@@ -57,6 +57,10 @@ add_library(tsmedia SHARED
     src/mediaviewer.cpp       src/mediaviewer.h
     src/settingsdialog.cpp    src/settingsdialog.h
     src/video/mfvideo.cpp     src/video/mfvideo.h
+    # 2.2 diagnostics
+    src/diagnostics.cpp         src/diagnostics.h
+    src/diagnosticscollect.cpp  src/diagnosticscollect.h
+    src/diagnosticsdialog.cpp   src/diagnosticsdialog.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -111,6 +115,29 @@ if(TSMEDIA_BUILD_TESTS)
     else()
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
+    endif()
+
+    # 2.2 diagnostics: the report, its redaction and the log parsers (own executable: QTest runs one
+    # test class per main()).
+    add_executable(tsmedia_diagnostics_tests
+        tests/tst_diagnostics.cpp
+        src/diagnostics.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+        src/settings.cpp # ts3::dataDir() is stubbed in the test
+    )
+    target_include_directories(tsmedia_diagnostics_tests PRIVATE src third_party/ts3client-pluginsdk/include)
+    target_compile_definitions(tsmedia_diagnostics_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(tsmedia_diagnostics_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(tsmedia_diagnostics_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test)
+    add_test(NAME tsmedia_diagnostics_tests COMMAND tsmedia_diagnostics_tests)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+        set_tests_properties(tsmedia_diagnostics_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
+    else()
+        set_tests_properties(tsmedia_diagnostics_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 

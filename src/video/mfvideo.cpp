@@ -55,6 +55,8 @@ constexpr DWORD    kMediaSource           = static_cast<DWORD>(MF_SOURCE_READER_
 std::mutex g_platformMutex;
 int        g_platformRefs = 0;
 
+std::atomic<int> g_lastVideoDevice{static_cast<int>(VideoDevice::NotUsedYet)}; // 2.2 diagnostics
+
 // The plugin delay-loads mfplat.dll / mfreadwrite.dll so it still loads on Windows N editions without
 // the Media Feature Pack. Nothing may call into Media Foundation before this returned true.
 bool mediaFoundationPresent()
@@ -489,6 +491,11 @@ void shutdown()
         MFShutdown();
 }
 
+VideoDevice lastVideoDevice() // 2.2 diagnostics
+{
+    return static_cast<VideoDevice>(g_lastVideoDevice.load());
+}
+
 // ================================================================================================
 // Probe
 // ================================================================================================
@@ -714,11 +721,15 @@ HRESULT VideoPlayer::Private::createDevice()
         hr = D3D11CreateDevice(nullptr, type, nullptr, flags, levels, count, D3D11_SDK_VERSION, &device, nullptr, &context);
         if (hr == E_INVALIDARG) // runtimes without 11.1 reject the whole list
             hr = D3D11CreateDevice(nullptr, type, nullptr, flags, levels + 1, count - 1, D3D11_SDK_VERSION, &device, nullptr, &context);
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hr)) {
+            g_lastVideoDevice.store(static_cast<int>(type == D3D_DRIVER_TYPE_HARDWARE ? VideoDevice::Hardware : VideoDevice::Warp)); // 2.2 diagnostics
             break;
+        }
     }
-    if (FAILED(hr))
+    if (FAILED(hr)) {
+        g_lastVideoDevice.store(static_cast<int>(VideoDevice::Failed)); // 2.2 diagnostics
         return hr;
+    }
 
     // The engine decodes on its own threads while frames are read back on the GUI thread.
     ComPtr<ID3D10Multithread> multithread;

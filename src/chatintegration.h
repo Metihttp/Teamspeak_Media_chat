@@ -53,6 +53,16 @@ class ChatIntegration : public QObject
 
     InlineMediaController* media() const { return m_media; }
 
+    // 2.2 diagnostics: how many of TeamSpeak's chat views and input lines are hooked (counts only).
+    int hookedChatViews() const { return m_views.size(); }
+    int hookedInputs() const
+    {
+        int count = 0;
+        for (const QPointer<QWidget>& input : m_inputs)
+            count += input.isNull() ? 0 : 1; // isNull(): no complete QWidget needed here
+        return count;
+    }
+
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 

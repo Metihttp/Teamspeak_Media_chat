@@ -21,6 +21,7 @@
 #include <QVBoxLayout>
 
 #include "core.h"
+#include "diagnosticsdialog.h" // 2.2 diagnostics
 #include "i18n.h"
 #include "medialink.h"
 #include "uiutil.h"
@@ -381,6 +382,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     titleRow->addWidget(title, 0, Qt::AlignBottom);
     titleRow->addWidget(version, 0, Qt::AlignBottom);
     titleRow->addStretch(1);
+    titleRow->addWidget(new DiagnosticsButton(this), 0, Qt::AlignBottom); // 2.2 diagnostics: "Diagnostic info…"
     auto* about = hint(i18n::t("Files you send are stored in the channel's file browser, where anyone allowed to download can get them. "
                                "People with TS Media chat see them in the chat."),
                        this);

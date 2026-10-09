@@ -18,6 +18,10 @@ namespace mf {
 bool startup();
 void shutdown();
 
+// 2.2 diagnostics: the Direct3D device the most recent VideoPlayer got (any thread).
+enum class VideoDevice { NotUsedYet = 0, Hardware = 1, Warp = 2, Failed = 3 };
+VideoDevice lastVideoDevice();
+
 struct ProbeResult {
     bool    ok = false;
     QSize   size;            // display size in pixels (pixel aspect ratio applied)
