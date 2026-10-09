@@ -12,6 +12,7 @@
 #include <cmath>
 
 #include "i18n.h"
+#include "previewpaint.h" // 2.2 audio
 #include "uiutil.h"
 
 namespace {
@@ -1130,6 +1131,37 @@ void drawVideoControls(QPainter& p, const QRectF& bounds, const PlaybackOverlay&
 }
 
 } // namespace
+
+// ---- 2.2 audio: the helpers above for preview modules in other files (previewpaint.h) -----------
+namespace previewpaint {
+
+Palette palette(bool dark)
+{
+    const ::Palette p = paletteFor(dark);
+    return {p.background, p.backgroundHover, p.border, p.title, p.link, p.muted, p.errorText, p.errorFill,
+            p.track, p.progress, p.placeholder, p.placeholderHover, p.hairline};
+}
+QColor  accent() { return kAccent; }
+qreal   cornerRadius() { return kRadius; }
+QFont   font(const PreviewStyle& style, qreal delta, bool bold) { return fontFor(style, delta, bold); }
+qreal   ratio(const PreviewStyle& style) { return ratioOf(style); }
+QImage  canvas(const QSize& logical, qreal dpr) { return makeCanvas(logical, dpr); }
+void    prepare(QPainter& p) { preparePainter(p); }
+QString fitText(const QFontMetricsF& fm, const QStringList& texts, qreal width) { return ::fitText(fm, texts, width); }
+void    drawFileName(QPainter& p, const QRectF& rect, Qt::Alignment align, const QString& shown) { ::drawFileName(p, rect, align, shown); }
+void    drawPlayIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawPlayIcon(p, box, color); }
+void    drawPauseIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawPauseIcon(p, box, color); }
+void    drawCircularArrow(QPainter& p, const QRectF& box, const QColor& color) { ::drawCircularArrow(p, box, color); }
+void    drawOpenIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawOpenIcon(p, box, color); }
+void    drawDownloadIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawDownloadIcon(p, box, color); }
+void    drawAlertIcon(QPainter& p, const QRectF& box, const QColor& background, const QColor& mark) { ::drawAlertIcon(p, box, background, mark); }
+void    drawRing(QPainter& p, const QPointF& center, qreal radius, qreal width, double progress, const QColor& track, const QColor& arc, bool animate)
+{
+    ::drawRing(p, center, radius, width, progress, track, arc, animate);
+}
+
+} // namespace previewpaint
+// ---- end 2.2 audio --------------------------------------------------------------------------------
 
 QSize previewLogicalSize(const MediaEntry& entry, const PreviewStyle& style)
 {

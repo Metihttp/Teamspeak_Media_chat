@@ -830,7 +830,8 @@ MediaKind kindForFileName(const QString& fileName)
     const QString ext = QFileInfo(fileName).suffix().toLower();
     static const QStringList images   = {QStringLiteral("jpg"), QStringLiteral("jpeg"), QStringLiteral("png"), QStringLiteral("bmp"), QStringLiteral("webp"), QStringLiteral("jfif")};
     static const QStringList videos   = {QStringLiteral("mp4"), QStringLiteral("webm"), QStringLiteral("mkv"), QStringLiteral("mov"), QStringLiteral("avi"), QStringLiteral("wmv"), QStringLiteral("m4v")};
-    static const QStringList audio    = {QStringLiteral("mp3"), QStringLiteral("wav"), QStringLiteral("ogg"), QStringLiteral("flac"), QStringLiteral("m4a"), QStringLiteral("opus"), QStringLiteral("aac")};
+    static const QStringList audio    = {QStringLiteral("mp3"), QStringLiteral("wav"), QStringLiteral("ogg"), QStringLiteral("flac"), QStringLiteral("m4a"), QStringLiteral("opus"), QStringLiteral("aac"),
+                                         QStringLiteral("wma"), QStringLiteral("mka"), QStringLiteral("weba")}; // 2.2 audio: measured to play inline
     static const QStringList archives = {QStringLiteral("zip"), QStringLiteral("rar"), QStringLiteral("7z"), QStringLiteral("tar"), QStringLiteral("gz")};
     static const QStringList docs     = {QStringLiteral("pdf"), QStringLiteral("txt"), QStringLiteral("doc"), QStringLiteral("docx"), QStringLiteral("xls"), QStringLiteral("xlsx"), QStringLiteral("ppt"), QStringLiteral("pptx"), QStringLiteral("md")};
 
