@@ -83,7 +83,7 @@ ServersSection::ServersSection(QWidget* parent)
     m_server->setMinimumWidth(kServerMinWidth);
     m_server->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_server->setMinimumContentsLength(24);
-    m_forget = new QPushButton(i18n::t("Forget"), this);
+    m_forget = new QPushButton(i18n::t("For&get"), this);
     m_forget->setAutoDefault(false);
     m_forget->setToolTip(i18n::t("Remove this server's own settings. It then uses the settings for all servers."));
     m_forget->setAccessibleDescription(m_forget->toolTip());
@@ -107,7 +107,7 @@ ServersSection::ServersSection(QWidget* parent)
     m_hint = hintLabel(QString(), this);
 
     // The server picker spans the section (long names need the room); its values follow as a form.
-    auto* serverLabel = new QLabel(i18n::t("Server"), this);
+    auto* serverLabel = new QLabel(i18n::t("&Server"), this);
     serverLabel->setBuddy(m_server);
     auto* serverRow = new QHBoxLayout;
     serverRow->addWidget(serverLabel);
@@ -125,10 +125,11 @@ ServersSection::ServersSection(QWidget* parent)
         const char* label;
         QWidget*    field;
     } rows[] = {
-        {"Automatic downloads", m_downloads},
-        {"Upload folder", m_folder},
-        {"Upload size limit", m_limit},
-        {"Note for people without the plugin", m_note},
+        // Access keys: unique on the Servers tab (with Server access below and the dialog's buttons).
+        {"Automatic &downloads", m_downloads},
+        {"Upload &folder", m_folder},
+        {"Upload size &limit", m_limit},
+        {"&Note for people without the plugin", m_note},
     };
     for (const auto& row : rows) {
         auto* label = new QLabel(i18n::t(row.label), this);

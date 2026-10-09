@@ -79,10 +79,19 @@ body:
     id: log-line
     attributes:
       label: Plugin load line from the TeamSpeak log
-      description: Open the newest file in `%APPDATA%\TS3Client\logs` and copy the line that contains `TS Media chat` and `loaded`. If there is no such line, write "missing".
-      placeholder: "TS Media chat 2.1.0 loaded"
+      description: Only needed if the plugin does not load (then Diagnostic info is not available). Open the newest file in `%APPDATA%\TS3Client\logs` and copy the line that contains `TS Media chat` and `loaded`. If there is no such line, write "missing".
+      placeholder: "TS Media chat 2.2.0 loaded"
     validations:
-      required: true
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic info
+      description: In TeamSpeak type `/tsmedia diag` (or open Settings → Diagnostic info…), press Copy and paste it here. It lists versions, settings and recent plugin messages; file names are hidden unless you chose to include them, and server addresses, server and channel names and nicknames are never included.
+      render: text
+    validations:
+      required: false
 
   - type: textarea
     id: widget-dump

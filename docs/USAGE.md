@@ -140,6 +140,7 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 | `/tsmedia cancel` | cancel all running uploads |
 | `/tsmedia settings` | open the settings |
 | `/tsmedia cache` | open the media cache folder |
+| `/tsmedia diag` | open *Diagnostic info* (also *Settings → Diagnostic info…*): versions, settings, session counts and recent plugin messages to copy into a bug report. File names are hidden unless you tick *Include file names*; server addresses, server and channel names and nicknames are never included. *Copy and open bug report* also opens the GitHub form in your browser with the version fields filled in. |
 | `/tsmedia help` or `/tsmedia` | print the version and the list of commands |
 | `/tsmedia debug` | write a list of TeamSpeak's chat widgets to `widget_dump.txt` in the plugin's data folder (`%APPDATA%\TS3Client\plugins\tsmedia`) for bug reports; the chat says *Diagnostics saved to …* |
 

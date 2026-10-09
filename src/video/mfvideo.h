@@ -22,6 +22,9 @@ void shutdown();
 // Media Foundation can be used on this computer (false on Windows N editions without the Media
 // Feature Pack). Cheap after the first call; safe on any thread.
 bool available();
+// 2.2 diagnostics: the Direct3D device the most recent VideoPlayer got (any thread).
+enum class VideoDevice { NotUsedYet = 0, Hardware = 1, Warp = 2, Failed = 3 };
+VideoDevice lastVideoDevice();
 
 struct ProbeResult {
     bool    ok = false;

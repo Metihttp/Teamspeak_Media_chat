@@ -18,6 +18,8 @@
 #include "chatintegration.h"
 #include "core.h"
 #include "datasaver.h" // 2.2 per-server settings
+#include "diagnosticscollect.h" // 2.2 diagnostics
+#include "diagnosticsdialog.h"  // 2.2 diagnostics
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "ownedtimer.h"
@@ -36,12 +38,13 @@
 
 namespace {
 
-QPointer<Core>            g_core;
-QPointer<ChatIntegration> g_chat;
-QPointer<SettingsDialog>  g_settings;
-QPointer<upd::Updater>    g_updater; // 2.2 updater
-QPointer<AccessGroup>     g_access;  // 2.2 servergroup
-bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
+QPointer<Core>              g_core;
+QPointer<ChatIntegration>   g_chat;
+QPointer<SettingsDialog>    g_settings;
+QPointer<upd::Updater>      g_updater;                 // 2.2 updater
+QPointer<AccessGroup>       g_access;                  // 2.2 servergroup
+QPointer<DiagnosticsDialog> g_diagnostics;             // 2.2 diagnostics
+bool                        g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
 // Explicit values: each feature owns its ids, and existing ones stay stable.
 enum MenuId {
@@ -110,6 +113,30 @@ void showSettings(QWidget* parent)
     dialog->activateWindow();
 }
 
+// 2.2 diagnostics: one "Diagnostic info" window (/tsmedia diag, Settings → Diagnostic info…). Owned
+// by TeamSpeak's main window, so it stays open when the settings close.
+void showDiagnostics(QWidget* parent)
+{
+    if (!g_core)
+        return;
+    if (g_diagnostics) {
+        g_diagnostics->raise();
+        g_diagnostics->activateWindow();
+        return;
+    }
+    diag::Environment env;
+    env.core                   = g_core;
+    env.chat                   = g_chat;
+    env.mediaFoundationStarted = g_mediaFoundation;
+    env.pluginApi              = PLUGIN_API_VERSION;
+    QWidget* owner             = g_chat && g_chat->mainWindow() ? g_chat->mainWindow() : parent;
+    auto*    dialog            = new DiagnosticsDialog(env, owner); // deletes itself on close
+    g_diagnostics              = dialog;
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
 // One line per command. Only the first line carries the plugin's name (printInfo adds it); "debug"
 // is for bug reports and not listed.
 void printHelp(uint64 sch)
@@ -122,6 +149,7 @@ void printHelp(uint64 sch)
         "[b]/tsmedia cache[/b] — open the media cache folder",
         "[b]/tsmedia update[/b] — check for a new version", // 2.2 updater (official builds only)
         "[b]/tsmedia datasaver[/b] on | off | default — pause or resume automatic downloads on this server", // 2.2 data saver
+        "[b]/tsmedia diag[/b] — copy diagnostic info for a bug report", // 2.2 diagnostics
         "[b]/tsmedia help[/b] — show this list",
     };
     for (const char* line : commands) {
@@ -339,6 +367,8 @@ TS3_EXPORT int ts3plugin_init()
         g_access->moveToThread(qApp->thread());
 
     QMetaObject::invokeMethod(core, [core, chat] {
+        diag::startSessionStats(core);              // 2.2 diagnostics: counts from the start (a child of core)
+        diag::setDialogOpener(&showDiagnostics);    // 2.2 diagnostics: Settings → Diagnostic info…
         g_mediaFoundation = mf::startup();
         if (!g_mediaFoundation)
             ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
@@ -357,6 +387,7 @@ TS3_EXPORT int ts3plugin_init()
 TS3_EXPORT void ts3plugin_shutdown()
 {
     auto cleanup = [] {
+        diag::setDialogOpener(nullptr); // 2.2 diagnostics (its window is closed below and waits for its worker)
         // 2.2 updater: cancels a running check or download (waits at most 1 s; a job still in a network
         // read keeps the DLL pinned and ends on its own) and closes its windows.
         delete g_updater.data();
@@ -460,6 +491,8 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
             if (datasaver::runCommand(sch, arguments))
                 serverSettingsChanged();
         });
+    } else if (cmd == QLatin1String("diag") || cmd == QLatin1String("diagnostics")) { // 2.2 diagnostics
+        onGuiThread([] { showDiagnostics(nullptr); });
     } else if (cmd == QLatin1String("debug")) {
         onGuiThread([sch] {
             if (!g_chat)

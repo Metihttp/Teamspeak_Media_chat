@@ -170,7 +170,7 @@ You need Visual Studio 2022 Build Tools, Qt 5.15.2, Git and Python 3; one script
 
 ## Support
 
-Found a bug? Check the [FAQ](docs/FAQ.md), then [open a bug report](https://github.com/Metihttp/Teamspeak_Media_chat/issues/new?template=bug_report.yml) with the plugin version (type `/tsmedia`), your TeamSpeak and Windows versions, and what happened.
+Found a bug? Check the [FAQ](docs/FAQ.md), then [open a bug report](https://github.com/Metihttp/Teamspeak_Media_chat/issues/new?template=bug_report.yml) with what happened. Type `/tsmedia diag` in the chat and press *Copy* to get the versions, settings and recent plugin messages for the report's *Diagnostic info* box (file names are hidden unless you include them).
 
 ## License and credits
 

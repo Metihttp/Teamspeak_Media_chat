@@ -265,12 +265,14 @@ Geometry geometryOf(IMFMediaType* type)
 
 // ---- D3D11 / DXGI -------------------------------------------------------------------------------
 
-HRESULT createD3D11Device(bool allowWarp, ID3D11Device** device, ID3D11DeviceContext** context)
+HRESULT createD3D11Device(bool allowWarp, ID3D11Device** device, ID3D11DeviceContext** context, D3D_DRIVER_TYPE* driverType)
 {
     if (!device || !context)
         return E_POINTER;
     *device  = nullptr;
     *context = nullptr;
+    if (driverType)
+        *driverType = D3D_DRIVER_TYPE_UNKNOWN;
 
     static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
                                                D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2,  D3D_FEATURE_LEVEL_9_1};
@@ -286,8 +288,11 @@ HRESULT createD3D11Device(bool allowWarp, ID3D11Device** device, ID3D11DeviceCon
         hr = D3D11CreateDevice(nullptr, type, nullptr, flags, levels, count, D3D11_SDK_VERSION, &created, nullptr, &immediate);
         if (hr == E_INVALIDARG) // runtimes without 11.1 reject the whole list
             hr = D3D11CreateDevice(nullptr, type, nullptr, flags, levels + 1, count - 1, D3D11_SDK_VERSION, &created, nullptr, &immediate);
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hr)) {
+            if (driverType)
+                *driverType = type;
             break;
+        }
     }
     if (FAILED(hr))
         return hr;

@@ -14,6 +14,7 @@ Where your files go, what stays on your computer, and how the plugin protects yo
 
 - **Local cache:** downloaded media is kept in `%APPDATA%\TS3Client\plugins\tsmedia\cache`, limited by the cache size you choose. You can clear it at any time in the settings.
 - **Temporary copies:** files being sent are staged in the `upload` and `paste` folders next to the cache. They are deleted once they have been sent or dismissed, and at the latest at the next start.
+- **Diagnostic info** (`/tsmedia diag`) is built only when you open it and leaves your computer only if you paste it somewhere. It shows exactly what *Copy* copies: plugin, Qt, TeamSpeak and Windows versions, which video and audio codecs Windows has, your settings (custom folders and links only as "changed"), counts of this session's transfers and the recent TS Media lines of the log. File names and paths in those lines read `<file 1>`, `<path 1>` unless you tick *Include file names* (your user folder then shows as `%USERPROFILE%`). Server addresses, server and channel names, unique IDs and nicknames are never included. *Copy and open bug report* opens GitHub's form in your browser with only the version fields filled in; the plugin itself sends nothing.
 
 ## Nothing is sent by accident
 

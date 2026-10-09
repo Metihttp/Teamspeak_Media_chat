@@ -64,6 +64,8 @@ using detail::PlatformScope;
 using detail::platformUnavailableText;
 using detail::Wording;
 
+std::atomic<int> g_lastVideoDevice{static_cast<int>(VideoDevice::NotUsedYet)}; // 2.2 diagnostics
+
 LONG defaultStride(IMFMediaType* type)
 {
     return static_cast<LONG>(static_cast<INT32>(MFGetAttributeUINT32(type, MF_MT_DEFAULT_STRIDE, 0)));
@@ -249,6 +251,11 @@ void shutdown()
 bool available()
 {
     return mediaFoundationPresent();
+}
+
+VideoDevice lastVideoDevice() // 2.2 diagnostics
+{
+    return static_cast<VideoDevice>(g_lastVideoDevice.load());
 }
 
 // ================================================================================================
@@ -475,7 +482,12 @@ bool VideoPlayer::Private::createEngine(QString* error)
     // Audio files need no graphics device at all: the audio-only engine never renders frames.
     HRESULT hr = S_OK;
     if (!audioOnly) {
-        hr = detail::createD3D11Device(true, &device, &context);
+        D3D_DRIVER_TYPE driver = D3D_DRIVER_TYPE_UNKNOWN;
+        hr                     = detail::createD3D11Device(true, &device, &context, &driver);
+        // 2.2 diagnostics: which device the most recent player got
+        g_lastVideoDevice.store(static_cast<int>(FAILED(hr)                           ? VideoDevice::Failed
+                                                 : driver == D3D_DRIVER_TYPE_HARDWARE ? VideoDevice::Hardware
+                                                                                      : VideoDevice::Warp));
         if (SUCCEEDED(hr))
             hr = detail::createDxgiDeviceManager(device.Get(), &deviceManager);
         if (FAILED(hr)) {

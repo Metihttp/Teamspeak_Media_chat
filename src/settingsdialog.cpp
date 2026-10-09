@@ -28,6 +28,7 @@
 #include "accessgroupbox.h" // 2.2 servergroup
 #include "core.h"
 #include "datasaver.h" // 2.2 per-server settings
+#include "diagnosticsdialog.h" // 2.2 diagnostics
 #include "i18n.h"
 #include "medialink.h"
 #include "settingssection.h"
@@ -250,8 +251,8 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* receive     = new QGroupBox(i18n::t("Receiving"), m_pages.at(static_cast<int>(Tab::ReceivingPlayback)));
     m_inlinePreviews  = new QCheckBox(i18n::t("&Show images, videos and file cards in the chat"), receive);
     m_receiveDetails  = new QWidget(receive);
-    // 2.2 data saver (no access key yet: the fitting letters are taken; assign one at integration).
-    m_dataSaver           = new QCheckBox(i18n::t("Data saver: pause automatic downloads"), m_receiveDetails);
+    // 2.2 data saver, at the top of the tab's first group.
+    m_dataSaver           = new QCheckBox(i18n::t("&Data saver: pause automatic downloads"), m_receiveDetails);
     auto* dataSaverHint   = hint(i18n::t("Images and videos load when you click them; small previews still load. Your limits below are kept. "
                                          "You can turn it off for single servers under Servers."),
                                  m_receiveDetails);
@@ -363,6 +364,17 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
         m_cacheNotice->stop();
         updateCacheLabel();
     });
+
+    // ---- 2.2 diagnostics: Troubleshooting ---------------------------------------------------------
+    auto* troubleshooting = new QGroupBox(i18n::t("Troubleshooting"), m_pages.at(static_cast<int>(Tab::General)));
+    auto* diagnostics     = new DiagnosticsButton(troubleshooting);
+    diagnostics->setText(i18n::t("&Diagnostic info…"));
+    auto* diagnosticsHint = hint(i18n::t("Versions, settings and recent messages to paste into a bug report. Nothing is sent by the plugin."), troubleshooting);
+    diagnostics->setAccessibleDescription(diagnosticsHint->text());
+    auto* troubleshootingLayout = new QVBoxLayout(troubleshooting);
+    troubleshootingLayout->addWidget(diagnosticsHint);
+    troubleshootingLayout->addWidget(diagnostics, 0, Qt::AlignLeft);
+    troubleshooting->setVisible(diag::hasDialogOpener()); // the window only exists inside TeamSpeak
 
     // ---- Sending ----------------------------------------------------------------------------------
     auto* send = new QGroupBox(i18n::t("Sending"), m_pages.at(static_cast<int>(Tab::Sending)));
@@ -501,6 +513,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
 
     // The 2.1 groups, unchanged, in their tabs.
     tabLayout(Tab::General)->insertWidget(tabLayout(Tab::General)->count() - 1, cache);
+    tabLayout(Tab::General)->insertWidget(tabLayout(Tab::General)->count() - 1, troubleshooting); // 2.2 diagnostics
     tabLayout(Tab::Sending)->insertWidget(tabLayout(Tab::Sending)->count() - 1, send);
     tabLayout(Tab::Sending)->insertWidget(tabLayout(Tab::Sending)->count() - 1, note);
     tabLayout(Tab::ReceivingPlayback)->insertWidget(tabLayout(Tab::ReceivingPlayback)->count() - 1, receive);

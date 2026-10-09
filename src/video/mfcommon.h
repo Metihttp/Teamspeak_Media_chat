@@ -14,7 +14,8 @@
 
 #include <windows.h>
 
-#include <cguid.h> // GUID_NULL
+#include <cguid.h>     // GUID_NULL
+#include <d3dcommon.h> // D3D_DRIVER_TYPE
 #include <guiddef.h>
 
 struct ID3D11Device;
@@ -99,7 +100,7 @@ Geometry geometryOf(IMFMediaType* type);
 
 // A multithread-protected D3D11 device with video support. allowWarp: fall back to the WARP software
 // rasterizer when there is no usable GPU (the player wants that; a hardware encoder does not).
-HRESULT createD3D11Device(bool allowWarp, ID3D11Device** device, ID3D11DeviceContext** context);
+HRESULT createD3D11Device(bool allowWarp, ID3D11Device** device, ID3D11DeviceContext** context, D3D_DRIVER_TYPE* driverType = nullptr);
 // A DXGI device manager handing device to Media Foundation components.
 HRESULT createDxgiDeviceManager(ID3D11Device* device, IMFDXGIDeviceManager** manager);
 

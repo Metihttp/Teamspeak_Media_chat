@@ -104,6 +104,10 @@ add_library(tsmedia SHARED
     src/serversettings.cpp    src/serversettings.h
     src/serverssection.cpp    src/serverssection.h
     src/datasaver.cpp         src/datasaver.h
+    # 2.2 diagnostics
+    src/diagnostics.cpp         src/diagnostics.h
+    src/diagnosticscollect.cpp  src/diagnosticscollect.h
+    src/diagnosticsdialog.cpp   src/diagnosticsdialog.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -211,6 +215,9 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 drag-out and per-server settings: export names, server groups in settings.ini, data saver rules
         tests/tst_dragout_servers.cpp
         src/filenames.cpp
+        # 2.2 diagnostics: the report, its redaction and the log parsers
+        tests/tst_diagnostics.cpp
+        src/diagnostics.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
