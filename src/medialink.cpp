@@ -470,11 +470,13 @@ QList<MediaLink> MediaLink::findInMessage(const QString& message)
 QString composeChatMessage(const MediaLink& link, bool includeNotice, const QString& downloadUrl)
 {
     // 2.1's candidates (BlurHash, the note's link, the note, the preview, the sizes) are the same
-    // steps in the same order, so this is the 2.2 composer with 2.1's label.
+    // steps in the same order, so this is the 2.2 composer with 2.1's label and 2.1's limit. Only the
+    // compatibility tests use it; Core uses composeChatMessages() with kMaxMessageBytes.
     ComposeOptions options;
     options.includeNotice  = includeNotice;
     options.downloadUrl    = downloadUrl;
     options.friendlyLabels = false;
+    options.maxBytes       = 1000; // 2.1's limit, whatever kMaxMessageBytes becomes
     return composeChatMessages({link}, options).value(0);
 }
 

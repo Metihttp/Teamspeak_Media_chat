@@ -542,6 +542,7 @@ void TestLink22::v21LinksAreByteIdentical()
             options.includeNotice  = notice;
             options.downloadUrl    = url;
             options.friendlyLabels = false;
+            options.maxBytes       = v21::kMaxMessageBytes;
             QCOMPARE(composeChatMessages({link}, options), QStringList{v21::composeChatMessage(old, notice, url)});
         }
     }
@@ -930,6 +931,7 @@ void TestLink22::composeEmptyCaptionMatches21()
     // and with friendly labels only the label differs.
     const MediaLink link = without22(photo());
     ComposeOptions  options;
+    options.maxBytes             = v21::kMaxMessageBytes;
     const QStringList messages = composeChatMessages({link}, options);
     QCOMPARE(messages.size(), 1);
     QString expected = v21::composeChatMessage(toV21(link), true, QString());
@@ -951,7 +953,7 @@ void TestLink22::composeCaptionFirst()
     QVERIFY2(text.startsWith(QStringLiteral("Sunset at the lake") + QString::fromLatin1(kMessageSeparator) + QStringLiteral("[URL=ts3file://")), qPrintable(text));
     QVERIFY(text.endsWith(QStringLiteral("plugin required to view this in chat[/I][/COLOR]")));
     QVERIFY(text.contains(QStringLiteral("]sunset.jpg[/URL] [COLOR=#72767d]")));
-    QVERIFY(utf8Bytes(text) < kMaxMessageBytes);
+    QVERIFY(utf8Bytes(text) < options.maxBytes);
     QCOMPARE(messages.first().links.size(), 1); // (sizes and items: QVector's operator== warns with MSVC)
     QCOMPARE(messages.first().links.first(), 0);
     QVERIFY(messages.first().dropped.isEmpty());
@@ -966,6 +968,7 @@ void TestLink22::composeCaptionSplit()
     const MediaLink link = photo(QStringLiteral("فایل_خیلی_طولانی_برای_آزمایش_اندازه_پیام_3f9a1c2e.jpg"));
     ComposeOptions  options;
     options.downloadUrl = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat");
+    options.maxBytes    = 1000; // the scenario is about this limit, whatever kMaxMessageBytes becomes
     options.caption     = QString(kCaptionMaxChars, QChar(0x0633)); // 300 Persian letters = 600 bytes
     const QVector<ComposedMessage> messages = composeChatMessagesDetailed({link}, options);
     QCOMPARE(messages.size(), 2);
@@ -976,7 +979,7 @@ void TestLink22::composeCaptionSplit()
     QVERIFY(messages.at(1).text.contains(QStringLiteral("[URL=https://github.com/Metihttp/Teamspeak_Media_chat]TS Media chat[/URL] plugin required")));
     QVERIFY2(messages.at(1).dropped.isEmpty(), qPrintable(messages.at(1).dropped.join(QLatin1Char(','))));
     for (const ComposedMessage& m : messages)
-        QVERIFY(utf8Bytes(m.text) < kMaxMessageBytes && !m.tooLong);
+        QVERIFY(utf8Bytes(m.text) < options.maxBytes && !m.tooLong);
 
     // Before splitting, only steps that keep the note are tried: here dropping the preview hash is enough.
     options.caption = QString(80, QLatin1Char('c'));

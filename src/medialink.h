@@ -101,8 +101,9 @@ struct MediaLink {
 // (#72767d) that has 4.56:1 contrast on TeamSpeak's white chat and 3.0:1 on a dark one (#2b2d31).
 // downloadUrl (optional, http(s) only) is linked from the plugin name in the note.
 // Clients with the plugin hide everything after a TS Media link in that message.
-// 2.1's composer, kept as is (the file name as label): composeChatMessages() with one link, no caption
-// and friendlyLabels off gives the same text.
+// 2.1's composer, kept as is (the file name as label, 2.1's limit of 1000 bytes) for the compatibility
+// tests: composeChatMessages() with one link, no caption, friendlyLabels off and maxBytes 1000 gives the
+// same text. New code uses composeChatMessages().
 QString composeChatMessage(const MediaLink& link, bool includeNotice, const QString& downloadUrl);
 
 // ---- 2.2 composer: captions, several links per message, one cascade ------------------------------

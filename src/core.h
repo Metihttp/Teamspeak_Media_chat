@@ -218,7 +218,8 @@ class Core : public QObject
     // The FloodGovernor of a connection, shared by Core's chat posts and the plugin-command transport
     // (PluginLink): ask it before each command (commandReady), then report commandSent and the answer
     // (commandFlooded on ERROR_client_is_flooding, answeredOk otherwise). Created on first use, dropped
-    // when the connection is lost. GUI thread only. Times are floodClockMs().
+    // when the connection is lost: use the reference right away, never keep it. GUI thread only. Times
+    // are floodClockMs(); floodGovernorChanged(sch) says when commands may be worth trying again.
     FloodGovernor& floodGovernor(uint64 sch);
     qint64         floodClockMs() const; // the governors' monotonic clock
     // A command was flooded (or answered) on sch: Core re-plans its posts (a pause applies to both).
