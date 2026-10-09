@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: FAQ and troubleshooting
+    url: https://github.com/Metihttp/Teamspeak_Media_chat/blob/main/docs/FAQ.md
+    about: Answers to common problems such as "Bad Image" errors, videos that don't play and missing previews.
+  - name: Server admin guide
+    url: https://github.com/Metihttp/Teamspeak_Media_chat#server-admin-guide
+    about: The file transfer permissions a TeamSpeak server needs so users can send and see media.
