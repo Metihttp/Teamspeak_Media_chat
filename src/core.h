@@ -8,10 +8,14 @@
 #include <QSet>
 #include <QStringList>
 #include <QThreadPool>
+#include <QVector>
+
+#include <QElapsedTimer>
 
 #include <atomic>
 #include <memory>
 
+#include "floodgovernor.h"
 #include "medialink.h"
 #include "mediaprobe.h"
 #include "ts3api.h"
@@ -50,13 +54,39 @@ struct ChatTarget {
     anyID  clientId = 0; // for TextMessageTarget_CLIENT
 };
 
-// Preparing: copied to the staging folder, probed, its preview uploaded. Uploading: the file itself.
-// Posting: the chat message announcing it is being sent. Done, Failed and Canceled are final.
-enum class UploadState { Preparing, Uploading, Posting, Done, Failed, Canceled };
+// Preparing: copied to the staging folder, probed, its preview uploaded. Compressing (2.4): a video
+// being made smaller before the upload; it counts as running wherever Preparing does. Uploading: the
+// file itself. Posting: the chat message announcing it is being sent (or waits for its turn). Done,
+// Failed and Canceled are final.
+enum class UploadState { Preparing, Compressing, Uploading, Posting, Done, Failed, Canceled };
+
+// ---- 2.2: one way to send ------------------------------------------------------------------------
+
+// Video quality for the compression planner (2.4); until then every video is sent as it is.
+enum class SendQuality { Auto, Original, P1080, P720, P480 };
+
+struct SendItem {
+    QString     path;              // the file to send
+    QString     displayName;       // its title in the toast and in warnings; empty: the file's name
+    bool        ownTemp    = false; // our own file (pasted, edited, compressed): deleted with the job
+    bool        pasted     = false; // a pasted picture ("Pasted image", sent as new_photo_<hex>)
+    bool        spoiler    = false; // sp=1; pictures, GIFs and videos only
+    SendQuality quality    = SendQuality::Auto;
+    bool        voice      = false; // a recorded voice message (vm=1; .m4a, sent as voice_message_<hex>)
+    qint64      durationMs = 0;     // voice: the recorder's length (else the probe's)
+    QByteArray  waveform;           // voice: MediaLink::kWaveformLevels levels of 0..15
+};
+
+struct SendRequest {
+    ChatTarget        target;
+    QVector<SendItem> items;   // their messages appear in this order (albums first, see Core::send)
+    QString           caption; // as typed; shown above the first file or album (never cut)
+    bool              album = false; // 2 or more pictures/videos go out as albums of up to 10
+};
 
 struct UploadJob {
     int         id    = 0;
-    int         batch = 0; // jobs from one uploadFiles() call share it: their chat messages keep that order
+    int         batch = 0; // jobs from one send() share it: their chat messages keep its order
     ChatTarget  target;
     uint64      channelId = 0;
     QString     sourcePath;
@@ -71,19 +101,23 @@ struct UploadJob {
     UploadState state          = UploadState::Preparing;
     // Waiting for its turn rather than working. In Preparing: for a free worker or upload slot
     // ("Waiting to upload…"). In Posting: uploaded, the chat message waits until the earlier files of
-    // its batch are posted ("Waiting for earlier files…"). Show it without a moving progress bar.
+    // its batch are posted ("Waiting for earlier files…") or until the rest of its album is uploaded
+    // ("Waiting for the rest of the album…"). Show it without a moving progress bar.
     bool        waiting  = false;
     bool        uploaded = false; // the file reached the server (it stays there even if posting fails)
     double      progress = 0.0;   // main file upload progress 0..1
     QString     message;          // status of the current step; the full error text when Failed
+    QString     displayName;      // SendItem::displayName (see displayNameFor)
+    bool        spoiler = false;  // SendItem::spoiler
+    bool        inAlbum = false;  // posted together with the other pictures/videos of its album
 
     // Filled by the probe step (worker thread) before uploading.
     LocalMediaInfo info;
     QString        previewRemotePath; // set once the preview/poster upload succeeded
 };
 
-// The title of an upload in the toast and in chat warnings: "Pasted image" for pasted pictures,
-// otherwise the source file's name (displayFileName).
+// The title of an upload in the toast and in chat warnings: its SendItem::displayName, "Pasted image"
+// for pasted pictures, otherwise the source file's name (always through displayFileName).
 QString displayNameFor(const UploadJob& job);
 
 // "You're not connected to a server. Connect to one to send files." Core's chat warning and the
@@ -146,13 +180,19 @@ class Core : public QObject
     void setInUse(const QString& key, bool inUse);
 
     // ---- uploads -------------------------------------------------------------------------
-    // Each file is probed on a worker thread (size, duration, blurhash, preview), the preview is
-    // uploaded to <uploadDirectory>/previews, then the file, then composeChatMessage() is posted.
-    // At most two files are transferred at once; the chat messages of one uploadFiles() call appear
-    // in the order of paths (a file that finishes early waits, see UploadJob::waiting).
+    // 2.2: every send goes through send(). Each file is probed on a worker thread (size, duration,
+    // blurhash, preview), the preview is uploaded to <uploadDirectory>/previews/<8 hex>.jpg, then the
+    // file. At most two files are transferred at once. The chat messages (composeChatMessages: caption
+    // first, several links per message when they fit) appear in the request's order: albums first,
+    // each posted once all of its items are uploaded, failed or canceled (failed ones are left out and
+    // the rest renumbered), then the other files one by one. A file that finishes early waits (see
+    // UploadJob::waiting). Posts go out one at a time through the connection's FloodGovernor.
+    // Returns the batch id, 0 if nothing was started (not connected, no file found).
+    int              send(const SendRequest& request);
+    // The 2.1 entry points: send() with default options (no caption, no spoiler, no album).
     void             uploadFiles(const QStringList& paths, const ChatTarget& target);
     void             uploadImage(const QImage& image, const ChatTarget& target);
-    void             cancelUpload(int id); // while Preparing or Uploading
+    void             cancelUpload(int id); // while Preparing, Compressing or Uploading
     const UploadJob* upload(int id) const; // nullptr once the job is gone
     QList<int>       uploadIds() const;    // every job Core still has, oldest first
 
@@ -174,6 +214,16 @@ class Core : public QObject
     void    openCacheFolder() const;
     void    applyCacheLimit(); // after Settings::cacheLimitMB changed: trims the cache to it shortly
 
+    // ---- flood control (2.2) -------------------------------------------------------------------
+    // The FloodGovernor of a connection, shared by Core's chat posts and the plugin-command transport
+    // (PluginLink): ask it before each command (commandReady), then report commandSent and the answer
+    // (commandFlooded on ERROR_client_is_flooding, answeredOk otherwise). Created on first use, dropped
+    // when the connection is lost. GUI thread only. Times are floodClockMs().
+    FloodGovernor& floodGovernor(uint64 sch);
+    qint64         floodClockMs() const; // the governors' monotonic clock
+    // A command was flooded (or answered) on sch: Core re-plans its posts (a pause applies to both).
+    void           floodStateChanged(uint64 sch);
+
     // ---- TeamSpeak callbacks (called on the GUI thread) ------------------------------------
     bool isOwnReturnCode(const QString& returnCode) const; // thread-safe
     void onTextMessage(uint64 sch, const QString& message);
@@ -185,6 +235,8 @@ class Core : public QObject
     void entryChanged(const QString& key);
     void uploadChanged(int id); // state, progress or waiting changed, or the job was removed
     void openRequested(const QString& key); // a download started with openWhenReady finished
+    // The posts of sch are all out (or a flood pause ended): plugin commands may go again.
+    void floodGovernorChanged(uint64 sch);
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
   private:
@@ -207,6 +259,33 @@ class Core : public QObject
         int        renames           = 0;     // new names after "file already exists"
         bool       mainUploaded      = false; // the main file is complete on the server
         MediaLink  link;                      // the link to post, once uploaded
+    };
+
+    // ---- 2.2 posting ----------------------------------------------------------------------
+    // A send is a batch of units posted in order: an album (its messages go once all of its uploads
+    // are settled) or a single file.
+    struct PostUnit {
+        QVector<int> jobs;             // upload ids, in post order
+        bool         album    = false;
+        bool         composed = false; // its messages are queued (or nothing of it reached the server)
+    };
+    struct BatchInfo {
+        QString           caption;             // as typed
+        bool              captionDone = false; // queued with a unit (or handed on to a retry)
+        QVector<PostUnit> units;
+    };
+    // One chat message waiting in its connection's queue.
+    struct PostItem {
+        uint64       sch       = 0;
+        ChatTarget   target;
+        uint64       channelId = 0;
+        QByteArray   text;          // UTF-8
+        QVector<int> jobs;          // the uploads it announces; empty for a caption of its own
+        int          attempts = 0;  // times sent
+    };
+    struct InFlightPost {
+        PostItem item;
+        quint64  ticket = 0; // FloodGovernor::postSent
     };
 
     // Downloads interrupted by a lost connection, restarted once the server is reachable again.
@@ -249,7 +328,7 @@ class Core : public QObject
     void    scheduleCacheLimit(const QString& justFinishedKey);
     void    enforceCacheLimit();
 
-    int     createUpload(const QString& sourcePath, const QString& remoteName, const ChatTarget& target, bool deleteSource, bool pasted, int batch);
+    int     createUpload(const SendItem& item, const QString& remoteName, const ChatTarget& target, int batch);
     void    markProbeStarted(int id);
     void    onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInfo& info, const QByteArray& previewJpeg);
     void    createRemoteDirectory(int id, bool previews);
@@ -261,8 +340,15 @@ class Core : public QObject
     void    resendWithNewName(int id, anyID failedTransfer);
     bool    renameUpload(UploadJob& job);
     void    finishUpload(int id);
-    void    postUploadMessage(int id);
     bool    waitsForEarlierPosts(const UploadJob& job) const;
+    QString heldText(const UploadJob& job) const; // why an uploaded file's message waits
+    void    pumpPostUnits();                      // composes the units whose turn has come
+    void    composeUnit(int batch, PostUnit& unit);
+    void    pumpPosts();                          // sends queued messages as their governors allow
+    bool    sendPost(PostItem& item);             // false: refused at once (already reported)
+    void    finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError);
+    void    failPost(const PostItem& item, const QString& text);
+    void    forgetBatchIfDone(int batch);
     void    seedCache(const UploadJob& job, const MediaLink& link);
     void    failUpload(int id, const QString& text);
     void    setUploadState(UploadJob& job, UploadState state, const QString& message = {}, bool waiting = false);
@@ -307,10 +393,19 @@ class Core : public QObject
     QHash<int, QString>     m_probing; // upload id -> staging dir, while its staging copy / probe runs
     QHash<int, std::shared_ptr<std::atomic<bool>>> m_stagingCancel; // upload id -> stops its staging copy
     QHash<int, QString>     m_deleteAfterProbe; // upload id -> pasted file to delete once its worker is done
-    QList<int>              m_sendQueue; // probed jobs waiting for an upload slot, by id (= selection order)
+    QList<int>              m_sendQueue; // probed jobs waiting for an upload slot, by id (= post order)
     int                     m_nextUploadId = 0;
     int                     m_nextBatch    = 0;
     bool                    m_uploadQueueScheduled = false;
+
+    // 2.2 posting
+    QHash<int, SendItem>            m_jobItems;      // upload id -> what was asked for (kept for a retry)
+    QHash<int, BatchInfo>           m_batches;       // batch id -> its units and caption
+    QHash<uint64, QList<PostItem>>  m_postQueue;     // connection -> messages waiting to be sent, in order
+    QHash<QString, InFlightPost>    m_postsInFlight; // return code -> a message waiting for its answer
+    QHash<uint64, FloodGovernor>    m_flood;         // connection -> its governor (posts and plugin commands)
+    QTimer*                         m_postTimer = nullptr; // wakes pumpPosts() when a governor allows the next post
+    QElapsedTimer                   m_clock;
 
     QHash<QString, PendingOp> m_ops;
     mutable QMutex            m_returnCodesMutex;

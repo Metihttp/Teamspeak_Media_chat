@@ -5,6 +5,9 @@
 #include <QList>
 #include <QString>
 
+#include <initializer_list>
+
+#include "logtext.h" // 2.2: LogArg, pub(), file(), local(), name()
 #include "plugin_definitions.h"
 #include "teamspeak/public_definitions.h"
 #include "teamspeak/public_errors.h"
@@ -42,6 +45,14 @@ bool getServerAddress(uint64 sch, QString* host, quint16* port);
 
 QString newReturnCode();
 
+// 2.2 structured log: every new line uses this, with each value tagged (logtext.h), e.g.
+//   ts3::log(LogLevel_WARNING, sch, "Couldn't move %1 to %2", {ts3::file(remote), ts3::local(path)});
+// TeamSpeak's log gets the plain text, the plugin log (pluginlog.h) the marked one.
+void log(LogLevel level, uint64 sch, const char* format, std::initializer_list<LogArg> args);
+// A constant line (nothing private in it).
+void log(const char* fixedText, LogLevel level = LogLevel_INFO, uint64 sch = 0);
+// 2.1's free-text lines: the plugin log keeps the whole line as unclassified (private) text. Don't use
+// it for new lines.
 void log(const QString& message, LogLevel level = LogLevel_INFO, uint64 sch = 0);
 
 // Prints a BBCode line into the chat tab the user is looking at when sch is the current connection,

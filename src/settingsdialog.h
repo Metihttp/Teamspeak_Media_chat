@@ -12,16 +12,27 @@ class QLineEdit;
 class QPushButton;
 class QSlider;
 class QSpinBox;
+class QTabWidget;
 class QTimer;
+class QVBoxLayout;
+class SettingsSection;
 
-// Plugin settings: Receiving, Playback, Media cache, Sending and the note for people without the plugin.
+// Plugin settings in tabs (2.2): General (media cache), Sending (sending, the note for people without
+// the plugin), Receiving & playback, Servers, Privacy & updates. Tabs without content stay hidden.
 // The window's objectName starts with "tsmedia" so plugin shutdown can close it.
 class SettingsDialog : public QDialog
 {
     Q_OBJECT
 
   public:
+    enum class Tab { General, Sending, ReceivingPlayback, Servers, PrivacyUpdates };
+
     SettingsDialog(Core* core, QWidget* parent = nullptr);
+
+    // 2.2: a feature's settings, added below the tab's groups in the order of the calls (the dialog
+    // takes ownership and shows the tab). A SettingsSection is loaded, checked and stored with the rest
+    // of the form; any other widget is only shown.
+    void addSection(Tab tab, QWidget* section);
 
   signals:
     void settingsChanged();
@@ -43,8 +54,15 @@ class SettingsDialog : public QDialog
     void showDownloadUrlError(const QString& text);
     void applyTheme();
     void fitToContents();
+    QVBoxLayout* tabLayout(Tab tab) const;
+    void         showTab(Tab tab);
+    void         showTabOf(QWidget* widget); // the tab a widget is on becomes the current one
 
     Core* m_core;
+
+    QTabWidget*                 m_tabs;
+    QVector<QWidget*>           m_pages;    // by Tab
+    QVector<SettingsSection*>   m_sections; // added by features
 
     // Receiving
     QCheckBox* m_inlinePreviews;

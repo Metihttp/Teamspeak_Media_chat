@@ -20,11 +20,89 @@ constexpr qint64 kMaxAspect        = 8;
 constexpr qint64 kMaxDurationMs    = 1000ll * 3600 * 1000; // 1000 hours
 constexpr int    kMaxBlurHashChars = 120;
 constexpr int    kMaxPathChars     = 1024;
-constexpr int    kMaxMessageBytes  = 1000; // TeamSpeak rejects text messages above 1024 bytes
+// kMaxMessageBytes (the message limit) is in medialink.h.
+
+constexpr int kShaBytes         = 32;
+constexpr int kPreviewShaBytes  = 16;
+constexpr int kWaveformBytes    = MediaLink::kWaveformLevels / 2; // two 4-bit levels per byte
+constexpr int kMaxUrlTokenChars = 512;                            // http(s) addresses in captions
 
 QString encode(const QString& value)
 {
     return QString::fromLatin1(QUrl::toPercentEncoding(value));
+}
+
+// ---- 2.2 metadata encodings ----------------------------------------------------------------------
+
+QString toBase64Url(const QByteArray& bytes)
+{
+    return QString::fromLatin1(bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+
+// Exactly `bytes` bytes as unpadded base64url in its one canonical spelling (the unused low bits of the
+// last character are zero), else empty. Values from chat links: strict, never "close enough".
+QByteArray fromBase64UrlExact(const QString& text, int bytes)
+{
+    const int chars = (bytes * 4 + 2) / 3;
+    if (text.length() != chars)
+        return {};
+    for (const QChar c : text) {
+        const ushort u = c.unicode();
+        const bool   ok = (u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z') || (u >= '0' && u <= '9') || u == '-' || u == '_';
+        if (!ok)
+            return {};
+    }
+    const QByteArray latin = text.toLatin1();
+    const auto       result = QByteArray::fromBase64Encoding(latin, QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals
+                                                                        | QByteArray::AbortOnBase64DecodingErrors);
+    if (result.decodingStatus != QByteArray::Base64DecodingStatus::Ok || result.decoded.size() != bytes)
+        return {};
+    if (toBase64Url(result.decoded) != text) // a non-canonical last character
+        return {};
+    return result.decoded;
+}
+
+// 64 levels of 0..15 -> 32 bytes, the first level of each pair in the high nibble.
+QByteArray packWaveform(const QByteArray& levels)
+{
+    QByteArray packed(kWaveformBytes, '\0');
+    for (int i = 0; i < kWaveformBytes; ++i)
+        packed[i] = static_cast<char>(((static_cast<uchar>(levels.at(2 * i)) & 0x0f) << 4) | (static_cast<uchar>(levels.at(2 * i + 1)) & 0x0f));
+    return packed;
+}
+
+QByteArray unpackWaveform(const QByteArray& packed)
+{
+    QByteArray levels(MediaLink::kWaveformLevels, '\0');
+    for (int i = 0; i < kWaveformBytes; ++i) {
+        const uchar b     = static_cast<uchar>(packed.at(i));
+        levels[2 * i]     = static_cast<char>(b >> 4);
+        levels[2 * i + 1] = static_cast<char>(b & 0x0f);
+    }
+    return levels;
+}
+
+bool isWaveform(const QByteArray& levels)
+{
+    if (levels.size() != MediaLink::kWaveformLevels)
+        return false;
+    for (const char level : levels) {
+        if (static_cast<uchar>(level) > MediaLink::kWaveformMax)
+            return false;
+    }
+    return true;
+}
+
+bool spoilerAllowed(MediaKind kind)
+{
+    return kind == MediaKind::Image || kind == MediaKind::AnimatedImage || kind == MediaKind::Video;
+}
+
+// "1".."99" without a sign, leading zero or spaces (album positions and sizes).
+int smallNumber(const QString& text)
+{
+    static const QRegularExpression re(QStringLiteral("^[1-9][0-9]?$"));
+    return re.match(text).hasMatch() ? text.toInt() : 0;
 }
 
 QString normalizeDir(QString path)
@@ -143,9 +221,43 @@ QString MediaLink::remoteFile() const
 
 QString MediaLink::key() const
 {
-    // Must stay identical to v1: cache file names and chat resources are derived from it.
-    const QString raw = serverUid + QLatin1Char('\n') + QString::number(channelId) + QLatin1Char('\n') + remoteFile() + QLatin1Char('\n') + QString::number(size);
+    // Without a sha it must stay identical to v1: cache file names and chat resources are derived from it.
+    QString raw = serverUid + QLatin1Char('\n') + QString::number(channelId) + QLatin1Char('\n') + remoteFile() + QLatin1Char('\n') + QString::number(size);
+    // The same condition as toUrl(): a hash that is never sent is no part of the identity either.
+    if (isTsMedia() && sha256.size() == kShaBytes)
+        raw += QLatin1Char('\n') + toBase64Url(sha256);
     return QString::fromLatin1(QCryptographicHash::hash(raw.toUtf8(), QCryptographicHash::Sha1).toHex().left(20));
+}
+
+void MediaLink::dropInvalidMetadata()
+{
+    if (!isTsMedia()) {
+        sha256.clear();
+        previewSha.clear();
+        spoiler    = false;
+        albumId    = 0;
+        albumIndex = 0;
+        albumCount = 0;
+        voice      = false;
+        waveform.clear();
+        return;
+    }
+    const MediaKind kind = kindForFileName(fileName);
+    if (sha256.size() != kShaBytes)
+        sha256.clear();
+    if (previewSha.size() != kPreviewShaBytes || previewFile.isEmpty())
+        previewSha.clear();
+    if (spoiler && !spoilerAllowed(kind))
+        spoiler = false;
+    if (albumId == 0 || albumCount < 2 || albumCount > kMaxAlbumItems || albumIndex < 1 || albumIndex > albumCount) {
+        albumId    = 0;
+        albumIndex = 0;
+        albumCount = 0;
+    }
+    if (voice && kind != MediaKind::Audio)
+        voice = false;
+    if (!voice || !isWaveform(waveform))
+        waveform.clear();
 }
 
 QString MediaLink::toUrl() const
@@ -171,15 +283,40 @@ QString MediaLink::toUrl() const
         url += QStringLiteral("&bh=") + encode(blurHash);
     if (!previewFile.isEmpty())
         url += QStringLiteral("&pv=") + encode(previewFile);
+
+    // 2.2: only what a receiver accepts, in the fixed order. Every value is base64url, hex or a decimal
+    // number, so none of them is ever percent-encoded.
+    MediaLink extra = *this;
+    extra.dropInvalidMetadata();
+    if (!extra.sha256.isEmpty())
+        url += QStringLiteral("&sha=") + toBase64Url(extra.sha256);
+    if (!extra.previewSha.isEmpty())
+        url += QStringLiteral("&ph=") + toBase64Url(extra.previewSha);
+    if (extra.spoiler)
+        url += QStringLiteral("&sp=1");
+    if (extra.albumId != 0) {
+        url += QStringLiteral("&al=") + QStringLiteral("%1").arg(extra.albumId, 8, 16, QLatin1Char('0'));
+        url += QStringLiteral("&ai=") + QString::number(extra.albumIndex);
+        url += QStringLiteral("&an=") + QString::number(extra.albumCount);
+    }
+    if (extra.voice)
+        url += QStringLiteral("&vm=1");
+    if (!extra.waveform.isEmpty())
+        url += QStringLiteral("&wf=") + toBase64Url(packWaveform(extra.waveform));
     return url;
 }
 
 QString MediaLink::toBBCode() const
 {
-    QString label = fileName;
-    label.replace(QLatin1Char('['), QLatin1Char('('));
-    label.replace(QLatin1Char(']'), QLatin1Char(')'));
-    return QStringLiteral("[URL=") + toUrl() + QStringLiteral("]") + label + QStringLiteral("[/URL]");
+    return toBBCode(fileName);
+}
+
+QString MediaLink::toBBCode(const QString& label) const
+{
+    QString text = label;
+    text.replace(QLatin1Char('['), QLatin1Char('('));
+    text.replace(QLatin1Char(']'), QLatin1Char(')'));
+    return QStringLiteral("[URL=") + toUrl() + QStringLiteral("]") + text + QStringLiteral("[/URL]");
 }
 
 MediaLink MediaLink::previewLink() const
@@ -268,6 +405,34 @@ MediaLink MediaLink::parse(const QString& href)
         if (!pv.isEmpty() && pv.compare(link.remoteFile(), Qt::CaseInsensitive) != 0)
             link.previewFile = pv;
     }
+
+    // 2.2 metadata, TS Media links only. Each check is exact; a bad value drops only its own field
+    // (the album: all three), and dropInvalidMetadata() applies the rules between fields.
+    if (link.isTsMedia()) {
+        if (has("sha"))
+            link.sha256 = fromBase64UrlExact(value("sha"), kShaBytes);
+        if (has("ph") && !link.previewFile.isEmpty())
+            link.previewSha = fromBase64UrlExact(value("ph"), kPreviewShaBytes);
+        link.spoiler = value("sp") == QLatin1String("1");
+        if (has("al") || has("ai") || has("an")) {
+            static const QRegularExpression hex8(QStringLiteral("^[0-9a-f]{8}$"));
+            const QString                   al    = value("al");
+            const int                       index = smallNumber(value("ai"));
+            const int                       count = smallNumber(value("an"));
+            if (hex8.match(al).hasMatch() && count >= 2 && count <= kMaxAlbumItems && index >= 1 && index <= count) {
+                link.albumId    = al.toUInt(nullptr, 16);
+                link.albumIndex = index;
+                link.albumCount = count;
+            }
+        }
+        link.voice = value("vm") == QLatin1String("1");
+        if (link.voice && has("wf")) {
+            const QByteArray packed = fromBase64UrlExact(value("wf"), kWaveformBytes);
+            if (!packed.isEmpty())
+                link.waveform = unpackWaveform(packed);
+        }
+        link.dropInvalidMetadata();
+    }
     return link;
 }
 
@@ -275,8 +440,25 @@ QList<MediaLink> MediaLink::findInMessage(const QString& message)
 {
     static const QRegularExpression re(QStringLiteral(R"(\[url=([^\]]*ts3file[^\]]*)\])"), QRegularExpression::CaseInsensitiveOption);
 
+    // [noparse] spans are shown as text (an unclosed one runs to the end of the message).
+    QString text;
+    text.reserve(message.size());
+    for (int from = 0; from < message.size();) {
+        const int open = message.indexOf(QLatin1String("[noparse]"), from, Qt::CaseInsensitive);
+        if (open < 0) {
+            text += message.midRef(from);
+            break;
+        }
+        text += message.midRef(from, open - from);
+        text += QLatin1Char(' '); // nothing on either side joins into one tag
+        const int close = message.indexOf(QLatin1String("[/noparse]"), open + 9, Qt::CaseInsensitive);
+        if (close < 0)
+            break;
+        from = close + 10;
+    }
+
     QList<MediaLink> result;
-    auto             it = re.globalMatch(message);
+    auto             it = re.globalMatch(text);
     while (it.hasNext()) {
         const MediaLink link = parse(it.next().captured(1));
         if (link.isValid())
@@ -287,34 +469,372 @@ QList<MediaLink> MediaLink::findInMessage(const QString& message)
 
 QString composeChatMessage(const MediaLink& link, bool includeNotice, const QString& downloadUrl)
 {
-    const QString url = includeNotice ? bbcodeSafeUrl(downloadUrl) : QString();
+    // 2.1's candidates (BlurHash, the note's link, the note, the preview, the sizes) are the same
+    // steps in the same order, so this is the 2.2 composer with 2.1's label.
+    ComposeOptions options;
+    options.includeNotice  = includeNotice;
+    options.downloadUrl    = downloadUrl;
+    options.friendlyLabels = false;
+    return composeChatMessages({link}, options).value(0);
+}
 
-    // Candidates from richest to leanest; the first one that fits is sent. The order follows the spec
-    // (BlurHash first, then the note); the trailing steps only matter for absurdly long file names.
-    MediaLink noHash = link;
-    noHash.blurHash.clear();
-    MediaLink noPreview = noHash;
-    noPreview.previewFile.clear();
-    MediaLink bare  = noPreview;
-    bare.width      = 0;
-    bare.height     = 0;
-    bare.durationMs = 0;
+namespace {
 
-    QStringList candidates;
-    if (includeNotice) {
-        candidates << link.toBBCode() + requiredNotice(url) << noHash.toBBCode() + requiredNotice(url);
-        if (!url.isEmpty())
-            candidates << noHash.toBBCode() + requiredNotice(QString());
+// Metadata the cascade can leave out, in the order it does.
+enum Drop : int {
+    DropPh   = 1 << 0,
+    DropBh   = 1 << 1,
+    DropWf   = 1 << 2,
+    DropPv   = 1 << 3,
+    DropDims = 1 << 4,
+    DropSha  = 1 << 5,
+};
+
+enum class Note { None, Plain, Linked };
+
+struct Step {
+    int  drops;
+    Note note;
+};
+
+MediaLink reduced(MediaLink link, int drops)
+{
+    if (drops & DropPh)
+        link.previewSha.clear();
+    if (drops & DropBh)
+        link.blurHash.clear();
+    if (drops & DropWf)
+        link.waveform.clear();
+    if (drops & DropPv) {
+        link.previewFile.clear();
+        link.previewSha.clear();
+    }
+    if (drops & DropDims) {
+        link.width      = 0;
+        link.height     = 0;
+        link.durationMs = 0;
+    }
+    if (drops & DropSha)
+        link.sha256.clear();
+    return link;
+}
+
+// Names of what a step really removed (for the log), in the cascade's order: the link's fields up to
+// wf, then the note's parts (noteNames), then the rest.
+QStringList droppedNames(const MediaLink& link, int drops, const QStringList& noteNames = {})
+{
+    MediaLink valid = link;
+    valid.dropInvalidMetadata();
+    QStringList names;
+    if ((drops & DropPh) && !valid.previewSha.isEmpty())
+        names << QStringLiteral("ph");
+    if ((drops & DropBh) && !link.blurHash.isEmpty())
+        names << QStringLiteral("bh");
+    if ((drops & DropWf) && !valid.waveform.isEmpty())
+        names << QStringLiteral("wf");
+    names << noteNames;
+    if ((drops & DropPv) && !link.previewFile.isEmpty())
+        names << QStringLiteral("pv");
+    if ((drops & DropDims) && ((link.width > 0 && link.height > 0) || link.durationMs > 0))
+        names << QStringLiteral("w/h/d");
+    if ((drops & DropSha) && !valid.sha256.isEmpty())
+        names << QStringLiteral("sha");
+    return names;
+}
+
+int utf8Size(const QString& text)
+{
+    return text.toUtf8().size();
+}
+
+// The caption as one message part. Linked addresses cost bytes: a caption that can't be sent on its own
+// that way is sent as plain text instead (never cut).
+QString captionPart(const QString& caption, int maxBytes)
+{
+    const QString clean = sanitizeCaption(caption);
+    if (clean.isEmpty())
+        return {};
+    const QString rich = captionToBBCode(clean);
+    if (utf8Size(rich) < maxBytes)
+        return rich;
+    if (!clean.contains(QLatin1Char('[')) && !clean.contains(QLatin1Char(']')))
+        return clean;
+    QString inner = clean;
+    inner.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"), Qt::CaseInsensitive);
+    return QStringLiteral("[noparse]") + inner + QStringLiteral("[/noparse]");
+}
+
+} // namespace
+
+QVector<ComposedMessage> composeChatMessagesDetailed(const QList<MediaLink>& links, const ComposeOptions& options)
+{
+    QVector<ComposedMessage> out;
+    const QString            sep     = QString::fromLatin1(kMessageSeparator);
+    const QString            url     = options.includeNotice ? bbcodeSafeUrl(options.downloadUrl) : QString();
+    const QString            caption = captionPart(options.caption, options.maxBytes);
+    const auto               fits    = [&options](const QString& text) { return utf8Size(text) < options.maxBytes; };
+    const auto               noteText = [&url](Note note) {
+        switch (note) {
+        case Note::Linked:
+            return requiredNotice(url);
+        case Note::Plain:
+            return requiredNotice(QString());
+        case Note::None:
+            break;
+        }
+        return QString();
+    };
+
+    if (links.isEmpty()) {
+        if (!caption.isEmpty())
+            out.append({caption, {}, {}, !fits(caption)});
+        return out;
+    }
+
+    QStringList labels;
+    for (const MediaLink& link : links)
+        labels << (options.friendlyLabels ? linkLabel(link) : link.fileName);
+    const auto linkText = [&links, &labels](int i, int drops) { return reduced(links.at(i), drops).toBBCode(labels.at(i)); };
+
+    // The cascade. The steps up to the note's link keep the note; only they are tried with the caption
+    // in the same message.
+    const int    keep = DropPh | DropBh | DropWf;
+    QVector<Step> withNote;
+    QVector<Step> leaner;
+    if (options.includeNotice) {
+        const Note top = url.isEmpty() ? Note::Plain : Note::Linked;
+        withNote << Step{0, top} << Step{DropPh, top} << Step{DropPh | DropBh, top} << Step{keep, top};
+        if (top == Note::Linked)
+            withNote << Step{keep, Note::Plain};
+        leaner << Step{keep, Note::None};
     } else {
-        candidates << link.toBBCode();
+        withNote << Step{0, Note::None} << Step{DropPh, Note::None} << Step{DropPh | DropBh, Note::None} << Step{keep, Note::None};
     }
-    candidates << noHash.toBBCode() << noPreview.toBBCode() << bare.toBBCode();
+    leaner << Step{keep | DropPv, Note::None} << Step{keep | DropPv | DropDims, Note::None} << Step{keep | DropPv | DropDims | DropSha, Note::None};
 
-    for (const QString& message : qAsConst(candidates)) {
-        if (message.toUtf8().size() < kMaxMessageBytes)
-            return message;
+    const auto stepDropped = [&](int i, const Step& step) {
+        QStringList note;
+        if (options.includeNotice && step.note != Note::Linked && !url.isEmpty())
+            note << QStringLiteral("note link");
+        if (options.includeNotice && step.note == Note::None)
+            note << QStringLiteral("note");
+        return droppedNames(links.at(i), step.drops, note);
+    };
+
+    // ---- the first message: caption, first link, note -------------------------------------------
+    Step    first     = leaner.last();
+    bool    found     = false;
+    QString prefix;
+    if (!caption.isEmpty()) {
+        for (const Step& step : qAsConst(withNote)) {
+            if (fits(caption + sep + linkText(0, step.drops) + noteText(step.note))) {
+                first  = step;
+                found  = true;
+                prefix = caption + sep;
+                break;
+            }
+        }
+        if (!found) // the caption goes first, as a message of its own (never shortened)
+            out.append({caption, {}, {}, !fits(caption)});
     }
-    return candidates.last();
+    if (!found) {
+        for (const QVector<Step>* steps : {&withNote, &leaner}) {
+            for (const Step& step : *steps) {
+                if (!found && fits(linkText(0, step.drops) + noteText(step.note))) {
+                    first = step;
+                    found = true;
+                }
+            }
+        }
+    }
+
+    // A message being filled: [prefix] body [tail]; only the first media message has a prefix (the
+    // caption) and a tail (the note).
+    struct Building {
+        QString         prefix;
+        QString         body;
+        QString         tail;
+        ComposedMessage message;
+    };
+    const auto finish = [&](Building& b) {
+        b.message.text = b.prefix + b.body + b.tail;
+        if (!b.message.tooLong)
+            b.message.tooLong = !fits(b.message.text);
+        b.message.dropped.removeDuplicates();
+        out.append(b.message);
+    };
+
+    Building current{prefix, linkText(0, first.drops), noteText(first.note), {}};
+    current.message.links << 0;
+    current.message.dropped = stepDropped(0, first);
+    current.message.tooLong = !found;
+
+    // ---- the other links, each with the metadata it keeps in a message of its own ----------------
+    QVector<Step> alone;
+    alone << Step{0, Note::None} << Step{DropPh, Note::None} << Step{DropPh | DropBh, Note::None} << Step{keep, Note::None};
+    alone << leaner.mid(options.includeNotice ? 1 : 0); // the steps after the note
+    for (int i = 1; i < links.size(); ++i) {
+        Step natural   = alone.last();
+        bool fitsAlone = false;
+        for (const Step& step : qAsConst(alone)) {
+            if (fits(linkText(i, step.drops))) {
+                natural   = step;
+                fitsAlone = true;
+                break;
+            }
+        }
+        const QString text = linkText(i, natural.drops);
+        if (fits(current.prefix + current.body + sep + text + current.tail)) {
+            current.body += sep + text;
+            current.message.links << i;
+            current.message.dropped += droppedNames(links.at(i), natural.drops);
+            continue;
+        }
+        finish(current);
+        current = Building{QString(), text, QString(), {}};
+        current.message.links << i;
+        current.message.dropped = droppedNames(links.at(i), natural.drops);
+        current.message.tooLong = !fitsAlone;
+    }
+    finish(current);
+    return out;
+}
+
+QStringList composeChatMessages(const QList<MediaLink>& links, const ComposeOptions& options)
+{
+    QStringList texts;
+    for (const ComposedMessage& message : composeChatMessagesDetailed(links, options))
+        texts << message.text;
+    return texts;
+}
+
+QString sanitizeCaption(const QString& typed)
+{
+    QString out;
+    out.reserve(qMin(typed.size(), kCaptionMaxChars + 1));
+    bool space = false;
+    for (int i = 0; i < typed.size(); ++i) {
+        const QChar  ch = typed.at(i);
+        const ushort u  = ch.unicode();
+        const bool   bidiControl = u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
+        if (ch.isSpace()) { // also tabs, line breaks and line or paragraph separators
+            space = !out.isEmpty();
+            continue;
+        }
+        if (bidiControl || ch.category() == QChar::Other_Control)
+            continue;
+        if (ch.isSurrogate()) {
+            // Whole pairs only.
+            if (!ch.isHighSurrogate() || i + 1 >= typed.size() || !typed.at(i + 1).isLowSurrogate()) {
+                continue;
+            }
+            const int need = (space ? 1 : 0) + 2;
+            if (out.size() + need > kCaptionMaxChars)
+                break;
+            if (space)
+                out += QLatin1Char(' ');
+            space = false;
+            out += ch;
+            out += typed.at(++i);
+            continue;
+        }
+        const int need = (space ? 1 : 0) + 1;
+        if (out.size() + need > kCaptionMaxChars)
+            break;
+        if (space)
+            out += QLatin1Char(' ');
+        space = false;
+        out += ch;
+    }
+    return out;
+}
+
+QString captionToBBCode(const QString& sanitized)
+{
+    static const QRegularExpression address(QStringLiteral("https?://[^\\s\\[\\]\"<>]{1,%1}").arg(kMaxUrlTokenChars), QRegularExpression::CaseInsensitiveOption);
+
+    const auto textRun = [](const QString& run) {
+        if (!run.contains(QLatin1Char('[')) && !run.contains(QLatin1Char(']')))
+            return run;
+        QString inner = run;
+        inner.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"), Qt::CaseInsensitive);
+        return QStringLiteral("[noparse]") + inner + QStringLiteral("[/noparse]");
+    };
+
+    QString out;
+    int     from = 0;
+    auto    it   = address.globalMatch(sanitized);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        // Only at the start of a word: "xhttp://..." is not an address.
+        if (match.capturedStart() > 0 && !sanitized.at(match.capturedStart() - 1).isSpace())
+            continue;
+        out += textRun(sanitized.mid(from, match.capturedStart() - from));
+        out += QStringLiteral("[URL]") + match.captured() + QStringLiteral("[/URL]");
+        from = match.capturedEnd();
+    }
+    out += textRun(sanitized.mid(from));
+    return out;
+}
+
+QString linkLabel(const MediaLink& link)
+{
+    MediaLink valid = link;
+    valid.dropInvalidMetadata();
+    QString label;
+    if (valid.voice) {
+        label = valid.durationMs > 0 ? i18n::t("Voice message (%1)").arg(formatDuration(valid.durationMs)) : i18n::t("Voice message");
+    } else if (valid.spoiler) {
+        switch (kindForFileName(valid.fileName)) {
+        case MediaKind::AnimatedImage:
+            label = i18n::t("Spoiler (GIF)");
+            break;
+        case MediaKind::Video:
+            label = i18n::t("Spoiler (video)");
+            break;
+        default:
+            label = i18n::t("Spoiler (image)");
+            break;
+        }
+    } else {
+        label = displayNameFor(link);
+    }
+    if (label.trimmed().isEmpty())
+        label = i18n::t("File");
+    label.replace(QLatin1Char('['), QLatin1Char('('));
+    label.replace(QLatin1Char(']'), QLatin1Char(')'));
+    return label;
+}
+
+QString boundRemoteBase(const QString& base)
+{
+    QString out;
+    int     bytes = 0;
+    for (int i = 0; i < base.size();) {
+        const QChar c     = base.at(i);
+        const bool  pair  = c.isHighSurrogate() && i + 1 < base.size() && base.at(i + 1).isLowSurrogate();
+        const int   units = pair ? 2 : 1;
+        if (c.isSurrogate() && !pair) { // a lone half: not a character
+            ++i;
+            continue;
+        }
+        const uint code = pair ? QChar::surrogateToUcs4(c, base.at(i + 1)) : c.unicode();
+        const int  size = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+        if (out.size() + units > kRemoteBaseMaxChars || bytes + size > kRemoteBaseMaxBytes)
+            break;
+        out += base.midRef(i, units);
+        bytes += size;
+        i += units;
+    }
+    return out;
+}
+
+QString remoteSuffixOf(const QString& remoteName)
+{
+    static const QRegularExpression suffix(QStringLiteral("_([0-9a-f]{8})$"));
+    const QString                   base  = QFileInfo(remoteName).completeBaseName();
+    const QRegularExpressionMatch   match = suffix.match(base);
+    return match.hasMatch() ? match.captured(1) : QString();
 }
 
 MediaKind kindForFileName(const QString& fileName)

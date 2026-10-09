@@ -1,7 +1,20 @@
 #pragma once
 
+#include <QByteArray>
 #include <QList>
 #include <QString>
+#include <QStringList>
+#include <QVector>
+
+// TeamSpeak's limit for one chat message, in UTF-8 bytes: every composed message stays below it.
+// TODO(S0): the SDK says 8192 (public_definitions.h), the plugin has always assumed 1024. The S0 spike
+// measures the real limit on the local server; then this becomes "measured limit - 24". The one place
+// that decides it: the composer, Core and the tests all use this constant.
+constexpr int kMaxMessageBytes = 1000;
+
+// Between the caption and the first link, and between links packed into one message.
+// TODO(S0): confirm that TeamSpeak shows '\n' as a line break; if it drops it, use " — " here.
+constexpr char kMessageSeparator[] = "\n";
 
 // A file in a channel's file browser, encoded the same way the TeamSpeak client encodes
 // files dragged from the file browser into the chat: [URL=ts3file://host?...]name[/URL]
@@ -13,8 +26,20 @@
 //   d               duration in milliseconds (video / audio)
 //   bh              BlurHash placeholder
 //   pv              remote path of a small JPEG preview / video poster in the same channel
+// 2.2 adds these, always after pv and in this order (only on links with tsm >= 2; see dropInvalidMetadata):
+//   sha             SHA-256 of the file: 43 base64url characters, no padding, canonical last character
+//   ph              first 16 bytes of the preview's SHA-256: 22 base64url characters; only with a valid pv
+//   sp=1            spoiler: pictures, GIFs and videos only
+//   al, ai, an      album: id (8 lower-case hex, never 00000000), position 1..an, size 2..10; all or none
+//   vm=1            voice message: audio only
+//   wf              waveform of a voice message: 64 levels of 4 bits = 32 bytes, 43 base64url characters
+// Receivers ignore unknown parameters, the first occurrence of a name wins, and an invalid value drops
+// only its own field (never the link). Links without these fields are byte-identical to 2.1's.
 struct MediaLink {
-    static constexpr int kProtocol = 2;
+    static constexpr int kProtocol      = 2;
+    static constexpr int kMaxAlbumItems = 10; // per album; larger sends become several albums
+    static constexpr int kWaveformLevels = 64;
+    static constexpr int kWaveformMax    = 15; // levels are 0..15 (4 bits)
 
     QString host;
     quint16 port = 0;
@@ -32,19 +57,42 @@ struct MediaLink {
     int     height     = 0;
     qint64  durationMs = 0;
     QString blurHash;
-    QString previewFile; // remote path, e.g. "/tsmedia/previews/clip_12345.jpg"
+    QString previewFile; // remote path, e.g. "/tsmedia/previews/3f9a1c2e.jpg"
+
+    // 2.2 metadata (all optional; see above)
+    QByteArray sha256;             // 32 bytes, or empty
+    QByteArray previewSha;         // 16 bytes, or empty
+    bool       spoiler    = false;
+    quint32    albumId    = 0;     // 0 = not in an album
+    int        albumIndex = 0;     // 1..albumCount
+    int        albumCount = 0;     // 2..kMaxAlbumItems
+    bool       voice      = false;
+    QByteArray waveform;           // kWaveformLevels bytes of 0..kWaveformMax, or empty
 
     bool    isValid() const;
     bool    isTsMedia() const { return protocol >= 2; }
+    bool    hasAlbum() const { return albumId != 0 && albumCount >= 2; }
     QString remoteFile() const; // "/dir/name.ext"
-    QString key() const;        // stable id used for cache + preview resources (ignores metadata)
+    // Stable id for the cache, chat resources, reactions and SYNC lists. Without a sha it is identical
+    // to v1 (cache names and documents from 2.1 keep working); with one, "\n" + base64url(sha) is part
+    // of it, so a link with a forged hash can neither reuse nor poison the genuine file's entry. Frozen
+    // from 2.2 on. Ignores every other metadata field.
+    QString key() const;
     QString toUrl() const;
-    QString toBBCode() const;   // [URL=...]fileName[/URL]
+    QString toBBCode() const;                     // [URL=...]fileName[/URL] (2.1's label)
+    QString toBBCode(const QString& label) const; // [URL=...]label[/URL]; brackets in the label become ( )
+
+    // Clears the 2.2 fields a receiver would ignore: wrong sizes, a spoiler or voice flag on the wrong
+    // kind of file, a preview hash without a preview, an incomplete album, a waveform without the
+    // voice flag, and all of them on links that aren't TS Media (tsm < 2). parse() and toUrl() apply it.
+    void dropInvalidMetadata();
 
     // The preview file as a link of its own (same server/channel, size unknown). Invalid if none.
     MediaLink previewLink() const;
 
-    static MediaLink        parse(const QString& href);
+    static MediaLink parse(const QString& href);
+    // Every valid file link in a raw chat message (BBCode). Text inside [noparse]...[/noparse] is skipped:
+    // TeamSpeak shows it as plain text, so a caption can't smuggle in a link that would be prefetched.
     static QList<MediaLink> findInMessage(const QString& message);
 };
 
@@ -53,7 +101,69 @@ struct MediaLink {
 // (#72767d) that has 4.56:1 contrast on TeamSpeak's white chat and 3.0:1 on a dark one (#2b2d31).
 // downloadUrl (optional, http(s) only) is linked from the plugin name in the note.
 // Clients with the plugin hide everything after a TS Media link in that message.
+// 2.1's composer, kept as is (the file name as label): composeChatMessages() with one link, no caption
+// and friendlyLabels off gives the same text.
 QString composeChatMessage(const MediaLink& link, bool includeNotice, const QString& downloadUrl);
+
+// ---- 2.2 composer: captions, several links per message, one cascade ------------------------------
+//
+// Messages: [caption kMessageSeparator] LINK (kMessageSeparator LINK)* [note], then LINK (sep LINK)*.
+// The caption goes before the links (2.1 receivers delete text after a TS Media link), the note once,
+// after the last link of the first media message. Each message holds as many complete links as fit
+// below maxBytes; packing never drops metadata to fit more links.
+// When a link doesn't fit, optional metadata is dropped in one order: ph, bh, wf, the note's link,
+// [then the caption moves to a message of its own, right above the media], the note, pv, w/h/d, sha.
+// TeamSpeak's own parameters, tsm, sp, al/ai/an and vm are never dropped, and the caption is never cut
+// (it is at most kCaptionMaxChars). Nothing left to drop: the message is sent anyway (tooLong).
+struct ComposeOptions {
+    QString caption;               // as typed: sanitizeCaption() and captionToBBCode() run here
+    bool    includeNotice  = true; // the note for people without the plugin
+    QString downloadUrl;           // linked from the note (http(s) only)
+    int     maxBytes       = kMaxMessageBytes;
+    bool    friendlyLabels = true; // linkLabel(); false: the remote file name, like 2.1
+};
+
+struct ComposedMessage {
+    QString      text;
+    QVector<int> links;       // indexes of the links it carries; empty for the caption on its own
+    QStringList  dropped;     // what was left out to fit: "ph", "bh", "wf", "note link", "note", "pv", "w/h/d", "sha"
+    bool         tooLong = false; // still at or above maxBytes with nothing left to drop
+};
+
+QVector<ComposedMessage> composeChatMessagesDetailed(const QList<MediaLink>& links, const ComposeOptions& options);
+QStringList              composeChatMessages(const QList<MediaLink>& links, const ComposeOptions& options);
+
+// ---- captions -------------------------------------------------------------------------------------
+
+constexpr int kCaptionMaxChars = 300; // UTF-16 units, as the send window counts them
+
+// One line of the sender's text made safe to post: C0/C1 controls and bidi marks removed, every run of
+// whitespace (line breaks too) becomes one space, trimmed, at most kCaptionMaxChars (never half of a
+// surrogate pair).
+QString sanitizeCaption(const QString& typed);
+
+// A sanitized caption as BBCode: http(s) addresses become [URL]address[/URL] (display only: the plugin
+// never opens them), runs of other text that contain [ or ] go inside [noparse]...[/noparse] (a
+// "[/noparse]" inside is defused), so a caption can never open a tag or fake a file link.
+QString captionToBBCode(const QString& sanitized);
+
+// The label of a link in the chat (what people without the plugin click): "Voice message (0:12)" for
+// voice messages, "Spoiler (image)" / "Spoiler (GIF)" / "Spoiler (video)" for spoilers (the name would
+// give it away), otherwise displayNameFor(). Brackets become parentheses.
+QString linkLabel(const MediaLink& link);
+
+// ---- remote names (2.2) ---------------------------------------------------------------------------
+
+constexpr int kRemoteBaseMaxChars = 48; // UTF-16 units
+constexpr int kRemoteBaseMaxBytes = 64; // UTF-8
+
+// The base of an uploaded file's name (before "_<8 hex>.<ext>") cut to kRemoteBaseMaxChars and
+// kRemoteBaseMaxBytes at a code-point boundary: Persian names keep 32 letters, CJK 21, emoji 16.
+// Lone surrogates are dropped.
+QString boundRemoteBase(const QString& base);
+
+// The random part of a name made by Core: "holiday_3f9a1c2e.jpg" -> "3f9a1c2e"; empty if there is none.
+QString remoteSuffixOf(const QString& remoteName);
 
 enum class MediaKind { Image, AnimatedImage, Video, Audio, Archive, Document, Other };
 

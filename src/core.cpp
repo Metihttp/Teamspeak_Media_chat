@@ -283,6 +283,7 @@ MediaLink sanitized(MediaLink link)
         link.blurHash.clear();
     if (!link.previewFile.isEmpty())
         link.previewFile = safePreviewPath(link.previewFile, link.remoteFile());
+    link.dropInvalidMetadata(); // 2.2 fields: after the preview check (ph needs a valid pv)
     return link;
 }
 
@@ -436,6 +437,7 @@ Core::Core(QObject* parent)
     g_instance = this;
     m_pool.setMaxThreadCount(kProbeThreads);
     m_stillPool.setMaxThreadCount(kStillThreads);
+    m_clock.start();
 }
 
 Core::~Core()
@@ -499,6 +501,11 @@ void Core::start()
     connect(m_resumeTimer, &QTimer::timeout, this, &Core::resumeInterrupted);
     if (!m_resume.isEmpty())
         m_resumeTimer->start();
+
+    // 2.2: the next chat post, when a connection's FloodGovernor allows it.
+    m_postTimer = new QTimer(this);
+    m_postTimer->setSingleShot(true);
+    connect(m_postTimer, &QTimer::timeout, this, &Core::pumpPosts);
 
     // Leftovers from a previous session (crash, client closed mid-transfer).
     QDir(cacheDir() + QStringLiteral("/.partial")).removeRecursively();
@@ -1528,7 +1535,8 @@ QString Core::makeRemoteName(const QString& originalName)
     // Keep names readable but safe for the file browser, BBCode and every OS.
     base.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|\[\]%#&+=]+)")), QStringLiteral("_"));
     base.replace(QRegularExpression(QStringLiteral(R"(\s+)")), QStringLiteral("_"));
-    base = base.left(48);
+    // 2.2: at most 48 characters and 64 UTF-8 bytes, so a non-Latin name can't crowd the message.
+    base = boundRemoteBase(base);
     if (base.isEmpty())
         base = QStringLiteral("file");
 
@@ -1544,6 +1552,7 @@ QString Core::renamedRemoteName(const QString& remoteName)
     QString         base = fi.completeBaseName();
     const QString   ext  = fi.suffix();
     base.remove(QRegularExpression(QStringLiteral("_[0-9a-f]{8}$")));
+    base = boundRemoteBase(base);
     if (base.isEmpty())
         base = QStringLiteral("file");
     return base + QLatin1Char('_') + uniqueSuffix() + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
@@ -1551,29 +1560,127 @@ QString Core::renamedRemoteName(const QString& remoteName)
 
 void Core::uploadFiles(const QStringList& paths, const ChatTarget& target)
 {
-    if (paths.isEmpty())
-        return;
+    SendRequest request;
+    request.target = target;
+    for (const QString& path : paths) {
+        SendItem item;
+        item.path = path;
+        request.items.append(item);
+    }
+    send(request);
+}
+
+namespace {
+
+bool isAlbumKind(const SendItem& item)
+{
+    if (item.voice)
+        return false;
+    const MediaKind kind = kindForFileName(item.path);
+    return kind == MediaKind::Image || kind == MediaKind::AnimatedImage || kind == MediaKind::Video;
+}
+
+// The name a file gets on the server.
+QString remoteNameFor(const SendItem& item, const QString& makeName)
+{
+    static const QRegularExpression pastedName(QStringLiteral("^new_photo_[0-9a-f]{8}\\.[a-z]+$"));
+    const QFileInfo                 fi(item.path);
+    if (item.pasted) {
+        // Our own paste keeps the name it was written under (a retry sends the same name).
+        if (pastedName.match(fi.fileName()).hasMatch())
+            return fi.fileName();
+        const QString ext = fi.suffix().toLower();
+        return QStringLiteral("new_photo_") + uniqueSuffix() + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
+    }
+    if (item.voice)
+        return QStringLiteral("voice_message_") + uniqueSuffix() + QStringLiteral(".m4a");
+    return makeName;
+}
+
+} // namespace
+
+int Core::send(const SendRequest& request)
+{
+    if (request.items.isEmpty())
+        return 0;
+    const auto dropTemps = [&request] {
+        for (const SendItem& item : request.items) {
+            if (item.ownTemp)
+                QFile::remove(item.path);
+        }
+    };
     // Checked once, so a dropped batch gives one line in the chat, not one per file.
-    const uint64 sch = target.sch ? target.sch : ts3::currentConnection();
-    if (!ts3::isConnected(sch)) {
+    ChatTarget target = request.target;
+    if (!target.sch)
+        target.sch = ts3::currentConnection();
+    if (!ts3::isConnected(target.sch)) {
         ts3::printWarning(ts3::currentConnection(), notConnectedText());
-        return;
+        dropTemps();
+        return 0;
     }
 
-    const int   batch = ++m_nextBatch;
-    QStringList missing;
-    for (const QString& path : paths) {
-        const QFileInfo fi(path);
+    QVector<SendItem> items;
+    QStringList       missing;
+    for (const SendItem& requested : request.items) {
+        const QFileInfo fi(requested.path);
         if (!fi.exists() || !fi.isFile()) {
-            missing.append(QDir::toNativeSeparators(path));
+            missing.append(QDir::toNativeSeparators(requested.path));
             continue;
         }
-        createUpload(fi.absoluteFilePath(), makeRemoteName(fi.fileName()), target, false, false, batch);
+        SendItem item = requested;
+        item.path     = fi.absoluteFilePath();
+        items.append(item);
     }
+    // Names in curly quotes: the plugin log marks those as private (diagnostics leave them out).
     if (missing.size() == 1)
-        ts3::printWarning(sch, i18n::t("Couldn't find %1. It may have been moved or deleted.").arg(missing.first()));
+        ts3::printWarning(target.sch, i18n::t("Couldn't find “%1”. It may have been moved or deleted.").arg(missing.first()));
     else if (missing.size() > 1)
-        ts3::printWarning(sch, i18n::t("Couldn't find %1 files: %2. They may have been moved or deleted.").arg(missing.size()).arg(missing.join(QStringLiteral(", "))));
+        ts3::printWarning(target.sch, i18n::t("Couldn't find %1 files: “%2”. They may have been moved or deleted.").arg(missing.size()).arg(missing.join(QStringLiteral("”, “"))));
+    if (items.isEmpty())
+        return 0;
+
+    // Post order: the albums (pictures and videos in their order, up to kMaxAlbumItems each; a last
+    // chunk of one is a single file), then everything else in its order.
+    QVector<QVector<int>> units;
+    QVector<int>          media;
+    for (int i = 0; i < items.size(); ++i) {
+        if (request.album && isAlbumKind(items.at(i)))
+            media.append(i);
+    }
+    if (media.size() >= 2) {
+        for (int at = 0; at < media.size(); at += MediaLink::kMaxAlbumItems)
+            units.append(media.mid(at, MediaLink::kMaxAlbumItems));
+    } else {
+        media.clear();
+    }
+    for (int i = 0; i < items.size(); ++i) {
+        if (!media.contains(i))
+            units.append({i});
+    }
+
+    const int batch            = ++m_nextBatch;
+    m_batches[batch].caption   = request.caption;
+    for (const QVector<int>& indexes : qAsConst(units)) {
+        PostUnit unit;
+        unit.album = indexes.size() >= 2;
+        for (int index : indexes) {
+            const SendItem& item = items.at(index);
+            const int       id   = createUpload(item, remoteNameFor(item, makeRemoteName(QFileInfo(item.path).fileName())), target, batch);
+            if (id == 0)
+                continue;
+            unit.jobs.append(id);
+            if (unit.album)
+                m_uploads[id].inAlbum = true;
+        }
+        if (!unit.jobs.isEmpty())
+            m_batches[batch].units.append(unit);
+    }
+    if (m_batches.value(batch).units.isEmpty()) {
+        m_batches.remove(batch);
+        return 0;
+    }
+    scheduleUploadQueue(); // files that failed at once may let the rest of their batch post
+    return batch;
 }
 
 void Core::uploadImage(const QImage& image, const ChatTarget& target)
@@ -1606,12 +1713,21 @@ void Core::uploadImage(const QImage& image, const ChatTarget& target)
         QFile::remove(path);
         return;
     }
-    createUpload(path, name, target, true, true, ++m_nextBatch);
+    SendRequest request;
+    request.target = target;
+    SendItem item;
+    item.path    = path;
+    item.pasted  = true;
+    item.ownTemp = true;
+    request.items.append(item);
+    send(request);
 }
 
-int Core::createUpload(const QString& sourcePath, const QString& remoteName, const ChatTarget& requested, bool deleteSource, bool pasted, int batch)
+int Core::createUpload(const SendItem& item, const QString& remoteName, const ChatTarget& requested, int batch)
 {
-    ChatTarget target = requested;
+    const QString& sourcePath   = item.path;
+    const bool     deleteSource = item.ownTemp;
+    ChatTarget     target       = requested;
     if (!target.sch)
         target.sch = ts3::currentConnection();
 
@@ -1630,7 +1746,9 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     job.channelId    = ts3::ownChannel(target.sch);
     job.sourcePath   = sourcePath;
     job.deleteSource = deleteSource;
-    job.pasted       = pasted;
+    job.pasted       = item.pasted;
+    job.displayName  = item.displayName;
+    job.spoiler      = item.spoiler;
     job.remoteDir    = normalizeRemoteDir(s.uploadDirectory);
     job.remoteName   = remoteName;
     job.size         = static_cast<quint64>(QFileInfo(sourcePath).size());
@@ -1639,6 +1757,7 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     job.message      = i18n::t("Waiting to upload…");
     const int id     = job.id;
     m_uploads.insert(id, job);
+    m_jobItems.insert(id, item);
     emit uploadChanged(id);
 
     UploadJob&    j     = m_uploads[id];
@@ -1824,10 +1943,14 @@ void Core::onDirectoryReady(int id, bool previews, bool ok)
     startPreviewSend(id);
 }
 
-// The preview is named after the file: <dir>/previews/<base>.jpg, or <dir>/<base>.preview.jpg.
+// 2.2: the preview is named after the random part of the file's name, <dir>/previews/<8 hex>.jpg, or
+// <dir>/<8 hex>.preview.jpg: short, so the name isn't in the message twice (2.1 accepts any pv path).
+// A new name for the file (renameUpload) gives the preview a new one too.
 QString Core::previewRemoteFor(const UploadJob& job, bool inFolder) const
 {
-    const QString base = QFileInfo(job.remoteName).completeBaseName();
+    QString base = remoteSuffixOf(job.remoteName);
+    if (base.isEmpty())
+        base = QFileInfo(job.remoteName).completeBaseName();
     return inFolder ? joinRemote(previewDirFor(job), base + QStringLiteral(".jpg")) : joinRemote(job.remoteDir, base + QStringLiteral(".preview.jpg"));
 }
 
@@ -2037,7 +2160,16 @@ void Core::finishUpload(int id)
     link.durationMs  = job.info.durationMs;
     link.blurHash    = job.info.blurHash;
     link.previewFile = job.previewRemotePath;
-    link             = sanitized(link); // what receivers will see
+    if (const auto item = m_jobItems.constFind(id); item != m_jobItems.constEnd()) {
+        link.spoiler = item->spoiler;
+        link.voice   = item->voice;
+        if (item->voice) {
+            if (item->durationMs > 0)
+                link.durationMs = item->durationMs;
+            link.waveform = item->waveform;
+        }
+    }
+    link = sanitized(link); // what receivers will see
 
     // Seed the cache so the sender sees the media instantly.
     seedCache(job, link);
@@ -2045,68 +2177,305 @@ void Core::finishUpload(int id)
     ts3::log(QStringLiteral("Uploaded %1 (%2)").arg(joinRemote(job.remoteDir, job.remoteName), formatSize(job.size)), LogLevel_INFO, job.target.sch);
     scheduleCacheLimit(link.key());
 
-    // The messages of one send appear in the order the files were chosen: a file that finishes
-    // before an earlier one waits for it (runUploadQueue posts it then).
-    if (waitsForEarlierPosts(job)) {
-        setUploadState(job, UploadState::Posting, i18n::t("Waiting for earlier files…"), true);
-        return;
-    }
-    postUploadMessage(id);
+    // The messages of one send appear in its order: a file that finishes before an earlier one (or
+    // before the rest of its album) waits; pumpPostUnits posts it when its turn has come.
+    const bool held = waitsForEarlierPosts(job);
+    setUploadState(job, UploadState::Posting, held ? heldText(job) : i18n::t("Posting to chat…"), held);
 }
 
-// Posts the chat message announcing an uploaded file (straight from finishUpload, or once a held
-// message's turn has come).
-void Core::postUploadMessage(int id)
+namespace {
+
+bool isPreparing(UploadState state)
 {
-    auto it = m_uploads.find(id);
-    if (it == m_uploads.end() || !it->uploaded || (it->state != UploadState::Uploading && !(it->state == UploadState::Posting && it->waiting)))
-        return;
-    UploadJob&       job     = it.value();
-    const MediaLink  link    = m_uploadExtra.value(id).link;
-    const Settings&  s       = Settings::instance();
-    const QByteArray message = composeChatMessage(link, s.addRequiredNotice, s.pluginDownloadUrl).toUtf8();
-    const QString    rc      = registerOp(OpType::PostMessage, {}, id);
-    unsigned         err     = ERROR_ok;
-    switch (job.target.mode) {
-    case TextMessageTarget_SERVER:
-        err = ts3::funcs.requestSendServerTextMsg(job.target.sch, message.constData(), rc.toUtf8().constData());
-        break;
-    case TextMessageTarget_CLIENT:
-        err = ts3::funcs.requestSendPrivateTextMsg(job.target.sch, message.constData(), job.target.clientId, rc.toUtf8().constData());
-        break;
-    default:
-        err = ts3::funcs.requestSendChannelTextMsg(job.target.sch, message.constData(), job.channelId, rc.toUtf8().constData());
-        break;
+    return state == UploadState::Preparing || state == UploadState::Compressing || state == UploadState::Uploading;
+}
+
+} // namespace
+
+// True while an earlier part of the same send (an earlier file, or the rest of its album) may still
+// post first.
+bool Core::waitsForEarlierPosts(const UploadJob& job) const
+{
+    const auto batch = m_batches.constFind(job.batch);
+    if (batch == m_batches.constEnd())
+        return false;
+    for (const PostUnit& unit : batch->units) {
+        const bool mine = unit.jobs.contains(job.id);
+        if (!unit.composed) {
+            for (int id : unit.jobs) {
+                const UploadJob* other = upload(id);
+                if (id != job.id && other && isPreparing(other->state))
+                    return true;
+            }
+            if (!mine)
+                return true; // an earlier unit is still to be posted
+        }
+        if (mine)
+            return false;
     }
-    if (err != ERROR_ok) {
-        forgetOp(rc);
-        failUpload(id, postErrorText(mapError(err), ts3::errorText(err)));
-        return;
+    return false;
+}
+
+QString Core::heldText(const UploadJob& job) const
+{
+    const auto batch = m_batches.constFind(job.batch);
+    if (batch != m_batches.constEnd()) {
+        for (const PostUnit& unit : batch->units) {
+            if (unit.jobs.contains(job.id))
+                return unit.album ? i18n::t("Waiting for the rest of the album…") : i18n::t("Waiting for earlier files…");
+            if (!unit.composed)
+                break; // an earlier file comes first
+        }
+    }
+    return i18n::t("Waiting for earlier files…");
+}
+
+// Composes the units whose turn has come: in each batch, in order, every unit whose uploads are all
+// settled (uploaded, failed or canceled) until one isn't. Also keeps the waiting texts right.
+void Core::pumpPostUnits()
+{
+    QList<int> batches = m_batches.keys();
+    std::sort(batches.begin(), batches.end());
+    for (int batch : qAsConst(batches)) {
+        bool earlierPending = false;
+        for (int u = 0; u < m_batches[batch].units.size(); ++u) {
+            PostUnit& unit = m_batches[batch].units[u];
+            if (unit.composed)
+                continue;
+            bool settled = true;
+            for (int id : qAsConst(unit.jobs)) {
+                const UploadJob* job = upload(id);
+                if (job && isPreparing(job->state))
+                    settled = false;
+            }
+            if (!earlierPending && settled) {
+                composeUnit(batch, m_batches[batch].units[u]); // may change the hashes: no references kept
+                continue;
+            }
+            // Held: say what it waits for (only when that changed: every update runs the queue again).
+            const QString text = !earlierPending && unit.album ? i18n::t("Waiting for the rest of the album…") : i18n::t("Waiting for earlier files…");
+            for (int id : m_batches[batch].units[u].jobs) {
+                auto job = m_uploads.find(id);
+                if (job != m_uploads.end() && job->state == UploadState::Posting && job->waiting && job->message != text)
+                    setUploadState(job.value(), UploadState::Posting, text, true);
+            }
+            earlierPending = true;
+        }
+    }
+    pumpPosts();
+}
+
+void Core::composeUnit(int batch, PostUnit& unit)
+{
+    unit.composed = true;
+    QVector<int>     ids;
+    QList<MediaLink> links;
+    for (int id : qAsConst(unit.jobs)) {
+        const UploadJob* job = upload(id);
+        if (job && job->uploaded && job->state == UploadState::Posting && m_uploadExtra.contains(id)) {
+            ids.append(id);
+            links.append(m_uploadExtra.value(id).link);
+        }
+    }
+    if (ids.isEmpty())
+        return; // nothing of it reached the server: the caption waits for the next unit
+
+    // An album is numbered over what was uploaded; a single survivor is a normal file.
+    if (unit.album && ids.size() >= 2) {
+        quint32 album = 0;
+        while (album == 0)
+            album = QRandomGenerator::global()->generate();
+        for (int i = 0; i < links.size(); ++i) {
+            links[i].albumId    = album;
+            links[i].albumIndex = i + 1;
+            links[i].albumCount = links.size();
+            m_uploadExtra[ids.at(i)].link = links.at(i);
+            // The sender's own copy knows its album too (the key doesn't change).
+            auto e = m_entries.find(links.at(i).key());
+            if (e != m_entries.end() && e->isOwnUpload) {
+                e->link.albumId    = album;
+                e->link.albumIndex = i + 1;
+                e->link.albumCount = links.size();
+                touch(e.value());
+            }
+        }
     }
 
-    setUploadState(job, UploadState::Posting, i18n::t("Posting to chat…"));
-    QTimer::singleShot(kPostTimeoutMs, this, [this, rc, id] {
+    const Settings& s = Settings::instance();
+    ComposeOptions  options;
+    options.includeNotice = s.addRequiredNotice;
+    options.downloadUrl   = s.pluginDownloadUrl;
+    BatchInfo& info       = m_batches[batch];
+    if (!info.captionDone && !info.caption.isEmpty()) {
+        options.caption  = info.caption;
+        info.captionDone = true;
+    }
+
+    const UploadJob first = *upload(ids.first());
+    for (const ComposedMessage& message : composeChatMessagesDetailed(links, options)) {
+        PostItem post;
+        post.sch       = first.target.sch;
+        post.target    = first.target;
+        post.channelId = first.channelId;
+        post.text      = message.text.toUtf8();
+        for (int index : message.links)
+            post.jobs.append(ids.at(index));
+        if (!message.dropped.isEmpty() || message.tooLong) {
+            const UploadJob* job = post.jobs.isEmpty() ? nullptr : upload(post.jobs.first());
+            const QString    file = job ? joinRemote(job->remoteDir, job->remoteName) : QString();
+            if (!message.dropped.isEmpty())
+                ts3::log(LogLevel_WARNING, post.sch, "Message for %1 dropped %2 to fit TeamSpeak's message limit",
+                         {ts3::file(file), ts3::pub(message.dropped.join(QStringLiteral(", ")))});
+            if (message.tooLong)
+                ts3::log(LogLevel_WARNING, post.sch, "Message for %1 is %2 bytes, more than TeamSpeak's message limit allows (%3); sending it anyway",
+                         {ts3::file(file), ts3::pub(post.text.size()), ts3::pub(kMaxMessageBytes)});
+        }
+        m_postQueue[post.sch].append(post);
+    }
+    for (int id : qAsConst(ids)) {
+        auto job = m_uploads.find(id);
+        if (job != m_uploads.end())
+            setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
+    }
+}
+
+// Sends what the governors allow now and plans the next wake-up.
+void Core::pumpPosts()
+{
+    const qint64 now  = floodClockMs();
+    qint64       wake = -1;
+    for (const uint64 sch : m_postQueue.keys()) {
+        FloodGovernor& governor = floodGovernor(sch);
+        while (!m_postQueue[sch].isEmpty() && governor.postReady(now)) {
+            PostItem post = m_postQueue[sch].takeFirst();
+            sendPost(post);
+        }
+        const int pending = m_postQueue.value(sch).size();
+        governor.setPendingPosts(pending);
+        if (pending == 0) {
+            m_postQueue.remove(sch);
+            emit floodGovernorChanged(sch); // plugin commands may go again
+            continue;
+        }
+        const qint64 at = governor.nextPostCheckMs(now);
+        wake            = wake < 0 ? at : qMin(wake, at);
+    }
+    if (m_postTimer) {
+        if (wake >= 0)
+            m_postTimer->start(static_cast<int>(qBound<qint64>(0, wake - now, 60 * 60 * 1000)));
+        else
+            m_postTimer->stop();
+    }
+}
+
+bool Core::sendPost(PostItem& post)
+{
+    const QString rc  = registerOp(OpType::PostMessage, {}, post.jobs.value(0));
+    unsigned      err = ERROR_ok;
+    switch (post.target.mode) {
+    case TextMessageTarget_SERVER:
+        err = ts3::funcs.requestSendServerTextMsg(post.sch, post.text.constData(), rc.toUtf8().constData());
+        break;
+    case TextMessageTarget_CLIENT:
+        err = ts3::funcs.requestSendPrivateTextMsg(post.sch, post.text.constData(), post.target.clientId, rc.toUtf8().constData());
+        break;
+    default:
+        err = ts3::funcs.requestSendChannelTextMsg(post.sch, post.text.constData(), post.channelId, rc.toUtf8().constData());
+        break;
+    }
+    ++post.attempts;
+    if (err != ERROR_ok) {
+        forgetOp(rc);
+        failPost(post, postErrorText(mapError(err), ts3::errorText(err)));
+        return false;
+    }
+
+    InFlightPost flight;
+    flight.item   = post;
+    flight.ticket = floodGovernor(post.sch).postSent(floodClockMs());
+    m_postsInFlight.insert(rc, flight);
+    for (int id : qAsConst(post.jobs)) {
+        auto job = m_uploads.find(id);
+        if (job != m_uploads.end() && job->state == UploadState::Posting && job->message != i18n::t("Posting to chat…"))
+            setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
+    }
+    // The governor lets the next post go after a second without an answer; the message counts as sent
+    // when no answer comes at all.
+    QTimer::singleShot(kPostTimeoutMs, this, [this, rc] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
-        auto jt = m_uploads.find(id);
-        if (jt != m_uploads.end() && jt->state == UploadState::Posting)
-            setUploadState(jt.value(), UploadState::Done, i18n::t("Sent"));
+        finishPost(rc, ERROR_ok, QString(), false);
     });
+    return true;
 }
 
-// True while an earlier job of the same batch may still post its message.
-bool Core::waitsForEarlierPosts(const UploadJob& job) const
+// The answer to a chat post (or its timeout, as ERROR_ok).
+void Core::finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError)
 {
-    for (const UploadJob& other : m_uploads) {
-        if (other.batch != job.batch || other.id >= job.id)
-            continue;
-        const bool pending = other.state == UploadState::Preparing || other.state == UploadState::Uploading
-                             || (other.state == UploadState::Posting && other.waiting);
-        if (pending)
-            return true;
+    auto it = m_postsInFlight.find(returnCode);
+    if (it == m_postsInFlight.end())
+        return;
+    InFlightPost flight = it.value();
+    m_postsInFlight.erase(it);
+    FloodGovernor& governor = floodGovernor(flight.item.sch);
+    const bool     flooded  = error == ERROR_client_is_flooding && !permissionError;
+    const bool     retry    = governor.postAnswered(flight.ticket, floodClockMs(), flooded, flight.item.attempts);
+    if (flooded && retry) {
+        ts3::log(LogLevel_WARNING, flight.item.sch, "TeamSpeak's flood protection held back a chat message (attempt %1); sending it again shortly",
+                 {ts3::pub(flight.item.attempts)});
+        for (int id : qAsConst(flight.item.jobs)) {
+            auto job = m_uploads.find(id);
+            if (job != m_uploads.end() && job->state == UploadState::Posting)
+                setUploadState(job.value(), UploadState::Posting, i18n::t("TeamSpeak is limiting messages. Retrying…"));
+        }
+        m_postQueue[flight.item.sch].prepend(flight.item); // before what came after it
+    } else if (error == ERROR_ok && !permissionError) {
+        for (int id : qAsConst(flight.item.jobs)) {
+            auto job = m_uploads.find(id);
+            if (job != m_uploads.end() && job->state == UploadState::Posting)
+                setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
+        }
+    } else {
+        failPost(flight.item, postErrorText(permissionError ? MediaError::Permission : mapError(error), message));
     }
-    return false;
+    pumpPosts();
+}
+
+void Core::failPost(const PostItem& post, const QString& text)
+{
+    if (post.jobs.isEmpty()) {
+        // A caption of its own: the files are posted anyway.
+        ts3::printWarning(post.sch, i18n::t("Couldn't send the caption: %1").arg(text));
+        return;
+    }
+    for (int id : post.jobs)
+        failUpload(id, text);
+}
+
+FloodGovernor& Core::floodGovernor(uint64 sch)
+{
+    return m_flood[sch];
+}
+
+qint64 Core::floodClockMs() const
+{
+    return m_clock.isValid() ? m_clock.elapsed() : 0;
+}
+
+void Core::floodStateChanged(uint64 sch)
+{
+    if (m_postQueue.contains(sch))
+        pumpPosts();
+}
+
+void Core::forgetBatchIfDone(int batch)
+{
+    for (const UploadJob& job : qAsConst(m_uploads)) {
+        if (job.batch == batch)
+            return;
+    }
+    m_batches.remove(batch);
 }
 
 void Core::seedCache(const UploadJob& job, const MediaLink& link)
@@ -2166,7 +2535,7 @@ void Core::cancelUpload(int id)
     if (it == m_uploads.end())
         return;
     UploadJob& job = it.value();
-    if (job.state != UploadState::Preparing && job.state != UploadState::Uploading)
+    if (!isPreparing(job.state))
         return;
     if (job.transferActive) {
         if (ts3::funcs.haltTransfer)
@@ -2215,16 +2584,30 @@ int Core::retryUpload(int id)
         ts3::printWarning(ts3::currentConnection(), notConnectedText());
         return 0; // stays, to be retried once connected
     }
-    const QString    source = job.sourcePath;
     const ChatTarget target = job.target;
-    const bool       pasted = job.pasted;
-    const bool       owned  = job.deleteSource;
+    SendItem         item   = m_jobItems.value(id);
+    item.path               = job.sourcePath;
+    item.pasted             = job.pasted;
+    item.ownTemp            = job.deleteSource;
     job.deleteSource        = false; // a pasted image now belongs to the new job
+
+    // A caption that nothing of its send carried (every file failed) goes with the retry.
+    SendRequest request;
+    request.target = target;
+    request.items.append(item);
+    auto batch = m_batches.find(job.batch);
+    if (batch != m_batches.end() && !batch->captionDone && !batch->caption.isEmpty()) {
+        request.caption    = batch->caption;
+        batch->captionDone = true;
+    }
     forgetUpload(id);
 
     // A pasted image keeps its name; anything else gets a new random part, as a new send would.
-    const QString name = QFileInfo(source).fileName();
-    return createUpload(source, pasted ? name : makeRemoteName(name), target, owned, pasted, ++m_nextBatch);
+    const int newBatch = send(request);
+    if (newBatch == 0)
+        return 0;
+    const PostUnit& unit = m_batches[newBatch].units.first();
+    return unit.jobs.value(0);
 }
 
 void Core::forgetUpload(int id)
@@ -2232,9 +2615,12 @@ void Core::forgetUpload(int id)
     auto it = m_uploads.find(id);
     if (it == m_uploads.end())
         return;
+    const int batch = it->batch;
     releaseSource(it.value());
     m_uploads.erase(it);
+    m_jobItems.remove(id);
     m_sendQueue.removeAll(id);
+    forgetBatchIfDone(batch);
     emit uploadChanged(id); // upload(id) is nullptr now
     scheduleUploadQueue();
 }
@@ -2293,18 +2679,8 @@ void Core::runUploadQueue()
             startSend(id);
     }
 
-    QList<int> held;
-    for (const UploadJob& job : qAsConst(m_uploads)) {
-        if (job.state == UploadState::Posting && job.waiting)
-            held.append(job.id);
-    }
-    // In id order: posting one lets the next of its batch go in the same pass.
-    std::sort(held.begin(), held.end());
-    for (int id : qAsConst(held)) {
-        const UploadJob* job = upload(id);
-        if (job && job->state == UploadState::Posting && job->waiting && !waitsForEarlierPosts(*job))
-            postUploadMessage(id);
-    }
+    // Held chat messages whose turn has come (2.2: per send unit, an album or a file).
+    pumpPostUnits();
 }
 
 void Core::cleanupUpload(UploadJob& job)
@@ -2534,16 +2910,9 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
             ts3::log(QStringLiteral("Could not remove %1 from the file browser: %2").arg(op.key, message), LogLevel_WARNING, sch);
         break;
 
-    case OpType::PostMessage: {
-        auto job = m_uploads.find(op.uploadId);
-        if (job == m_uploads.end())
-            break;
-        if (ok)
-            setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
-        else
-            failUpload(op.uploadId, postErrorText(mapped, message));
+    case OpType::PostMessage:
+        finishPost(returnCode, error, message, permissionError);
         break;
-    }
     }
 }
 
@@ -2606,14 +2975,19 @@ void Core::onConnectionLost(uint64 sch)
         failPreviewDownload(key, QStringLiteral("disconnected"), true);
 
     QList<int> ids;
-    QList<int> held; // uploaded, their chat message still waiting for earlier files
+    QList<int> held; // uploaded, their chat message still waiting for earlier files (or in the post queue)
     for (const auto& job : qAsConst(m_uploads)) {
         if (job.target.sch != sch)
             continue;
-        if (job.state == UploadState::Preparing || job.state == UploadState::Uploading)
+        if (isPreparing(job.state))
             ids.append(job.id);
         else if (job.state == UploadState::Posting && job.waiting)
             held.append(job.id);
+    }
+    // Messages that were waiting for their turn won't be sent on this connection any more.
+    for (const PostItem& post : m_postQueue.take(sch)) {
+        for (int id : post.jobs)
+            held.append(id);
     }
     std::sort(ids.begin(), ids.end());
     std::sort(held.begin(), held.end());
@@ -2621,6 +2995,7 @@ void Core::onConnectionLost(uint64 sch)
         failUpload(id, uploadErrorText(MediaError::NotConnected));
     for (int id : qAsConst(held))
         failUpload(id, postErrorText(MediaError::NotConnected));
+    m_flood.remove(sch); // a new connection starts with a fresh budget
 }
 
 // ============================================================================================
@@ -2842,6 +3217,8 @@ MediaError Core::mapError(unsigned int error)
 
 QString displayNameFor(const UploadJob& job)
 {
+    if (!job.displayName.isEmpty())
+        return displayFileName(job.displayName);
     return job.pasted ? i18n::t("Pasted image") : displayFileName(QFileInfo(job.sourcePath).fileName());
 }
 

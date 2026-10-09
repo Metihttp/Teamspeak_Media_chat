@@ -97,7 +97,7 @@ constexpr int kButtonSize = 24; // close, Retry and Cancel all: at least 24 x 24
 
 bool isRunning(UploadState state)
 {
-    return state == UploadState::Preparing || state == UploadState::Uploading;
+    return state == UploadState::Preparing || state == UploadState::Compressing || state == UploadState::Uploading; // 2.2: + Compressing
 }
 
 bool isActive(UploadState state)
@@ -749,6 +749,14 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
         status = !job.message.isEmpty() ? job.message : job.waiting ? i18n::t("Waiting to upload…") : i18n::t("Preparing…");
         if (job.waiting)
             row.bar->setProgress(0.0);
+        else
+            row.bar->setBusy();
+        row.speed.reset();
+        break;
+    case UploadState::Compressing: // 2.2 foundation (2.4 fills in its texts and progress)
+        status = !job.message.isEmpty() ? job.message : i18n::t("Compressing…");
+        if (job.progress > 0.0)
+            row.bar->setProgress(qBound(0.0, job.progress, 1.0));
         else
             row.bar->setBusy();
         row.speed.reset();

@@ -13,6 +13,7 @@
 #include "medialink.h"
 #include "settings.h"
 #include "uiutil.h"
+#include "testmain.h" // 2.2 foundation
 
 // settings.cpp keeps its ini file in the plugin's data folder; these tests never load or save it.
 namespace ts3 {
@@ -1194,6 +1195,6 @@ void TestTsMedia::normalizeUploadDirectory()
     QCOMPARE(Settings::normalizeUploadDirectory(input), folder);
 }
 
-QTEST_GUILESS_MAIN(TestTsMedia)
+TSMEDIA_TEST_MAIN(TestTsMedia) // 2.2 foundation: also runs the test classes of the other test files
 
 #include "tst_tsmedia.moc"
