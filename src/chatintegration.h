@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QRectF>
 #include <QSet>
+#include <QThreadPool>
 #include <QVector>
 
 #include "core.h"
@@ -24,8 +25,9 @@ class UploadToast;
 //  * hides the "plugin required" note that follows TS Media links (it is meant for clients without the plugin)
 //  * forwards hover/clicks to InlineMediaController (GIFs, video controls) and opens MediaViewer
 //  * right-click menu on previews (open, save, copy, show in folder, ...)
-//  * lets users drop files on the chat or paste screenshots/copied files into the chat line to send
-//    them (a paste asks first: the clipboard may hold something old the user did not mean to send)
+//  * lets users drop files on the chat or paste screenshots/copied files into the chat input to send
+//    them (a paste asks first: the clipboard may hold something old the user did not mean to send;
+//    a drag shows where the drop will go)
 class ChatIntegration : public QObject
 {
     Q_OBJECT
@@ -116,7 +118,7 @@ class ChatIntegration : public QObject
     int          previewAreaWidth(QTextBrowser* browser) const;
     void         activate(const Hit& hit, const QPointF& viewportPos, bool controlsVisible);
     void         openKey(const QString& key);
-    void         copyImage(const QString& key);
+    bool         copyImage(const QString& key, QString* feedback); // feedback: "Image copied" or why not
     // actionable: a click there does something (pointing hand); otherwise the arrow.
     void         updateCursor(QTextBrowser* browser, bool overPreview, const QPoint& viewportPos, bool actionable = true);
     void         repaintPointerState(QTextBrowser* browser, const QString& key, bool includeVideos); // hover / pressed look
@@ -126,13 +128,22 @@ class ChatIntegration : public QObject
     bool         testShowsRawChat(const MediaLink& link) const;
     void         requestSnapshot(QTextBrowser* browser, const QString& reason);
 
+    // Why nothing can be sent from a chat right now (checked before a picker, paste prompt or drop).
+    enum class SendBlock { None, NoRecipient, NotConnected, Password };
+
     bool          acceptsDrop(const QMimeData* mime) const;
     void          sendMime(const QMimeData* mime, const ChatTarget& target);
     void          confirmPaste(QWidget* input, const QStringList& files, const QImage& image, const ChatTarget& target);
     bool          resolveTarget(QWidget* widget, ChatTarget* target) const; // false: unknown private chat partner
     bool          resolveCurrentTarget(ChatTarget* target, QWidget** source) const;
-    void          warnNoRecipient(QWidget* widget) const;
+    SendBlock     checkSend(QWidget* widget, ChatTarget* target) const; // resolveTarget, connection, channel password
+    QString       blockText(SendBlock block) const;
+    void          warnCantSend(QWidget* widget, SendBlock block) const; // tooltip at the widget + chat line
     QString       describeTarget(const ChatTarget& target) const;
+    QTextBrowser* chatBrowserFor(QWidget* widget) const; // the chat a drop on widget goes to
+    void          showDropOverlay(QWidget* widget, const QMimeData* mime);
+    void          hideDropOverlay();
+    void          showFeedback(QWidget* widget, const QString& text, bool error) const; // brief tooltip at the pointer
     QTabBar*      chatTabBarFor(QWidget* widget) const;
     QTextBrowser* visibleChatBrowser() const;
     QTextBrowser* browserForViewport(QObject* viewport) const;
@@ -161,4 +172,8 @@ class ChatIntegration : public QObject
     mutable int            m_scrollBarExtent  = 0;     // width a shown vertical scroll bar takes (measured)
     QPointer<QWidget>      m_pasteConfirm;             // open "send what was pasted?" prompt
     QPointer<MediaViewer>  m_viewer;                   // viewer opened from the chat (paused when an inline video starts)
+    QPointer<QWidget>      m_dropOverlay;              // "Drop to send" over the chat during a drag
+    SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget
+    ChatTarget             m_dropTarget;
+    QThreadPool            m_thumbnailPool; // paste prompt thumbnails of copied pictures (waited for on destruction)
 };

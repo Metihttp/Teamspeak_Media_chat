@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QCursor>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -12,9 +13,11 @@
 #include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileIconProvider>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHelpEvent>
+#include <QImageIOHandler>
 #include <QImageReader>
 #include <QKeyEvent>
 #include <QLabel>
@@ -23,6 +26,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
 #include <QScrollBar>
@@ -236,11 +240,16 @@ ChatIntegration::ChatIntegration(Core* core, QObject* parent)
 
 ChatIntegration::~ChatIntegration()
 {
+    // Thumbnail workers run code of this DLL: they are done before it can be unloaded.
+    m_thumbnailPool.clear();
+    m_thumbnailPool.waitForDone();
     // Inline players are shut down here, synchronously, while Core still exists.
     delete m_media;
     m_media = nullptr;
     if (m_pasteConfirm)
         delete m_pasteConfirm.data();
+    if (m_dropOverlay)
+        delete m_dropOverlay.data();
 
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         if (it->browser)
@@ -1317,20 +1326,36 @@ void ChatIntegration::openViewer(const QString& key)
     }
 }
 
-void ChatIntegration::copyImage(const QString& key)
+bool ChatIntegration::copyImage(const QString& key, QString* feedback)
 {
     const MediaEntry* e = m_core->entry(key);
     if (!e || e->state != MediaState::Ready || !isPreviewableImage(e->kind))
-        return;
+        return false;
     QImageReader reader(e->localPath);
     reader.setAutoTransform(true);
     reader.setDecideFormatFromContent(true);
     const QSize size = reader.size();
-    if (size.isValid() && static_cast<qint64>(size.width()) * size.height() > kMaxCopyPixels)
-        return;
+    if (size.isValid() && static_cast<qint64>(size.width()) * size.height() > kMaxCopyPixels) {
+        *feedback = i18n::t("This image is too large to copy. Open it in your default app and copy it from there.");
+        return false;
+    }
     const QImage image = reader.read();
-    if (!image.isNull())
-        QGuiApplication::clipboard()->setImage(image);
+    if (image.isNull()) {
+        *feedback = i18n::t("Couldn't copy this image. Use Save as… instead.");
+        return false;
+    }
+    QGuiApplication::clipboard()->setImage(image);
+    *feedback = i18n::t("Image copied");
+    return true;
+}
+
+// Copy and save confirmations next to the pointer. Not a QStringLiteral: QToolTip's label is a
+// process-wide widget that outlives the plugin.
+void ChatIntegration::showFeedback(QWidget* widget, const QString& text, bool error) const
+{
+    if (text.isEmpty())
+        return;
+    QToolTip::showText(QCursor::pos(), text, widget, QRect(), error ? qMax(4000, ui::notificationDurationMs()) : 1800);
 }
 
 void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos)
@@ -1340,58 +1365,350 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         return;
     const bool ready = e->state == MediaState::Ready;
     const bool media = isMediaKind(e->kind);
+    const bool gone  = e->state == MediaState::Failed && e->error == MediaError::NotFound;
+    // Programs and scripts from the chat are never run: "Open" would only show them in their folder.
+    const bool unsafe = !media && m_core->isUnsafeToOpen(key);
 
     auto* menu = new QMenu(browser);
     menu->setObjectName(QStringLiteral("tsmediaPreviewMenu"));
     menu->setAttribute(Qt::WA_DeleteOnClose);
     menu->setLayoutDirection(Qt::LeftToRight);
+    QPointer<QTextBrowser> guard(browser);
+    auto viewport = [guard]() -> QWidget* { return guard ? guard->viewport() : nullptr; };
+    QAction* primary = nullptr; // what a click on the preview does; Windows shows it in bold
 
-    if (e->kind == MediaKind::Video && m_media) {
-        const PlaybackOverlay o      = m_media->overlay(key);
-        const bool            active = o.playing || o.ended || o.positionMs > 0;
-        menu->addAction(o.playing ? i18n::t("Pause") : i18n::t("Play"), this, [this, key] {
-            if (m_media)
-                m_media->click(key, VideoZone::PlayPause, 0.0);
-        });
-        if (active) {
-            menu->addAction(o.muted ? i18n::t("Unmute") : i18n::t("Mute"), this, [this, key] {
-                if (!m_media)
-                    return;
-                // The player may have been closed meanwhile; Mute must never start playback.
-                const PlaybackOverlay now = m_media->overlay(key);
-                if (now.playing || now.ended || now.positionMs > 0)
-                    m_media->click(key, VideoZone::Mute, 0.0);
+    // The preview's own state: playback, or getting the file.
+    if (gone) {
+        menu->addAction(downloadErrorTitle(MediaError::NotFound))->setEnabled(false);
+    } else {
+        if (e->kind == MediaKind::Video && m_media) {
+            const PlaybackOverlay o      = m_media->overlay(key);
+            const bool            active = o.playing || o.ended || o.positionMs > 0;
+            primary = menu->addAction(o.playing ? i18n::t("&Pause") : i18n::t("&Play"), this, [this, key] {
+                if (m_media)
+                    m_media->click(key, VideoZone::PlayPause, 0.0);
             });
+            if (active) {
+                menu->addAction(o.muted ? i18n::t("Un&mute") : i18n::t("&Mute"), this, [this, key] {
+                    if (!m_media)
+                        return;
+                    // The player may have been closed meanwhile; Mute must never start playback.
+                    const PlaybackOverlay now = m_media->overlay(key);
+                    if (now.playing || now.ended || now.positionMs > 0)
+                        m_media->click(key, VideoZone::Mute, 0.0);
+                });
+            }
         }
-        menu->addSeparator();
+        QAction* fetch = nullptr;
+        if (e->state == MediaState::Idle)
+            fetch = menu->addAction(i18n::t("&Download"), this, [this, key] { m_core->download(key, false); });
+        else if (e->state == MediaState::Failed)
+            fetch = menu->addAction(i18n::t("&Retry download"), this, [this, key] { m_core->retry(key); });
+        if (!primary)
+            primary = fetch;
     }
+    menu->addSeparator(); // separators at the start or end of a menu are not shown
 
-    menu->addAction(i18n::t("Open"), this, [this, key] { openKey(key); });
+    // Opening it.
+    if (!gone && !unsafe) {
+        QAction* open = menu->addAction(i18n::t("&Open"), this, [this, key] { openKey(key); });
+        if (!primary)
+            primary = open;
+    }
     if (media && ready)
-        menu->addAction(i18n::t("Open with default app"), this, [this, key] { m_core->openExternally(key); });
+        menu->addAction(i18n::t("Open &with default app"), this, [this, key] { m_core->openExternally(key); });
     if (ready) {
-        QPointer<QTextBrowser> guard(browser);
-        menu->addAction(i18n::t("Save as…"), this, [this, key, guard] { m_core->saveAs(key, guard ? guard->window() : mainWindow()); });
+        QAction* reveal = menu->addAction(i18n::t("Show in &folder"), this, [this, key] { m_core->revealInFolder(key); });
+        if (!primary && unsafe)
+            primary = reveal;
     }
-    if (ready && isPreviewableImage(e->kind))
-        menu->addAction(i18n::t("Copy image"), this, [this, key] { copyImage(key); });
-    menu->addAction(i18n::t("Copy link"), this, [this, key] {
-        if (const MediaEntry* entry = m_core->entry(key))
+    menu->addSeparator();
+
+    // Keeping or passing it on. No Ctrl+C / Ctrl+S hints: in the chat those keys act on the text selection.
+    if (ready) {
+        menu->addAction(i18n::t("&Save as…"), this, [this, key, guard, viewport] {
+            const QString saved = m_core->saveAs(key, guard ? guard->window() : mainWindow());
+            if (!saved.isEmpty())
+                showFeedback(viewport(), ui::savedToText(saved), false);
+        });
+    }
+    if (ready && isPreviewableImage(e->kind)) {
+        menu->addAction(i18n::t("&Copy image"), this, [this, key, viewport] {
+            QString    feedback;
+            const bool ok = copyImage(key, &feedback);
+            showFeedback(viewport(), feedback, !ok);
+        });
+    }
+    menu->addAction(i18n::t("Copy &link"), this, [this, key, viewport] {
+        if (const MediaEntry* entry = m_core->entry(key)) {
             QGuiApplication::clipboard()->setText(entry->link.toUrl());
+            showFeedback(viewport(), i18n::t("Link copied"), false);
+        }
     });
-    if (ready)
-        menu->addAction(i18n::t("Show in folder"), this, [this, key] { m_core->revealInFolder(key); });
 
-    if (e->state == MediaState::Idle) {
-        menu->addSeparator();
-        menu->addAction(i18n::t("Download"), this, [this, key] { m_core->download(key, false); });
-    } else if (e->state == MediaState::Failed && e->error != MediaError::NotFound) {
-        menu->addSeparator();
-        menu->addAction(i18n::t("Retry download"), this, [this, key] { m_core->retry(key); });
-    }
-
+    if (primary)
+        menu->setDefaultAction(primary);
     menu->popup(globalPos);
 }
+
+// ============================================================================================
+// Sending: drag & drop, paste, file picker
+// ============================================================================================
+
+namespace {
+
+QString dot()
+{
+    return QStringLiteral(" · ");
+}
+
+QFont scaledFont(const QFont& base, qreal factor)
+{
+    QFont font(base);
+    if (base.pixelSize() > 0)
+        font.setPixelSize(qMax(1, qRound(base.pixelSize() * factor)));
+    else
+        font.setPointSizeF(qMax(1.0, (base.pointSizeF() > 0 ? base.pointSizeF() : 9.0) * factor));
+    return font;
+}
+
+// An arrow going up out of a tray, in the stroke style of the other plugin glyphs.
+void drawUploadGlyph(QPainter& p, const QRectF& box, const QColor& color)
+{
+    const qreal s  = box.width();
+    const qreal cx = box.center().x();
+    p.setPen(QPen(color, s * 0.08, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawLine(QPointF(cx, box.top() + s * 0.12), QPointF(cx, box.top() + s * 0.64));
+    QPainterPath head;
+    head.moveTo(cx - s * 0.22, box.top() + s * 0.34);
+    head.lineTo(cx, box.top() + s * 0.12);
+    head.lineTo(cx + s * 0.22, box.top() + s * 0.34);
+    p.drawPath(head);
+    QPainterPath tray;
+    tray.moveTo(box.left() + s * 0.14, box.top() + s * 0.62);
+    tray.lineTo(box.left() + s * 0.14, box.top() + s * 0.86);
+    tray.lineTo(box.right() - s * 0.14, box.top() + s * 0.86);
+    tray.lineTo(box.right() - s * 0.14, box.top() + s * 0.62);
+    p.drawPath(tray);
+}
+
+void drawBlockedGlyph(QPainter& p, const QRectF& box, const QColor& color)
+{
+    const qreal s  = box.width();
+    const qreal cx = box.center().x();
+    p.setPen(QPen(color, s * 0.08));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(box.adjusted(s * 0.08, s * 0.08, -s * 0.08, -s * 0.08));
+    p.setPen(QPen(color, s * 0.09, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(cx, box.top() + s * 0.30), QPointF(cx, box.top() + s * 0.54));
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawEllipse(QPointF(cx, box.top() + s * 0.70), s * 0.055, s * 0.055);
+}
+
+// Shown over a chat while files are dragged onto it: a drop sends at once, so it says where to and how
+// to skip it, or why nothing can be sent there. Takes no mouse or drag events itself.
+class DropOverlay : public QWidget
+{
+  public:
+    explicit DropOverlay(QWidget* parent)
+        : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("tsmediaDropOverlay")); // swept at plugin shutdown like our other widgets
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFocusPolicy(Qt::NoFocus);
+        setLayoutDirection(Qt::LeftToRight);
+    }
+
+    void setContent(bool dark, bool blocked, const QString& title, const QString& subtitle, const QString& hint)
+    {
+        m_dark     = dark;
+        m_blocked  = blocked;
+        m_title    = title;
+        m_subtitle = subtitle;
+        m_hint     = hint;
+        update();
+    }
+
+    QFont titleFont() const
+    {
+        QFont font = scaledFont(this->font(), 1.25);
+        font.setWeight(QFont::DemiBold);
+        return font;
+    }
+
+    qreal textWidth() const { return qMax(0.0, width() - 2.0 * kInset - 24.0); }
+
+  protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        // Opaque enough that the text keeps 4.5:1 over any picture in the chat.
+        p.fillRect(rect(), m_dark ? QColor(30, 31, 34, 225) : QColor(255, 255, 255, 230));
+        const QColor accent = m_blocked ? (m_dark ? QColor(0xfa, 0x77, 0x7c) : QColor(0xc4, 0x28, 0x2d))
+                                        : (m_dark ? QColor(0x94, 0x9c, 0xf7) : QColor(0x47, 0x52, 0xc4));
+        const QColor text   = m_dark ? QColor(0xf2, 0xf3, 0xf5) : QColor(0x06, 0x06, 0x07);
+        const QColor muted  = m_dark ? QColor(0xb5, 0xba, 0xc1) : QColor(0x5c, 0x5e, 0x66);
+
+        const QRectF frame = QRectF(rect()).adjusted(kInset, kInset, -kInset, -kInset);
+        if (frame.width() < 48 || frame.height() < 48)
+            return;
+        QPen border(accent, 2.0, Qt::DashLine);
+        border.setDashPattern({4.0, 3.0});
+        p.setPen(border);
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(frame, 8, 8);
+
+        const QFont         bodyFont = font();
+        const QFont         headFont = titleFont();
+        const QFont         hintFont = scaledFont(bodyFont, 0.9);
+        const QFontMetricsF tfm(headFont), bfm(bodyFont), hfm(hintFont);
+        const qreal         textW    = textWidth();
+        const qreal         glyph    = 28.0;
+        const int           wrap     = Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap;
+        // The subtitle (a target name or a reason) may take two lines; everything is centred as a block.
+        const qreal subH  = qMin(bfm.boundingRect(QRectF(0, 0, textW, 1000), wrap, m_subtitle).height(), bfm.lineSpacing() * 2.0 + 1.0);
+        const qreal total = glyph + 10 + tfm.height() + 4 + subH + (m_hint.isEmpty() ? 0.0 : 8 + hfm.height());
+        const qreal left  = frame.left() + 12;
+        qreal       y     = qMax(frame.top() + 8, frame.center().y() - total / 2);
+
+        const QRectF glyphBox(frame.center().x() - glyph / 2, y, glyph, glyph);
+        if (m_blocked)
+            drawBlockedGlyph(p, glyphBox, accent);
+        else
+            drawUploadGlyph(p, glyphBox, accent);
+        y += glyph + 10;
+        p.setFont(headFont);
+        p.setPen(text);
+        p.drawText(QRectF(left, y, textW, tfm.height()), Qt::AlignCenter, tfm.elidedText(m_title, Qt::ElideRight, textW));
+        y += tfm.height() + 4;
+        p.setFont(bodyFont);
+        p.setPen(muted);
+        p.drawText(QRectF(left, y, textW, subH), wrap, m_subtitle);
+        y += subH;
+        if (!m_hint.isEmpty()) {
+            y += 8;
+            p.setFont(hintFont);
+            p.drawText(QRectF(left, y, textW, hfm.height()), Qt::AlignCenter, hfm.elidedText(m_hint, Qt::ElideRight, textW));
+        }
+    }
+
+  private:
+    static constexpr qreal kInset = 12.0;
+
+    bool    m_dark    = false;
+    bool    m_blocked = false;
+    QString m_title;
+    QString m_subtitle;
+    QString m_hint;
+};
+
+// An icon painted at the window's scale (QIcon::paint picks the best source size for it).
+QPixmap iconPixmap(const QIcon& icon, int size, qreal dpr)
+{
+    QPixmap pixmap(QSize(size, size) * dpr);
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+    QPainter p(&pixmap);
+    icon.paint(&p, QRect(0, 0, size, size));
+    return pixmap;
+}
+
+// A thumbnail (device pixels) with a 1 px frame, so a white screenshot doesn't melt into a white dialog.
+QPixmap framedPixmap(const QImage& image, qreal dpr, const QColor& frame)
+{
+    QImage out = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    {
+        QPainter  p(&out);
+        const int w = qMax(1, qRound(dpr));
+        p.fillRect(0, 0, out.width(), w, frame);
+        p.fillRect(0, out.height() - w, out.width(), w, frame);
+        p.fillRect(0, 0, w, out.height(), frame);
+        p.fillRect(out.width() - w, 0, w, out.height(), frame);
+    }
+    out.setDevicePixelRatio(dpr);
+    return QPixmap::fromImage(out);
+}
+
+// The logical size a picture of `size` pixels gets in the paste prompt: at most 200 x 150, never enlarged.
+QSize thumbnailSize(const QSize& size)
+{
+    const QSize box(200, 150);
+    return size.width() > box.width() || size.height() > box.height() ? size.scaled(box, Qt::KeepAspectRatio) : size;
+}
+
+// "JPG image", "MP4 video", "ZIP archive": in English, not the Windows name of the file type.
+QString fileTypeText(const QString& fileName)
+{
+    const QString ext = QFileInfo(fileName).suffix().toUpper();
+    switch (kindForFileName(fileName)) {
+    case MediaKind::Image:
+    case MediaKind::AnimatedImage:
+        return i18n::t("%1 image").arg(ext);
+    case MediaKind::Video:
+        return i18n::t("%1 video").arg(ext);
+    case MediaKind::Audio:
+        return i18n::t("%1 audio").arg(ext);
+    case MediaKind::Archive:
+        return i18n::t("%1 archive").arg(ext);
+    case MediaKind::Document:
+        return i18n::t("%1 document").arg(ext);
+    case MediaKind::Other:
+        break;
+    }
+    return ext.isEmpty() ? i18n::t("File") : i18n::t("%1 file").arg(ext);
+}
+
+// The warning in a paste prompt for several files when some of them can't be sent.
+QString skippedText(int tooLarge, int empty, bool nothingLeft, int limitMB)
+{
+    const QString raise = i18n::t("You can raise the limit in Settings → Sending.");
+    if (nothingLeft) {
+        if (empty == 0)
+            return i18n::t("These files are larger than your %1 MB upload limit.").arg(limitMB) + QLatin1Char(' ') + raise;
+        if (tooLarge == 0)
+            return i18n::t("These files are empty, so they can't be sent.");
+        return i18n::t("These files are empty or larger than your %1 MB upload limit, so they can't be sent.").arg(limitMB);
+    }
+    QString text;
+    if (tooLarge > 0 && empty > 0)
+        text = i18n::t("%1 files are empty or larger than your %2 MB upload limit and will be skipped.").arg(tooLarge + empty).arg(limitMB);
+    else if (tooLarge == 1)
+        text = i18n::t("1 file is larger than your %1 MB upload limit and will be skipped.").arg(limitMB);
+    else if (tooLarge > 1)
+        text = i18n::t("%1 files are larger than your %2 MB upload limit and will be skipped.").arg(tooLarge).arg(limitMB);
+    else if (empty == 1)
+        text = i18n::t("1 file is empty and will be skipped.");
+    else if (empty > 1)
+        text = i18n::t("%1 files are empty and will be skipped.").arg(empty);
+    if (tooLarge > 0)
+        text += QLatin1Char(' ') + raise;
+    return text;
+}
+
+// Secondary text in a dialog: the window text toned down, as long as it keeps 4.5:1.
+void setMuted(QLabel* label)
+{
+    QPalette     pal   = label->palette();
+    const QColor text  = pal.color(QPalette::WindowText);
+    const QColor back  = pal.color(QPalette::Window);
+    const QColor muted = ui::flatten(QColor(text.red(), text.green(), text.blue(), 175), back);
+    if (ui::contrastRatio(muted, back) >= 4.5) {
+        pal.setColor(QPalette::WindowText, muted);
+        label->setPalette(pal);
+    }
+}
+
+// Thumbnails of copied pictures are decoded on a worker only up to this size (memory); JPEG decodes
+// straight to the small size, so it may be larger.
+constexpr qint64  kMaxThumbnailPixels     = 24LL * 1000 * 1000;
+constexpr qint64  kMaxJpegThumbnailPixels = 100LL * 1000 * 1000;
+constexpr quint64 kMaxThumbnailFileBytes  = 30ull * 1024 * 1024;
+
+} // namespace
 
 bool ChatIntegration::acceptsDrop(const QMimeData* mime) const
 {
@@ -1599,23 +1916,40 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     case QEvent::DragEnter:
     case QEvent::DragMove: {
         auto* de = static_cast<QDragMoveEvent*>(event);
-        if (!s.interceptDragDrop || (de->keyboardModifiers() & Qt::ShiftModifier) || !acceptsDrop(de->mimeData()))
+        if (!s.interceptDragDrop || (de->keyboardModifiers() & Qt::ShiftModifier) || !acceptsDrop(de->mimeData())) {
+            hideDropOverlay(); // Shift: TeamSpeak's own drop
             break;
-        de->setDropAction(Qt::CopyAction);
+        }
+        // Where it would go is checked when the drag enters a widget (or Shift is let go), not on every move.
+        if (event->type() == QEvent::DragEnter || !m_dropOverlay || !m_dropOverlay->isVisible()) {
+            m_dropBlock = checkSend(qobject_cast<QWidget*>(watched), &m_dropTarget);
+            showDropOverlay(qobject_cast<QWidget*>(watched), de->mimeData());
+        }
+        // Kept as the drag target either way; "no drop" when nothing could be sent from here.
+        de->setDropAction(m_dropBlock == SendBlock::None ? Qt::CopyAction : Qt::IgnoreAction);
         de->accept();
         return true;
     }
 
+    case QEvent::DragLeave:
+        hideDropOverlay();
+        break;
+
     case QEvent::Drop: {
+        hideDropOverlay();
         auto* de = static_cast<QDropEvent*>(event);
         if (!s.interceptDragDrop || (de->keyboardModifiers() & Qt::ShiftModifier) || !acceptsDrop(de->mimeData()))
             break;
-        auto*      widget = qobject_cast<QWidget*>(watched);
-        ChatTarget target;
-        if (resolveTarget(widget, &target))
-            sendMime(de->mimeData(), target);
-        else
-            warnNoRecipient(widget);
+        auto*           widget = qobject_cast<QWidget*>(watched);
+        ChatTarget      target;
+        const SendBlock block = checkSend(widget, &target);
+        if (block != SendBlock::None) {
+            warnCantSend(widget, block);
+            de->setDropAction(Qt::IgnoreAction);
+            de->accept();
+            return true;
+        }
+        sendMime(de->mimeData(), target);
         de->setDropAction(Qt::CopyAction);
         de->accept();
         return true;
@@ -1634,10 +1968,11 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             break;
         if (ke->isAutoRepeat())
             return true; // a held Ctrl+V asks once
-        auto*      widget = qobject_cast<QWidget*>(watched);
-        ChatTarget target;
-        if (!resolveTarget(widget, &target)) {
-            warnNoRecipient(widget);
+        auto*           widget = qobject_cast<QWidget*>(watched);
+        ChatTarget      target;
+        const SendBlock block = checkSend(widget, &target);
+        if (block != SendBlock::None) {
+            warnCantSend(widget, block); // no prompt for something that would fail anyway
             return true;
         }
         // What is on the clipboard may be old and unseen: nothing is sent before the user saw it.
@@ -1727,12 +2062,108 @@ bool ChatIntegration::resolveCurrentTarget(ChatTarget* target, QWidget** source)
     return resolveTarget(widget, target);
 }
 
-void ChatIntegration::warnNoRecipient(QWidget* widget) const
+// Checked before the file picker, the paste prompt and a drop, so the user never picks files that
+// can only fail afterwards.
+ChatIntegration::SendBlock ChatIntegration::checkSend(QWidget* widget, ChatTarget* target) const
 {
-    const QString text = i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.");
+    if (!resolveTarget(widget, target))
+        return SendBlock::NoRecipient;
+    if (!ts3::isConnected(target->sch))
+        return SendBlock::NotConnected;
+    // Files always go to the own channel's file browser, whichever chat announces them.
+    if (ts3::channelHasPassword(target->sch, ts3::ownChannel(target->sch)))
+        return SendBlock::Password;
+    return SendBlock::None;
+}
+
+QString ChatIntegration::blockText(SendBlock block) const
+{
+    switch (block) {
+    case SendBlock::NoRecipient:
+        return i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.");
+    case SendBlock::NotConnected:
+        return i18n::t("You're not connected to a server. Connect to one to send files.");
+    case SendBlock::Password:
+        return uploadErrorText(MediaError::Password);
+    case SendBlock::None:
+        break;
+    }
+    return {};
+}
+
+// What happened, at the place the user acted (a tooltip) and in the chat, where it stays readable.
+void ChatIntegration::warnCantSend(QWidget* widget, SendBlock block) const
+{
+    const QString text = blockText(block);
+    if (text.isEmpty())
+        return;
     ts3::printWarning(ts3::currentConnection(), text);
     if (widget && widget->isVisible())
         QToolTip::showText(widget->mapToGlobal(QPoint(12, widget->height() / 2)), text, widget);
+}
+
+QTextBrowser* ChatIntegration::chatBrowserFor(QWidget* widget) const
+{
+    if (QTextBrowser* browser = browserForViewport(widget))
+        return browser;
+    // The chat input: the chat shown above it (their nearest common ancestor holds both).
+    for (QWidget* anc = widget ? widget->parentWidget() : nullptr; anc; anc = anc->parentWidget()) {
+        for (auto it = m_views.constBegin(); it != m_views.constEnd(); ++it) {
+            QTextBrowser* b = it->browser;
+            if (b && b->isVisible() && anc->isAncestorOf(b))
+                return b;
+        }
+    }
+    return visibleChatBrowser();
+}
+
+// Uses m_dropBlock / m_dropTarget, checked when the drag entered widget.
+void ChatIntegration::showDropOverlay(QWidget* widget, const QMimeData* mime)
+{
+    QTextBrowser* browser = chatBrowserFor(widget);
+    if (!browser || !mime) {
+        hideDropOverlay();
+        return;
+    }
+    auto* overlay = static_cast<DropOverlay*>(m_dropOverlay.data());
+    if (!overlay) {
+        overlay       = new DropOverlay(browser);
+        m_dropOverlay = overlay;
+    } else if (overlay->parentWidget() != browser) {
+        overlay->setParent(browser);
+    }
+    const PreviewStyle style = styleFor(browser);
+    overlay->setFont(style.font);
+    overlay->setGeometry(browser->viewport()->geometry());
+
+    QString title;
+    QString subtitle;
+    if (m_dropBlock == SendBlock::None) {
+        const int count = mime->hasUrls() ? mime->urls().size() : 0;
+        if (count == 1) {
+            // "Drop to send “holiday.jpg”": the name is shortened in the middle, the quotes stay.
+            const QString      prefix = i18n::t("Drop to send “%1”");
+            const QFontMetrics fm(overlay->titleFont());
+            const int          room   = qMax(40, static_cast<int>(overlay->textWidth()) - fm.horizontalAdvance(prefix.arg(QString())));
+            title = prefix.arg(fm.elidedText(displayFileName(QFileInfo(mime->urls().first().toLocalFile()).fileName()), Qt::ElideMiddle, room));
+        } else {
+            title = count > 1 ? i18n::t("Drop to send %1 files").arg(count) : i18n::t("Drop to send the image");
+        }
+        subtitle = i18n::t("to %1").arg(describeTarget(m_dropTarget));
+    } else {
+        title    = i18n::t("Can't send files here");
+        subtitle = m_dropBlock == SendBlock::NoRecipient ? i18n::t("Can't tell who this private chat is with (they may have left the server).")
+                                                         : blockText(m_dropBlock);
+    }
+    overlay->setContent(style.dark, m_dropBlock != SendBlock::None, title, subtitle, i18n::t("Hold Shift to drop without sending"));
+    overlay->show();
+    overlay->raise();
+}
+
+void ChatIntegration::hideDropOverlay()
+{
+    if (m_dropOverlay && m_dropOverlay->isVisible())
+        m_dropOverlay->hide();
 }
 
 QString ChatIntegration::describeTarget(const ChatTarget& target) const
@@ -1745,7 +2176,7 @@ QString ChatIntegration::describeTarget(const ChatTarget& target) const
     }
     case TextMessageTarget_CLIENT: {
         const QString name = nicknameOf(target.sch, target.clientId);
-        return i18n::t("%1 (private chat)").arg(name.isEmpty() ? QStringLiteral("?") : name);
+        return name.isEmpty() ? i18n::t("this private chat") : i18n::t("%1 (private chat)").arg(name);
     }
     default: {
         const QString name = ts3::isConnected(target.sch) ? ts3::channelName(target.sch, ts3::ownChannel(target.sch)) : QString();
@@ -1770,64 +2201,149 @@ void ChatIntegration::confirmPaste(QWidget* input, const QStringList& files, con
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setWindowModality(Qt::WindowModal);
     box->setLayoutDirection(Qt::LeftToRight);
-    box->setWindowTitle(i18n::t("Send to chat"));
+    box->setWindowTitle(files.isEmpty() ? i18n::t("Send pasted image") : i18n::t("Send files to chat"));
 
-    const QString where = describeTarget(target);
-    QString       question;
-    QStringList   details;
-    QPixmap       picture;
+    const qreal   dpr     = box->devicePixelRatioF();
+    const QColor  frame   = box->palette().color(QPalette::Mid);
+    const QString where   = describeTarget(target);
+    const int     limitMB = Settings::instance().uploadMaxMB;
+    const quint64 limit   = static_cast<quint64>(qMax(0, limitMB)) * 1024 * 1024;
+
+    QString     question;
+    QStringList details; // one line per file: "name · size"
+    QString     summary; // muted: "Total: 9 files · 812.6 MB", "JPG image · 2.4 MB", "1920 × 1080"
+    QString     warning; // files that can't be sent (checked now instead of failing after Send)
+    QStringList valid;
+    QPixmap     picture;
+    QString     thumbnailPath; // a copied picture: its thumbnail is decoded on a worker
+    QSize       thumbnail;     // its logical size, reserved now so the prompt doesn't grow later
     if (!files.isEmpty()) {
-        quint64 total = 0;
+        quint64     total    = 0;
+        int         tooLarge = 0;
+        int         empty    = 0;
+        QStringList skipped; // listed first, so the files that won't go are never hidden in "and 3 more"
+        QStringList fine;
         for (const QString& path : files) {
             const QFileInfo info(path);
-            total += static_cast<quint64>(qMax<qint64>(0, info.size()));
-            if (details.size() < kPromptMaxNames)
-                details.append(displayFileName(info.fileName()));
+            const quint64   size = static_cast<quint64>(qMax<qint64>(0, info.size()));
+            const QString   line = displayFileName(info.fileName()) + dot() + formatSize(size);
+            if (size == 0) {
+                ++empty;
+                skipped.append(line + dot() + i18n::t("empty"));
+            } else if (size > limit) {
+                ++tooLarge;
+                skipped.append(line + dot() + i18n::t("over the limit"));
+            } else {
+                valid.append(path);
+                fine.append(line);
+                total += size;
+            }
         }
+        details = (skipped + fine).mid(0, kPromptMaxNames);
         if (files.size() == 1) {
-            question = i18n::t("Send “%1” to %2?").arg(details.first(), where);
+            const QFileInfo info(files.first());
+            question = i18n::t("Send “%1” to %2?").arg(displayFileName(info.fileName()), where);
             details.clear();
+            summary = fileTypeText(info.fileName()) + dot() + formatSize(static_cast<quint64>(qMax<qint64>(0, info.size())));
+            if (empty > 0)
+                warning = i18n::t("This file is empty, so it can't be sent.");
+            else if (tooLarge > 0)
+                warning = i18n::t("This file is larger than your %1 MB upload limit. You can raise the limit in Settings → Sending.").arg(limitMB);
         } else {
             question = i18n::t("Send %1 files to %2?").arg(files.size()).arg(where);
             if (files.size() > kPromptMaxNames)
-                details.append(i18n::t("… and %1 more").arg(files.size() - kPromptMaxNames));
+                details.append(i18n::t("and %1 more").arg(files.size() - kPromptMaxNames));
+            summary = (valid.size() == 1 ? i18n::t("Total: 1 file") : i18n::t("Total: %1 files").arg(valid.size())) + dot() + formatSize(total);
+            if (valid.size() < files.size())
+                warning = skippedText(tooLarge, empty, valid.isEmpty(), limitMB);
         }
-        details.append(formatSize(total));
-        picture = box->style()->standardIcon(QStyle::SP_MessageBoxQuestion, nullptr, box).pixmap(32, 32);
+
+        // The file's own type icon instead of a question mark; the first file's for a set of one type.
+        QFileIconProvider icons;
+        bool              oneType = true;
+        for (const QString& path : files)
+            oneType = oneType && QFileInfo(path).suffix().compare(QFileInfo(files.first()).suffix(), Qt::CaseInsensitive) == 0;
+        picture = iconPixmap(oneType ? icons.icon(QFileInfo(files.first())) : icons.icon(QFileIconProvider::File), 32, dpr);
+
+        const QString single = files.size() == 1 && !valid.isEmpty() ? valid.first() : QString();
+        if (!single.isEmpty() && isPreviewableImage(kindForFileName(single)) && QFileInfo(single).size() <= static_cast<qint64>(kMaxThumbnailFileBytes)) {
+            QImageReader reader(single); // reads the header only
+            reader.setDecideFormatFromContent(true);
+            QSize raw = reader.size();
+            if (reader.transformation() & QImageIOHandler::TransformationRotate90)
+                raw.transpose();
+            const qint64 pixels = static_cast<qint64>(raw.width()) * raw.height();
+            const bool   jpeg   = reader.format() == "jpeg";
+            if (raw.isValid() && pixels <= (jpeg ? kMaxJpegThumbnailPixels : kMaxThumbnailPixels)) {
+                thumbnailPath = single;
+                thumbnail     = thumbnailSize(raw);
+            }
+        }
     } else {
         question = i18n::t("Send the pasted image to %1?").arg(where);
-        details.append(QStringLiteral("%1 × %2").arg(image.width()).arg(image.height()));
-        const qreal dpr = box->devicePixelRatioF();
-        picture         = QPixmap::fromImage(image.scaled(QSize(200, 150) * dpr, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        picture.setDevicePixelRatio(dpr);
+        summary  = i18n::t("%1 × %2").arg(image.width()).arg(image.height());
+        const QSize device = thumbnailSize(image.size()) * dpr;
+        picture            = framedPixmap(image.size() == device ? image : image.scaled(device, Qt::KeepAspectRatio, Qt::SmoothTransformation), dpr, frame);
     }
 
     auto* pictureLabel = new QLabel(box);
     pictureLabel->setPixmap(picture);
     pictureLabel->setAlignment(Qt::AlignTop);
+    if (thumbnail.isValid()) {
+        pictureLabel->setFixedSize(thumbnail);
+        pictureLabel->setAlignment(Qt::AlignCenter); // the type icon until the picture is there
+    }
     auto* questionLabel = new QLabel(question, box);
     questionLabel->setTextFormat(Qt::PlainText);
     questionLabel->setWordWrap(true);
     QFont bold = questionLabel->font();
     bold.setBold(true);
     questionLabel->setFont(bold);
-    auto* detailsLabel = new QLabel(details.join(QLatin1Char('\n')), box);
-    detailsLabel->setTextFormat(Qt::PlainText);
-    detailsLabel->setWordWrap(true);
-
-    auto*        buttons = new QDialogButtonBox(box);
-    QPushButton* send    = buttons->addButton(i18n::t("Send"), QDialogButtonBox::AcceptRole);
-    buttons->addButton(i18n::t("Cancel"), QDialogButtonBox::RejectRole);
-    send->setDefault(true);
-    connect(buttons, &QDialogButtonBox::accepted, box, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, box, &QDialog::reject);
 
     auto* texts = new QVBoxLayout;
     texts->addWidget(questionLabel);
-    texts->addWidget(detailsLabel);
+    if (!details.isEmpty()) {
+        auto* detailsLabel = new QLabel(details.join(QLatin1Char('\n')), box);
+        detailsLabel->setTextFormat(Qt::PlainText);
+        detailsLabel->setWordWrap(true);
+        texts->addWidget(detailsLabel);
+    }
+    auto* summaryLabel = new QLabel(summary, box);
+    summaryLabel->setTextFormat(Qt::PlainText);
+    summaryLabel->setWordWrap(true);
+    setMuted(summaryLabel);
+    texts->addWidget(summaryLabel);
+    if (!warning.isEmpty()) {
+        auto* warningIcon = new QLabel(box);
+        warningIcon->setPixmap(iconPixmap(box->style()->standardIcon(QStyle::SP_MessageBoxWarning, nullptr, box), 16, dpr));
+        warningIcon->setAlignment(Qt::AlignTop);
+        auto* warningLabel = new QLabel(warning, box);
+        warningLabel->setTextFormat(Qt::PlainText);
+        warningLabel->setWordWrap(true);
+        auto* warningRow = new QHBoxLayout;
+        warningRow->setSpacing(6);
+        warningRow->addWidget(warningIcon, 0, Qt::AlignTop);
+        warningRow->addWidget(warningLabel, 1);
+        texts->addSpacing(4);
+        texts->addLayout(warningRow);
+    }
     texts->addStretch(1);
+
+    // "Send 7 files" says what will happen when some are skipped; nothing to send, nothing to click.
+    const bool    canSend = !image.isNull() || !valid.isEmpty();
+    const QString label   = files.size() <= 1 || valid.isEmpty() ? i18n::t("Send")
+                            : valid.size() == 1                 ? i18n::t("Send 1 file")
+                                                                : i18n::t("Send %1 files").arg(valid.size());
+    auto*        buttons = new QDialogButtonBox(box);
+    QPushButton* send    = buttons->addButton(label, QDialogButtonBox::AcceptRole);
+    QPushButton* cancel  = buttons->addButton(i18n::t("Cancel"), QDialogButtonBox::RejectRole);
+    send->setEnabled(canSend);
+    (canSend ? send : cancel)->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, box, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, box, &QDialog::reject);
+
     auto* row = new QHBoxLayout;
-    row->addWidget(pictureLabel);
+    row->addWidget(pictureLabel, 0, Qt::AlignTop);
     row->addLayout(texts, 1);
     auto* layout = new QVBoxLayout(box);
     layout->addLayout(row);
@@ -1835,17 +2351,41 @@ void ChatIntegration::confirmPaste(QWidget* input, const QStringList& files, con
     layout->setSizeConstraint(QLayout::SetFixedSize);
     questionLabel->setMinimumWidth(320);
 
-    connect(box, &QDialog::accepted, this, [this, files, image, target] {
-        if (!files.isEmpty())
-            m_core->uploadFiles(files, target);
-        else
+    connect(box, &QDialog::accepted, this, [this, valid, image, target] {
+        if (!valid.isEmpty())
+            m_core->uploadFiles(valid, target);
+        else if (!image.isNull())
             m_core->uploadImage(image, target);
     });
     m_pasteConfirm = box;
+
+    if (!thumbnailPath.isEmpty()) {
+        // Decoding a photo takes too long for the GUI thread. The pool is ours (waited for in the
+        // destructor), never the global one, whose tasks could outlive the DLL.
+        const QPointer<QLabel> shown(pictureLabel);
+        const QSize            device = thumbnail * dpr;
+        m_thumbnailPool.start([this, shown, thumbnailPath, device, dpr, frame] {
+            QImageReader reader(thumbnailPath);
+            reader.setAutoTransform(true);
+            reader.setDecideFormatFromContent(true);
+            QSize scaled = device; // applied before the rotation
+            if (reader.transformation() & QImageIOHandler::TransformationRotate90)
+                scaled.transpose();
+            reader.setScaledSize(scaled);
+            const QImage decoded = reader.read();
+            if (decoded.isNull())
+                return; // the type icon stays
+            QMetaObject::invokeMethod(this, [shown, decoded, dpr, frame] {
+                if (shown)
+                    shown->setPixmap(framedPixmap(decoded, dpr, frame));
+            }, Qt::QueuedConnection);
+        });
+    }
+
     box->show();
     box->raise();
     box->activateWindow();
-    send->setFocus();
+    (canSend ? send : cancel)->setFocus();
 }
 
 ChatTarget ChatIntegration::currentTarget() const
@@ -1879,13 +2419,17 @@ void ChatIntegration::pickAndSendFiles()
     static QString lastDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
     ChatTarget     target;
     QWidget*       source = nullptr;
-    if (!resolveCurrentTarget(&target, &source)) {
-        warnNoRecipient(source);
+    resolveCurrentTarget(&target, &source); // finds the chat input (or chat) the command came from
+    // Checked before the picker opens: choosing files that can only fail afterwards wastes the effort.
+    const SendBlock block = checkSend(source, &target);
+    if (block != SendBlock::None) {
+        warnCantSend(source, block);
         return;
     }
+    // The title names the destination, like the paste prompt: "Send files to the channel “Lobby”".
     const QStringList files = QFileDialog::getOpenFileNames(
-        mainWindow(), i18n::t("Send files to chat"), lastDir,
-        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov)"));
+        mainWindow(), i18n::t("Send files to %1").arg(describeTarget(target)), lastDir,
+        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v)"));
     if (files.isEmpty())
         return;
     lastDir = QFileInfo(files.first()).absolutePath();
@@ -1901,6 +2445,7 @@ void ChatIntegration::onUploadChanged(int id)
         m_toast = new UploadToast(m_core, host);
     else if (m_toast->parentWidget() != host)
         m_toast->setHost(host);
+    m_toast->setDark(styleFor(host).dark); // TeamSpeak's light or dark theme, like the previews
     m_toast->updateJob(id);
 }
 
