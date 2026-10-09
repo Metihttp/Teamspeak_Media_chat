@@ -272,6 +272,18 @@ TS3_EXPORT int ts3plugin_init()
         ts3::log(QString::fromLatin1("[update] " TSMEDIA_VERSION " didn't start last time: the previous version was restored"), LogLevel_WARNING);
         return 1;
     }
+#ifdef TSMEDIA_TESTHOOKS
+    // 2.2 updater rollback tests (test builds only): <data>/selftest_init_fail.txt makes this start fail
+    // (init returns 1), selftest_init_crash.txt makes it crash. Each trigger is used once.
+    if (takeTrigger(QString::fromLatin1("selftest_init_fail.txt"), nullptr)) {
+        ts3::log(QString::fromLatin1("[test] init fails on purpose"), LogLevel_WARNING);
+        return 1;
+    }
+    if (takeTrigger(QString::fromLatin1("selftest_init_crash.txt"), nullptr)) {
+        ts3::log(QString::fromLatin1("[test] init crashes on purpose"), LogLevel_WARNING);
+        *static_cast<volatile int*>(nullptr) = 0;
+    }
+#endif
 
     Settings::instance().load();
 

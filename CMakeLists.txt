@@ -22,6 +22,22 @@ else()
     set(TSMEDIA_ARCH win32)
 endif()
 
+# 2.2 updater tests: a test build can report another version, to play the "next release" on the local
+# test server (docs/UPDATES.md). Refused without TSMEDIA_TESTHOOKS.
+set(TSMEDIA_VERSION_OVERRIDE "" CACHE STRING "Test builds only: the version to build instead of the project version")
+if(TSMEDIA_VERSION_OVERRIDE)
+    if(NOT TSMEDIA_TESTHOOKS)
+        message(FATAL_ERROR "TSMEDIA_VERSION_OVERRIDE needs -DTSMEDIA_TESTHOOKS=ON")
+    endif()
+    if(NOT TSMEDIA_VERSION_OVERRIDE MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+        message(FATAL_ERROR "TSMEDIA_VERSION_OVERRIDE must look like 2.1.9")
+    endif()
+    set(PROJECT_VERSION ${TSMEDIA_VERSION_OVERRIDE})
+    set(PROJECT_VERSION_MAJOR ${CMAKE_MATCH_1})
+    set(PROJECT_VERSION_MINOR ${CMAKE_MATCH_2})
+    set(PROJECT_VERSION_PATCH ${CMAKE_MATCH_3})
+endif()
+
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/version.h @ONLY)
 configure_file(src/version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc @ONLY)
 

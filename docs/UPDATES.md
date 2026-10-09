@@ -155,6 +155,15 @@ It refuses DLLs with imports outside an allowlist, and checks every imported Qt 
    (backports: `--latest=false`), so "latest" never lacks a manifest.
 5. `build.ps1 -VerifyPublished`.
 
+### Testing without GitHub
+
+- Unit tests: `tsmedia_update_tests` (signed vectors in `tests/data/update`, made with the test key 99).
+- Test builds (`-DTSMEDIA_TESTHOOKS=ON -DTSMEDIA_UPDATER=ON`) trust key 99 and read
+  `<TeamSpeak config>/plugins/tsmedia/update_base.txt` (`http://127.0.0.1:<port>`; loopback only): all
+  update requests then go to a local server with GitHub's paths. `-DTSMEDIA_VERSION_OVERRIDE=2.1.9`
+  (test builds only) builds a "next version" to offer. `selftest_init_fail.txt` / `selftest_init_crash.txt`
+  in the same folder make the next start fail or crash right after the boot guard (rollback tests).
+
 ### Still to measure on a real TeamSpeak (not possible in the automated tests)
 
 - Which quit path exits TeamSpeak 3.6.2 cleanly (its Quit action, found by Ctrl+Q / objectName, or
