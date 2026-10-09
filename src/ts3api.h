@@ -44,8 +44,12 @@ QString newReturnCode();
 
 void log(const QString& message, LogLevel level = LogLevel_INFO, uint64 sch = 0);
 
-// Prints a BBCode line into the channel chat tab of the given connection (local only).
+// Prints a BBCode line into the chat tab the user is looking at when sch is the current connection,
+// otherwise into the channel tab of sch (local only).
 void print(uint64 sch, const QString& bbcode);
+// The chat's theme (ChatIntegration knows it): printInfo / printWarning pick prefix colours that are
+// readable on it.
+void setChatDark(bool dark);
 void printInfo(uint64 sch, const QString& text);
 void printWarning(uint64 sch, const QString& text);
 

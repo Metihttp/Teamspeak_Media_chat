@@ -1,7 +1,9 @@
 // Unit tests for the pure-logic parts of TS Media chat: the chat link format, the message composer,
-// BlurHash, the formatting helpers, display names, error texts and the shared UI helpers (uiutil).
+// BlurHash, the formatting helpers, display names, error texts, the shared UI helpers (uiutil) and
+// the settings checks (link for the note, upload folder).
 // Built as target tsmedia_tests (see CMakeLists.txt).
 
+#include <QDir>
 #include <QFileInfo>
 #include <QImage>
 #include <QUrl>
@@ -9,7 +11,16 @@
 
 #include "blurhash.h"
 #include "medialink.h"
+#include "settings.h"
 #include "uiutil.h"
+
+// settings.cpp keeps its ini file in the plugin's data folder; these tests never load or save it.
+namespace ts3 {
+QString dataDir()
+{
+    return QDir::tempPath();
+}
+} // namespace ts3
 
 namespace {
 
@@ -166,6 +177,12 @@ class TestTsMedia : public QObject
     // UI helpers
     void contrastRatio();
     void savedToText();
+
+    // Settings
+    void checkDownloadUrl_data();
+    void checkDownloadUrl();
+    void normalizeUploadDirectory_data();
+    void normalizeUploadDirectory();
 };
 
 // ---- MediaLink ---------------------------------------------------------------------------------
@@ -1118,6 +1135,63 @@ void TestTsMedia::savedToText()
 {
     QCOMPARE(ui::savedToText(QStringLiteral("C:/Users/me/Pictures/holiday.jpg")), QStringLiteral("Saved to Pictures"));
     QCOMPARE(ui::savedToText(QStringLiteral("D:/clip.mp4")), QStringLiteral("Saved to D:\\"));
+}
+
+// ---- Settings ----------------------------------------------------------------------------------
+
+void TestTsMedia::checkDownloadUrl_data()
+{
+    QTest::addColumn<QString>("input");
+    QTest::addColumn<int>("problem");
+    QTest::addColumn<QString>("normalized");
+
+    const int none     = static_cast<int>(Settings::DownloadUrlProblem::None);
+    const int notWeb   = static_cast<int>(Settings::DownloadUrlProblem::NotWebAddress);
+    const int scheme   = static_cast<int>(Settings::DownloadUrlProblem::Scheme);
+    const int brackets = static_cast<int>(Settings::DownloadUrlProblem::Brackets);
+    const int tooLong  = static_cast<int>(Settings::DownloadUrlProblem::TooLong);
+    QTest::newRow("empty: the default link") << QString() << none << QString();
+    QTest::newRow("spaces only") << QStringLiteral("   ") << none << QString();
+    QTest::newRow("https assumed") << QStringLiteral("example.com/x") << none << QStringLiteral("https://example.com/x");
+    QTest::newRow("http kept") << QStringLiteral(" http://example.com/x ") << none << QStringLiteral("http://example.com/x");
+    QTest::newRow("ftp") << QStringLiteral("ftp://a.b/x") << scheme << QString();
+    QTest::newRow("no host") << QStringLiteral("https://") << notWeb << QString();
+    QTest::newRow("javascript") << QStringLiteral("javascript:alert(1)") << notWeb << QString();
+    QTest::newRow("bracket in path") << QStringLiteral("a.com/[x]") << brackets << QString();
+    QTest::newRow("IPv6 literal") << QStringLiteral("https://[::1]/") << brackets << QString();
+    QTest::newRow("too long") << QStringLiteral("https://a.com/") + QString(600, QLatin1Char('a')) << tooLong << QString();
+}
+
+void TestTsMedia::checkDownloadUrl()
+{
+    QFETCH(QString, input);
+    QFETCH(int, problem);
+    QFETCH(QString, normalized);
+
+    QString out = QStringLiteral("left over");
+    QCOMPARE(static_cast<int>(Settings::checkDownloadUrl(input, &out)), problem);
+    QCOMPARE(out, normalized); // cleared unless the link is usable
+}
+
+void TestTsMedia::normalizeUploadDirectory_data()
+{
+    QTest::addColumn<QString>("input");
+    QTest::addColumn<QString>("folder");
+
+    QTest::newRow("empty: the default folder") << QString() << QStringLiteral("/tsmedia");
+    QTest::newRow("spaces only") << QStringLiteral("  ") << QStringLiteral("/tsmedia");
+    QTest::newRow("backslashes, spaces, trailing slash") << QStringLiteral(" a\\b/ ") << QStringLiteral("/a/b");
+    QTest::newRow("top level") << QStringLiteral("/") << QStringLiteral("/");
+    QTest::newRow("trailing slashes") << QStringLiteral("x//") << QStringLiteral("/x");
+    QTest::newRow("already normal") << QStringLiteral("/tsmedia/clips") << QStringLiteral("/tsmedia/clips");
+}
+
+void TestTsMedia::normalizeUploadDirectory()
+{
+    QFETCH(QString, input);
+    QFETCH(QString, folder);
+
+    QCOMPARE(Settings::normalizeUploadDirectory(input), folder);
 }
 
 QTEST_GUILESS_MAIN(TestTsMedia)

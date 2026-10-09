@@ -36,6 +36,7 @@ class SettingsDialog : public QDialog
     void setDirty(bool dirty);
     void updateEnabled();
     void syncVolume();
+    void updateGifHint();
     void updateCacheLabel();
     void clearCache();
     bool checkDownloadUrl(bool normalize); // shows or hides the message under the field
@@ -51,6 +52,7 @@ class SettingsDialog : public QDialog
     QCheckBox* m_autoDownload;
     QSpinBox*  m_autoDownloadMax;
     QCheckBox* m_autoplayGifs;
+    QLabel*    m_gifHint; // shown while Windows animations are off (GIFs then play on hover only)
     QSpinBox*  m_videoAutoDownload;
     QSpinBox*  m_previewWidth;
     QSpinBox*  m_previewHeight;

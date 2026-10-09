@@ -8,15 +8,17 @@ How to send files, what you see in the chat, how the gallery viewer works, and t
 
 | Method | How |
 | --- | --- |
-| Drag & drop | Drop files on the chat messages or the input line. They are sent right away. |
-| Paste | Press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input line. Always asks first. |
-| Menu | **Plugins → TS Media chat → Send file / image to chat…** |
+| Drag & drop | Drop files on the chat messages or the chat input. They are sent right away. |
+| Paste | Press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input. Always asks first. |
+| Menu | **Plugins → TS Media chat → Send files to chat…** (greyed out while the current server tab is not connected) |
 | Hotkey | Set it up once in **Tools → Options → Hotkeys** (see below). |
 | Chat command | `/tsmedia send` |
 
-- **Drag & drop:** you can drop one or more files at once. Hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour. Drags from TeamSpeak's own file browser keep working as before.
-- **Paste:** take a screenshot (for example with <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>) or copy files in Explorer, click the chat input line and press <kbd>Ctrl</kbd>+<kbd>V</kbd>. Plain text still pastes as usual.
-- **Hotkey:** in **Tools → Options → Hotkeys**, click **Add**, then **Show Advanced Actions**, and pick **Plugins → Plugin Hotkey → TS Media chat → Send file / image to the current chat**.
+- **Drag & drop:** you can drop one or more files at once. While you drag, the chat shows *Drop to send …* and where the files will go, or *Can't send files here* and the reason. Hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour. Drags from TeamSpeak's own file browser keep working as before.
+- **Paste:** take a screenshot (for example with <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>) or copy files in Explorer, click the chat input and press <kbd>Ctrl</kbd>+<kbd>V</kbd>. Plain text still pastes as usual.
+- **Hotkeys:** in **Tools → Options → Hotkeys**, click **Add**, then **Show Advanced Actions**, and pick **Plugins → Plugin Hotkey → TS Media chat → Send files to the current chat**. **Cancel all uploads** is there too.
+
+Before the file picker opens, before the paste dialog and when you drop files, the plugin checks that you are connected, that your channel has no password and that it knows who a private chat is with. If something is missing, it says why (next to where you are and in the chat), and nothing is sent.
 
 Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS.md#sending).
 
@@ -25,6 +27,7 @@ Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS
 - The message goes to the chat tab you are looking at: channel, server or a private chat. The file itself is always stored in the file browser of **the channel you are currently in**.
 - If the partner of a private chat can't be identified (for example, they left the server), nothing is sent. Something meant for one person never ends up in the channel instead.
 - When you send several files at once, their messages appear in the chat in the order you chose the files. Up to two files upload at the same time; the others wait their turn.
+- Messages from the plugin itself (an upload failed, a command's answer) appear in the chat tab you are looking at.
 
 ### The paste confirmation
 
@@ -32,7 +35,7 @@ Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS
   <img src="images/paste-dialog.png" width="480" alt="The Send to chat dialog after pressing Ctrl+V: a thumbnail of the pasted screenshot, the question whether to send it to the current channel, its size in pixels, and Send and Cancel buttons">
 </p>
 
-Pressing Ctrl+V with a screenshot or copied files opens a small dialog that shows what will be sent and where (the channel, the whole server or a private chat). For a screenshot it shows a thumbnail and the size in pixels; for files, their names and the total size. Nothing is sent until you click **Send**. The clipboard may hold something old you forgot about, so the plugin always asks.
+Pressing Ctrl+V with a screenshot or copied files opens a small dialog that asks whether to send them and names where they go (the channel, the whole server or a private chat). A screenshot or a single copied picture shows a thumbnail; other files show their type icon, their names and sizes, and the total size. Files that are empty or larger than your upload limit are listed first, marked and skipped, and the button says how many files will be sent (*Send 7 files*). Nothing is sent until you click **Send**. The clipboard may hold something old you forgot about, so the plugin always asks.
 
 ### Upload progress
 
@@ -40,7 +43,13 @@ Pressing Ctrl+V with a screenshot or copied files opens a small dialog that show
   <img src="images/upload-toast.png" width="360" alt="The upload panel in the corner of the chat: a file name, a progress bar with the percentage and upload speed, and a button to cancel the upload">
 </p>
 
-A small panel in the corner of the chat shows each upload with its progress and speed. Its **×** button cancels a running upload. If an upload fails, the panel and the chat say why and what to do next.
+A panel at the bottom of the chat shows each upload with its progress, in TeamSpeak's light or dark theme:
+
+- An upload shows its percentage, the speed, the amount sent and the time left. Files waiting for their turn say *Waiting to upload…*.
+- With several files, a header shows the overall progress (*2 of 5 sent*), the time left and **Cancel all**. At most four files are listed, failed ones first; the rest are summed up as *+3 more*, which you can click to see them all.
+- The **×** button of a file cancels its upload, or dismisses it once it is finished.
+- A failed upload says why and what to do next. It stays at least 10 seconds (15 with **Retry**), and never goes away while the pointer is on the panel. **Retry** sends the file again when that is possible (not when the file already reached the server). Every failure is also written into the chat, where it stays readable.
+- `/tsmedia cancel` or the *Cancel all uploads* hotkey stop every running upload from the keyboard.
 
 ### File names and folders
 
@@ -49,33 +58,36 @@ A small panel in the corner of the chat shows each upload with its progress and 
 - A pasted image is sent as `new_photo_<random>.png`, or converted to JPEG (quality 90) if it is larger than 2 MB and has no transparency.
 - With *Upload a small preview* on (the default), a preview is stored as `/tsmedia/previews/<name>.jpg`. Previews are only made for photos larger than 1.5 MB or with a side longer than 2560 px (preview up to 1280 px), for animated GIFs and WebPs larger than 4 MB (first frame, up to 640 px), and for every video (poster up to 960 px).
 - If the folder can't be created (no `i_ft_directory_create_power`), the file goes to the root of the channel's file browser and its preview to `/previews`, or next to the file as `<name>.preview.jpg`.
-- The folder and the maximum upload size (default 100 MB) can be changed in the [settings](SETTINGS.md#sending).
+- The folder and the upload size limit (default 100 MB) can be changed in the [settings](SETTINGS.md#sending).
 
 ## Viewing media
 
 - **Images and GIFs** up to 15 MB load automatically. Larger ones show their preview (or a blurred placeholder) with the file size, and load when you click them. Clicking an image or GIF opens the gallery viewer.
-- **Videos** show their poster, a play button and the duration. Clicking play downloads the video first (a progress ring shows the percentage) and then plays it right in the chat. Hover over a playing video to show its controls: play/pause, time, seek bar, mute and expand (opens the gallery viewer). The controls hide 2.5 s after the mouse stops. Starting a video pauses any other.
-- **Other files**, audio files included, appear as cards. Click a card to download the file and open it with its default Windows app. Programs and scripts are never run; they are only shown in Explorer.
+- **Videos** show their poster, a play button and the duration. Clicking play downloads the video first (a progress ring shows the percentage) and then plays it right in the chat. Hover over a playing video to show its controls: play/pause, time, seek bar, mute and expand (opens the gallery viewer). Pointing at a control shows its name, and the seek bar shows the time under the pointer. The controls stay while the pointer rests on them and fade out 2.5 s after the mouse stops elsewhere. Starting a video pauses any other.
+- **Videos Windows can't play inside the chat** (a missing decoder, for example) show *Opens in default app*: clicking them opens your default video app.
+- **Other files**, audio files included, appear as cards. Click a card to download the file and open it with its default Windows app. Programs and scripts are never run: their card says *Show in folder*, and clicking it shows the file in Explorer.
 - **Ordinary TeamSpeak file links** (for example a file dragged from the file browser into the chat) get the same treatment, just without the dimensions, duration, blurred placeholder and preview that TS Media chat adds to its own links.
-- You have to be connected to the server the file is on. Up to 3 downloads run at once, previews first.
-- When something goes wrong, the reason is written on the preview or card. Click it to try again (not offered for deleted files or password-protected channels). The [FAQ](FAQ.md#what-do-the-messages-on-a-preview-mean) explains every message.
+- Previews and cards light up when you point at them and when you press them. Point at a card or a failed preview to see the file's full name, size and status.
+- You have to be connected to the server the file is on. Up to 3 downloads run at once, previews first. A file waiting for its turn says *Waiting to download…*.
+- When something goes wrong, the reason is written on the preview or card. Failed cards have a **Retry** button, and clicking a failed picture tries again. Deleted files and files in password-protected channels can't be retried: their previews show the normal pointer and do nothing when clicked. The [FAQ](FAQ.md#what-do-the-messages-on-a-preview-mean) explains every message.
+- With Windows animations turned off (**Settings → Accessibility → Visual effects → Animation effects**), GIFs play only while the pointer is over them, and loading indicators stand still.
 
 ## Right-click menu
 
-Right-click any preview or card:
+Right-click any preview or card. The item in bold is what a click on the preview does.
 
 | Item | Shown for |
 | --- | --- |
-| Play / Pause | videos |
+| Play / Pause | videos (*Open in default app* for a video Windows can't play inside the chat) |
 | Mute / Unmute | videos that have been started |
-| Open | always (media opens in the viewer, other files in their default app) |
-| Open with default app | downloaded images and videos |
-| Save as… | downloaded files |
-| Copy image | downloaded images and GIFs |
-| Copy link | always (copies the `ts3file://` link) |
-| Show in folder | downloaded files |
 | Download | files that are not downloaded yet |
-| Retry download | files whose download failed (unless the file was deleted) |
+| Retry download | files whose download failed (not for deleted files or password-protected channels) |
+| Open | everything except deleted files, files in password-protected channels, and programs and scripts (media opens in the viewer, other files in their default app) |
+| Open with default app | downloaded images and videos |
+| Show in folder | downloaded files |
+| Save as… | downloaded files (confirms *Saved to …* with the folder's name) |
+| Copy image | downloaded images and GIFs (confirms *Image copied*) |
+| Copy link | always (copies the `ts3file://` link and confirms *Link copied*) |
 
 ## Gallery viewer
 
@@ -86,37 +98,49 @@ Right-click any preview or card:
 The viewer shows every media item of the chat, so you can step through them without closing it. The counter shows which item you are looking at.
 
 - The mouse wheel zooms around the pointer, and dragging pans the image.
-- Double-clicking an image switches between *fit to window* and *actual size*.
+- Double-clicking an image switches between *fit to window* and 100%, zooming into the point you clicked (200% when the picture already fits at 100%). 100% shows one image pixel per screen pixel, so on a scaled display (125%, 150%, …) pictures look smaller at 100% than in other apps that scale them up.
 - Clicking a GIF pauses or resumes it. Clicking a video plays or pauses it, and double-clicking a video toggles full screen.
-- The bottom bar has **Fit**, **100%**, **Copy image** (**Copy frame** for videos), **Save as…**, **Show in folder** and **Open with default app**.
+- The bottom bar has **Fit**, **100%**, **Copy image** (**Copy frame** for videos and GIFs), **Save as…**, **Show in folder** and **Open with default app** (not offered for programs and scripts, which are only shown in their folder). Fit and 100% show which view is active.
+- Full screen keeps a header with the name, the position in the gallery, Copy, Save, Open and Exit. The controls and the pointer hide while you don't move the mouse.
+- Messages say what went wrong first and offer the way out right below: **Retry**, **Open with default app**, or **Get it from Microsoft Store** when a video needs a decoder from the Store.
 - Volume changes made in the viewer are remembered.
 - Images that are not downloaded yet load when you step to them. Videos wait until you press play, unless they are small enough to download automatically.
+- The **?** button in the top bar (or <kbd>?</kbd> / <kbd>F1</kbd>) shows the keyboard shortcuts.
 
 ### Viewer keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
-| <kbd>←</kbd> / <kbd>→</kbd> | previous / next item of the gallery |
-| <kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>Shift</kbd>+<kbd>→</kbd> | seek 5 s back / forward (video) |
+| <kbd>←</kbd> / <kbd>→</kbd> | previous / next item of the gallery (seek 5 s when the video is the chat's only item) |
+| <kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>Shift</kbd>+<kbd>→</kbd> | seek 5 s back / forward (video); move a zoomed picture |
 | <kbd>Space</kbd> or <kbd>K</kbd> | play / pause a video; pause / resume a GIF |
 | <kbd>Home</kbd> | back to the start of the video |
 | <kbd>M</kbd> | mute / unmute |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | volume up / down by 5% |
+| <kbd>L</kbd> | loop on / off |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | volume up / down by 5% (video); move a zoomed picture |
 | <kbd>F</kbd> | full screen |
 | <kbd>Esc</kbd> | leave full screen, otherwise close the viewer |
 | <kbd>0</kbd> | fit the image to the window |
-| <kbd>1</kbd> | actual size (100%) |
+| <kbd>1</kbd> | 100% (one image pixel per screen pixel) |
+| <kbd>+</kbd> / <kbd>−</kbd> | zoom in / out |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | copy the image, or the current video frame |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | save as… |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | open with default app |
+| <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | move between the buttons |
+| <kbd>Enter</kbd> | press the highlighted or focused button |
+| <kbd>?</kbd> or <kbd>F1</kbd> | show the shortcut list |
 
-Letter and number keys also work with non-Latin keyboard layouts.
+Letter and number keys also work with non-Latin keyboard layouts. After a mouse click in the viewer, the keys act on the media again.
 
 ## Chat commands
 
 | Command | What it does |
 | --- | --- |
 | `/tsmedia send` | pick files and send them to the current chat |
+| `/tsmedia cancel` | cancel all running uploads |
 | `/tsmedia settings` | open the settings |
 | `/tsmedia cache` | open the media cache folder |
-| `/tsmedia debug` | write a list of TeamSpeak's chat widgets to `widget_dump.txt` in the plugin's data folder (`%APPDATA%\TS3Client\plugins\tsmedia`), for bug reports |
-| `/tsmedia` | print the version and the list of commands |
+| `/tsmedia help` or `/tsmedia` | print the version and the list of commands |
+| `/tsmedia debug` | write a list of TeamSpeak's chat widgets to `widget_dump.txt` in the plugin's data folder (`%APPDATA%\TS3Client\plugins\tsmedia`) for bug reports; the chat says *Diagnostics saved to …* |
+
+An unknown command is named in a warning, followed by the list of commands.

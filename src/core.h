@@ -86,6 +86,10 @@ struct UploadJob {
 // otherwise the source file's name (displayFileName).
 QString displayNameFor(const UploadJob& job);
 
+// "You're not connected to a server. Connect to one to send files." Core's chat warning and the
+// checks before a send (picker, paste, drop) say the same.
+QString notConnectedText();
+
 // Best still picture currently available for an entry.
 struct MediaStill {
     enum Source { None, BlurHash, Preview, Full };
@@ -168,6 +172,7 @@ class Core : public QObject
     quint64 cacheSize() const;
     void    clearCache();
     void    openCacheFolder() const;
+    void    applyCacheLimit(); // after Settings::cacheLimitMB changed: trims the cache to it shortly
 
     // ---- TeamSpeak callbacks (called on the GUI thread) ------------------------------------
     bool isOwnReturnCode(const QString& returnCode) const; // thread-safe

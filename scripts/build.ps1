@@ -49,6 +49,9 @@ if (-not $No32) {
 }
 
 $version = (Select-String -Path (Join-Path $root "CMakeLists.txt") -Pattern 'project\(tsmedia VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+# The same text as TeamSpeak's Addons list shows (CMakeLists.txt is the only place to change it).
+$description = (Select-String -Path (Join-Path $root "CMakeLists.txt") -Pattern 'set\(PLUGIN_DESCRIPTION\s+"([^"]+)"\)').Matches[0].Groups[1].Value
+if (-not $description) { throw "PLUGIN_DESCRIPTION not found in CMakeLists.txt" }
 $platforms = (@("win32", "win64") | Where-Object { $dlls.ContainsKey($_) }) -join ", "
 
 # Package: a .ts3_plugin is a zip with package.ini + plugins\<name>_<platform>.dll
@@ -62,7 +65,7 @@ Type = Plugin
 Author = MehdiHttp
 Version = $version
 Platforms = $platforms
-Description = "Discord-style images, GIFs and videos in the TeamSpeak chat. Drop or paste files into the chat; users with the plugin see and play them inline."
+Description = "$description"
 "@ | Set-Content -Encoding UTF8 "$stage\package.ini"
 
 New-Item -ItemType Directory -Force $dist | Out-Null

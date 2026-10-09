@@ -915,7 +915,8 @@ void UploadToast::relayout()
         const int gb = group(b);
         return ga != gb ? ga < gb : a < b;
     });
-    if (order != m_order) {
+    // Not QList::operator!=: for int on 32-bit builds it goes through MSVC's deprecated checked_array_iterator.
+    if (order.size() != m_order.size() || !std::equal(order.cbegin(), order.cend(), m_order.cbegin())) {
         for (int id : qAsConst(order))
             m_rowsLayout->removeWidget(m_rows[id].widget);
         for (int id : qAsConst(order))

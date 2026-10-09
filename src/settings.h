@@ -34,7 +34,7 @@ struct Settings {
 
     // Sending
     bool    interceptDragDrop     = true; // drop files on the chat to send them (hold Shift for TeamSpeak's default)
-    bool    interceptPaste        = true; // Ctrl+V a screenshot in the chat line to send it
+    bool    interceptPaste        = true; // Ctrl+V a screenshot or copied files in the chat input to send them
     bool    convertLargePngToJpeg = true;
     bool    generatePreviews      = true; // upload a small preview / poster with large images and videos
     bool    addRequiredNotice     = true; // tell people without the plugin that it is needed

@@ -350,6 +350,10 @@ void ChatIntegration::discover()
             scheduleScan(v.browser);
         }
     }
+
+    // Lines Core prints (upload results, warnings) use prefix colours for the chat's theme.
+    if (QTextBrowser* chat = visibleChatBrowser())
+        ts3::setChatDark(styleFor(chat).dark);
 }
 
 void ChatIntegration::attachBrowser(QTextBrowser* browser)
@@ -1365,7 +1369,9 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         return;
     const bool ready = e->state == MediaState::Ready;
     const bool media = isMediaKind(e->kind);
-    const bool gone  = e->state == MediaState::Failed && e->error == MediaError::NotFound;
+    // Deleted from the server or in a password-protected channel: nothing here can get the file
+    // (a click on the preview does nothing either).
+    const bool gone = !isPreviewActionable(*e);
     // Programs and scripts from the chat are never run: "Open" would only show them in their folder.
     const bool unsafe = !media && m_core->isUnsafeToOpen(key);
 
@@ -1375,16 +1381,19 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     menu->setLayoutDirection(Qt::LeftToRight);
     QPointer<QTextBrowser> guard(browser);
     auto viewport = [guard]() -> QWidget* { return guard ? guard->viewport() : nullptr; };
-    QAction* primary = nullptr; // what a click on the preview does; Windows shows it in bold
+    QAction* primary  = nullptr; // what a click on the preview does; Windows shows it in bold
+    bool     external = false;   // a video Windows can't play inline: its primary item opens the default app
 
     // The preview's own state: playback, or getting the file.
     if (gone) {
-        menu->addAction(downloadErrorTitle(MediaError::NotFound))->setEnabled(false);
+        menu->addAction(downloadErrorTitle(e->error))->setEnabled(false);
     } else {
         if (e->kind == MediaKind::Video && m_media) {
             const PlaybackOverlay o      = m_media->overlay(key);
             const bool            active = o.playing || o.ended || o.positionMs > 0;
-            primary = menu->addAction(o.playing ? i18n::t("&Pause") : i18n::t("&Play"), this, [this, key] {
+            // The click hands such a video to the default app, as its preview says ("Opens in default app").
+            external = o.externalOnly && !o.playing;
+            primary  = menu->addAction(o.playing ? i18n::t("&Pause") : external ? i18n::t("Open in &default app") : i18n::t("&Play"), this, [this, key] {
                 if (m_media)
                     m_media->click(key, VideoZone::PlayPause, 0.0);
             });
@@ -1402,7 +1411,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         QAction* fetch = nullptr;
         if (e->state == MediaState::Idle)
             fetch = menu->addAction(i18n::t("&Download"), this, [this, key] { m_core->download(key, false); });
-        else if (e->state == MediaState::Failed)
+        else if (isRetryableDownload(*e))
             fetch = menu->addAction(i18n::t("&Retry download"), this, [this, key] { m_core->retry(key); });
         if (!primary)
             primary = fetch;
@@ -1415,7 +1424,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         if (!primary)
             primary = open;
     }
-    if (media && ready)
+    if (media && ready && !external)
         menu->addAction(i18n::t("Open &with default app"), this, [this, key] { m_core->openExternally(key); });
     if (ready) {
         QAction* reveal = menu->addAction(i18n::t("Show in &folder"), this, [this, key] { m_core->revealInFolder(key); });
@@ -1515,7 +1524,8 @@ class DropOverlay : public QWidget
     explicit DropOverlay(QWidget* parent)
         : QWidget(parent)
     {
-        setObjectName(QStringLiteral("tsmediaDropOverlay")); // swept at plugin shutdown like our other widgets
+        // Swept at plugin shutdown like our other widgets. fromLatin1: it lives in TeamSpeak's chat widget.
+        setObjectName(QString::fromLatin1("tsmediaDropOverlay"));
         setAttribute(Qt::WA_TransparentForMouseEvents);
         setAttribute(Qt::WA_NoSystemBackground);
         setFocusPolicy(Qt::NoFocus);
@@ -2082,7 +2092,7 @@ QString ChatIntegration::blockText(SendBlock block) const
     case SendBlock::NoRecipient:
         return i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.");
     case SendBlock::NotConnected:
-        return i18n::t("You're not connected to a server. Connect to one to send files.");
+        return notConnectedText(); // Core's wording
     case SendBlock::Password:
         return uploadErrorText(MediaError::Password);
     case SendBlock::None:
@@ -2097,6 +2107,8 @@ void ChatIntegration::warnCantSend(QWidget* widget, SendBlock block) const
     const QString text = blockText(block);
     if (text.isEmpty())
         return;
+    if (QTextBrowser* chat = chatBrowserFor(widget))
+        ts3::setChatDark(styleFor(chat).dark);
     ts3::printWarning(ts3::currentConnection(), text);
     if (widget && widget->isVisible())
         QToolTip::showText(widget->mapToGlobal(QPoint(12, widget->height() / 2)), text, widget);
@@ -2445,7 +2457,9 @@ void ChatIntegration::onUploadChanged(int id)
         m_toast = new UploadToast(m_core, host);
     else if (m_toast->parentWidget() != host)
         m_toast->setHost(host);
-    m_toast->setDark(styleFor(host).dark); // TeamSpeak's light or dark theme, like the previews
+    const bool dark = styleFor(host).dark; // TeamSpeak's light or dark theme, like the previews
+    m_toast->setDark(dark);
+    ts3::setChatDark(dark);
     m_toast->updateJob(id);
 }
 

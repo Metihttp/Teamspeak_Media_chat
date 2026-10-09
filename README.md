@@ -72,19 +72,19 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 
 ## Send files
 
-- **Drag & drop** files onto the chat. They are sent right away; hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour.
-- **Paste** a screenshot or copied files into the chat input line with <kbd>Ctrl</kbd>+<kbd>V</kbd>. A dialog shows what will be sent and where. Nothing is sent until you click **Send**.
-- **Menu:** **Plugins → TS Media chat → Send file / image to chat…**
-- **Hotkey:** assign *Send file / image to the current chat* in **Tools → Options → Hotkeys**.
-- **Command:** type `/tsmedia send`.
+- **Drag & drop** files onto the chat. While you drag, the chat shows where the files will go (or why they can't be sent there). A drop sends them right away; hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour.
+- **Paste** a screenshot or copied files into the chat input with <kbd>Ctrl</kbd>+<kbd>V</kbd>. A dialog shows what will be sent and where, with a thumbnail or the file sizes. Nothing is sent until you click **Send**.
+- **Menu:** **Plugins → TS Media chat → Send files to chat…** (available while you are connected).
+- **Hotkeys:** assign *Send files to the current chat* and *Cancel all uploads* in **Tools → Options → Hotkeys**.
+- **Commands:** type `/tsmedia send`, or `/tsmedia cancel` to stop running uploads. `/tsmedia help` lists all commands.
 
-The message goes to the chat tab you are looking at; the file is stored in the channel you are in. More in the [usage guide](docs/USAGE.md#sending-files).
+The message goes to the chat tab you are looking at; the file is stored in the channel you are in. A panel at the bottom of the chat shows the progress, and a failed upload can be retried from there. More in the [usage guide](docs/USAGE.md#sending-files).
 
 ## View media
 
 - **Photos and GIFs** up to 15 MB load automatically (the limit is a setting). Larger ones load when you click them.
-- **Videos** show a poster with their duration. Press play to download the video and play it right in the chat.
-- **Other files** appear as cards. Click one to download it and open it with its default app.
+- **Videos** show a poster with their duration. Press play to download the video and play it right in the chat. A video Windows can't play inside the chat says *Opens in default app*.
+- **Other files** appear as cards. Click one to download it and open it with its default app. Point at a card to see the full name, size and status.
 - **The gallery viewer** opens when you click a photo or GIF, or a video's expand button: every media item of the chat, with zoom and full screen.
 
 <p align="center">
@@ -96,14 +96,14 @@ Right-click any preview for Open, Save as…, Copy image, Copy link, Show in fol
 ## Settings
 
 <p align="center">
-  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings dialog with its Receiving, Playback, Sending and General sections">
+  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings dialog with its Receiving, Playback, Media cache, Sending and Note for people without the plugin sections">
 </p>
 
 Open the settings with **Plugins → TS Media chat → Settings…**, `/tsmedia settings`, or the plugin's Settings button in **Tools → Options → Addons**. The options people change most:
 
-- **Load images automatically up to** (15 MB). Videos only download when you press play, unless you set *Download videos automatically up to*.
-- **Drop files on the chat to send them** and **Ctrl+V a screenshot or copied files in the chat line to send them** (both on). Turn them off if a drop or paste should never send anything.
-- **Tell people without the plugin that it is needed** (on): the grey note after your link.
+- **Download images and GIFs automatically up to** (15 MB). Videos only download when you press play, unless you set *Download videos automatically*.
+- **Send files dropped on the chat** and **Send screenshots and files pasted into the chat input (Ctrl+V)** (both on). Turn them off if a drop or paste should never send anything.
+- **Add a note after files you send** (on): the grey note after your link, under *Note for people without the plugin*.
 
 All options, defaults and ranges: [settings reference](docs/SETTINGS.md).
 

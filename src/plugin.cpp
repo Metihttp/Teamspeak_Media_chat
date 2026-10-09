@@ -75,6 +75,8 @@ void showSettings(QWidget* parent)
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
+        if (g_core)
+            g_core->applyCacheLimit(); // a lower limit counts now, not after the next download
         if (g_chat)
             g_chat->refreshAll();
     });

@@ -13,7 +13,7 @@ body:
     attributes:
       label: Plugin version
       description: Type `/tsmedia` in the TeamSpeak chat and copy the first line it prints.
-      placeholder: "TS Media chat 2.0.7"
+      placeholder: "TS Media chat 2.1.0"
     validations:
       required: true
 
@@ -80,7 +80,7 @@ body:
     attributes:
       label: Plugin load line from the TeamSpeak log
       description: Open the newest file in `%APPDATA%\TS3Client\logs` and copy the line that contains `TS Media chat` and `loaded`. If there is no such line, write "missing".
-      placeholder: "TS Media chat 2.0.7 loaded"
+      placeholder: "TS Media chat 2.1.0 loaded"
     validations:
       required: true
 

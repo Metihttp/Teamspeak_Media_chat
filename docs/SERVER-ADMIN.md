@@ -41,7 +41,7 @@ Repeat it for `i_ft_file_download_power` and `i_ft_directory_create_power` if ne
 
 - Transfer volume can be limited per client with `i_ft_quota_mb_upload_per_client` and `i_ft_quota_mb_download_per_client`, and for the whole virtual server with its upload and download quotas.
 - When a download quota is used up, previews and cards show *Server transfer limit reached*. When an upload quota or the server's storage is full, sending fails with a message that asks the user to contact a server admin.
-- Each user also has their own *Max upload size* setting (100 MB by default). Server quotas apply on top of it.
+- Each user also has their own *Upload size limit* setting (100 MB by default). Server quotas apply on top of it.
 
 ## Folders and housekeeping
 

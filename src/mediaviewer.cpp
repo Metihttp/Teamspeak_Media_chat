@@ -38,6 +38,7 @@
 #include <QVariantAnimation>
 #include <QVector>
 #include <QWheelEvent>
+#include <QWindow>
 
 #include <cmath>
 #include <functional>
@@ -2524,7 +2525,7 @@ void MediaViewer::Private::primaryAction()
 // Whether the shown item is downloaded without asking. Pictures are: showing them is what the viewer
 // is for. Videos and audio can be gigabytes, so only those the user asked for (the item the viewer was
 // opened on, or Play / Download pressed) and those the chat downloads automatically too: the same rule
-// as Core's automatic downloads (Settings::videoAutoDownloadMB, 0 = "Never (when I press play)"; the
+// as Core's automatic downloads (Settings::videoAutoDownloadMB, 0 = "Off (download when played)"; the
 // setting is off without inline previews). Files Core stopped because their real size exceeded the
 // limit (tooLargeForAuto) and links of unknown size are never fetched unasked: they wait for Play.
 bool MediaViewer::Private::fetchesAutomatically() const
@@ -3512,7 +3513,20 @@ MediaViewer::MediaViewer(Core* core, const QStringList& keys, int index, std::op
         media = media.scaled(avail - chrome, Qt::KeepAspectRatio);
     resize((media + chrome).expandedTo(QSize(720, 520)).boundedTo(avail));
 
-    useDarkTitleBar(this);
+    useDarkTitleBar(this); // creates the native window, so windowHandle() exists from here on
+
+    // Moved to a monitor with another scale: video frames are requested at the new device-pixel size,
+    // and a fitted picture fits again (its zoom counts device pixels). Once the window has the new scale.
+    if (QWindow* window = windowHandle()) {
+        connect(window, &QWindow::screenChanged, this, [this] {
+            QTimer::singleShot(0, this, [this] {
+                if (d->canvas->isFit())
+                    d->canvas->setFit();
+                d->layoutStage();
+                d->canvas->update();
+            });
+        });
+    }
 }
 
 MediaViewer::~MediaViewer()

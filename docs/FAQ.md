@@ -19,7 +19,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.0.7 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.1.0 loaded`.
 
 ### How do I update?
 
@@ -41,7 +41,7 @@ Sending files to password-protected channels isn't supported. Use another channe
 
 ### "This file is larger than your 100 MB upload limit"
 
-Raise *Max upload size* in **Settings → Sending** (up to 4096 MB). The server's transfer quotas still apply.
+Raise *Upload size limit* in **Settings → Sending** (up to 4096 MB). The server's transfer quotas still apply.
 
 ### Nothing happens when I send in a private chat
 
@@ -55,7 +55,7 @@ Both can be turned off in **Settings → Sending**. For a single drop, hold <kbd
 
 ### A video doesn't play
 
-Inside the chat, a video that Windows can't open is handed to your default video app instead; the gallery viewer names the missing decoder. H.264 (most .mp4 files) works out of the box. For the others, install the matching extension from the Microsoft Store:
+Inside the chat, a video that Windows can't play shows *Opens in default app* and opens in your default video app when you click it. The gallery viewer names the missing decoder and offers **Get it from Microsoft Store** when there is an extension for it; an audio file it can't play says *This audio file can't be played here*. H.264 (most .mp4 files) works out of the box. For the others, install the matching extension from the Microsoft Store:
 
 | Format | Extension to install |
 | --- | --- |
@@ -65,6 +65,14 @@ Inside the chat, a video that Windows can't open is handed to your default video
 | MPEG-2 | MPEG-2 Video Extension |
 
 Windows N editions (for example Windows 11 Pro N) need the **Media Feature Pack**. Formats Windows can't decode at all (ProRes, DNxHD, …) can still be opened with right-click → *Open with default app*.
+
+### GIFs only play when I point at them
+
+Either *Play GIFs automatically* is off in **Settings → Receiving**, or Windows animations are turned off (**Settings → Accessibility → Visual effects → Animation effects**). The plugin follows that Windows setting: GIFs then play only while the pointer is over them, and loading indicators stand still.
+
+### Pictures look smaller at 100% in the viewer
+
+Since 2.1.0, 100% in the gallery viewer shows one image pixel per screen pixel. On a display scaled to 125%, 150% or more, that is smaller than in apps that scale pictures up. *Fit* still fits the picture into the window, but never enlarges it.
 
 ### Other people don't see my images in the chat
 
@@ -93,7 +101,7 @@ When a download fails, the preview or card says why:
 | Download failed | Something else went wrong. | Click the preview to try again. |
 | Can't preview this image | The image is too large to decode (above 80 megapixels) or can't be read. | Click it, then choose **Open with default app**. |
 
-Deleted files and files in password-protected channels can't be retried. For everything else, clicking the preview or card tries again.
+Deleted files and files in password-protected channels can't be retried: their previews show the normal pointer and do nothing when clicked. For everything else, click the picture or the card's **Retry** button to try again. Point at a card to read the whole message.
 
 ## Permissions
 
@@ -119,7 +127,7 @@ No, the plugin is Windows only.
 
 ### The cache takes too much space
 
-Lower the cache size limit or click **Clear** in **Settings → General**. Media still in the chat is downloaded again when needed.
+Lower the *Size limit* or click **Clear cache** in **Settings → Media cache**. Media still in the chat is downloaded again when needed.
 
 ### Where are my settings and the cache?
 

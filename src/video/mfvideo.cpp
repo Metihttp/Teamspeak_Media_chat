@@ -190,7 +190,7 @@ QString unsupportedFormatText()
 
 QString damagedText()
 {
-    return i18n::t("The video could not be decoded. The file may be damaged.");
+    return i18n::t("Couldn't decode this file. It may be damaged.");
 }
 
 QString missingDecoderText(const GUID& subtype)
@@ -217,9 +217,9 @@ QString fileErrorText(HRESULT hr)
 {
     if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)
         || hr == HRESULT_FROM_WIN32(ERROR_INVALID_NAME))
-        return i18n::t("The video file was not found.");
+        return i18n::t("The file was not found.");
     if (hr == E_ACCESSDENIED || hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) || hr == HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION))
-        return i18n::t("The video file is in use or access to it was denied.");
+        return i18n::t("The file is in use by another program, or access was denied.");
     return {};
 }
 
@@ -238,7 +238,7 @@ QString failureText(HRESULT hr, const GUID& videoSubtype = GUID_NULL)
         return missingDecoderText(videoSubtype);
     if (hr == MF_E_INVALID_STREAM_DATA || hr == MF_E_INVALIDREQUEST || hr == E_UNEXPECTED)
         return damagedText();
-    return i18n::t("The video could not be played (error %1).").arg(hexCode(hr));
+    return i18n::t("Couldn't play this file (error %1).").arg(hexCode(hr));
 }
 
 // ---- source reader helpers ----------------------------------------------------------------------
@@ -741,7 +741,7 @@ bool VideoPlayer::Private::createEngine(QString* error)
 
     HRESULT hr = createDevice();
     if (FAILED(hr)) {
-        *error = i18n::t("The video player could not be started (graphics error %1).")
+        *error = i18n::t("Couldn't start the player (graphics error %1). Updating your graphics driver may help.")
                      .arg(hexCode(hr));
         return false;
     }
@@ -845,7 +845,7 @@ QString VideoPlayer::Private::engineErrorText(DWORD_PTR code, HRESULT hr) const
     case MF_MEDIA_ENGINE_ERR_ABORTED:
         return i18n::t("Playback was interrupted.");
     case MF_MEDIA_ENGINE_ERR_NETWORK:
-        return i18n::t("The video file could not be read.");
+        return i18n::t("Couldn't read the file.");
     case MF_MEDIA_ENGINE_ERR_DECODE:
         return damagedText();
     case MF_MEDIA_ENGINE_ERR_ENCRYPTED:
@@ -905,7 +905,7 @@ void VideoPlayer::Private::onEngineEvent(quint64 eventGeneration, DWORD event, D
     case MF_MEDIA_ENGINE_EVENT_STREAMRENDERINGERROR: {
         const QString message = event == MF_MEDIA_ENGINE_EVENT_ERROR
                                     ? engineErrorText(param1, static_cast<HRESULT>(param2))
-                                    : i18n::t("Video playback stopped because the graphics device was reset. Open the video again.");
+                                    : i18n::t("Playback stopped because the graphics device was reset. Open the file again.");
         failed = true;
         timer.stop();
         emit q->failed(message);

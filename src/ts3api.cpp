@@ -8,6 +8,8 @@ TS3Functions funcs{};
 QString      pluginId;
 
 namespace {
+bool chatDark = false; // setChatDark: the chat the lines are printed into has a dark theme
+
 QString escapeBBCode(QString text)
 {
     // [noparse] is supported by the TeamSpeak chat and keeps user supplied names from being interpreted.
@@ -175,22 +177,35 @@ void log(const QString& message, LogLevel level, uint64 sch)
         funcs.logMessage(message.toUtf8().constData(), level, "TSMedia", sch);
 }
 
-void print(uint64 sch, const QString& bbcode)
+void setChatDark(bool dark)
 {
-    if (!funcs.printMessage || !sch)
-        return;
-    funcs.printMessage(sch, bbcode.toUtf8().constData(), PLUGIN_MESSAGE_TARGET_CHANNEL);
+    chatDark = dark;
 }
 
+void print(uint64 sch, const QString& bbcode)
+{
+    if (!sch)
+        return;
+    const QByteArray utf8 = bbcode.toUtf8();
+    // The tab the user is looking at (a private chat, the server tab) when it belongs to that connection.
+    if (sch == currentConnection() && funcs.printMessageToCurrentTab)
+        funcs.printMessageToCurrentTab(utf8.constData());
+    else if (funcs.printMessage)
+        funcs.printMessage(sch, utf8.constData(), PLUGIN_MESSAGE_TARGET_CHANNEL);
+}
+
+// Prefix colours keep 4.5:1 on TeamSpeak's white chat and on its dark one (#2b2d31).
 void printInfo(uint64 sch, const QString& text)
 {
-    print(sch, QStringLiteral("[color=#3a7bd5][b]TS Media chat[/b][/color] ") + escapeBBCode(text));
+    const QString color = QString::fromLatin1(chatDark ? "#949cf7" : "#4752c4");
+    print(sch, QStringLiteral("[color=%1][b]TS Media chat[/b][/color] ").arg(color) + escapeBBCode(text));
 }
 
 void printWarning(uint64 sch, const QString& text)
 {
     log(text, LogLevel_WARNING, sch);
-    print(sch, QStringLiteral("[color=#d35400][b]TS Media chat ⚠[/b][/color] ") + escapeBBCode(text));
+    const QString color = QString::fromLatin1(chatDark ? "#f0b232" : "#b54708");
+    print(sch, QStringLiteral("[color=%1][b]TS Media chat ⚠[/b][/color] ").arg(color) + escapeBBCode(text));
 }
 
 } // namespace ts3

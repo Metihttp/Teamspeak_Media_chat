@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.0.7 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.1.0 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
-set(PLUGIN_DESCRIPTION "Discord-style images, GIFs and videos in the TeamSpeak chat. Files are stored in the channel file browser; plugin users see and play them inline.")
+# Shown in TeamSpeak's Addons list; scripts/build.ps1 reads it from here for the package's installer text.
+set(PLUGIN_DESCRIPTION "Discord-style images, GIFs, videos and files in the TeamSpeak chat. Drop or paste files into the chat; everyone with the plugin sees and plays them inline.")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,7 +83,7 @@ set_target_properties(tsmedia PROPERTIES
     PREFIX ""
 )
 
-# ---- unit tests (pure logic: link format, chat message, blurhash, texts and UI helpers) -----------------------------
+# ---- unit tests (pure logic: link format, chat message, blurhash, texts, UI helpers, settings checks) ---------------
 option(TSMEDIA_BUILD_TESTS "Build unit tests" ON)
 if(TSMEDIA_BUILD_TESTS)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
@@ -93,8 +94,9 @@ if(TSMEDIA_BUILD_TESTS)
         src/blurhash.cpp
         src/i18n.cpp
         src/uiutil.cpp
+        src/settings.cpp # ts3::dataDir() is stubbed in the test
     )
-    target_include_directories(tsmedia_tests PRIVATE src)
+    target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)

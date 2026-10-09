@@ -191,11 +191,6 @@ QString fileChangedText()
     return i18n::t("The file on the server was replaced after it was sent.");
 }
 
-QString notConnectedText()
-{
-    return i18n::t("You're not connected to a server. Connect to one to send files.");
-}
-
 QString uploadLimitText(int limitMB)
 {
     return i18n::t("This file is larger than your %1 MB upload limit. You can raise the limit in Settings → Sending.").arg(limitMB);
@@ -2703,6 +2698,11 @@ void Core::openCacheFolder() const
     QDesktopServices::openUrl(QUrl::fromLocalFile(cacheDir()));
 }
 
+void Core::applyCacheLimit()
+{
+    scheduleCacheLimit(QString());
+}
+
 void Core::scheduleCacheLimit(const QString& justFinishedKey)
 {
     if (!justFinishedKey.isEmpty())
@@ -2843,4 +2843,9 @@ MediaError Core::mapError(unsigned int error)
 QString displayNameFor(const UploadJob& job)
 {
     return job.pasted ? i18n::t("Pasted image") : displayFileName(QFileInfo(job.sourcePath).fileName());
+}
+
+QString notConnectedText()
+{
+    return i18n::t("You're not connected to a server. Connect to one to send files.");
 }

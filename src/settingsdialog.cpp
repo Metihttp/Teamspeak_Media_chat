@@ -184,6 +184,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     m_autoDownloadMax->setAccessibleName(i18n::t("Download images and GIFs automatically up to"));
     m_autoplayGifs = new QCheckBox(i18n::t("Play &GIFs automatically"), m_receiveDetails);
     m_autoplayGifs->setToolTip(i18n::t("When this is off, or animations are turned off in Windows, GIFs play only while the pointer is over them."));
+    m_gifHint = hint(i18n::t("Windows animations are turned off, so GIFs play only while the pointer is over them."), m_receiveDetails);
     m_videoAutoDownload = spin(Settings::videoAutoDownloadMBRange, 10, megabytes(), m_receiveDetails);
     m_videoAutoDownload->setPrefix(i18n::t("up to "));
     m_videoAutoDownload->setSpecialValueText(i18n::t("Off (download when played)")); // replaces prefix and suffix at 0
@@ -208,13 +209,20 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* receiveDetailsForm = form(m_receiveDetails);
     receiveDetailsForm->setContentsMargins(0, 0, 0, 0);
     receiveDetailsForm->addRow(imageRow);
-    receiveDetailsForm->addRow(m_autoplayGifs);
+    // In a box of its own: a hidden form row would still take the form's row spacing.
+    auto* gifRows = new QVBoxLayout;
+    gifRows->setSpacing(receiveDetailsForm->verticalSpacing());
+    gifRows->addWidget(m_autoplayGifs);
+    gifRows->addWidget(m_gifHint);
+    receiveDetailsForm->addRow(gifRows);
     receiveDetailsForm->addRow(i18n::t("Download &videos automatically"), m_videoAutoDownload);
     receiveDetailsForm->addRow(previewSizeLabel, previewSizeRow);
     auto* receiveForm = form(receive);
     receiveForm->addRow(m_inlinePreviews);
     receiveForm->addRow(m_receiveDetails);
     m_indented.append(m_receiveDetails);
+    m_indented.append(m_gifHint);
+    updateGifHint();
 
     // ---- Playback ---------------------------------------------------------------------------------
     auto* playback    = new QGroupBox(i18n::t("Playback"), this);
@@ -244,7 +252,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     // ---- Media cache ------------------------------------------------------------------------------
     auto* cache     = new QGroupBox(i18n::t("Media cache"), this);
     m_cacheLimit    = spin(Settings::cacheLimitMBRange, 256, megabytes(), cache);
-    auto* cacheHint =hint(i18n::t("Media you haven't opened for the longest time is removed first."), cache);
+    auto* cacheHint = hint(i18n::t("Media you haven't opened for the longest time is removed first."), cache);
     m_cacheLimit->setAccessibleDescription(cacheHint->text());
     m_cacheLabel    = new QLabel(cache);
     auto* openCache = new QPushButton(i18n::t("&Open folder"), cache);
@@ -495,8 +503,22 @@ void SettingsDialog::changeEvent(QEvent* event)
         return;
     if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange)
         applyTheme(); // also when TeamSpeak's skin changes while the dialog is open
-    else if (event->type() == QEvent::ActivationChange && isActiveWindow())
+    else if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
         syncVolume();
+        updateGifHint(); // the Windows setting may have changed meanwhile
+    }
+}
+
+// Windows animations off: inline GIFs play only on hover, whatever "Play GIFs automatically" says.
+void SettingsDialog::updateGifHint()
+{
+    const bool show = !ui::animationsEnabled();
+    m_autoplayGifs->setAccessibleDescription(show ? m_gifHint->text() : QString());
+    if (show == !m_gifHint->isHidden())
+        return;
+    m_gifHint->setVisible(show);
+    if (show && isVisible())
+        QTimer::singleShot(0, this, [this] { fitToContents(); }); // once the layouts have taken in the new row
 }
 
 void SettingsDialog::load(const Settings& s)
