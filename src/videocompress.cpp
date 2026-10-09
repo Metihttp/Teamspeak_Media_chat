@@ -363,7 +363,9 @@ QString compressFailedNote(const QString& cause)
 
 QString compressFailedText(const QString& cause, int limitMB)
 {
-    return i18n::t("Couldn't compress this video (%1), and the original is larger than your %2 MB upload limit.").arg(cause).arg(limitMB);
+    return i18n::t("Couldn't compress this video (%1), and the original is larger than your %2 MB upload limit. Try again, or raise the limit in Settings → Sending.")
+        .arg(cause)
+        .arg(limitMB);
 }
 
 QString diskSpaceText(quint64 neededBytes)

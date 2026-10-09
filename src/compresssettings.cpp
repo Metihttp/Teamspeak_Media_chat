@@ -33,10 +33,11 @@ CompressSettingsSection::CompressSettingsSection(QWidget* dialog, Core* core)
     compressRow->addWidget(m_threshold);
     compressRow->addStretch(1);
 
-    m_convert = new QCheckBox(i18n::t("Con&vert videos that may not play for others"), group);
-    QLabel* convertHint = hint(i18n::t("iPhone (HEVC), AV1, VP9 and camcorder videos become MP4, when this computer can play them."), group);
-    m_convert->setAccessibleDescription(convertHint->text());
-    addIndented(convertHint);
+    // The formats by name, so the option explains itself; the details in the tooltip (the dialog stays
+    // short: the Sending tab holds four groups).
+    m_convert = new QCheckBox(i18n::t("Con&vert iPhone (HEVC), AV1, VP9 and camcorder videos too"), group);
+    m_convert->setToolTip(i18n::t("Many people can't play these formats. They become an MP4 of any size, but only when this computer can play them."));
+    m_convert->setAccessibleDescription(m_convert->toolTip());
 
     m_quality = new QComboBox(group);
     m_quality->addItem(i18n::t("Smaller (480p)"), 480);
@@ -50,8 +51,8 @@ CompressSettingsSection::CompressSettingsSection(QWidget* dialog, Core* core)
     m_gpu = new QCheckBox(i18n::t("Use the &graphics card when possible"), group);
     m_gpu->setToolTip(i18n::t("Faster and lighter on the processor. Turn this off if compressed videos look wrong or compressing fails."));
 
-    m_hint = hint(m_available ? i18n::t("Videos are converted on this computer to an MP4 that plays everywhere. A video over your upload limit is made "
-                                        "small enough when possible; if compressing fails, the original is sent when it fits.")
+    m_hint = hint(m_available ? i18n::t("Done on this computer, to an MP4 that plays everywhere. A video over your upload limit is made small enough when "
+                                        "possible; if that fails, the original is sent when it fits.")
                               : i18n::t("Video compression needs Windows Media Foundation. On Windows N editions, install the Media Feature Pack."),
                   group);
     m_compress->setAccessibleDescription(m_hint->text());
@@ -59,7 +60,6 @@ CompressSettingsSection::CompressSettingsSection(QWidget* dialog, Core* core)
     QFormLayout* form = SettingsSection::form(group);
     form->addRow(compressRow);
     form->addRow(m_convert);
-    form->addRow(convertHint);
     form->addRow(m_qualityLabel, m_quality);
     form->addRow(m_gpu);
     form->addRow(m_hint);

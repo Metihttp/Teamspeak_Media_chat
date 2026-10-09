@@ -77,6 +77,23 @@ Changing the volume in the gallery viewer updates this setting too.
 
 - **Open the send window** lets you add a caption, mark spoilers and see what can't be sent before anything goes out. **Send right away** sends dropped files as soon as you let go (as in 2.1), except when none of them could be sent: the window then opens and says why.
 
+### Videos
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Compress videos larger than | on, 25 MB | 1–4096 MB. The video becomes an H.264/AAC MP4 before it is uploaded. |
+| Convert iPhone (HEVC), AV1, VP9 and camcorder videos too | on | Of any size, and only when this computer can play them. |
+| Quality | Balanced (720p) | Smaller (480p, up to 30 fps), Balanced (720p, up to 60 fps) or High (1080p, up to 60 fps). |
+| Use the graphics card when possible | on | Off when no graphics card video encoder was found; the processor is used then. |
+
+- Compressing happens on your computer only; nothing is sent anywhere else. One video is compressed at a time, at a lower priority than TeamSpeak's own work.
+- A video is only compressed when that makes it at least 30% smaller. A video larger than your **upload size limit** is made small enough to fit when possible (a lower bitrate first, then a smaller picture); the send window then picks that quality by itself.
+- The send window has a **Quality** list for each video, with the size each choice is expected to have; *Original* sends the file as it is.
+- If compressing fails and the original fits your upload limit, the original is sent and the upload panel says so.
+- The result has the same random part in its name, with the extension `.mp4`. Extra sound tracks, subtitles and metadata (including any location data in phone videos) are not kept.
+- Needs Windows Media Foundation. On Windows N editions without the Media Feature Pack, videos are sent as they are.
+- Settings keys (`settings.ini`): `compressVideos`, `compressVideosOverMB`, `compressVideoQuality` (480, 720 or 1080), `convertUnplayableVideos`, `compressUseGpu`.
+
 ## Note for people without the plugin
 
 | Setting | Default | Range and notes |

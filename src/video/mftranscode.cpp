@@ -861,7 +861,7 @@ TranscodeResult Attempt::run()
         const QString rate = m_result.detail;
         ok                 = pump();
         if (ok) {
-            m_result.detail = rate + QString::fromLatin1("; reader: ") + readerChain();
+            m_result.detail = rate + QString::fromLatin1("; reader: ") + readerChain() + QString::fromLatin1("; encoder depth %1 frames").arg(m_encoderDepth);
             if (m_copiedFrames > 0)
                 m_result.detail += QString::fromLatin1("; %1 frames copied to plain memory").arg(m_copiedFrames);
             if (m_emptyFrames > 0)

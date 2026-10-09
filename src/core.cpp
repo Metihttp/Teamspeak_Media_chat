@@ -2998,7 +2998,7 @@ void Core::runTranscode(int id)
                     self->onCompressed(id, control, outDir, result);
             }, Qt::QueuedConnection);
         }
-    });
+    }, -id); // queued videos go in the order they were sent (the earlier id first)
 }
 
 void Core::markCompressStarted(int id, const std::shared_ptr<mf::TranscodeControl>& control)
@@ -3014,8 +3014,10 @@ void Core::markCompressStarted(int id, const std::shared_ptr<mf::TranscodeContro
 bool Core::canSendOriginal(int id) const
 {
     const UploadJob* job = upload(id);
+    // No file system check here: the toast asks on every progress tick (a vanished original fails when
+    // it is copied, with its own text).
     return job && job->state == UploadState::Compressing && !job->compressFinishing && m_compressing.contains(id)
-           && job->originalSize <= megabytes(Settings::instance().uploadMaxMB) && QFileInfo(job->sourcePath).isFile();
+           && job->originalSize <= megabytes(Settings::instance().uploadMaxMB);
 }
 
 void Core::sendOriginal(int id)
