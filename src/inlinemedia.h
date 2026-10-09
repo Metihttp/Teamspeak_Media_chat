@@ -37,8 +37,8 @@ class InlineMediaController : public QObject
     PlaybackOverlay overlay(const QString& key) const;
 
     // Keys whose previews are currently on screen in a visible chat tab. Animations run only while
-    // visible (and, when autoplayGifs is off, only while hovered). Playing videos keep playing while
-    // scrolled away or in a hidden tab.
+    // visible (and, when autoplayGifs or Windows animations are off, only while hovered). Playing
+    // videos keep playing while scrolled away or in a hidden tab.
     void setVisibleKeys(const QSet<QString>& keys);
     // Keys that still have a preview in some chat document (visible or not). A video whose preview
     // is gone (chat tab closed, chat cleared) for about a second is stopped and its player closed:
@@ -85,6 +85,7 @@ class InlineMediaController : public QObject
     void   makeRoomForPlayer(const Video* keep);
     void   applySettings(Video* video);
     bool   controlsShown(const Video* video) const;
+    double controlsOpacity(const Video* video) const; // < 1 while the bar fades out
     bool   isVideo(const QString& key) const;
     bool   isAnimatable(const QString& key);
     QSize  videoFrameSize(const Video* video) const;
