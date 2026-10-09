@@ -38,6 +38,7 @@
 #include <cmath>
 
 #include "composehooks.h"
+#include "filedrag.h" // 2.2 drag-out: the own-drag marker
 #include "i18n.h"
 #include "uiutil.h"
 #include "video/mfvideo.h"
@@ -1552,7 +1553,7 @@ void ComposeDialog::addFromPicker()
 
 bool ComposeDialog::acceptsMime(const QMimeData* mime) const
 {
-    if (!mime || compose::isOwnDrag(mime)) // dragged out of a chat: never sent again by accident
+    if (!mime || filedrag::isOwn(mime)) // dragged out of a chat: never sent again by accident
         return false;
     for (const QString& format : mime->formats()) {
         if (format.contains(QLatin1String("ts3"), Qt::CaseInsensitive))

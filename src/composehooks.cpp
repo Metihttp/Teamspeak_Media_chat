@@ -1,20 +1,14 @@
 #include "composehooks.h"
 
-#include <QMimeData>
+#include "albums.h"
 
 namespace compose {
 
 namespace {
 
-#ifdef TSMEDIA_ALBUMS
-bool g_albums = true;
-#else
-bool g_albums = false;
-#endif
-
 PresenceLineFactory& presenceFactory()
 {
-    static PresenceLineFactory factory;
+    static PresenceLineFactory factory; // reset by its owner (PeerHub) at plugin shutdown
     return factory;
 }
 
@@ -25,30 +19,20 @@ void setPresenceLineFactory(PresenceLineFactory factory)
     presenceFactory() = std::move(factory);
 }
 
+PresenceLineFactory presenceLineFactory()
+{
+    return presenceFactory();
+}
+
 QWidget* createPresenceLine(QWidget* parent, const ChatTarget& target)
 {
     const PresenceLineFactory& factory = presenceFactory();
     return factory ? factory(parent, target) : nullptr;
 }
 
-void setAlbumsEnabled(bool enabled)
-{
-    g_albums = enabled;
-}
-
 bool albumsEnabled()
 {
-    return g_albums;
-}
-
-QString ownDragMimeFormat()
-{
-    return QString::fromLatin1("application/x-tsmedia-key");
-}
-
-bool isOwnDrag(const QMimeData* mime)
-{
-    return mime && mime->hasFormat(ownDragMimeFormat());
+    return albums::enabled();
 }
 
 } // namespace compose

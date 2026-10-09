@@ -63,6 +63,10 @@ struct Settings {
     // "Restore defaults" never clears them.
     QHash<QString, ServerOverrides> servers;
 
+    // 2.2 protocol: Privacy (both global, never per server)
+    bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
+    bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
+
     static Settings& instance();
     void             load();
     void             save() const;

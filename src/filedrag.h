@@ -6,21 +6,29 @@
 // Mark-of-the-Web. Our own drags carry mimeFormat(), and every TS Media drop target refuses them,
 // so a file dropped back on a chat is never uploaded again by accident.
 
+#include <QMimeData>
 #include <QPointF>
 #include <QString>
 #include <Qt>
 
 class Core;
 class QFont;
-class QMimeData;
 class QObject;
 
 namespace filedrag {
 
-// "application/x-tsmedia-key": the media key of a drag that started in TS Media.
-QString mimeFormat();
+// "application/x-tsmedia-key": the media key of a drag that started in TS Media. The one own-drag
+// marker (decisions: compose, chat drop and drag-out share it). Built at run time: drag and clipboard
+// data can outlive the DLL.
+inline QString mimeFormat()
+{
+    return QString::fromLatin1("application/x-tsmedia-key");
+}
 // A drag that started in TS Media (refused by the chat, the chat input and the send window).
-bool isOwn(const QMimeData* mime);
+inline bool isOwn(const QMimeData* mime)
+{
+    return mime && mime->hasFormat(mimeFormat());
+}
 
 // The data of a drag: the file as a local URL (Windows gets CF_HDROP), plus mimeFormat() = key when
 // own is set. Plain QMimeData with run-time strings only: the clipboard keeps it after the plugin is

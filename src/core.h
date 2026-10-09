@@ -312,6 +312,7 @@ class Core : public QObject
     void openRequested(const QString& key); // a download started with openWhenReady finished
     // The posts of sch are all out (or a flood pause ended): plugin commands may go again.
     void floodGovernorChanged(uint64 sch);
+    void cacheCleared(); // 2.2 protocol: clearCache() ran (the reactions cache is cleared with it)
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
   private:

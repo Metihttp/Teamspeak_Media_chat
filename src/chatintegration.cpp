@@ -49,6 +49,7 @@
 #include "audiocard.h" // 2.2 audio
 #include "filedrag.h" // 2.2 drag-out
 #include "albums.h" // 2.2 album
+#include "chatreactions.h" // 2.2 reactions
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
@@ -248,6 +249,9 @@ ChatIntegration::ChatIntegration(Core* core, QObject* parent)
 
 ChatIntegration::~ChatIntegration()
 {
+    // 2.2 reactions: its picker and hover state go first.
+    delete m_reactions;
+    m_reactions = nullptr;
     // 2.2 album: the chats stay with TeamSpeak: messages we hid are shown and collapsed album links
     // given back (the grids stay, like single previews). m_mutating stays set: no rescan is queued now.
     m_mutating = true;
@@ -299,6 +303,7 @@ void ChatIntegration::start()
     // 2.2 spoiler: each step of a reveal crossfade is redrawn like a frame.
     m_reveals = new RevealFades(this);
     connect(m_reveals, &RevealFades::changed, this, &ChatIntegration::onFrameChanged);
+    m_reactions = new ChatReactions(this, m_core); // 2.2 reactions
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -757,6 +762,9 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
         else if (fromStill)
             m_media->setFrameSize(key, size * style.dpr);
     }
+    // 2.2 reactions: the reaction row under the media and the add button (outside previewLogicalSize).
+    if (m_reactions)
+        img = m_reactions->compose(browser, key, img, style, &size);
     if (logicalSize)
         *logicalSize = size;
     return img;
@@ -840,6 +848,14 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         // The layout size changed (plain links once the picture is known, chat resized, ...).
         const bool    bottom = isAtBottom(browser);
         const QString name   = kScheme + key;
+        // 2.2 reactions: a preview wholly above the visible part that grows or shrinks (a reaction row
+        // appearing or going) must not move what the user is reading.
+        const QSize oldSize = view->formatSizes.value(key);
+        bool        above   = !bottom && oldSize.isValid();
+        for (int pos : positions) {
+            const QRectF r = previewRect(browser, pos, QSizeF(oldSize));
+            above          = above && r.isValid() && r.bottom() <= 0;
+        }
         m_mutating           = true;
         for (int pos : positions) {
             QTextCursor c(doc);
@@ -856,8 +872,13 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         if (View* v = viewFor(browser))
             v->formatSizes.insert(key, size);
         browser->viewport()->update();
-        if (bottom)
+        if (bottom) {
             browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
+        } else if (above) { // 2.2 reactions: scroll anchoring
+            doc->documentLayout()->documentSize(); // lays out the change, so the range is current
+            QScrollBar* bar = browser->verticalScrollBar();
+            bar->setValue(bar->value() + positions.size() * (size.height() - oldSize.height()));
+        }
         scheduleVisibilityUpdate();
     } else {
         // Cheap path: same layout, only the pixels of the preview's rect change.
@@ -1056,7 +1077,9 @@ ChatIntegration::Hit ChatIntegration::previewAt(QTextBrowser* browser, const QPo
         if (key.isEmpty())
             continue;
         // The rect of what is drawn: the gaps around it belong to the chat text, not the preview.
-        const QRectF r = previewRect(browser, p, contentSizeOf(cf.toImageFormat()));
+        QRectF r = previewRect(browser, p, contentSizeOf(cf.toImageFormat()));
+        if (m_reactions) // 2.2 reactions: the row below the picture is ChatReactions'
+            r = m_reactions->pictureRect(browser, key, r);
         if (r.contains(viewportPos))
             return albums::isObjectId(key) ? albumHit(browser, key, r, viewportPos) : Hit{key, r, key}; // 2.2 album: per tile
     }
@@ -1588,6 +1611,8 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         });
     }
     addHideSpoilerAction(menu, key); // 2.2 spoiler
+    if (m_reactions) // 2.2 reactions: "Add reaction", the way without hover
+        m_reactions->addMenu(menu, browser, key);
 
     if (primary)
         menu->setDefaultAction(primary);
@@ -1760,9 +1785,8 @@ bool ChatIntegration::acceptsDrop(const QMimeData* mime) const
     if (!mime || filedrag::isOwn(mime)) // 2.2 drag-out: our own drags are never sent again
         return false;
     for (const QString& format : mime->formats()) {
-        // Drags from TeamSpeak's own file browser keep their native behaviour; 2.2 compose: files dragged
-        // out of a chat (our marker) are never sent again by accident.
-        if (format.contains(QLatin1String("ts3"), Qt::CaseInsensitive) || format == compose::ownDragMimeFormat())
+        // Drags from TeamSpeak's own file browser keep their native behaviour.
+        if (format.contains(QLatin1String("ts3"), Qt::CaseInsensitive))
             return false;
     }
     if (mime->hasUrls()) {
@@ -1846,6 +1870,8 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
 bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
 {
     const Settings& s = Settings::instance();
+    if (m_reactions && m_reactions->filterEvent(watched, event)) // 2.2 reactions: pills, add button
+        return true;
     // 2.2 audio: the seek position under the pointer, on a video player or an audio card.
     auto seekFraction = [this](QTextBrowser* browser, const QString& key, const QSize& size, const QPointF& local) {
         if (m_media && m_media->mode(key) == InlineMediaController::Mode::Audio) {

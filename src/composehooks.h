@@ -3,13 +3,10 @@
 // 2.2 compose: the places where other features plug into the send window (ComposeDialog) without
 // editing it. GUI thread only.
 
-#include <QString>
-
 #include <functional>
 
 #include "core.h" // ChatTarget
 
-class QMimeData;
 class QWidget;
 
 namespace compose {
@@ -22,27 +19,22 @@ namespace compose {
 // window shows why nothing can be sent (not connected, the private chat partner left). Returning
 // nullptr shows nothing. Without a factory the window shows no presence line at all.
 //
-// The function is called on the GUI thread. Reset it (setPresenceLineFactory({})) at shutdown before
-// deleting anything it uses; the send windows are always closed before that.
+// PeerHub registers PresenceLine in start() and resets the factory (setPresenceLineFactory({})) in
+// prepareShutdown and its destructor, before anything it uses goes; the send windows are closed by
+// then. Called on the GUI thread.
 using PresenceLineFactory = std::function<QWidget*(QWidget* parent, const ChatTarget& target)>;
 
-void     setPresenceLineFactory(PresenceLineFactory factory);
-QWidget* createPresenceLine(QWidget* parent, const ChatTarget& target); // nullptr: no factory, or it made none
+void                setPresenceLineFactory(PresenceLineFactory factory);
+PresenceLineFactory presenceLineFactory();
+QWidget*            createPresenceLine(QWidget* parent, const ChatTarget& target); // nullptr: no factory, or it made none
 
 // ---- albums (the album feature) ---------------------------------------------------------------------
 //
-// "Send as an album" is offered for 2 or more pictures and videos only while albums are enabled. Off
-// until the album feature is ready: build with TSMEDIA_ALBUMS defined, or call setAlbumsEnabled(true)
-// at start-up. While it is off the window never asks Core for an album.
-void setAlbumsEnabled(bool enabled);
+// "Send as an album" is offered for 2 or more pictures and videos only while albums are enabled:
+// albums::enabled() (albums.h), the one switch for sending, grouping and drawing albums.
 bool albumsEnabled();
 
-// ---- our own drags ------------------------------------------------------------------------------------
-//
-// "application/x-tsmedia-key": the marker on drags that started in TS Media (the drag-out feature's
-// filedrag::mimeFormat(); TODO use filedrag::isOwn once both are merged). The chat and the send window
-// never take such a drop, so a file dragged out of the chat can't be uploaded again by accident.
-QString ownDragMimeFormat();
-bool    isOwnDrag(const QMimeData* mime);
+// Our own drags (files dragged out of a chat or the viewer) carry filedrag::mimeFormat(); the send
+// window refuses them with filedrag::isOwn(), like the chat and its input do.
 
 } // namespace compose

@@ -11,8 +11,10 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include "albums.h"
 #include "composehooks.h"
 #include "composemodel.h"
+#include "filedrag.h"
 #include "medialink.h"
 #include "testmain.h"
 
@@ -393,19 +395,19 @@ void TestCompose::pastedImageFiles()
 
 void TestCompose::hooks()
 {
+    // One own-drag marker for the send window, the chat and drag-out (filedrag.h).
     QMimeData own;
-    own.setData(compose::ownDragMimeFormat(), "key");
-    QVERIFY(compose::isOwnDrag(&own));
-    QCOMPARE(compose::ownDragMimeFormat(), QStringLiteral("application/x-tsmedia-key"));
+    own.setData(filedrag::mimeFormat(), "key");
+    QVERIFY(filedrag::isOwn(&own));
+    QCOMPARE(filedrag::mimeFormat(), QStringLiteral("application/x-tsmedia-key"));
     QMimeData other;
     other.setText(QStringLiteral("x"));
-    QVERIFY(!compose::isOwnDrag(&other));
-    QVERIFY(!compose::isOwnDrag(nullptr));
+    QVERIFY(!filedrag::isOwn(&other));
+    QVERIFY(!filedrag::isOwn(nullptr));
 
-    const bool albums = compose::albumsEnabled();
-    compose::setAlbumsEnabled(!albums);
-    QCOMPARE(compose::albumsEnabled(), !albums);
-    compose::setAlbumsEnabled(albums);
+    // One album switch: albums::enabled() (on in 2.2).
+    QCOMPARE(compose::albumsEnabled(), albums::enabled());
+    QVERIFY(compose::albumsEnabled());
 
     // Without a factory the window shows no presence line.
     QVERIFY(compose::createPresenceLine(nullptr, ChatTarget()) == nullptr);

@@ -123,6 +123,18 @@ add_library(tsmedia SHARED
     # 2.2 album
     src/albums.cpp            src/albums.h
     src/chatalbums.cpp
+    # 2.2 protocol: presence and reactions
+    src/peerprotocol.cpp      src/peerprotocol.h
+    src/pluginlink.cpp        src/pluginlink.h
+    src/peers.cpp             src/peers.h
+    src/reactions.cpp         src/reactions.h
+    src/reactionart.cpp       src/reactionart.h
+    src/reactionpicker.cpp    src/reactionpicker.h
+    src/presenceline.cpp      src/presenceline.h
+    src/privacysection.cpp    src/privacysection.h
+    src/composehooks.cpp      src/composehooks.h
+    src/peerhub.cpp           src/peerhub.h
+    src/chatreactions.cpp     src/chatreactions.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -246,6 +258,13 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 album
         tests/tst_albums.cpp
         src/albums.cpp
+        # 2.2 protocol: presence and reactions
+        tests/tst_protocol.cpp
+        src/peerprotocol.cpp
+        src/peers.cpp
+        src/pluginlink.cpp
+        src/reactions.cpp
+        src/reactionart.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
@@ -338,6 +357,10 @@ if(TSMEDIA_BUILD_TOOLS)
         src/uiutil.cpp
         src/spoiler.cpp # 2.2 spoiler
         src/albums.cpp # 2.2 album
+        # 2.2 protocol: reaction rows
+        src/reactionart.cpp
+        src/reactions.cpp
+        src/peerprotocol.cpp
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})

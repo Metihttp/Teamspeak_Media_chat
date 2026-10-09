@@ -27,16 +27,6 @@ QString preferredDropEffectFormat()
 
 } // namespace
 
-QString mimeFormat()
-{
-    return QString::fromLatin1("application/x-tsmedia-key");
-}
-
-bool isOwn(const QMimeData* mime)
-{
-    return mime && mime->hasFormat(mimeFormat());
-}
-
 QMimeData* makeMime(const QString& path, const QString& key, bool own)
 {
     // Not a subclass: the clipboard may keep this object after the plugin DLL is gone.

@@ -12,6 +12,7 @@
 #include "previewrenderer.h"
 
 class ComposeDialog; // 2.2 compose
+class ChatReactions; // 2.2 reactions
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -74,6 +75,8 @@ class ChatIntegration : public QObject
 
     // ---- implementation (owned by chatintegration.cpp; may be reorganised freely) --------------
   private:
+    friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
+
     struct PreviewPos {
         int     position = 0; // document position of the preview object
         QString key;
@@ -280,4 +283,5 @@ class ChatIntegration : public QObject
     int                                     m_pressedTile = -1;
     QTimer*                                 m_albumTimer  = nullptr; // redraws albums with new GIF frames, ~30 per second
     QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
+    ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
 };
