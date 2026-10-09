@@ -51,12 +51,15 @@ add_library(tsmedia SHARED
     src/settings.cpp          src/settings.h
     src/core.cpp              src/core.h
     src/previewrenderer.cpp   src/previewrenderer.h
+    src/previewpaint.h        src/audiocard.cpp     src/audiocard.h       # 2.2 audio
+    src/audioplayback.cpp     src/audioplayback.h                         # 2.2 audio
     src/inlinemedia.cpp       src/inlinemedia.h
     src/chatintegration.cpp   src/chatintegration.h
     src/uploadtoast.cpp       src/uploadtoast.h
     src/mediaviewer.cpp       src/mediaviewer.h
     src/settingsdialog.cpp    src/settingsdialog.h
     src/video/mfvideo.cpp     src/video/mfvideo.h
+    src/video/mfcommon.cpp    src/video/mfcommon.h  # 2.2 audio: shared Media Foundation helpers
     # 2.2 foundation
     src/logtext.cpp           src/logtext.h
     src/pluginlog.cpp         src/pluginlog.h
@@ -126,6 +129,31 @@ if(TSMEDIA_BUILD_TESTS)
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
+
+    # 2.2 audio: the audio card's geometry / hit tests / states and the audio auto-download rule.
+    add_executable(tsmedia_audio_tests
+        tests/tst_audio.cpp
+        src/audiocard.cpp
+        src/audioplayback.cpp
+        src/previewrenderer.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+        src/uiutil.cpp
+        src/settings.cpp # ts3::dataDir() is stubbed in the test
+    )
+    target_include_directories(tsmedia_audio_tests PRIVATE src third_party/ts3client-pluginsdk/include)
+    target_compile_definitions(tsmedia_audio_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(tsmedia_audio_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(tsmedia_audio_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test)
+    add_test(NAME tsmedia_audio_tests COMMAND tsmedia_audio_tests)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+        set_tests_properties(tsmedia_audio_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
+    else()
+        set_tests_properties(tsmedia_audio_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
+    endif()
 endif()
 
 # ---- developer tools -----------------------------------------------------------------------------
@@ -135,6 +163,7 @@ if(TSMEDIA_BUILD_TOOLS)
     add_executable(mfvideo_smoketest
         tools/mfvideo_smoketest.cpp
         src/video/mfvideo.cpp
+        src/video/mfcommon.cpp # 2.2 audio
         src/i18n.cpp
     )
     target_include_directories(mfvideo_smoketest PRIVATE src)
@@ -149,6 +178,7 @@ if(TSMEDIA_BUILD_TOOLS)
     add_executable(render_gallery
         tools/render_gallery.cpp
         src/previewrenderer.cpp
+        src/audiocard.cpp # 2.2 audio
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp

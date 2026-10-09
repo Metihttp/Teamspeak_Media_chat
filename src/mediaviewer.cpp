@@ -2456,7 +2456,8 @@ void MediaViewer::Private::openPlayer(const QString& path)
         }
         updateTime(ms);
     });
-    player->open(path);
+    // 2.2 audio: audio files play in the audio-only engine (no graphics device, audio error texts).
+    player->open(path, content == Content::Audio ? mf::OpenMode::AudioOnly : mf::OpenMode::Auto);
 }
 
 void MediaViewer::Private::onPlayerLoaded()

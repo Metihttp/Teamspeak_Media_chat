@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "audioplayback.h" // 2.2 audio
 #include "blurhash.h"
 #include "i18n.h"
 #include "settings.h"
@@ -622,10 +623,15 @@ void Core::startAutoDownloads(const QString& key)
     const bool      isVideo    = e.kind == MediaKind::Video;
     const quint64   imageLimit = megabytes(s.autoDownloadMaxMB);
     const quint64   videoLimit = megabytes(s.videoAutoDownloadMB);
+    // 2.2 audio: audio files have their own rule (audioplayback.h); voice: pass link.voice once the link carries vm.
+    const bool    isAudio    = e.kind == MediaKind::Audio;
+    const quint64 audioLimit = isAudio ? audioplayback::autoDownloadLimit(s, false) : 0;
     if (isImage)
         e.tooLargeForAuto = e.link.size > imageLimit;
     else if (isVideo)
         e.tooLargeForAuto = videoLimit > 0 && e.link.size > videoLimit;
+    else if (isAudio)
+        e.tooLargeForAuto = audioLimit > 0 && e.link.size > audioLimit;
 
     // Images that are already cached do not need their preview; video posters are always useful.
     const bool wantPreview = e.previewState == MediaState::Idle && !e.previewPath.isEmpty() && (e.state != MediaState::Ready || !isImage);
@@ -635,6 +641,8 @@ void Core::startAutoDownloads(const QString& key)
             wantMain = s.autoDownloadImages && !e.tooLargeForAuto;
         else if (isVideo)
             wantMain = videoLimit > 0 && e.link.size <= videoLimit;
+        else if (isAudio) // 2.2 audio
+            wantMain = audioLimit > 0 && e.link.size <= audioLimit;
     }
 
     // Previews first: they are what the chat shows until the real file is there.
@@ -1176,6 +1184,8 @@ void Core::resumeInterrupted()
 quint64 Core::autoDownloadLimit(const MediaEntry& e) const
 {
     const Settings& s = Settings::instance();
+    if (e.kind == MediaKind::Audio) // 2.2 audio (voice: pass link.voice once the link carries vm)
+        return audioplayback::autoDownloadLimit(s, false);
     return e.kind == MediaKind::Video ? megabytes(s.videoAutoDownloadMB) : megabytes(s.autoDownloadMaxMB);
 }
 
