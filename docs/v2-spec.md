@@ -8,7 +8,7 @@ changing them; keep their style (Qt 5.15, C++17, QStringLiteral, 4-space indent,
 v2 adds: **inline video player and animated GIFs inside the chat**, a **"plugin required" note** for
 people without the plugin, **metadata + BlurHash placeholders** so the chat never jumps, **previews /
 posters** uploaded with big images and videos, a **gallery viewer with a video player**, a
-**right-click menu**, **Persian/English UI**, and **cache size limit**.
+**right-click menu** and a **cache size limit**.
 
 The public headers in `src/` are the contract between modules. Do not change public APIs. You may add
 private members/helpers to the classes you own (sections marked "implementation ... may be reorganised").
@@ -38,10 +38,9 @@ percent-encoded with `QUrl::toPercentEncoding`). Parsing must accept plain TeamS
 unknown params, any param order, `&amp;`, and `file:///ts3file/...` hrefs like v1.
 
 `composeChatMessage(link, includeNotice, url)` = `link.toBBCode()` and, if `includeNotice`,
-` [COLOR=#8e9297][I]— <note>[/I][/COLOR]` where note is (sender language):
-* EN no url: `TS Media chat plugin required to view this in chat`
-* EN url: `[URL=<url>]TS Media chat[/URL] plugin required to view this in chat`
-* Persian variants of both notes: see `requiredNotice()` in src/medialink.cpp
+` [COLOR=#8e9297][I]— <note>[/I][/COLOR]` where note is (always English):
+* no url: `TS Media chat plugin required to view this in chat`
+* url: `[URL=<url>]TS Media chat[/URL] plugin required to view this in chat`
 * Default url (Settings::defaultDownloadUrl): `https://github.com/Metihttp/Teamspeak_Media_chat`; an empty setting means the default
 Keep the whole message < 1000 UTF-8 bytes (drop `bh`, then the note, if ever needed).
 
@@ -127,12 +126,17 @@ F = fullscreen, Esc = close). Items not yet downloaded: call `core->download(key
 still with a progress indicator until Ready (listen to `Core::entryChanged`). Mark the shown key
 in use. Dark theme as v1.
 
-## Settings & i18n
+## Settings & user-visible texts
 
-New settings (see `settings.h`) are persisted like v1 keys; `Settings::load` applies
-`i18n::setLanguage`. The ranges of the numeric settings are defined once in `settings.h`
-(`Settings::*Range`): `load()` clamps to them and SettingsDialog offers exactly those ranges. SettingsDialog groups: Receiving, Playback, Sending (incl. "Tell people without
-open/clear cache), with RTL layout when Persian. Menus and toast texts are translated too.
+New settings (see `settings.h`) are persisted like v1 keys. The ranges of the numeric settings are
+defined once in `settings.h` (`Settings::*Range`): `load()` clamps to them and SettingsDialog offers
+exactly those ranges. SettingsDialog groups: Receiving, Playback, Sending (incl. "Tell people without
+the plugin that it is needed" and the download link), General (cache limit + usage, open/clear cache).
+
+The UI is English only (an old `language` key in `settings.ini` is ignored). Every user-visible string
+(menus, toasts, dialogs, previews, the plugin-required note) still goes through `i18n::t("...")`, which
+returns a Qt-allocated `QString` and not a `QStringLiteral`: such strings may end up in Qt state that
+outlives the plugin DLL (style sheets, settings, TeamSpeak's widgets; see `settings.cpp`).
 
 ## Test hooks (TSMEDIA_TESTHOOKS only)
 

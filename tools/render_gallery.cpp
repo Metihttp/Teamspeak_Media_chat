@@ -3,7 +3,7 @@
 // Renders every state of the chat previews (previewrenderer.cpp) without TeamSpeak or a Core
 // instance: entries and stills are built by hand the way Core would produce them. Writes one PNG
 // per state into <outdir>/<theme>_<dpr>x/ and a labelled contact sheet per theme and dpr
-// (<outdir>/sheet_<theme>_<dpr>x.png). Persian variants are rendered for a few states.
+// (<outdir>/sheet_<theme>_<dpr>x.png).
 
 #include <QDir>
 #include <QFileInfo>
@@ -18,7 +18,6 @@
 #include <functional>
 
 #include "blurhash.h"
-#include "i18n.h"
 #include "previewrenderer.h"
 
 namespace {
@@ -154,7 +153,6 @@ QImage gifFrame(int index, const QSize& maxPixels)
 struct Sample {
     QString                                                  name;
     QString                                                  label;
-    bool                                                     persian = false;
     int                                                      maxWidth = 400;
     std::function<QImage(const PreviewStyle&, QSize*)>        render;
 };
@@ -162,11 +160,10 @@ struct Sample {
 QList<Sample> buildSamples()
 {
     QList<Sample> list;
-    auto add = [&list](const QString& name, const QString& label, std::function<QImage(const PreviewStyle&, QSize*)> fn, bool persian = false, int maxWidth = 400) {
+    auto add = [&list](const QString& name, const QString& label, std::function<QImage(const PreviewStyle&, QSize*)> fn, int maxWidth = 400) {
         Sample s;
         s.name     = name;
         s.label    = label;
-        s.persian  = persian;
         s.maxWidth = maxWidth;
         s.render   = std::move(fn);
         list.append(s);
@@ -396,12 +393,12 @@ QList<Sample> buildSamples()
         o.positionMs      = 65000;
         o.durationMs      = 3723000;
         return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
-    }, false, 220);
+    }, 220);
 
     // ---- cards -----------------------------------------------------------------------------
     const MediaEntry zip = makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Idle);
-    auto card = [&add](const QString& name, const QString& label, const MediaEntry& e, bool persian = false, int maxWidth = 400) {
-        add(name, label, [e](const PreviewStyle& st, QSize* ls) { return renderPreview(e, MediaStill(), st, ls); }, persian, maxWidth);
+    auto card = [&add](const QString& name, const QString& label, const MediaEntry& e, int maxWidth = 400) {
+        add(name, label, [e](const PreviewStyle& st, QSize* ls) { return renderPreview(e, MediaStill(), st, ls); }, maxWidth);
     };
     card(QStringLiteral("card_idle"), QStringLiteral("card idle"), zip);
     {
@@ -431,45 +428,8 @@ QList<Sample> buildSamples()
         e.tooLargeForAuto = true;
         return e;
     }());
-    card(QStringLiteral("card_long_name"), QStringLiteral("long file name, narrow"), makeEntry(QStringLiteral("a_really_long_file_name_that_does_not_fit_anywhere_final_v2.tar.gz"), 734003200, 0, 0, 0, MediaState::Idle), false, 240);
+    card(QStringLiteral("card_long_name"), QStringLiteral("long file name, narrow"), makeEntry(QStringLiteral("a_really_long_file_name_that_does_not_fit_anywhere_final_v2.tar.gz"), 734003200, 0, 0, 0, MediaState::Idle), 240);
 
-    // ---- Persian ---------------------------------------------------------------------------
-    card(QStringLiteral("fa_card_downloading"), QStringLiteral("FA card downloading"), downloading(makeEntry(QStringLiteral("پروژه.zip"), 24700000, 0, 0, 0, MediaState::Idle), 0.62), true);
-    card(QStringLiteral("fa_card_permission"), QStringLiteral("FA card failed: permission"), failed(zip, MediaError::Permission), true);
-    card(QStringLiteral("fa_card_ready"), QStringLiteral("FA card ready"), makeEntry(QStringLiteral("گزارش نهایی.pdf"), 1830000, 0, 0, 0, MediaState::Ready), true);
-    add(QStringLiteral("fa_image_failed"), QStringLiteral("FA image failed: deleted"), [=](const PreviewStyle& st, QSize* ls) {
-        const MediaEntry e = failed(photoReady, MediaError::NotFound);
-        return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), st, ls);
-    }, true);
-    add(QStringLiteral("fa_image_preview_only"), QStringLiteral("FA preview-only big image"), [=](const PreviewStyle& st, QSize* ls) {
-        MediaEntry e      = makeEntry(QStringLiteral("huge_panorama.jpg"), 25794560, 4000, 3000, 0, MediaState::Idle);
-        e.tooLargeForAuto = true;
-        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
-    }, true);
-    add(QStringLiteral("fa_video_idle"), QStringLiteral("FA video poster, not downloaded"), [=](const PreviewStyle& st, QSize* ls) {
-        return renderPreview(clip, posterStill(clip, st), st, ls);
-    }, true);
-    add(QStringLiteral("fa_video_playing"), QStringLiteral("FA video playing with controls"), [=](const PreviewStyle& st, QSize* ls) {
-        MediaEntry e = clip;
-        e.state      = MediaState::Ready;
-        PlaybackOverlay o;
-        o.controlsVisible = true;
-        o.playing         = true;
-        o.positionMs      = 3200;
-        o.durationMs      = 10000;
-        return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
-    }, true);
-    add(QStringLiteral("fa_video_no_poster"), QStringLiteral("FA plain link video, no poster"), [=](const PreviewStyle& st, QSize* ls) {
-        const MediaEntry e = makeEntry(QStringLiteral("ویدیو تولد.mp4"), 355293, 0, 0, 0, MediaState::Idle);
-        return renderPreview(e, MediaStill(), st, ls);
-    }, true);
-    // Latin names starting with digits keep their order in the RTL UI (not "Track_48213.mp3_-_01").
-    card(QStringLiteral("fa_card_digits_audio"), QStringLiteral("FA card 01_-_Track_48213.mp3"), makeEntry(QStringLiteral("01_-_Track_48213.mp3"), 4120000, 0, 0, 0, MediaState::Idle), true);
-    card(QStringLiteral("fa_card_digits_pdf"), QStringLiteral("FA card 2024_report_12345.pdf"), makeEntry(QStringLiteral("2024_report_12345.pdf"), 1830000, 0, 0, 0, MediaState::Ready), true);
-    add(QStringLiteral("fa_video_digits_no_poster"), QStringLiteral("FA video 2024-05-01_12-00-00.mkv, no poster"), [=](const PreviewStyle& st, QSize* ls) {
-        const MediaEntry e = makeEntry(QStringLiteral("2024-05-01_12-00-00.mkv"), 355293, 0, 0, 0, MediaState::Idle);
-        return renderPreview(e, MediaStill(), st, ls);
-    }, true);
     // A name with a RIGHT-TO-LEFT OVERRIDE must not fake its extension ("invoice_exe.pdf" look).
     card(QStringLiteral("card_bidi_override"), QStringLiteral("name with U+202E (shown without it)"),
          makeEntry(QStringLiteral("invoice_") + QChar(0x202E) + QStringLiteral("fdp.exe"), 88000, 0, 0, 0, MediaState::Idle));
@@ -487,7 +447,7 @@ int checkDisplayFileName()
         {QStringLiteral("invoice_") + QChar(0x202E) + QStringLiteral("fdp.exe"), QStringLiteral("invoice_fdp.exe")},
         {QChar(0x2067) + QStringLiteral("a") + QChar(0x2069) + QChar(0x200F) + QStringLiteral("b.jpg"), QStringLiteral("ab.jpg")},
         {QStringLiteral("line\nbreak\t.txt") + QChar(0x2028), QStringLiteral("linebreak.txt")},
-        {QStringLiteral("پیش") + QChar(0x200C) + QStringLiteral("نمایش.png"), QStringLiteral("پیش") + QChar(0x200C) + QStringLiteral("نمایش.png")},
+        {QStringLiteral("a") + QChar(0x200C) + QStringLiteral("b") + QChar(0x200D) + QStringLiteral("c.png"), QStringLiteral("a") + QChar(0x200C) + QStringLiteral("b") + QChar(0x200D) + QStringLiteral("c.png")}, // ZWNJ/ZWJ stay
         {QStringLiteral("<b>x</b>.png"), QStringLiteral("<b>x</b>.png")}, // markup is escaped by widgets, not removed
     };
     int failures = 0;
@@ -577,9 +537,8 @@ int main(int argc, char* argv[])
             const QString scale = QString::number(dpr);
             const QString sub   = QStringLiteral("%1/%2_%3x").arg(outDir, theme, scale);
             QDir().mkpath(sub);
-            QList<Rendered> en, fa;
+            QList<Rendered> rendered;
             for (const Sample& s : samples) {
-                i18n::setLanguage(s.persian ? Language::Persian : Language::English);
                 PreviewStyle style;
                 style.dark      = dark;
                 style.font      = chatFont;
@@ -594,11 +553,9 @@ int main(int argc, char* argv[])
                 }
                 img.save(QStringLiteral("%1/%2.png").arg(sub, s.name));
                 ++written;
-                (s.persian ? fa : en).append({s.label + QStringLiteral("  (%1x%2)").arg(logical.width()).arg(logical.height()), img, logical});
+                rendered.append({s.label + QStringLiteral("  (%1x%2)").arg(logical.width()).arg(logical.height()), img, logical});
             }
-            i18n::setLanguage(Language::English);
-            writeSheet(en, dark, dpr, chatFont, QStringLiteral("%1/sheet_%2_%3x.png").arg(outDir, theme, scale));
-            writeSheet(fa, dark, dpr, chatFont, QStringLiteral("%1/sheet_fa_%2_%3x.png").arg(outDir, theme, scale));
+            writeSheet(rendered, dark, dpr, chatFont, QStringLiteral("%1/sheet_%2_%3x.png").arg(outDir, theme, scale));
         }
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";

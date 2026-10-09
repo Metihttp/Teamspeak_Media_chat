@@ -96,13 +96,8 @@ void Settings::load()
     uploadMaxMB     = readInt(s, "uploadMaxMB", d.uploadMaxMB, uploadMaxMBRange);
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
 
-    // General
-    bool      langOk = false;
-    const int lang   = s.value(key("language")).toInt(&langOk);
-    language         = langOk && lang >= static_cast<int>(Language::Auto) && lang <= static_cast<int>(Language::Persian) ? static_cast<Language>(lang) : d.language;
-    cacheLimitMB     = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
-
-    i18n::setLanguage(language);
+    // General (a "language" key written by older versions is ignored)
+    cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
 }
 
 void Settings::save() const
@@ -132,7 +127,6 @@ void Settings::save() const
     // QSettings' INI writer drops backslashes inside values, so store the normalised form.
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
 
-    s.setValue(key("language"), static_cast<int>(language));
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
     s.sync();
 }

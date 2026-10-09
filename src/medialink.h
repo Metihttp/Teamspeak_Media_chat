@@ -49,8 +49,8 @@ struct MediaLink {
 };
 
 // The complete chat message for an upload: the link, followed (optionally) by a short note for
-// people without the plugin, e.g. "— TS Media chat plugin required to view this in chat".
-// The note is written in the sender's UI language; downloadUrl (optional) is linked from it.
+// people without the plugin: "— TS Media chat plugin required to view this in chat".
+// downloadUrl (optional, http(s) only) is linked from the plugin name in the note.
 // Clients with the plugin hide everything after a TS Media link in that message.
 QString composeChatMessage(const MediaLink& link, bool includeNotice, const QString& downloadUrl);
 

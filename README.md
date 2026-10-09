@@ -7,7 +7,6 @@
 [![Latest release](https://img.shields.io/github/v/release/Metihttp/Teamspeak_Media_chat?label=latest%20release)](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
 ![TeamSpeak 3.6.x](https://img.shields.io/badge/TeamSpeak-3.6.x-2580c3)
 ![Windows](https://img.shields.io/badge/Windows-64--bit%20%7C%2032--bit-0078d6)
-![English | Persian UI](https://img.shields.io/badge/UI-English%20%7C%20Persian-6e7681)
 
 ### [Download the latest version](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
 
@@ -96,8 +95,6 @@ and restart TeamSpeak. Requires TeamSpeak 3.6.x. TeamSpeak 5 and 6 are not suppo
   links to this page.
 - **Clear errors** right in the chat: no permission, file deleted from the server, password-protected channel, not
   connected, transfer quota exhausted, with click-to-retry.
-- **English and Persian** user interface (chosen automatically from the Windows regional format, or set by hand),
-  right-to-left in Persian.
 - **Light and dark** TeamSpeak themes.
 - **Cache with a size limit.** The media used least recently is removed first; media that is playing or open in the viewer
   never is.
@@ -120,7 +117,7 @@ and restart TeamSpeak. Requires TeamSpeak 3.6.x. TeamSpeak 5 and 6 are not suppo
 **Install**
 
 1. Download `TSMedia-<version>.ts3_plugin` from the [latest release](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
-   (currently `TSMedia-2.0.6.ts3_plugin`).
+   (currently `TSMedia-2.0.7.ts3_plugin`).
 2. Closing TeamSpeak first is recommended.
 3. Double-click the file. TeamSpeak's own package installer opens and shows the author (MehdiHttp), the version and the
    platform. Click **Install**, and answer **Yes** when it asks whether to activate the add-on.
@@ -145,7 +142,7 @@ To someone without the plugin, your message is an ordinary TeamSpeak file link f
 
 - Clicking the file name downloads the file with TeamSpeak's own file transfer (download permission required).
 - "TS Media chat" in the note links to this GitHub page.
-- The note is written in the **sender's** interface language (English or Persian).
+- The note is in English.
 - People with the plugin never see the note: the plugin removes it from their chat view (even with inline previews turned off).
 - Senders can turn the note off or change its link (Settings → Sending).
 
@@ -234,7 +231,7 @@ Open with default app. Volume changes made in the viewer are remembered.
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | copy the image, or the current video frame |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | save as… |
 
-Letter keys also work with a Persian (or any other non-Latin) keyboard layout.
+Letter keys also work with non-Latin keyboard layouts.
 
 ### Chat commands
 
@@ -289,7 +286,6 @@ Settings are stored in `%APPDATA%\TS3Client\plugins\tsmedia\settings.ini`.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| Language | Automatic (Windows language) | Automatic, English or Persian. Automatic picks Persian when the Windows *regional format* (Windows Settings → Time & language) is Persian, English otherwise. Some texts (menus, hotkeys) change after restarting TeamSpeak. |
 | Cache size limit | 1024 MB | 100 MB to 1 TB. Beyond it the oldest downloaded media is deleted. The space in use is shown next to it, with **Open folder** and **Clear** buttons. |
 
 ## Server admin guide
@@ -415,7 +411,7 @@ result in the issues.
 
 **The plugin doesn't show up in TeamSpeak.**
 Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log
-(`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.0.6 loaded`.
+(`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.0.7 loaded`.
 
 **I don't want Ctrl+V or dropping files to send anything.**
 Both can be turned off in Settings → Sending. For a single drop, hold Shift.
@@ -458,8 +454,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
   cmake --build build --config Release
   ```
 
-- **Unit tests:** the 64-bit build also builds `tsmedia_tests` (link format, BlurHash, i18n). Run them from a
-  *Developer PowerShell for VS 2022*:
+- **Unit tests:** the 64-bit build also builds `tsmedia_tests` (link format, chat message, BlurHash, helpers). Run them
+  from a *Developer PowerShell for VS 2022*:
 
   ```powershell
   ctest --test-dir build -C Release --output-on-failure
@@ -468,8 +464,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 - **Developer tools** (in `build\Release`; put Qt's `bin` folder on `PATH` to run them):
   - `mfvideo_smoketest <video> <outdir>` probes and plays a video headless through Media Foundation, checks pause, seek,
     loop and teardown, and saves frames. Completely silent (players stay muted at volume 0).
-  - `render_gallery <outdir> [<media dir>]` renders every preview, card and player state, light and dark, English and
-    Persian, to PNG files.
+  - `render_gallery <outdir> [<media dir>]` renders every preview, card and player state, light and dark, to PNG files.
 - **`TSMEDIA_TESTHOOKS`:** `-DTSMEDIA_TESTHOOKS=ON` builds a test variant with extra logging, chat snapshots and self-test
   hooks that only act on localhost servers. **Never distribute that build.** `scripts\build.ps1` always builds with the
   hooks off.
@@ -488,7 +483,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | `src/video/mfvideo.*` | Media Foundation video probing and playback |
 | `src/mediaviewer.*` | Gallery viewer (zoom, video player, full screen, shortcuts) |
 | `src/uploadtoast.*`, `src/settingsdialog.*` | Upload progress panel and settings dialog |
-| `src/settings.*`, `src/i18n.*` | Settings (INI file) and English / Persian texts |
+| `src/settings.*`, `src/i18n.*` | Settings (INI file) and user-visible texts |
 | `src/version.*.in` | Version header and Windows version resource (generated by CMake) |
 | `tests/` | Unit tests (`tsmedia_tests`) |
 | `tools/` | Developer tools (`mfvideo_smoketest`, `render_gallery`) |

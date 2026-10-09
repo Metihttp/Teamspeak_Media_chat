@@ -55,13 +55,6 @@ QColor accentColor()
 
 void useDarkTitleBar(QWidget* window); // Windows only, defined at the end of this file
 
-// Keeps a number with its Latin unit ("12.5 MB", "4000 × 3000") in one piece inside Persian text;
-// without it the bidi algorithm separates the digits from the unit.
-QString ltr(const QString& text)
-{
-    return i18n::isPersian() ? QChar(0x200E) + text + QChar(0x200E) : text;
-}
-
 bool canPan(const QImage& image, qreal zoom, const QSize& area)
 {
     if (image.isNull())
@@ -1122,8 +1115,8 @@ void MediaViewer::Private::buildUi()
     nameLabel->setTextFormat(Qt::PlainText);
     metaLabel->setTextFormat(Qt::PlainText);
     counterLabel->setTextFormat(Qt::PlainText);
-    // File names are usually Latin; align them with the UI direction rather than their own.
-    const Qt::Alignment start = (i18n::direction() == Qt::RightToLeft ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignAbsolute | Qt::AlignVCenter;
+    // Left-aligned like the rest of the window, also when a name is in a right-to-left script.
+    const Qt::Alignment start = Qt::AlignLeft | Qt::AlignAbsolute | Qt::AlignVCenter;
     nameLabel->setAlignment(start);
     metaLabel->setAlignment(start);
 
@@ -1137,9 +1130,8 @@ void MediaViewer::Private::buildUi()
     top->addLayout(titles, 1);
     top->addWidget(counterLabel, 0, Qt::AlignVCenter);
 
-    // ---- stage: picture / video, overlays (always left-to-right like a media timeline) ---------
+    // ---- stage: picture / video, overlays -----------------------------------------------------
     stage = new QWidget(q);
-    stage->setLayoutDirection(Qt::LeftToRight);
     stage->setMinimumSize(320, 220);
     stage->installEventFilter(this);
 
@@ -1147,7 +1139,6 @@ void MediaViewer::Private::buildUi()
     surface = new VideoSurface(stage);
     surface->hide();
     overlay = new StatusOverlay(stage);
-    overlay->setLayoutDirection(i18n::direction());
 
     controls = new ControlBar(stage);
     controls->hide();
@@ -1163,13 +1154,13 @@ void MediaViewer::Private::buildUi()
     volumeSlider->setPageStep(10);
     volumeSlider->setFixedWidth(84);
     volumeSlider->setValue(volume);
-    volumeSlider->setToolTip(i18n::t("Volume (↑ / ↓)", "بلندی صدا (↑ / ↓)"));
+    volumeSlider->setToolTip(i18n::t("Volume (↑ / ↓)"));
     loopButton = new GlyphButton(Glyph::Loop, 34, false, controls);
     loopButton->setCheckable(true);
     loopButton->setChecked(loop);
-    loopButton->setToolTip(i18n::t("Loop", "پخش تکراری"));
+    loopButton->setToolTip(i18n::t("Loop"));
     fullscreenButton = new GlyphButton(Glyph::FullscreenEnter, 34, false, controls);
-    fullscreenButton->setToolTip(i18n::t("Full screen (F)", "تمام‌صفحه (F)"));
+    fullscreenButton->setToolTip(i18n::t("Full screen (F)"));
 
     auto* bar = new QHBoxLayout(controls);
     bar->setContentsMargins(10, 26, 10, 8);
@@ -1185,17 +1176,16 @@ void MediaViewer::Private::buildUi()
     bar->addWidget(fullscreenButton);
 
     prevButton = new GlyphButton(Glyph::ChevronLeft, 44, true, stage);
-    prevButton->setToolTip(i18n::t("Previous (←)", "قبلی (←)"));
+    prevButton->setToolTip(i18n::t("Previous (←)"));
     nextButton = new GlyphButton(Glyph::ChevronRight, 44, true, stage);
-    nextButton->setToolTip(i18n::t("Next (→)", "بعدی (→)"));
+    nextButton->setToolTip(i18n::t("Next (→)"));
     exitButton = new GlyphButton(Glyph::FullscreenExit, 40, true, stage);
-    exitButton->setToolTip(i18n::t("Exit full screen (Esc)", "خروج از تمام‌صفحه (Esc)"));
+    exitButton->setToolTip(i18n::t("Exit full screen (Esc)"));
     exitButton->hide();
 
     flashLabel = new QLabel(stage);
     flashLabel->setObjectName(QStringLiteral("tsmediaFlash"));
     flashLabel->setTextFormat(Qt::PlainText);
-    flashLabel->setLayoutDirection(i18n::direction());
     flashLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     flashLabel->hide();
     connect(flashTimer, &QTimer::timeout, flashLabel, &QWidget::hide);
@@ -1203,20 +1193,20 @@ void MediaViewer::Private::buildUi()
     // ---- action bar ---------------------------------------------------------------------------
     actionBar = new QWidget(q);
     actionBar->setObjectName(QStringLiteral("tsmediaActionBar"));
-    fitButton = textButton(i18n::t("Fit", "اندازهٔ پنجره"), actionBar);
-    fitButton->setToolTip(i18n::t("Fit to window (0)", "جا دادن در پنجره (0)"));
+    fitButton = textButton(i18n::t("Fit"), actionBar);
+    fitButton->setToolTip(i18n::t("Fit to window (0)"));
     actualButton = textButton(QStringLiteral("100%"), actionBar);
-    actualButton->setToolTip(i18n::t("Actual size (1)", "اندازهٔ واقعی (1)"));
+    actualButton->setToolTip(i18n::t("Actual size (1)"));
     zoomLabel = new QLabel(actionBar);
     zoomLabel->setMinimumWidth(48);
     actionButton = textButton(QString(), actionBar);
     actionButton->setObjectName(QStringLiteral("primary"));
     actionButton->hide();
-    copyButton   = textButton(i18n::t("Copy image", "کپی تصویر"), actionBar);
-    saveButton   = textButton(i18n::t("Save as…", "ذخیره با نام…"), actionBar);
-    saveButton->setToolTip(i18n::t("Save a copy (Ctrl+S)", "ذخیرهٔ یک نسخه (Ctrl+S)"));
-    folderButton = textButton(i18n::t("Show in folder", "نمایش در پوشه"), actionBar);
-    openButton   = textButton(i18n::t("Open with default app", "باز کردن با برنامهٔ پیش‌فرض"), actionBar);
+    copyButton   = textButton(i18n::t("Copy image"), actionBar);
+    saveButton   = textButton(i18n::t("Save as…"), actionBar);
+    saveButton->setToolTip(i18n::t("Save a copy (Ctrl+S)"));
+    folderButton = textButton(i18n::t("Show in folder"), actionBar);
+    openButton   = textButton(i18n::t("Open with default app"), actionBar);
     openButton->setObjectName(QStringLiteral("primary"));
 
     auto* actions = new QHBoxLayout(actionBar);
@@ -1470,8 +1460,8 @@ void MediaViewer::Private::showItem(int i)
         seekSlider->setRange(0, 0);
         seekSlider->setValue(0);
     }
-    copyButton->setText(content == Content::Video ? i18n::t("Copy frame", "کپی فریم") : i18n::t("Copy image", "کپی تصویر"));
-    copyButton->setToolTip(i18n::t("Copy to clipboard (Ctrl+C)", "کپی در کلیپ‌بورد (Ctrl+C)"));
+    copyButton->setText(content == Content::Video ? i18n::t("Copy frame") : i18n::t("Copy image"));
+    copyButton->setToolTip(i18n::t("Copy to clipboard (Ctrl+C)"));
 
     if (e->state == MediaState::Ready)
         startLoading();
@@ -1546,8 +1536,8 @@ void MediaViewer::Private::onDecoded(quint64 forGeneration, const Decoded& resul
         tooLarge     = true;
         tooLargeSize = result.size;
     } else if (result.image.isNull()) {
-        errorTitle  = i18n::t("This image can't be shown", "نمایش این تصویر ممکن نیست");
-        errorDetail = i18n::t("The file may be damaged or in an unsupported format.", "ممکن است فایل خراب باشد یا قالب آن پشتیبانی نشود.");
+        errorTitle  = i18n::t("This image can't be shown");
+        errorDetail = i18n::t("The file may be damaged or in an unsupported format.");
     } else {
         fullImage = result.image;
         loaded    = true;
@@ -1603,9 +1593,9 @@ void MediaViewer::Private::openPlayer(const QString& path)
     connect(player, &mf::VideoPlayer::loaded, this, [this] { onPlayerLoaded(); });
     connect(player, &mf::VideoPlayer::failed, this, [this](const QString& error) {
         playerFailed = true;
-        errorTitle   = content == Content::Audio ? i18n::t("This file can't be played here", "این فایل اینجا پخش نمی‌شود")
-                                                 : i18n::t("This video can't be played here", "این ویدیو اینجا پخش نمی‌شود");
-        errorDetail  = i18n::t("Try opening it with your default app.", "آن را با برنامهٔ پیش‌فرض باز کنید.");
+        errorTitle   = content == Content::Audio ? i18n::t("This file can't be played here")
+                                                 : i18n::t("This video can't be played here");
+        errorDetail  = i18n::t("Try opening it with your default app.");
         if (!error.isEmpty())
             errorDetail += QLatin1Char('\n') + error;
         updatePlaybackUi();
@@ -1782,7 +1772,7 @@ void MediaViewer::Private::updateTopBar()
         parts << formatSize(e->link.size);
     metaLabel->setText(parts.join(QStringLiteral("  ·  ")));
 
-    counterLabel->setText(i18n::t("%1 / %2", "%1 از %2").arg(index + 1).arg(keys.size()));
+    counterLabel->setText(i18n::t("%1 / %2").arg(index + 1).arg(keys.size()));
     counterLabel->setVisible(keys.size() > 1);
 }
 
@@ -1803,9 +1793,9 @@ void MediaViewer::Private::updateOverlay()
         return;
     }
     if (tooLarge) {
-        overlay->showMessage(Glyph::Info, i18n::t("This image is too large to show here", "این تصویر برای نمایش در اینجا خیلی بزرگ است"),
-                             i18n::t("%1 pixels. Open it with your default app instead.", "%1 پیکسل. آن را با برنامهٔ پیش‌فرض باز کنید.")
-                                 .arg(ltr(QStringLiteral("%1 × %2").arg(tooLargeSize.width()).arg(tooLargeSize.height()))),
+        overlay->showMessage(Glyph::Info, i18n::t("This image is too large to show here"),
+                             i18n::t("%1 pixels. Open it with your default app instead.")
+                                 .arg(QStringLiteral("%1 × %2").arg(tooLargeSize.width()).arg(tooLargeSize.height())),
                              false);
         return;
     }
@@ -1818,26 +1808,26 @@ void MediaViewer::Private::updateOverlay()
         return;
     }
     if (e->state == MediaState::Failed) {
-        const QString detail = e->errorText.isEmpty() ? i18n::t("Something went wrong while downloading this file.", "هنگام دانلود این فایل مشکلی پیش آمد.") : e->errorText;
-        overlay->showMessage(Glyph::Error, i18n::t("Download failed", "دانلود ناموفق بود"), detail, true);
+        const QString detail = e->errorText.isEmpty() ? i18n::t("Something went wrong while downloading this file.") : e->errorText;
+        overlay->showMessage(Glyph::Error, i18n::t("Download failed"), detail, true);
         return;
     }
 
     auto downloadText = [e] {
         if (e->link.size == 0)
-            return i18n::t("Downloading…", "در حال دانلود…");
+            return i18n::t("Downloading…");
         const quint64 done = static_cast<quint64>(qBound(0.0, e->progress, 1.0) * static_cast<double>(e->link.size));
-        return i18n::t("Downloading… %1 of %2", "در حال دانلود… %1 از %2").arg(ltr(formatSize(done)), ltr(formatSize(e->link.size)));
+        return i18n::t("Downloading… %1 of %2").arg(formatSize(done), formatSize(e->link.size));
     };
 
     if (content == Content::File) {
         if (e->state == MediaState::Downloading)
             overlay->showProgress(e->progress, downloadText());
         else if (e->state == MediaState::Queued)
-            overlay->showProgress(-1, i18n::t("Waiting to download…", "در انتظار دانلود…"));
+            overlay->showProgress(-1, i18n::t("Waiting to download…"));
         else
             overlay->showMessage(Glyph::File, displayFileName(e->link.fileName),
-                                 (e->link.size > 0 ? ltr(formatSize(e->link.size)) + QStringLiteral("  ·  ") : QString()) + i18n::t("No preview available", "پیش‌نمایشی موجود نیست"),
+                                 (e->link.size > 0 ? formatSize(e->link.size) + QStringLiteral("  ·  ") : QString()) + i18n::t("No preview available"),
                                  false);
         return;
     }
@@ -1847,16 +1837,16 @@ void MediaViewer::Private::updateOverlay()
         overlay->showProgress(e->progress, downloadText());
         return;
     case MediaState::Queued:
-        overlay->showProgress(-1, i18n::t("Waiting to download…", "در انتظار دانلود…"));
+        overlay->showProgress(-1, i18n::t("Waiting to download…"));
         return;
     case MediaState::Idle:
         if (waitingForPlay()) {
-            const QString text = e->link.size > 0 ? i18n::t("Press play to download (%1)", "برای دانلود (%1) دکمهٔ پخش را بزنید").arg(ltr(formatSize(e->link.size)))
-                                                  : i18n::t("Press play to download", "برای دانلود دکمهٔ پخش را بزنید");
+            const QString text = e->link.size > 0 ? i18n::t("Press play to download (%1)").arg(formatSize(e->link.size))
+                                                  : i18n::t("Press play to download");
             // Under the play button; for audio under the file name the surface draws below its icon.
             overlay->showPrompt(text, content == Content::Audio ? 100 : kCenterButton + 14);
         } else {
-            overlay->showProgress(-1, i18n::t("Loading…", "در حال بارگذاری…"));
+            overlay->showProgress(-1, i18n::t("Loading…"));
         }
         return;
     case MediaState::Ready:
@@ -1894,13 +1884,13 @@ void MediaViewer::Private::updateButtons()
     openButton->setEnabled(ready);
 
     if (e && e->state == MediaState::Failed && e->error != MediaError::NotFound) {
-        actionButton->setText(i18n::t("Retry", "تلاش دوباره"));
+        actionButton->setText(i18n::t("Retry"));
         actionButton->show();
     } else if (e && content == Content::File && e->state == MediaState::Idle) {
-        actionButton->setText(i18n::t("Download", "دانلود"));
+        actionButton->setText(i18n::t("Download"));
         actionButton->show();
     } else if (waitingForPlay()) {
-        actionButton->setText(i18n::t("Download and play", "دانلود و پخش"));
+        actionButton->setText(i18n::t("Download and play"));
         actionButton->show();
     } else {
         actionButton->hide();
@@ -1919,14 +1909,14 @@ void MediaViewer::Private::updatePlaybackUi()
     playButton->setEnabled(ready || awaiting);
     seekSlider->setEnabled(ready && seekSlider->maximum() > 0);
     playButton->setGlyph(playing ? Glyph::Pause : ended ? Glyph::Replay : Glyph::Play);
-    playButton->setToolTip(playing    ? i18n::t("Pause (Space)", "مکث (Space)")
-                           : ended    ? i18n::t("Replay (Space)", "پخش دوباره (Space)")
-                           : awaiting ? i18n::t("Download and play (Space)", "دانلود و پخش (Space)")
-                                      : i18n::t("Play (Space)", "پخش (Space)"));
+    playButton->setToolTip(playing    ? i18n::t("Pause (Space)")
+                           : ended    ? i18n::t("Replay (Space)")
+                           : awaiting ? i18n::t("Download and play (Space)")
+                                      : i18n::t("Play (Space)"));
 
     const bool silent = muted || volume == 0;
     muteButton->setGlyph(silent ? Glyph::VolumeMuted : volume < 50 ? Glyph::VolumeLow : Glyph::VolumeHigh);
-    muteButton->setToolTip(silent ? i18n::t("Unmute (M)", "باصدا کردن (M)") : i18n::t("Mute (M)", "بی‌صدا کردن (M)"));
+    muteButton->setToolTip(silent ? i18n::t("Unmute (M)") : i18n::t("Mute (M)"));
     {
         const QSignalBlocker blocker(volumeSlider);
         volumeSlider->setValue(muted ? 0 : volume);
@@ -2027,7 +2017,7 @@ void MediaViewer::Private::onWindowStateChanged()
     topBar->setVisible(!fullscreen);
     actionBar->setVisible(!fullscreen);
     fullscreenButton->setGlyph(fullscreen ? Glyph::FullscreenExit : Glyph::FullscreenEnter);
-    fullscreenButton->setToolTip(fullscreen ? i18n::t("Exit full screen (F)", "خروج از تمام‌صفحه (F)") : i18n::t("Full screen (F)", "تمام‌صفحه (F)"));
+    fullscreenButton->setToolTip(fullscreen ? i18n::t("Exit full screen (F)") : i18n::t("Full screen (F)"));
     if (q->isMinimized() && player && player->isPlaying())
         player->pause();
     // An animation keeps decoding frames nobody sees while minimized; it resumes on restore unless
@@ -2163,7 +2153,7 @@ void MediaViewer::Private::copyCurrent()
     if (image.isNull())
         return;
     QApplication::clipboard()->setImage(image);
-    flash(i18n::t("Copied to clipboard", "در کلیپ‌بورد کپی شد"));
+    flash(i18n::t("Copied to clipboard"));
 }
 
 void MediaViewer::Private::flash(const QString& text)
@@ -2181,7 +2171,7 @@ bool MediaViewer::Private::handleKey(QKeyEvent* event)
     const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
     const bool ctrl  = event->modifiers().testFlag(Qt::ControlModifier);
 
-    // With a Persian (or any non-Latin) keyboard layout the letter keys produce other characters;
+    // With a non-Latin keyboard layout the letter keys produce other characters;
     // fall back to the physical key so F, M, K, 0, 1, Ctrl+C and Ctrl+S keep working.
     int           key = event->key();
     const quint32 vk  = event->nativeVirtualKey();
@@ -2319,7 +2309,7 @@ MediaViewer::MediaViewer(Core* core, const QStringList& keys, int index, std::op
         d->muted = *muted; // instead of Settings::videosStartMuted
     setAttribute(Qt::WA_DeleteOnClose);
     setObjectName(QStringLiteral("tsmediaMediaViewer"));
-    setLayoutDirection(i18n::direction());
+    setLayoutDirection(Qt::LeftToRight);
     setFocusPolicy(Qt::StrongFocus);
     // fromLatin1, never QStringLiteral: a window with a parent shares the parent's QStyleSheetStyle when
     // TeamSpeak uses style sheets, and its parser keeps the last text it parsed until TeamSpeak destroys

@@ -1212,17 +1212,17 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     auto* menu = new QMenu(browser);
     menu->setObjectName(QStringLiteral("tsmediaPreviewMenu"));
     menu->setAttribute(Qt::WA_DeleteOnClose);
-    menu->setLayoutDirection(i18n::direction());
+    menu->setLayoutDirection(Qt::LeftToRight);
 
     if (e->kind == MediaKind::Video && m_media) {
         const PlaybackOverlay o      = m_media->overlay(key);
         const bool            active = o.playing || o.ended || o.positionMs > 0;
-        menu->addAction(o.playing ? i18n::t("Pause", "مکث") : i18n::t("Play", "پخش"), this, [this, key] {
+        menu->addAction(o.playing ? i18n::t("Pause") : i18n::t("Play"), this, [this, key] {
             if (m_media)
                 m_media->click(key, VideoZone::PlayPause, 0.0);
         });
         if (active) {
-            menu->addAction(o.muted ? i18n::t("Unmute", "باصدا کردن") : i18n::t("Mute", "بی‌صدا کردن"), this, [this, key] {
+            menu->addAction(o.muted ? i18n::t("Unmute") : i18n::t("Mute"), this, [this, key] {
                 if (!m_media)
                     return;
                 // The player may have been closed meanwhile; Mute must never start playback.
@@ -1234,28 +1234,28 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         menu->addSeparator();
     }
 
-    menu->addAction(i18n::t("Open", "باز کردن"), this, [this, key] { openKey(key); });
+    menu->addAction(i18n::t("Open"), this, [this, key] { openKey(key); });
     if (media && ready)
-        menu->addAction(i18n::t("Open with default app", "باز کردن با برنامهٔ پیش‌فرض"), this, [this, key] { m_core->openExternally(key); });
+        menu->addAction(i18n::t("Open with default app"), this, [this, key] { m_core->openExternally(key); });
     if (ready) {
         QPointer<QTextBrowser> guard(browser);
-        menu->addAction(i18n::t("Save as…", "ذخیره با نام…"), this, [this, key, guard] { m_core->saveAs(key, guard ? guard->window() : mainWindow()); });
+        menu->addAction(i18n::t("Save as…"), this, [this, key, guard] { m_core->saveAs(key, guard ? guard->window() : mainWindow()); });
     }
     if (ready && isPreviewableImage(e->kind))
-        menu->addAction(i18n::t("Copy image", "کپی تصویر"), this, [this, key] { copyImage(key); });
-    menu->addAction(i18n::t("Copy link", "کپی لینک"), this, [this, key] {
+        menu->addAction(i18n::t("Copy image"), this, [this, key] { copyImage(key); });
+    menu->addAction(i18n::t("Copy link"), this, [this, key] {
         if (const MediaEntry* entry = m_core->entry(key))
             QGuiApplication::clipboard()->setText(entry->link.toUrl());
     });
     if (ready)
-        menu->addAction(i18n::t("Show in folder", "نمایش در پوشه"), this, [this, key] { m_core->revealInFolder(key); });
+        menu->addAction(i18n::t("Show in folder"), this, [this, key] { m_core->revealInFolder(key); });
 
     if (e->state == MediaState::Idle) {
         menu->addSeparator();
-        menu->addAction(i18n::t("Download", "دانلود"), this, [this, key] { m_core->download(key, false); });
+        menu->addAction(i18n::t("Download"), this, [this, key] { m_core->download(key, false); });
     } else if (e->state == MediaState::Failed && e->error != MediaError::NotFound) {
         menu->addSeparator();
-        menu->addAction(i18n::t("Retry download", "تلاش دوباره برای دانلود"), this, [this, key] { m_core->retry(key); });
+        menu->addAction(i18n::t("Retry download"), this, [this, key] { m_core->retry(key); });
     }
 
     menu->popup(globalPos);
@@ -1579,8 +1579,7 @@ bool ChatIntegration::resolveCurrentTarget(ChatTarget* target, QWidget** source)
 
 void ChatIntegration::warnNoRecipient(QWidget* widget) const
 {
-    const QString text = i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.",
-                                 "مشخص نیست این چت خصوصی با چه کسی است (شاید از سرور خارج شده باشد). چیزی ارسال نشد.");
+    const QString text = i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.");
     ts3::printWarning(ts3::currentConnection(), text);
     if (widget && widget->isVisible())
         QToolTip::showText(widget->mapToGlobal(QPoint(12, widget->height() / 2)), text, widget);
@@ -1591,16 +1590,16 @@ QString ChatIntegration::describeTarget(const ChatTarget& target) const
     switch (target.mode) {
     case TextMessageTarget_SERVER: {
         const QString name = ts3::serverName(target.sch);
-        return name.isEmpty() ? i18n::t("everyone on the server", "همهٔ افراد سرور")
-                              : i18n::t("everyone on the server “%1”", "همهٔ افراد سرور «%1»").arg(name);
+        return name.isEmpty() ? i18n::t("everyone on the server")
+                              : i18n::t("everyone on the server “%1”").arg(name);
     }
     case TextMessageTarget_CLIENT: {
         const QString name = nicknameOf(target.sch, target.clientId);
-        return i18n::t("%1 (private chat)", "%1 (چت خصوصی)").arg(name.isEmpty() ? QStringLiteral("?") : name);
+        return i18n::t("%1 (private chat)").arg(name.isEmpty() ? QStringLiteral("?") : name);
     }
     default: {
         const QString name = ts3::isConnected(target.sch) ? ts3::channelName(target.sch, ts3::ownChannel(target.sch)) : QString();
-        return name.isEmpty() ? i18n::t("the channel", "کانال") : i18n::t("the channel “%1”", "کانال «%1»").arg(name);
+        return name.isEmpty() ? i18n::t("the channel") : i18n::t("the channel “%1”").arg(name);
     }
     }
 }
@@ -1620,8 +1619,8 @@ void ChatIntegration::confirmPaste(QWidget* input, const QStringList& files, con
     box->setObjectName(QStringLiteral("tsmediaPasteConfirm"));
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setWindowModality(Qt::WindowModal);
-    box->setLayoutDirection(i18n::direction());
-    box->setWindowTitle(i18n::t("Send to chat", "ارسال به چت"));
+    box->setLayoutDirection(Qt::LeftToRight);
+    box->setWindowTitle(i18n::t("Send to chat"));
 
     const QString where = describeTarget(target);
     QString       question;
@@ -1636,17 +1635,17 @@ void ChatIntegration::confirmPaste(QWidget* input, const QStringList& files, con
                 details.append(displayFileName(info.fileName()));
         }
         if (files.size() == 1) {
-            question = i18n::t("Send “%1” to %2?", "«%1» به %2 فرستاده شود؟").arg(details.first(), where);
+            question = i18n::t("Send “%1” to %2?").arg(details.first(), where);
             details.clear();
         } else {
-            question = i18n::t("Send %1 files to %2?", "%1 فایل به %2 فرستاده شود؟").arg(files.size()).arg(where);
+            question = i18n::t("Send %1 files to %2?").arg(files.size()).arg(where);
             if (files.size() > kPromptMaxNames)
-                details.append(i18n::t("… and %1 more", "… و %1 فایل دیگر").arg(files.size() - kPromptMaxNames));
+                details.append(i18n::t("… and %1 more").arg(files.size() - kPromptMaxNames));
         }
         details.append(formatSize(total));
         picture = box->style()->standardIcon(QStyle::SP_MessageBoxQuestion, nullptr, box).pixmap(32, 32);
     } else {
-        question = i18n::t("Send the pasted image to %1?", "تصویر چسبانده‌شده به %1 فرستاده شود؟").arg(where);
+        question = i18n::t("Send the pasted image to %1?").arg(where);
         details.append(QStringLiteral("%1 × %2").arg(image.width()).arg(image.height()));
         const qreal dpr = box->devicePixelRatioF();
         picture         = QPixmap::fromImage(image.scaled(QSize(200, 150) * dpr, Qt::KeepAspectRatio, Qt::SmoothTransformation));
@@ -1667,8 +1666,8 @@ void ChatIntegration::confirmPaste(QWidget* input, const QStringList& files, con
     detailsLabel->setWordWrap(true);
 
     auto*        buttons = new QDialogButtonBox(box);
-    QPushButton* send    = buttons->addButton(i18n::t("Send", "ارسال"), QDialogButtonBox::AcceptRole);
-    buttons->addButton(i18n::t("Cancel", "لغو"), QDialogButtonBox::RejectRole);
+    QPushButton* send    = buttons->addButton(i18n::t("Send"), QDialogButtonBox::AcceptRole);
+    buttons->addButton(i18n::t("Cancel"), QDialogButtonBox::RejectRole);
     send->setDefault(true);
     connect(buttons, &QDialogButtonBox::accepted, box, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, box, &QDialog::reject);
@@ -1735,9 +1734,8 @@ void ChatIntegration::pickAndSendFiles()
         return;
     }
     const QStringList files = QFileDialog::getOpenFileNames(
-        mainWindow(), i18n::t("Send files to chat", "ارسال فایل به چت"), lastDir,
-        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov)",
-                "همهٔ فایل‌ها (*.*);;تصویرها (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;ویدیوها (*.mp4 *.webm *.mkv *.mov)"));
+        mainWindow(), i18n::t("Send files to chat"), lastDir,
+        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov)"));
     if (files.isEmpty())
         return;
     lastDir = QFileInfo(files.first()).absolutePath();

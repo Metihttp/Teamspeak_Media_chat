@@ -7,7 +7,6 @@
 #include <QtTest>
 
 #include "blurhash.h"
-#include "i18n.h"
 #include "medialink.h"
 
 namespace {
@@ -18,7 +17,7 @@ const QString kRefHash = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj"); // the 
 const QString kBaseHref = QStringLiteral("ts3file://voice.example.org?port=9987&serverUID=uid&channel=3&path=%2Ftsmedia"
                                          "&filename=clip.mp4&isDir=0&size=100&fileDateTime=1700000000");
 
-const QString kNoteEn = QStringLiteral(" [COLOR=#8e9297][I]— TS Media chat plugin required to view this in chat[/I][/COLOR]");
+const QString kNote = QStringLiteral(" [COLOR=#8e9297][I]— TS Media chat plugin required to view this in chat[/I][/COLOR]");
 
 MediaLink sampleLink()
 {
@@ -105,9 +104,6 @@ class TestTsMedia : public QObject
     Q_OBJECT
 
   private slots:
-    void initTestCase();
-    void cleanup();
-
     // MediaLink
     void linkRoundTrip_data();
     void linkRoundTrip();
@@ -153,18 +149,7 @@ class TestTsMedia : public QObject
     void formatSize();
     void kindForFileName_data();
     void kindForFileName();
-    void i18nLanguage();
 };
-
-void TestTsMedia::initTestCase()
-{
-    i18n::setLanguage(Language::English);
-}
-
-void TestTsMedia::cleanup()
-{
-    i18n::setLanguage(Language::English);
-}
 
 // ---- MediaLink ---------------------------------------------------------------------------------
 
@@ -179,8 +164,8 @@ void TestTsMedia::linkRoundTrip_data()
     QTest::newRow("plain") << QStringLiteral("voice.example.org") << uid << QStringLiteral("/tsmedia") << QStringLiteral("photo.png");
     QTest::newRow("root dir") << QStringLiteral("127.0.0.1") << uid << QStringLiteral("/") << QStringLiteral("photo.png");
     QTest::newRow("spaces") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/my files") << QStringLiteral("my holiday photo 2024.jpg");
-    QTest::newRow("persian") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/tsmedia") << QStringLiteral("عکس تعطیلات ۱۴۰۳.jpg");
-    QTest::newRow("persian dir") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/رسانه") << QStringLiteral("ویدیو.mp4");
+    QTest::newRow("greek") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/tsmedia") << QStringLiteral("διακοπές 2024.jpg");
+    QTest::newRow("cyrillic dir") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/медиа") << QStringLiteral("видео.mp4");
     QTest::newRow("emoji") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/tsmedia") << QStringLiteral("😀 party time.gif");
     QTest::newRow("cjk") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/tsmedia") << QStringLiteral("视频 剪辑.webm");
     QTest::newRow("brackets") << QStringLiteral("ts.example.com") << uid << QStringLiteral("/tsmedia") << QStringLiteral("[draft] report (v2).pdf");
@@ -487,10 +472,10 @@ void TestTsMedia::keyMatchesV1()
     b.serverUid = QStringLiteral("Wn5SbAbc+/9xQ0pRu7Zy3pCt+Ys=");
     b.channelId = 12;
     b.path      = QStringLiteral("/tsmedia");
-    b.fileName  = QStringLiteral("عکس من.jpg");
+    b.fileName  = QStringLiteral("φωτογραφία μου.jpg");
     b.size      = 2048;
     b.blurHash  = kRefHash;
-    QCOMPARE(b.key(), QStringLiteral("ba8860a7ce16e134195a"));
+    QCOMPARE(b.key(), QStringLiteral("fa6ca2c6c38ebcdcbd36"));
 }
 
 void TestTsMedia::previewLink()
@@ -534,14 +519,11 @@ void TestTsMedia::findInComposedMessage()
 {
     const MediaLink link = sampleLink();
     for (const QString& url : {QString(), QStringLiteral("https://example.com/tsmedia")}) {
-        for (Language lang : {Language::English, Language::Persian}) {
-            i18n::setLanguage(lang);
-            const QString          message = composeChatMessage(link, true, url);
-            const QList<MediaLink> found   = MediaLink::findInMessage(message);
-            QCOMPARE(found.size(), 1); // the download link in the note is not a ts3file link
-            const QString diff = difference(found.first(), link);
-            QVERIFY2(diff.isEmpty(), qPrintable(diff));
-        }
+        const QString          message = composeChatMessage(link, true, url);
+        const QList<MediaLink> found   = MediaLink::findInMessage(message);
+        QCOMPARE(found.size(), 1); // the download link in the note is not a ts3file link
+        const QString diff = difference(found.first(), link);
+        QVERIFY2(diff.isEmpty(), qPrintable(diff));
     }
 
     // Several links in one message, mixed with ordinary URLs.
@@ -557,25 +539,20 @@ void TestTsMedia::findInComposedMessage()
 
 void TestTsMedia::composeNotice_data()
 {
-    QTest::addColumn<bool>("persian");
     QTest::addColumn<QString>("url");
     QTest::addColumn<QString>("note");
 
     const QString url = QStringLiteral("https://example.com/tsmedia");
-    QTest::newRow("en") << false << QString() << QStringLiteral("TS Media chat plugin required to view this in chat");
-    QTest::newRow("en url") << false << url << QStringLiteral("[URL=https://example.com/tsmedia]TS Media chat[/URL] plugin required to view this in chat");
-    QTest::newRow("fa") << true << QString() << QStringLiteral("برای دیدن این فایل داخل چت، پلاگین TS Media chat لازم است");
-    QTest::newRow("fa url") << true << url << QStringLiteral("برای دیدن این فایل داخل چت، پلاگین [URL=https://example.com/tsmedia]TS Media chat[/URL] لازم است");
-    QTest::newRow("en blank url") << false << QStringLiteral("   ") << QStringLiteral("TS Media chat plugin required to view this in chat");
+    QTest::newRow("no url") << QString() << QStringLiteral("TS Media chat plugin required to view this in chat");
+    QTest::newRow("url") << url << QStringLiteral("[URL=https://example.com/tsmedia]TS Media chat[/URL] plugin required to view this in chat");
+    QTest::newRow("blank url") << QStringLiteral("   ") << QStringLiteral("TS Media chat plugin required to view this in chat");
 }
 
 void TestTsMedia::composeNotice()
 {
-    QFETCH(bool, persian);
     QFETCH(QString, url);
     QFETCH(QString, note);
 
-    i18n::setLanguage(persian ? Language::Persian : Language::English);
     const MediaLink link    = sampleLink();
     const QString   message = composeChatMessage(link, true, url);
     QCOMPARE(message, link.toBBCode() + QStringLiteral(" [COLOR=#8e9297][I]— ") + note + QStringLiteral("[/I][/COLOR]"));
@@ -616,7 +593,7 @@ void TestTsMedia::composeDownloadUrlSanitising()
     QVERIFY(message.startsWith(link.toBBCode()));
     const QString note = message.mid(link.toBBCode().length());
     if (linked.isEmpty()) {
-        QCOMPARE(note, kNoteEn);
+        QCOMPARE(note, kNote);
     } else {
         QCOMPARE(note, QStringLiteral(" [COLOR=#8e9297][I]— [URL=") + linked + QStringLiteral("]TS Media chat[/URL] plugin required to view this in chat[/I][/COLOR]"));
     }
@@ -642,11 +619,11 @@ void TestTsMedia::composeSizeRule()
         bare.durationMs = 0;
 
         const QString message = composeChatMessage(link, true, QString());
-        if (utf8Bytes(link.toBBCode() + kNoteEn) < 1000) {
-            QCOMPARE(message, link.toBBCode() + kNoteEn);
+        if (utf8Bytes(link.toBBCode() + kNote) < 1000) {
+            QCOMPARE(message, link.toBBCode() + kNote);
             sawFull = true;
-        } else if (utf8Bytes(noHash.toBBCode() + kNoteEn) < 1000) {
-            QCOMPARE(message, noHash.toBBCode() + kNoteEn); // BlurHash goes first
+        } else if (utf8Bytes(noHash.toBBCode() + kNote) < 1000) {
+            QCOMPARE(message, noHash.toBBCode() + kNote); // BlurHash goes first
             sawNoHash = true;
         } else if (utf8Bytes(noHash.toBBCode()) < 1000) {
             QCOMPARE(message, noHash.toBBCode()); // then the note
@@ -683,8 +660,8 @@ void TestTsMedia::composeSizeRuleWithUrl()
         } else if (utf8Bytes(noHash.toBBCode() + noteUrl) < 1000) {
             QCOMPARE(message, noHash.toBBCode() + noteUrl);
             sawNoHash = true;
-        } else if (utf8Bytes(noHash.toBBCode() + kNoteEn) < 1000) {
-            QCOMPARE(message, noHash.toBBCode() + kNoteEn); // keep the note, without its link
+        } else if (utf8Bytes(noHash.toBBCode() + kNote) < 1000) {
+            QCOMPARE(message, noHash.toBBCode() + kNote); // keep the note, without its link
             sawPlainNote = true;
         } else if (utf8Bytes(noHash.toBBCode()) < 1000) {
             QCOMPARE(message, noHash.toBBCode());
@@ -699,12 +676,11 @@ void TestTsMedia::composeSizeRuleWithUrl()
 
 void TestTsMedia::composeSizeRuleCountsBytes()
 {
-    // Persian text is 2 bytes per letter in UTF-8 (and 6 when percent-encoded in the URL).
-    i18n::setLanguage(Language::Persian);
+    // Greek text is 2 bytes per letter in UTF-8 (and 6 when percent-encoded in the URL).
     bool sawCharsFitButBytesDont = false;
     for (int n = 1; n <= 400; ++n) {
         MediaLink link = sampleLink();
-        link.fileName  = QString(n, QChar(0x0641)) + QStringLiteral(".jpg"); // ف
+        link.fileName  = QString(n, QChar(0x03c6)) + QStringLiteral(".jpg"); // φ
         MediaLink bare = link;
         bare.blurHash.clear();
         bare.previewFile.clear();
@@ -858,7 +834,7 @@ void TestTsMedia::blurhashIsValid_data()
     QTest::newRow("bad char &") << kRefHash.left(27) + QLatin1Char('&') << false;
     QTest::newRow("space") << kRefHash.left(26) + QStringLiteral(" j") << false;
     QTest::newRow("non-ascii") << kRefHash.left(27) + QChar(0x00e9) << false;
-    QTest::newRow("persian digit") << kRefHash.left(27) + QChar(0x06f1) << false;
+    QTest::newRow("fullwidth digit") << kRefHash.left(27) + QChar(0xff11) << false;
     QTest::newRow("size flag > 80") << QStringLiteral("~0GuUZ") << false;
     QTest::newRow("wrong components") << QStringLiteral("10GuUZ") << false; // 2x1 needs 8 chars
 }
@@ -964,20 +940,6 @@ void TestTsMedia::kindForFileName()
     QFETCH(int, kind);
     QCOMPARE(int(::kindForFileName(name)), kind);
     QCOMPARE(isPreviewableImage(::kindForFileName(name)), kind == int(MediaKind::Image) || kind == int(MediaKind::AnimatedImage));
-}
-
-void TestTsMedia::i18nLanguage()
-{
-    i18n::setLanguage(Language::Persian);
-    QCOMPARE(i18n::language(), Language::Persian);
-    QVERIFY(i18n::isPersian());
-    QCOMPARE(i18n::t("Download", "دانلود"), QStringLiteral("دانلود"));
-    QCOMPARE(i18n::direction(), Qt::RightToLeft);
-
-    i18n::setLanguage(Language::English);
-    QVERIFY(!i18n::isPersian());
-    QCOMPARE(i18n::t("Download", "دانلود"), QStringLiteral("Download"));
-    QCOMPARE(i18n::direction(), Qt::LeftToRight);
 }
 
 QTEST_GUILESS_MAIN(TestTsMedia)

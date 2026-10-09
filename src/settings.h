@@ -2,8 +2,6 @@
 
 #include <QString>
 
-#include "i18n.h"
-
 struct Settings {
     // Valid values of the numeric settings, defined once: load() clamps to them and SettingsDialog
     // offers exactly these ranges.
@@ -48,10 +46,9 @@ struct Settings {
     QString uploadDirectory = QString::fromLatin1("/tsmedia");
 
     // General
-    Language language     = Language::Auto;
-    int      cacheLimitMB = 1024; // oldest cached media is deleted beyond this
+    int cacheLimitMB = 1024; // oldest cached media is deleted beyond this
 
     static Settings& instance();
-    void             load(); // also applies the language to i18n
+    void             load();
     void             save() const;
 };

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.0.6 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.0.7 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -81,7 +81,7 @@ set_target_properties(tsmedia PROPERTIES
     PREFIX ""
 )
 
-# ---- unit tests (pure logic: link format, blurhash, i18n) -------------------------------------
+# ---- unit tests (pure logic: link format, chat message, blurhash) -----------------------------
 option(TSMEDIA_BUILD_TESTS "Build unit tests" ON)
 if(TSMEDIA_BUILD_TESTS)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)

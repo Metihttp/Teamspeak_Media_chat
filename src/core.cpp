@@ -181,12 +181,12 @@ QString uniqueSuffix()
 
 QString nameTakenText()
 {
-    return i18n::t("A file with this name already exists on the server.", "فایلی با همین نام از قبل روی سرور هست.");
+    return i18n::t("A file with this name already exists on the server.");
 }
 
 QString fileChangedText()
 {
-    return i18n::t("The file on the server is no longer the one that was sent", "فایل روی سرور دیگر همان فایلی نیست که فرستاده شده بود");
+    return i18n::t("The file on the server is no longer the one that was sent");
 }
 
 // Transfer failures caused by the connection rather than by the file: restarted automatically.
@@ -888,12 +888,12 @@ void Core::finishDownload(const QString& key)
 
     QString error;
     if (found.isEmpty()) {
-        error = i18n::t("The downloaded file is missing", "فایل دانلودشده پیدا نشد");
+        error = i18n::t("The downloaded file is missing");
     } else {
         QDir().mkpath(QFileInfo(e.localPath).absolutePath());
         QFile::remove(e.localPath);
         if (!QFile::rename(found, e.localPath) && !QFile::copy(found, e.localPath))
-            error = i18n::t("Could not write to the media cache", "نوشتن در کش رسانه ممکن نشد");
+            error = i18n::t("Could not write to the media cache");
     }
     QDir(partial).removeRecursively();
     if (!error.isEmpty()) {
@@ -1455,11 +1455,11 @@ void Core::saveAs(const QString& key, QWidget* parent) const
     }
 
     const QString ext    = QFileInfo(name).suffix();
-    QString       filter = i18n::t("All files (*)", "همه فایل‌ها (*)");
+    QString       filter = i18n::t("All files (*)");
     if (!ext.isEmpty())
-        filter.prepend(i18n::t("%1 files (*.%2)", "فایل‌های %1 (*.%2)").arg(ext.toUpper(), ext) + QStringLiteral(";;"));
+        filter.prepend(i18n::t("%1 files (*.%2)").arg(ext.toUpper(), ext) + QStringLiteral(";;"));
 
-    const QString title  = i18n::t("Save as", "ذخیره با نام");
+    const QString title  = i18n::t("Save as");
     const QString target = QFileDialog::getSaveFileName(parent, title, QDir(dir).filePath(name), filter);
     if (target.isEmpty())
         return;
@@ -1470,13 +1470,13 @@ void Core::saveAs(const QString& key, QWidget* parent) const
     // The dialog already confirmed overwriting.
     const bool ok = QFileInfo(localPath).isFile() && (!QFile::exists(target) || QFile::remove(target)) && QFile::copy(localPath, target);
     if (!ok) {
-        // Not QMessageBox::warning: its OK button follows TeamSpeak's language (Qt has no Persian
-        // translation) and a top-level box does not take the plugin's layout direction.
-        QMessageBox box(QMessageBox::Warning, title, i18n::t("Could not save the file to %1.", "ذخیره فایل در %1 ممکن نشد.").arg(QDir::toNativeSeparators(target)),
+        // Not QMessageBox::warning: its OK button follows TeamSpeak's language, and a top-level box
+        // takes TeamSpeak's layout direction instead of the plugin's left-to-right one.
+        QMessageBox box(QMessageBox::Warning, title, i18n::t("Could not save the file to %1.").arg(QDir::toNativeSeparators(target)),
                         QMessageBox::Ok, parent);
-        box.setLayoutDirection(i18n::direction());
+        box.setLayoutDirection(Qt::LeftToRight);
         if (QAbstractButton* okButton = box.button(QMessageBox::Ok))
-            okButton->setText(i18n::t("OK", "تأیید"));
+            okButton->setText(i18n::t("OK"));
         box.exec();
     }
 }
@@ -1535,7 +1535,7 @@ void Core::uploadFiles(const QStringList& paths, const ChatTarget& target)
     for (const QString& path : paths) {
         const QFileInfo fi(path);
         if (!fi.exists() || !fi.isFile()) {
-            ts3::printWarning(target.sch ? target.sch : ts3::currentConnection(), i18n::t("File not found: %1", "فایل پیدا نشد: %1").arg(path));
+            ts3::printWarning(target.sch ? target.sch : ts3::currentConnection(), i18n::t("File not found: %1").arg(path));
             continue;
         }
         createUpload(fi.absoluteFilePath(), makeRemoteName(fi.fileName()), target, false);
@@ -1568,7 +1568,7 @@ void Core::uploadImage(const QImage& image, const ChatTarget& target)
 
     const QString path = dir + QLatin1Char('/') + name;
     if (!writeFile(path, data)) {
-        ts3::printWarning(target.sch ? target.sch : ts3::currentConnection(), i18n::t("Could not save the pasted image.", "ذخیره تصویر چسبانده‌شده ممکن نشد."));
+        ts3::printWarning(target.sch ? target.sch : ts3::currentConnection(), i18n::t("Could not save the pasted image."));
         return;
     }
     createUpload(path, name, target, true);
@@ -1581,7 +1581,7 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
         target.sch = ts3::currentConnection();
 
     if (!ts3::isConnected(target.sch)) {
-        ts3::printWarning(ts3::currentConnection(), i18n::t("You are not connected to a server.", "به هیچ سروری وصل نیستید."));
+        ts3::printWarning(ts3::currentConnection(), i18n::t("You are not connected to a server."));
         if (deleteSource)
             QFile::remove(sourcePath);
         return 0;
@@ -1598,7 +1598,7 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     job.remoteName   = remoteName;
     job.size         = static_cast<quint64>(QFileInfo(sourcePath).size());
     job.state        = UploadState::Preparing;
-    job.message      = i18n::t("Preparing…", "در حال آماده‌سازی…");
+    job.message      = i18n::t("Preparing…");
     const int id     = job.id;
     m_uploads.insert(id, job);
     emit uploadChanged(id);
@@ -1606,15 +1606,15 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     UploadJob&    j     = m_uploads[id];
     const quint64 limit = megabytes(s.uploadMaxMB);
     if (j.size > limit) {
-        failUpload(id, i18n::t("File is larger than the %1 MB upload limit (see settings).", "حجم فایل از سقف آپلود (%1 مگابایت) بیشتر است؛ تنظیمات را ببینید.").arg(s.uploadMaxMB));
+        failUpload(id, i18n::t("File is larger than the %1 MB upload limit (see settings).").arg(s.uploadMaxMB));
         return id;
     }
     if (j.size == 0) {
-        failUpload(id, i18n::t("File is empty.", "فایل خالی است."));
+        failUpload(id, i18n::t("File is empty."));
         return id;
     }
     if (ts3::channelHasPassword(target.sch, j.channelId)) {
-        failUpload(id, i18n::t("Uploading to password-protected channels is not supported yet.", "آپلود در کانال‌های رمزدار هنوز پشتیبانی نمی‌شود."));
+        failUpload(id, i18n::t("Uploading to password-protected channels is not supported yet."));
         return id;
     }
 
@@ -1680,18 +1680,18 @@ void Core::onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInf
         return;
     }
     if (!staged) {
-        failUpload(id, i18n::t("Could not read the file.", "خواندن فایل ممکن نشد."));
+        failUpload(id, i18n::t("Could not read the file."));
         return;
     }
     // The staged copy is what gets uploaded: its size goes into the link (the original may have
     // changed since it was checked).
     const Settings& s = Settings::instance();
     if (stagedSize == 0) {
-        failUpload(id, i18n::t("File is empty.", "فایل خالی است."));
+        failUpload(id, i18n::t("File is empty."));
         return;
     }
     if (stagedSize > megabytes(s.uploadMaxMB)) {
-        failUpload(id, i18n::t("File is larger than the %1 MB upload limit (see settings).", "حجم فایل از سقف آپلود (%1 مگابایت) بیشتر است؛ تنظیمات را ببینید.").arg(s.uploadMaxMB));
+        failUpload(id, i18n::t("File is larger than the %1 MB upload limit (see settings).").arg(s.uploadMaxMB));
         return;
     }
     UploadJob& job = it.value();
@@ -1881,7 +1881,7 @@ void Core::startSend(int id)
     job.transferId     = tid;
     job.transferActive = true;
     m_uploadsByTransfer.insert(tid, id);
-    setUploadState(job, UploadState::Uploading, i18n::t("Uploading…", "در حال آپلود…"));
+    setUploadState(job, UploadState::Uploading, i18n::t("Uploading…"));
     ensureProgressTimer();
 }
 
@@ -1987,21 +1987,21 @@ void Core::finishUpload(int id)
     }
     if (err != ERROR_ok) {
         forgetOp(rc);
-        failUpload(id, i18n::t("Uploaded, but the chat message could not be sent: %1", "فایل آپلود شد، اما پیام چت ارسال نشد: %1").arg(ts3::errorText(err)));
+        failUpload(id, i18n::t("Uploaded, but the chat message could not be sent: %1").arg(ts3::errorText(err)));
         scheduleCacheLimit(link.key());
         return;
     }
 
     job.progress = 1.0;
     ts3::log(QStringLiteral("Uploaded %1 (%2)").arg(joinRemote(job.remoteDir, job.remoteName), formatSize(job.size)), LogLevel_INFO, job.target.sch);
-    setUploadState(job, UploadState::Posting, i18n::t("Sending…", "در حال ارسال…"));
+    setUploadState(job, UploadState::Posting, i18n::t("Sending…"));
     QTimer::singleShot(kPostTimeoutMs, this, [this, rc, id] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
         auto jt = m_uploads.find(id);
         if (jt != m_uploads.end() && jt->state == UploadState::Posting)
-            setUploadState(jt.value(), UploadState::Done, i18n::t("Sent", "ارسال شد"));
+            setUploadState(jt.value(), UploadState::Done, i18n::t("Sent"));
     });
     scheduleCacheLimit(link.key());
 }
@@ -2050,7 +2050,7 @@ void Core::failUpload(int id, const QString& text)
     if (job.transferActive)
         m_uploadsByTransfer.remove(job.transferId);
     job.transferActive = false;
-    ts3::printWarning(job.target.sch, i18n::t("Could not send %1: %2", "ارسال %1 ممکن نشد: %2").arg(QFileInfo(job.sourcePath).fileName(), text));
+    ts3::printWarning(job.target.sch, i18n::t("Could not send %1: %2").arg(QFileInfo(job.sourcePath).fileName(), text));
     setUploadState(job, UploadState::Failed, text);
 }
 
@@ -2070,7 +2070,7 @@ void Core::cancelUpload(int id)
     }
     // A running probe, folder request or preview upload notices the state change (cleanupUpload
     // halts the preview transfer).
-    setUploadState(job, UploadState::Canceled, i18n::t("Canceled", "لغو شد"));
+    setUploadState(job, UploadState::Canceled, i18n::t("Canceled"));
 }
 
 const UploadJob* Core::upload(int id) const
@@ -2329,9 +2329,9 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
         if (job == m_uploads.end())
             break;
         if (ok)
-            setUploadState(job.value(), UploadState::Done, i18n::t("Sent", "ارسال شد"));
+            setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
         else
-            failUpload(op.uploadId, i18n::t("Uploaded, but the chat message was rejected: %1", "فایل آپلود شد، اما سرور پیام چت را نپذیرفت: %1").arg(describe(mapped, message)));
+            failUpload(op.uploadId, i18n::t("Uploaded, but the chat message was rejected: %1").arg(describe(mapped, message)));
         break;
     }
     }
@@ -2401,7 +2401,7 @@ void Core::onConnectionLost(uint64 sch)
             ids.append(job.id);
     }
     for (int id : qAsConst(ids))
-        failUpload(id, i18n::t("Disconnected from the server.", "ارتباط با سرور قطع شد."));
+        failUpload(id, i18n::t("Disconnected from the server."));
 }
 
 // ============================================================================================
@@ -2620,18 +2620,18 @@ QString Core::describe(MediaError error, const QString& fallback)
 {
     switch (error) {
     case MediaError::Permission:
-        return i18n::t("You don't have permission for this file on this server", "در این سرور اجازه دسترسی به این فایل را ندارید");
+        return i18n::t("You don't have permission for this file on this server");
     case MediaError::Password:
-        return i18n::t("The channel is password protected", "این کانال رمز دارد");
+        return i18n::t("The channel is password protected");
     case MediaError::NotFound:
-        return i18n::t("The file no longer exists on the server", "این فایل دیگر روی سرور وجود ندارد");
+        return i18n::t("The file no longer exists on the server");
     case MediaError::NotConnected:
-        return i18n::t("Not connected to the server this file is on", "به سروری که این فایل روی آن است وصل نیستید");
+        return i18n::t("Not connected to the server this file is on");
     case MediaError::Quota:
-        return i18n::t("The server's file transfer quota is exhausted", "سهمیه انتقال فایل سرور تمام شده است");
+        return i18n::t("The server's file transfer quota is exhausted");
     case MediaError::None:
     case MediaError::Other:
         break;
     }
-    return fallback.isEmpty() ? i18n::t("Transfer failed", "انتقال ناموفق بود") : fallback;
+    return fallback.isEmpty() ? i18n::t("Transfer failed") : fallback;
 }

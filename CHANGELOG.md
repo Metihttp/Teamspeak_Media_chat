@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were not released on GitHub, so they have no release date.
 
+## [2.0.7] - 2026-10-09
+
+### Removed
+
+- The Persian user interface and the UI language setting; the plugin is English only (an old language entry in
+  `settings.ini` is ignored).
+
+### Changed
+
+- The plugin-required note is always in English.
+
 ## [2.0.6] - 2026-10-09
 
 ### Changed
@@ -88,4 +99,5 @@ Version 2.0.6 is the first public release. Earlier versions were not released on
   everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.0.7]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.0.7
 [2.0.6]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.0.6

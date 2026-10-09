@@ -85,10 +85,8 @@ void showSettings(QWidget* parent)
 
 void printHelp(uint64 sch)
 {
-    ts3::printInfo(sch, i18n::t(TSMEDIA_NAME " " TSMEDIA_VERSION " — commands: /tsmedia send | settings | cache | debug",
-                                TSMEDIA_NAME " " TSMEDIA_VERSION " — دستورها: /tsmedia send | settings | cache | debug"));
-    ts3::printInfo(sch, i18n::t("Drop files on the chat or paste a screenshot (Ctrl+V) into the chat line to send it.",
-                                "برای ارسال، فایل را روی چت رها کنید یا اسکرین‌شات را با Ctrl+V در خط چت بچسبانید."));
+    ts3::printInfo(sch, i18n::t(TSMEDIA_NAME " " TSMEDIA_VERSION " — commands: /tsmedia send | settings | cache | debug"));
+    ts3::printInfo(sch, i18n::t("Drop files on the chat or paste a screenshot (Ctrl+V) into the chat line to send it."));
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -202,7 +200,7 @@ TS3_EXPORT int ts3plugin_init()
     if (!qApp)
         return 1;
 
-    Settings::instance().load(); // also selects the UI language, before menus are created
+    Settings::instance().load();
 
     auto* core = new Core;
     auto* chat = new ChatIntegration(core);
@@ -313,7 +311,7 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
             QFile         file(path);
             if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 file.write(g_chat->dumpWidgetTree().toUtf8());
-                ts3::printInfo(sch, i18n::t("Widget dump written to %1", "فهرست ویجت‌ها در %1 ذخیره شد").arg(path));
+                ts3::printInfo(sch, i18n::t("Widget dump written to %1").arg(path));
             }
         });
     } else {
@@ -339,9 +337,9 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
         QString text;
     };
     const Item items[] = {
-        {MenuSend, i18n::t("Send file / image to chat…", "ارسال فایل یا تصویر به چت…")},
-        {MenuSettings, i18n::t("Settings…", "تنظیمات…")},
-        {MenuCache, i18n::t("Open media cache folder", "باز کردن پوشهٔ کش رسانه‌ها")},
+        {MenuSend, i18n::t("Send file / image to chat…")},
+        {MenuSettings, i18n::t("Settings…")},
+        {MenuCache, i18n::t("Open media cache folder")},
     };
     constexpr size_t count = sizeof(items) / sizeof(items[0]);
 
@@ -363,7 +361,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
     *hotkeys = static_cast<PluginHotkey**>(malloc(sizeof(PluginHotkey*) * 2));
     auto* hk = static_cast<PluginHotkey*>(malloc(sizeof(PluginHotkey)));
     copyText(hk->keyword, PLUGIN_HOTKEY_BUFSZ, QStringLiteral("tsmedia_send"));
-    copyText(hk->description, PLUGIN_HOTKEY_BUFSZ, i18n::t("Send file / image to the current chat", "ارسال فایل یا تصویر به چت فعلی"));
+    copyText(hk->description, PLUGIN_HOTKEY_BUFSZ, i18n::t("Send file / image to the current chat"));
     (*hotkeys)[0] = hk;
     (*hotkeys)[1] = nullptr;
 }

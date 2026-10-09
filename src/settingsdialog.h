@@ -4,14 +4,13 @@
 
 class Core;
 class QCheckBox;
-class QComboBox;
 class QLabel;
 class QLineEdit;
 class QSlider;
 class QSpinBox;
 struct Settings;
 
-// Plugin settings: Receiving, Playback, Sending and General (language, cache).
+// Plugin settings: Receiving, Playback, Sending and General (cache).
 // The window's objectName starts with "tsmedia" so plugin shutdown can close it.
 class SettingsDialog : public QDialog
 {
@@ -57,8 +56,7 @@ class SettingsDialog : public QDialog
     QLineEdit* m_uploadDir;
 
     // General
-    QComboBox* m_language;
-    QSpinBox*  m_cacheLimit;
-    QLabel*    m_cacheLabel;
-    quint64    m_cacheUsed = 0; // bytes, measured when the dialog opens and after clearing
+    QSpinBox* m_cacheLimit;
+    QLabel*   m_cacheLabel;
+    quint64   m_cacheUsed = 0; // bytes, measured when the dialog opens and after clearing
 };

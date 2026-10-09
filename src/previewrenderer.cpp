@@ -365,7 +365,7 @@ void drawRing(QPainter& p, const QPointF& center, qreal radius, qreal width, dou
 
 QString percentText(double progress)
 {
-    return i18n::t("%1%", "%1٪").arg(qRound(qBound(0.0, progress, 1.0) * 100.0));
+    return i18n::t("%1%").arg(qRound(qBound(0.0, progress, 1.0) * 100.0));
 }
 
 QString joinDot(const QString& a, const QString& b)
@@ -377,21 +377,13 @@ QString joinDot(const QString& a, const QString& b)
     return a + QStringLiteral("  ·  ") + b;
 }
 
-// Keeps a number with a Latin unit ("23.6 MB") in reading order inside Persian sentences.
-QString ltrRun(const QString& text)
-{
-    if (text.isEmpty() || i18n::direction() == Qt::LeftToRight)
-        return text;
-    return QChar(0x202A) + text + QChar(0x202C); // LEFT-TO-RIGHT EMBEDDING ... POP DIRECTIONAL FORMATTING
-}
-
 QString sizeText(const MediaEntry& e)
 {
-    return e.link.size ? ltrRun(formatSize(e.link.size)) : QString();
+    return e.link.size ? formatSize(e.link.size) : QString();
 }
 
-// File names keep their own reading direction (from their first strong character), whatever the
-// UI's: in the Persian UI "2024-05-01_12-00-00.mkv" must not turn into "mkv.12-00-00_2024-05-01".
+// File names keep their own reading direction (from their first strong character): a name in a
+// right-to-left script reads right-to-left, "2024-05-01_12-00-00.mkv" left-to-right.
 // shown: the elided displayFileName(); align still decides the side (use Qt::AlignAbsolute).
 void drawFileName(QPainter& p, const QRectF& rect, Qt::Alignment align, const QString& shown)
 {
@@ -408,25 +400,25 @@ QString errorTitle(const MediaEntry& e)
 {
     switch (e.error) {
     case MediaError::NotFound:
-        return i18n::t("File was deleted from the server", "این فایل از روی سرور پاک شده است");
+        return i18n::t("File was deleted from the server");
     case MediaError::Permission:
-        return i18n::t("No permission to download", "اجازهٔ دانلود ندارید");
+        return i18n::t("No permission to download");
     case MediaError::Password:
-        return i18n::t("Channel is password protected", "کانال رمز عبور دارد");
+        return i18n::t("Channel is password protected");
     case MediaError::NotConnected:
-        return i18n::t("Not connected to this server", "به این سرور وصل نیستید");
+        return i18n::t("Not connected to this server");
     case MediaError::Quota:
-        return i18n::t("Server transfer quota reached", "سهمیهٔ انتقال فایل سرور تمام شده است");
+        return i18n::t("Server transfer quota reached");
     case MediaError::None:
     case MediaError::Other:
         break;
     }
-    return e.errorText.isEmpty() ? i18n::t("Download failed", "دانلود انجام نشد") : e.errorText;
+    return e.errorText.isEmpty() ? i18n::t("Download failed") : e.errorText;
 }
 
 QString retryHint()
 {
-    return i18n::t("click to retry", "برای تلاش دوباره کلیک کنید");
+    return i18n::t("click to retry");
 }
 
 QString cardStatus(const MediaEntry& e, bool imageDecodeFailed)
@@ -435,20 +427,20 @@ QString cardStatus(const MediaEntry& e, bool imageDecodeFailed)
     switch (e.state) {
     case MediaState::Idle:
         if (e.tooLargeForAuto)
-            return joinDot(size, i18n::t("Large file — click to load", "فایل بزرگ — برای بارگذاری کلیک کنید"));
-        return joinDot(size, i18n::t("Click to download", "برای دانلود کلیک کنید"));
+            return joinDot(size, i18n::t("Large file — click to load"));
+        return joinDot(size, i18n::t("Click to download"));
     case MediaState::Queued:
-        return joinDot(size, i18n::t("Waiting…", "در صف دانلود…"));
+        return joinDot(size, i18n::t("Waiting…"));
     case MediaState::Downloading: {
         const int percent = qRound(qBound(0.0, e.progress, 1.0) * 100.0);
         if (size.isEmpty())
-            return i18n::t("Downloading…  %1%", "در حال دانلود…  %1٪").arg(percent);
-        return i18n::t("Downloading…  %1% of %2", "در حال دانلود…  %1٪ از %2").arg(percent).arg(size);
+            return i18n::t("Downloading…  %1%").arg(percent);
+        return i18n::t("Downloading…  %1% of %2").arg(percent).arg(size);
     }
     case MediaState::Ready:
         if (imageDecodeFailed)
-            return joinDot(size, i18n::t("Can't preview — click to open", "پیش‌نمایش ممکن نیست — برای باز کردن کلیک کنید"));
-        return joinDot(size, i18n::t("Click to open", "برای باز کردن کلیک کنید"));
+            return joinDot(size, i18n::t("Can't preview — click to open"));
+        return joinDot(size, i18n::t("Click to open"));
     case MediaState::Failed:
         return isRetryable(e) ? joinDot(errorTitle(e), retryHint()) : errorTitle(e);
     }
@@ -460,7 +452,7 @@ QString cardStatus(const MediaEntry& e, bool imageDecodeFailed)
 // Small dark label on top of media (duration, size, GIF badge, hints).
 enum class PillIcon { None, Download, Open, Progress };
 
-QRectF drawPill(QPainter& p, const QRectF& bounds, Qt::Corner corner, PillIcon icon, double progress, const QString& text, const QFont& font, bool rtl)
+QRectF drawPill(QPainter& p, const QRectF& bounds, Qt::Corner corner, PillIcon icon, double progress, const QString& text, const QFont& font)
 {
     const QFontMetricsF fm(font);
     const qreal         height   = qCeil(fm.height()) + 6.0;
@@ -486,11 +478,10 @@ QRectF drawPill(QPainter& p, const QRectF& bounds, Qt::Corner corner, PillIcon i
     p.setBrush(QColor(0, 0, 0, 165));
     p.drawRoundedRect(pill, 4, 4);
 
-    // Icon first in reading order.
-    const qreal  contentLeft  = pill.left() + 7.0;
-    const qreal  contentRight = pill.right() - 7.0;
-    const QRectF iconRect(rtl ? contentRight - iconSize : contentLeft, pill.top() + 4.0, iconSize, iconSize);
-    const QRectF textRect(rtl ? contentRight - iconSize - gap - textW : contentLeft + iconSize + gap, pill.top(), textW, height);
+    // Icon first, then the text.
+    const qreal  contentLeft = pill.left() + 7.0;
+    const QRectF iconRect(contentLeft, pill.top() + 4.0, iconSize, iconSize);
+    const QRectF textRect(contentLeft + iconSize + gap, pill.top(), textW, height);
 
     switch (icon) {
     case PillIcon::Download:
@@ -509,7 +500,7 @@ QRectF drawPill(QPainter& p, const QRectF& bounds, Qt::Corner corner, PillIcon i
     if (!text.isEmpty()) {
         p.setFont(font);
         p.setPen(Qt::white);
-        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignAbsolute | (rtl ? Qt::AlignRight : Qt::AlignLeft), fm.elidedText(text, Qt::ElideRight, textRect.width()));
+        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute, fm.elidedText(text, Qt::ElideRight, textRect.width()));
     }
     return pill;
 }
@@ -618,14 +609,13 @@ void drawBackdrop(QPainter& p, const QImage& pixels, const QRectF& bounds, bool 
 QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Source source, bool animatedFrame, const MediaLayout& layout, const PreviewStyle& style, QSize* logicalSize)
 {
     const Palette pal = paletteFor(style.dark);
-    const bool    rtl = i18n::direction() == Qt::RightToLeft;
     if (logicalSize)
         *logicalSize = layout.box;
 
     QImage   out = makeCanvas(layout.box, ratioOf(style));
     QPainter p(&out);
     preparePainter(p);
-    p.setLayoutDirection(rtl ? Qt::RightToLeft : Qt::LeftToRight);
+    p.setLayoutDirection(Qt::LeftToRight);
 
     const QRectF bounds(QPointF(0, 0), QSizeF(layout.box));
     QPainterPath clip;
@@ -654,9 +644,9 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
         if (full)
             break;
         if (pixels.isNull())
-            drawCenterMessage(p, bounds, i18n::t("Can't preview this image", "پیش‌نمایش این تصویر ممکن نیست"), i18n::t("click to open", "برای باز کردن کلیک کنید"), false, style);
+            drawCenterMessage(p, bounds, i18n::t("Can't preview this image"), i18n::t("click to open"), false, style);
         else
-            drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Open, -1, i18n::t("Click to open", "برای باز کردن کلیک کنید"), pillFont, rtl);
+            drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Open, -1, i18n::t("Click to open"), pillFont);
         break;
     case MediaState::Queued:
         drawProgressDisc(p, bounds, 44, -1, false, style);
@@ -670,7 +660,7 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
             drawButtonDisc(p, disc, false);
             drawDownloadIcon(p, disc.adjusted(disc.width() * 0.27, disc.height() * 0.27, -disc.width() * 0.27, -disc.height() * 0.27), Qt::white);
         }
-        drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Download, -1, sizeText(e), pillFont, rtl);
+        drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Download, -1, sizeText(e), pillFont);
         break;
     case MediaState::Failed:
         drawCenterMessage(p, bounds, errorTitle(e), isRetryable(e) ? retryHint() : QString(), true, style);
@@ -787,22 +777,20 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const QSize   size = cardSize(style);
     const qreal   w    = size.width();
     const qreal   h    = size.height();
-    const bool    rtl  = i18n::direction() == Qt::RightToLeft;
     if (logicalSize)
         *logicalSize = size;
-    auto mirrored = [rtl, w](const QRectF& r) { return rtl ? QRectF(w - r.right(), r.top(), r.width(), r.height()) : r; };
 
     QImage   out = makeCanvas(size, ratioOf(style));
     QPainter p(&out);
     preparePainter(p);
-    p.setLayoutDirection(rtl ? Qt::RightToLeft : Qt::LeftToRight);
+    p.setLayoutDirection(Qt::LeftToRight);
 
     p.setPen(QPen(pal.border, 1));
     p.setBrush(pal.background);
     p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), kRadius, kRadius);
 
     const bool   failed = e.state == MediaState::Failed;
-    const QRectF glyph  = mirrored(QRectF(14, 11, 32, 40));
+    const QRectF glyph(14, 11, 32, 40);
     drawFileGlyph(p, glyph, glyphColor(e), extensionLabel(e), style);
     if (failed) {
         const QRectF badge(glyph.right() - 6, glyph.bottom() - 11, 15, 15);
@@ -830,7 +818,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
         action = isRetryable(e) ? Action::Retry : Action::None;
         break;
     }
-    const QRectF actionRect = mirrored(QRectF(w - 14 - 22, (h - 22) / 2.0, 22, 22));
+    const QRectF actionRect(w - 14 - 22, (h - 22) / 2.0, 22, 22);
     switch (action) {
     case Action::Download:
         drawDownloadIcon(p, actionRect, pal.muted);
@@ -858,25 +846,25 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const QFontMetricsF subFm(subFont);
     const qreal         blockHeight = titleFm.height() + 3 + subFm.height();
     const qreal         top         = (h - blockHeight) / 2.0 - (e.state == MediaState::Downloading ? 2.0 : 0.0);
-    const auto          align       = Qt::AlignVCenter | Qt::AlignAbsolute | (rtl ? Qt::AlignRight : Qt::AlignLeft);
+    const auto          align       = Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute;
 
     p.setFont(titleFont);
     p.setPen(e.state == MediaState::Ready ? pal.link : pal.title);
-    drawFileName(p, mirrored(QRectF(textStart, top, textWidth, titleFm.height())), align,
+    drawFileName(p, QRectF(textStart, top, textWidth, titleFm.height()), align,
                  titleFm.elidedText(displayFileName(e.link.fileName), Qt::ElideMiddle, textWidth));
 
     p.setFont(subFont);
     p.setPen(failed ? pal.error : pal.muted);
-    p.drawText(mirrored(QRectF(textStart, top + titleFm.height() + 3, textWidth, subFm.height())), align,
+    p.drawText(QRectF(textStart, top + titleFm.height() + 3, textWidth, subFm.height()), align,
                subFm.elidedText(cardStatus(e, imageDecodeFailed), Qt::ElideRight, textWidth));
 
     if (e.state == MediaState::Downloading) {
-        const QRectF track = mirrored(QRectF(textStart, h - 9, textWidth, 3));
+        const QRectF track(textStart, h - 9, textWidth, 3);
         p.setPen(Qt::NoPen);
         p.setBrush(pal.track);
         p.drawRoundedRect(track, 1.5, 1.5);
         const qreal  filled = qMax(3.0, track.width() * qBound(0.0, e.progress, 1.0));
-        const QRectF done   = rtl ? QRectF(track.right() - filled, track.top(), filled, track.height()) : QRectF(track.topLeft(), QSizeF(filled, track.height()));
+        const QRectF done(track.topLeft(), QSizeF(filled, track.height()));
         p.setBrush(kAccent);
         p.drawRoundedRect(done, 1.5, 1.5);
     }
@@ -894,8 +882,7 @@ struct VideoGeometry {
     QRectF time;
 };
 
-// Shared by renderVideo() and the hit tests so they can never disagree. Controls are always laid
-// out left-to-right (media playback convention, also in RTL languages).
+// Shared by renderVideo() and the hit tests so they can never disagree.
 VideoGeometry videoGeometry(const QSizeF& size)
 {
     const qreal   w       = size.width();
@@ -973,7 +960,6 @@ void drawVideoControls(QPainter& p, const QRectF& bounds, const PlaybackOverlay&
     if (fm.horizontalAdvance(time) <= g.time.width()) {
         p.setFont(font);
         p.setPen(QColor(255, 255, 255, 235));
-        p.setLayoutDirection(Qt::LeftToRight);
         p.drawText(g.time, Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute, time);
     }
 }
@@ -1022,14 +1008,13 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
 {
     const QSizeF natural = linkSize(entry);
     const QSize  box     = mediaLayout(natural.isEmpty() ? QSizeF(16, 9) : natural, style, true).box;
-    const bool   rtl     = i18n::direction() == Qt::RightToLeft;
     if (logicalSize)
         *logicalSize = box;
 
     QImage   out = makeCanvas(box, ratioOf(style));
     QPainter p(&out);
     preparePainter(p);
-    p.setLayoutDirection(rtl ? Qt::RightToLeft : Qt::LeftToRight);
+    p.setLayoutDirection(Qt::LeftToRight);
 
     const QRectF bounds(QPointF(0, 0), QSizeF(box));
     QPainterPath clip;
@@ -1063,7 +1048,7 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
         p.setFont(font);
         p.setPen(QColor(255, 255, 255, 225));
         const QRectF nameRect(12, 8, bounds.width() - 24, fm.height());
-        drawFileName(p, nameRect, Qt::AlignVCenter | Qt::AlignAbsolute | (rtl ? Qt::AlignRight : Qt::AlignLeft),
+        drawFileName(p, nameRect, Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute,
                      fm.elidedText(displayFileName(entry.link.fileName), Qt::ElideMiddle, nameRect.width()));
     }
 
@@ -1101,21 +1086,18 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
                 drawSpeakerIcon(p, disc.adjusted(6, 6, -6, -6), Qt::white, true);
             }
         } else {
-            if (durationMs > 0) {
-                p.setLayoutDirection(Qt::LeftToRight);
-                drawPill(p, bounds, Qt::BottomRightCorner, PillIcon::None, -1, formatDuration(durationMs), pillFont, false);
-                p.setLayoutDirection(rtl ? Qt::RightToLeft : Qt::LeftToRight);
-            }
+            if (durationMs > 0)
+                drawPill(p, bounds, Qt::BottomRightCorner, PillIcon::None, -1, formatDuration(durationMs), pillFont);
             if (!overlay.busy && !started) {
                 switch (entry.state) {
                 case MediaState::Idle:
-                    drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Download, -1, sizeText(entry), pillFont, rtl);
+                    drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Download, -1, sizeText(entry), pillFont);
                     break;
                 case MediaState::Queued:
-                    drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, -1, i18n::t("Waiting…", "در صف دانلود…"), pillFont, rtl);
+                    drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, -1, i18n::t("Waiting…"), pillFont);
                     break;
                 case MediaState::Downloading:
-                    drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, entry.progress, percentText(entry.progress), pillFont, rtl);
+                    drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, entry.progress, percentText(entry.progress), pillFont);
                     break;
                 case MediaState::Ready:
                 case MediaState::Failed:
@@ -1160,7 +1142,7 @@ QString displayFileName(const QString& name)
     out.reserve(name.size());
     for (const QChar ch : name) {
         const ushort u = ch.unicode();
-        // LRM, RLM, ALM; LRE, RLE, PDF, LRO, RLO; LRI, RLI, FSI, PDI. (ZWNJ/ZWJ stay: Persian needs them.)
+        // LRM, RLM, ALM; LRE, RLE, PDF, LRO, RLO; LRI, RLI, FSI, PDI. (ZWNJ/ZWJ stay: some scripts need them.)
         const bool bidiControl = u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
         const QChar::Category category = ch.category();
         if (bidiControl || category == QChar::Other_Control || category == QChar::Separator_Line || category == QChar::Separator_Paragraph)

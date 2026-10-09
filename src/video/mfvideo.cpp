@@ -180,18 +180,17 @@ QString codecName(const GUID& subtype, const char** storeApp)
 
 QString platformUnavailableText()
 {
-    return i18n::t("Windows video support (Media Foundation) is not available. On Windows N editions, install the Media Feature Pack.",
-                   "پشتیبانی ویدیوی ویندوز (Media Foundation) در دسترس نیست. در نسخه‌های N ویندوز، Media Feature Pack را نصب کنید.");
+    return i18n::t("Windows video support (Media Foundation) is not available. On Windows N editions, install the Media Feature Pack.");
 }
 
 QString unsupportedFormatText()
 {
-    return i18n::t("This file format can't be played on this computer.", "این قالب فایل روی این رایانه قابل پخش نیست.");
+    return i18n::t("This file format can't be played on this computer.");
 }
 
 QString damagedText()
 {
-    return i18n::t("The video could not be decoded. The file may be damaged.", "ویدیو رمزگشایی نشد. ممکن است فایل خراب باشد.");
+    return i18n::t("The video could not be decoded. The file may be damaged.");
 }
 
 QString missingDecoderText(const GUID& subtype)
@@ -201,11 +200,10 @@ QString missingDecoderText(const GUID& subtype)
     if (codec.isEmpty())
         return unsupportedFormatText();
     if (storeApp) {
-        return i18n::t("No %1 video decoder is installed on this computer. Install “%2” from the Microsoft Store.",
-                       "رمزگشای ویدیوی %1 روی این رایانه نصب نیست. «%2» را از Microsoft Store نصب کنید.")
+        return i18n::t("No %1 video decoder is installed on this computer. Install “%2” from the Microsoft Store.")
             .arg(codec, QString::fromLatin1(storeApp));
     }
-    return i18n::t("No %1 video decoder is installed on this computer.", "رمزگشای ویدیوی %1 روی این رایانه نصب نیست.").arg(codec);
+    return i18n::t("No %1 video decoder is installed on this computer.").arg(codec);
 }
 
 bool isMissingDecoder(HRESULT hr)
@@ -219,9 +217,9 @@ QString fileErrorText(HRESULT hr)
 {
     if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)
         || hr == HRESULT_FROM_WIN32(ERROR_INVALID_NAME))
-        return i18n::t("The video file was not found.", "فایل ویدیو پیدا نشد.");
+        return i18n::t("The video file was not found.");
     if (hr == E_ACCESSDENIED || hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) || hr == HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION))
-        return i18n::t("The video file is in use or access to it was denied.", "فایل ویدیو در حال استفاده است یا اجازهٔ دسترسی به آن داده نشد.");
+        return i18n::t("The video file is in use or access to it was denied.");
     return {};
 }
 
@@ -240,7 +238,7 @@ QString failureText(HRESULT hr, const GUID& videoSubtype = GUID_NULL)
         return missingDecoderText(videoSubtype);
     if (hr == MF_E_INVALID_STREAM_DATA || hr == MF_E_INVALIDREQUEST || hr == E_UNEXPECTED)
         return damagedText();
-    return i18n::t("The video could not be played (error %1).", "ویدیو پخش نشد (خطای %1).").arg(hexCode(hr));
+    return i18n::t("The video could not be played (error %1).").arg(hexCode(hr));
 }
 
 // ---- source reader helpers ----------------------------------------------------------------------
@@ -743,7 +741,7 @@ bool VideoPlayer::Private::createEngine(QString* error)
 
     HRESULT hr = createDevice();
     if (FAILED(hr)) {
-        *error = i18n::t("The video player could not be started (graphics error %1).", "پخش‌کنندهٔ ویدیو راه‌اندازی نشد (خطای گرافیکی %1).")
+        *error = i18n::t("The video player could not be started (graphics error %1).")
                      .arg(hexCode(hr));
         return false;
     }
@@ -845,13 +843,13 @@ QString VideoPlayer::Private::engineErrorText(DWORD_PTR code, HRESULT hr) const
 
     switch (code) {
     case MF_MEDIA_ENGINE_ERR_ABORTED:
-        return i18n::t("Playback was interrupted.", "پخش متوقف شد.");
+        return i18n::t("Playback was interrupted.");
     case MF_MEDIA_ENGINE_ERR_NETWORK:
-        return i18n::t("The video file could not be read.", "فایل ویدیو خوانده نشد.");
+        return i18n::t("The video file could not be read.");
     case MF_MEDIA_ENGINE_ERR_DECODE:
         return damagedText();
     case MF_MEDIA_ENGINE_ERR_ENCRYPTED:
-        return i18n::t("This video is copy-protected and can't be played here.", "این ویدیو محافظت‌شده است و اینجا پخش نمی‌شود.");
+        return i18n::t("This video is copy-protected and can't be played here.");
     case MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED: {
         if (isMissingDecoder(hr))
             return missingDecoderText(videoSubtypeOf(path));
@@ -907,8 +905,7 @@ void VideoPlayer::Private::onEngineEvent(quint64 eventGeneration, DWORD event, D
     case MF_MEDIA_ENGINE_EVENT_STREAMRENDERINGERROR: {
         const QString message = event == MF_MEDIA_ENGINE_EVENT_ERROR
                                     ? engineErrorText(param1, static_cast<HRESULT>(param2))
-                                    : i18n::t("Video playback stopped because the graphics device was reset. Open the video again.",
-                                              "پخش ویدیو متوقف شد چون دستگاه گرافیکی بازنشانی شد. ویدیو را دوباره باز کنید.");
+                                    : i18n::t("Video playback stopped because the graphics device was reset. Open the video again.");
         failed = true;
         timer.stop();
         emit q->failed(message);

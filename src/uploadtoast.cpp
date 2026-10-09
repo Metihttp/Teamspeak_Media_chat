@@ -20,7 +20,6 @@
 #include "previewrenderer.h"
 
 // Thin rounded progress line; also has an indeterminate mode for the preparing phase.
-// Fills from the right in right-to-left layouts.
 class UploadToast::ProgressLine : public QWidget
 {
   public:
@@ -97,8 +96,6 @@ class UploadToast::ProgressLine : public QWidget
         } else {
             fill = QRectF(0, 0, r.width() * m_value, r.height());
         }
-        if (layoutDirection() == Qt::RightToLeft)
-            fill.moveLeft(r.width() - fill.right());
         if (fill.width() <= 0.0)
             return;
         p.setBrush(m_color);
@@ -114,13 +111,6 @@ class UploadToast::ProgressLine : public QWidget
 };
 
 namespace {
-
-// Keeps a number with its Latin unit ("12.5 MB", "4000 × 3000") in one piece inside Persian text;
-// without it the bidi algorithm separates the digits from the unit.
-QString ltr(const QString& text)
-{
-    return i18n::isPersian() ? QChar(0x200E) + text + QChar(0x200E) : text;
-}
 
 QIcon closeIcon()
 {
@@ -163,7 +153,7 @@ UploadToast::UploadToast(Core* core, QWidget* host)
     m_clock.start();
     setObjectName(QStringLiteral("tsmediaUploadToast"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setLayoutDirection(i18n::direction());
+    setLayoutDirection(Qt::LeftToRight);
     // fromLatin1, never QStringLiteral: the toast lives in TeamSpeak's chat and shares its
     // QStyleSheetStyle when TeamSpeak uses style sheets. That style's parser keeps the last text it
     // parsed until TeamSpeak destroys it at exit, after this DLL is unloaded, and ~QString on literal
@@ -239,8 +229,8 @@ UploadToast::Row& UploadToast::rowFor(int id)
     row.title = new QLabel(row.widget);
     row.title->setTextFormat(Qt::PlainText); // a file name, never rich text
     row.title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    // File names are usually Latin; align them with the UI direction rather than their own.
-    row.title->setAlignment((i18n::direction() == Qt::RightToLeft ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignAbsolute | Qt::AlignVCenter);
+    // Left-aligned like the rest of the toast, also when a name is in a right-to-left script.
+    row.title->setAlignment(Qt::AlignLeft | Qt::AlignAbsolute | Qt::AlignVCenter);
     QFont f = row.title->font();
     f.setBold(true);
     row.title->setFont(f);
@@ -307,7 +297,7 @@ void UploadToast::updateJob(int id)
     switch (job->state) {
     case UploadState::Preparing:
         // Probing the file and uploading its preview.
-        status            = i18n::t("Preparing…", "در حال آماده‌سازی…");
+        status            = i18n::t("Preparing…");
         row.uploadStartMs = -1;
         row.bar->setBusy();
         break;
@@ -318,34 +308,34 @@ void UploadToast::updateJob(int id)
             row.uploadStartProgress = progress;
         }
         row.bar->setProgress(progress);
-        status = i18n::t("Uploading… %1%", "در حال ارسال… %1%").arg(qRound(progress * 100));
+        status = i18n::t("Uploading… %1%").arg(qRound(progress * 100));
         if (job->size > 0) {
             const quint64 sent = static_cast<quint64>(progress * static_cast<double>(job->size));
-            status += QStringLiteral("  ·  ") + ltr(formatSize(sent) + QStringLiteral(" / ") + formatSize(job->size));
+            status += QStringLiteral("  ·  ") + formatSize(sent) + QStringLiteral(" / ") + formatSize(job->size);
             const qint64 elapsed = m_clock.elapsed() - row.uploadStartMs;
             if (elapsed > 1500 && progress > row.uploadStartProgress) {
                 const double bytesPerSecond = (progress - row.uploadStartProgress) * static_cast<double>(job->size) * 1000.0 / static_cast<double>(elapsed);
-                status += QStringLiteral("  ·  ") + i18n::t("%1/s", "%1 در ثانیه").arg(ltr(formatSize(static_cast<quint64>(bytesPerSecond))));
+                status += QStringLiteral("  ·  ") + i18n::t("%1/s").arg(formatSize(static_cast<quint64>(bytesPerSecond)));
             }
         }
         break;
     }
     case UploadState::Posting:
-        status = i18n::t("Posting to chat…", "در حال فرستادن پیام در چت…");
+        status = i18n::t("Posting to chat…");
         row.bar->setProgress(1.0);
         break;
     case UploadState::Done:
-        status = i18n::t("Sent", "ارسال شد");
+        status = i18n::t("Sent");
         state  = QStringLiteral("done");
         row.bar->setProgress(1.0);
         row.bar->setColor(QColor(0x23, 0xa5, 0x5a));
         break;
     case UploadState::Failed:
-        status = job->message.isEmpty() ? i18n::t("Upload failed", "ارسال ناموفق بود") : job->message;
+        status = job->message.isEmpty() ? i18n::t("Upload failed") : job->message;
         state  = QStringLiteral("error");
         break;
     case UploadState::Canceled:
-        status = i18n::t("Canceled", "لغو شد");
+        status = i18n::t("Canceled");
         break;
     }
 
@@ -361,7 +351,7 @@ void UploadToast::updateJob(int id)
 
     const bool running = isRunning(job->state);
     row.close->setVisible(running || failed || job->state == UploadState::Canceled);
-    row.close->setToolTip(running ? i18n::t("Cancel upload", "لغو ارسال") : i18n::t("Dismiss", "بستن"));
+    row.close->setToolTip(running ? i18n::t("Cancel upload") : i18n::t("Dismiss"));
     row.bar->setVisible(!failed && job->state != UploadState::Canceled);
 
     if (!running && job->state != UploadState::Posting && !row.removalScheduled) {

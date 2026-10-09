@@ -33,7 +33,6 @@
 #include <functional>
 #include <iterator>
 
-#include "i18n.h"
 #include "video/mfvideo.h"
 
 namespace {
@@ -531,7 +530,6 @@ int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
     SetConsoleOutputCP(CP_UTF8);
-    i18n::setLanguage(Language::English);
 
     const QStringList args = QCoreApplication::arguments();
     if (args.size() != 3 && args.size() != 4) {

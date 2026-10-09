@@ -111,10 +111,8 @@ QString bbcodeSafeUrl(const QString& input)
 QString requiredNotice(const QString& url)
 {
     const QString note = url.isEmpty()
-                             ? i18n::t("TS Media chat plugin required to view this in chat",
-                                       "برای دیدن این فایل داخل چت، پلاگین TS Media chat لازم است")
-                             : i18n::t("[URL=%1]TS Media chat[/URL] plugin required to view this in chat",
-                                       "برای دیدن این فایل داخل چت، پلاگین [URL=%1]TS Media chat[/URL] لازم است")
+                             ? i18n::t("TS Media chat plugin required to view this in chat")
+                             : i18n::t("[URL=%1]TS Media chat[/URL] plugin required to view this in chat")
                                    .arg(url);
     return QStringLiteral(" [COLOR=#8e9297][I]— ") + note + QStringLiteral("[/I][/COLOR]");
 }
