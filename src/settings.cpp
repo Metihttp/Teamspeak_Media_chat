@@ -125,6 +125,8 @@ void Settings::load()
     uploadMaxMB     = readInt(s, "uploadMaxMB", d.uploadMaxMB, uploadMaxMBRange);
     // Empty means the default folder, like an empty field in the dialog ("/" is the top level).
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
+    dropOpensSendWindow = readBool(s, "dropOpensSendWindow", d.dropOpensSendWindow); // 2.2 compose
+    sendAsAlbum         = readBool(s, "sendAsAlbum", d.sendAsAlbum);
 
     // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
@@ -156,6 +158,8 @@ void Settings::save() const
     s.setValue(key("uploadMaxMB"), uploadMaxMB);
     // QSettings' INI writer drops backslashes inside values, so store the normalised form.
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
+    s.setValue(key("dropOpensSendWindow"), dropOpensSendWindow); // 2.2 compose
+    s.setValue(key("sendAsAlbum"), sendAsAlbum);
 
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
     s.sync();

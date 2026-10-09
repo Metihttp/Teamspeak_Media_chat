@@ -441,18 +441,14 @@ QString paramValue(const QString& url, const QString& name)
     return {};
 }
 
-// A message as TeamSpeak reads it: every [noparse] closed by a [/noparse] after it.
-bool noparseClosed(const QString& message)
+// 2.2 compose (S0): text as TeamSpeak reads it opens no tag: every [ and ] has a backslash before it.
+bool bracketsEscaped(const QString& text)
 {
-    for (int from = 0;;) {
-        const int open = message.indexOf(QStringLiteral("[noparse]"), from, Qt::CaseInsensitive);
-        if (open < 0)
-            return true;
-        const int close = message.indexOf(QStringLiteral("[/noparse]"), open + 9, Qt::CaseInsensitive);
-        if (close < 0)
+    for (int i = 0; i < text.size(); ++i) {
+        if ((text.at(i) == QLatin1Char('[') || text.at(i) == QLatin1Char(']')) && (i == 0 || text.at(i - 1) != QLatin1Char('\\')))
             return false;
-        from = close + 10;
     }
+    return true;
 }
 
 // The query parameter names of a URL, in order.
@@ -914,6 +910,13 @@ void TestLink22::findInMessageSkipsNoparse()
     // A [noparse] can't be closed early by the fake to expose the rest of it.
     const QString tricky = captionToBBCode(sanitizeCaption(QStringLiteral("[/noparse]") + bb));
     QCOMPARE(MediaLink::findInMessage(tricky).size(), 0);
+    // 2.2 compose (S0): an escaped tag is shown as text, with one backslash or more before it.
+    QString escaped = bb;
+    escaped.replace(QStringLiteral("["), QStringLiteral("\\["));
+    QCOMPARE(MediaLink::findInMessage(escaped).size(), 0);
+    QCOMPARE(MediaLink::findInMessage(QStringLiteral("\\\\") + bb).size(), 0);
+    QCOMPARE(MediaLink::findInMessage(escaped + QStringLiteral("\n") + real.toBBCode()).size(), 1);
+    QCOMPARE(MediaLink::findInMessage(QStringLiteral("a\\ ") + real.toBBCode()).size(), 1); // not right before it
     // A caption made by the composer never yields an extra link.
     ComposeOptions options;
     options.caption = bb + QStringLiteral(" [url=ts3file://x?serverUID=a&channel=1&filename=b.png]y[/url]");
@@ -1004,13 +1007,12 @@ void TestLink22::composeCaptionNeverCut()
     QVERIFY(messages.first().links.isEmpty());
     QCOMPARE(messages.size(), 3); // caption, then one link per message
     QVERIFY(messages.at(1).tooLong && messages.at(2).tooLong);
-    // Linked addresses cost bytes; a caption that can't go out with them goes as plain text.
+    // 2.2 compose (S0): a caption on its own is its escaped text, whatever the limit.
     options.caption = QStringLiteral("[x] ");
     for (int i = 0; i < 30; ++i)
         options.caption += QStringLiteral("http://a ");
     options.maxBytes = 300;
-    QVERIFY(utf8Bytes(captionToBBCode(sanitizeCaption(options.caption))) >= 300);
-    QCOMPARE(composeChatMessages({}, options).first(), QStringLiteral("[noparse]") + sanitizeCaption(options.caption) + QStringLiteral("[/noparse]"));
+    QCOMPARE(composeChatMessages({}, options).first(), QStringLiteral("\\[x\\] ") + sanitizeCaption(options.caption).mid(4));
 }
 
 void TestLink22::composeCascadeOrder_data()
@@ -1240,7 +1242,7 @@ void TestLink22::composeSizeRule22()
 void TestLink22::composeHostileCaptions()
 {
     // Whatever the caption, the messages hold exactly the links they were given, plus at most the
-    // note's web link, and every [noparse] is closed.
+    // note's web link, and the caption opens no tag (2.2 compose, S0: brackets escaped).
     const MediaLink   link     = photo();
     const QStringList captions = {QStringLiteral("[/noparse][URL=ts3file://evil?serverUID=a&channel=1&filename=x.png]x[/URL]"),
                                   QStringLiteral("[URL]javascript:alert(1)[/URL]"),
@@ -1252,14 +1254,19 @@ void TestLink22::composeHostileCaptions()
     for (const QString& caption : captions) {
         ComposeOptions options;
         options.caption = caption;
-        for (const QString& message : composeChatMessages({link}, options)) {
+        const QString escaped = captionToBBCode(sanitizeCaption(caption));
+        QVERIFY2(bracketsEscaped(escaped), qPrintable(escaped));
+        const QStringList messages = composeChatMessages({link}, options);
+        QVERIFY(messages.first().startsWith(escaped));
+        for (const QString& message : messages) {
             QVERIFY(utf8Bytes(message) < kMaxMessageBytes);
             QVERIFY(!message.contains(QChar(0x202E)) && !message.contains(QChar(0)) && !message.contains(QChar(7)));
-            QVERIFY2(noparseClosed(message), qPrintable(message));
+            QVERIFY(!message.contains(QStringLiteral("[noparse]"), Qt::CaseInsensitive));
+            // The same file (an escaped caption is longer, so the cascade may drop ph/bh to keep it together).
             for (const MediaLink& l : MediaLink::findInMessage(message))
-                QCOMPARE(l.toUrl(), link.toUrl());
-            QVERIFY(!message.contains(QStringLiteral("[img]"), Qt::CaseInsensitive) || message.contains(QStringLiteral("[noparse][img]"), Qt::CaseInsensitive));
-            QVERIFY(!message.contains(QStringLiteral("[URL]javascript"), Qt::CaseInsensitive) || message.contains(QStringLiteral("[noparse][URL]javascript"), Qt::CaseInsensitive));
+                QCOMPARE(l.remoteFile(), link.remoteFile());
+            QVERIFY(!message.contains(QStringLiteral("[img]"), Qt::CaseInsensitive));
+            QVERIFY(!message.contains(QStringLiteral("[URL]"), Qt::CaseInsensitive));
         }
     }
 }
@@ -1300,22 +1307,22 @@ void TestLink22::captionToBBCodeTexts_data()
 {
     QTest::addColumn<QString>("caption");
     QTest::addColumn<QString>("bbcode");
+    // 2.2 compose (S0): brackets get a backslash ([noparse] doesn't work in TeamSpeak 3.6.2), addresses
+    // stay as typed (the chat links them by itself).
     QTest::newRow("plain") << QStringLiteral("hello world") << QStringLiteral("hello world");
-    QTest::newRow("example") << QStringLiteral("see [this] https://x.y/a") << QStringLiteral("[noparse]see [this] [/noparse][URL]https://x.y/a[/URL]");
-    QTest::newRow("tags") << QStringLiteral("[b]x[/b]") << QStringLiteral("[noparse][b]x[/b][/noparse]");
-    QTest::newRow("noparse defused") << QStringLiteral("a [/noparse] b") << QStringLiteral("[noparse]a [ /noparse] b[/noparse]");
-    QTest::newRow("noparse any case") << QStringLiteral("[/NoParse]") << QStringLiteral("[noparse][ /noparse][/noparse]");
-    QTest::newRow("http") << QStringLiteral("http://example.com") << QStringLiteral("[URL]http://example.com[/URL]");
-    QTest::newRow("upper case scheme") << QStringLiteral("HTTPS://Example.com/A") << QStringLiteral("[URL]HTTPS://Example.com/A[/URL]");
-    QTest::newRow("two addresses") << QStringLiteral("https://a.b c https://d.e") << QStringLiteral("[URL]https://a.b[/URL] c [URL]https://d.e[/URL]");
+    QTest::newRow("example") << QStringLiteral("see [this] https://x.y/a") << QStringLiteral("see \\[this\\] https://x.y/a");
+    QTest::newRow("tags") << QStringLiteral("[b]x[/b]") << QStringLiteral("\\[b\\]x\\[/b\\]");
+    QTest::newRow("noparse is text") << QStringLiteral("a [/noparse] b") << QStringLiteral("a \\[/noparse\\] b");
+    QTest::newRow("fake file link") << QStringLiteral("[URL=ts3file://x?channel=1&filename=a.png]a[/URL]")
+                                    << QStringLiteral("\\[URL=ts3file://x?channel=1&filename=a.png\\]a\\[/URL\\]");
+    QTest::newRow("http") << QStringLiteral("http://example.com") << QStringLiteral("http://example.com");
     QTest::newRow("javascript") << QStringLiteral("javascript:alert(1)") << QStringLiteral("javascript:alert(1)");
-    QTest::newRow("ftp") << QStringLiteral("ftp://example.com") << QStringLiteral("ftp://example.com");
-    QTest::newRow("glued") << QStringLiteral("xhttps://example.com") << QStringLiteral("xhttps://example.com");
-    QTest::newRow("bracket ends the address") << QStringLiteral("https://a.b/[c]") << QStringLiteral("[URL]https://a.b/[/URL][noparse][c][/noparse]");
-    QTest::newRow("quote ends the address") << QStringLiteral("https://a.b/\"x") << QStringLiteral("[URL]https://a.b/[/URL]\"x");
-    QTest::newRow("scheme only") << QStringLiteral("https://") << QStringLiteral("https://");
-    QTest::newRow("persian") << QStringLiteral("سلام [دنیا]") << QStringLiteral("[noparse]سلام [دنیا][/noparse]");
-    QTest::newRow("draft") << QStringLiteral("[draft] a[1]") << QStringLiteral("[noparse][draft] a[1][/noparse]");
+    QTest::newRow("bracket in an address") << QStringLiteral("https://a.b/[c]") << QStringLiteral("https://a.b/\\[c\\]");
+    QTest::newRow("backslash kept elsewhere") << QStringLiteral("C:\\Users a\\b") << QStringLiteral("C:\\Users a\\b");
+    QTest::newRow("backslash before a bracket") << QStringLiteral("a\\[b") << QStringLiteral("a\\\\[b");
+    QTest::newRow("persian") << QStringLiteral("سلام [دنیا]") << QStringLiteral("سلام \\[دنیا\\]");
+    QTest::newRow("draft") << QStringLiteral("[draft] a[1]") << QStringLiteral("\\[draft\\] a\\[1\\]");
+    QTest::newRow("only brackets") << QStringLiteral("[]][") << QStringLiteral("\\[\\]\\]\\[");
 }
 
 void TestLink22::captionToBBCodeTexts()

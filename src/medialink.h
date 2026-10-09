@@ -91,8 +91,9 @@ struct MediaLink {
     MediaLink previewLink() const;
 
     static MediaLink parse(const QString& href);
-    // Every valid file link in a raw chat message (BBCode). Text inside [noparse]...[/noparse] is skipped:
-    // TeamSpeak shows it as plain text, so a caption can't smuggle in a link that would be prefetched.
+    // Every valid file link in a raw chat message (BBCode). Text inside [noparse]...[/noparse] is skipped,
+    // and so is an escaped "\[URL=...]" (2.2 compose, S0: TeamSpeak shows it as plain text), so a caption
+    // can't smuggle in a link that would be prefetched.
     static QList<MediaLink> findInMessage(const QString& message);
 };
 
@@ -143,9 +144,10 @@ constexpr int kCaptionMaxChars = 300; // UTF-16 units, as the send window counts
 // surrogate pair).
 QString sanitizeCaption(const QString& typed);
 
-// A sanitized caption as BBCode: http(s) addresses become [URL]address[/URL] (display only: the plugin
-// never opens them), runs of other text that contain [ or ] go inside [noparse]...[/noparse] (a
-// "[/noparse]" inside is defused), so a caption can never open a tag or fake a file link.
+// A sanitized caption as BBCode (2.2 compose, S0): every [ and ] gets a backslash before it, which
+// TeamSpeak 3.6.2 shows as the plain bracket ([noparse] doesn't work there), so a caption can never open
+// a tag or fake a file link. A backslash the user typed right before a bracket is lost. Addresses are
+// left alone: the chat links http(s) and www addresses by itself.
 QString captionToBBCode(const QString& sanitized);
 
 // The label of a link in the chat (what people without the plugin click): "Voice message (0:12)" for

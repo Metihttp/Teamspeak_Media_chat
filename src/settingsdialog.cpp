@@ -295,6 +295,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     // ---- Sending ----------------------------------------------------------------------------------
     auto* send = new QGroupBox(i18n::t("Sending"), m_pages.at(static_cast<int>(Tab::Sending)));
     m_dragDrop = new QCheckBox(i18n::t("Send &files dropped on the chat (hold Shift for TeamSpeak's own drop)"), send);
+    m_dragDrop->setObjectName(QString::fromLatin1("dropSendsFiles")); // 2.2 compose: its drop-mode setting follows this
     m_paste    = new QCheckBox(i18n::t("Send screenshots and files pas&ted into the chat input (Ctrl+V)"), send);
     m_jpeg     = new QCheckBox(i18n::t("Convert pasted images over 2 MB to &JPEG"), send);
     m_jpeg->setToolTip(i18n::t("Images with transparency stay PNG."));

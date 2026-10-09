@@ -63,6 +63,11 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    # 2.2 compose: the send window
+    src/composehooks.cpp      src/composehooks.h
+    src/composemodel.cpp      src/composemodel.h
+    src/composedialog.cpp     src/composedialog.h
+    src/composesettings.cpp   src/composesettings.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -109,6 +114,10 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlog.cpp
         src/hashing.cpp
         src/floodgovernor.cpp
+        # 2.2 compose
+        tests/tst_compose.cpp
+        src/composemodel.cpp
+        src/composehooks.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})

@@ -25,7 +25,6 @@ constexpr int    kMaxPathChars     = 1024;
 constexpr int kShaBytes         = 32;
 constexpr int kPreviewShaBytes  = 16;
 constexpr int kWaveformBytes    = MediaLink::kWaveformLevels / 2; // two 4-bit levels per byte
-constexpr int kMaxUrlTokenChars = 512;                            // http(s) addresses in captions
 
 QString encode(const QString& value)
 {
@@ -468,7 +467,12 @@ QList<MediaLink> MediaLink::findInMessage(const QString& message)
     QList<MediaLink> result;
     auto             it = re.globalMatch(text);
     while (it.hasNext()) {
-        const MediaLink link = parse(it.next().captured(1));
+        const QRegularExpressionMatch match = it.next();
+        // 2.2 compose (S0): TeamSpeak shows a "[" with backslashes right before it as a plain bracket, so
+        // an escaped tag (a caption) is text, never a link: nothing may fetch it.
+        if (match.capturedStart() > 0 && text.at(match.capturedStart() - 1) == QLatin1Char('\\'))
+            continue;
+        const MediaLink link = parse(match.captured(1));
         if (link.isValid())
             result.append(link);
     }
@@ -557,21 +561,10 @@ int utf8Size(const QString& text)
     return text.toUtf8().size();
 }
 
-// The caption as one message part. Linked addresses cost bytes: a caption that can't be sent on its own
-// that way is sent as plain text instead (never cut).
-QString captionPart(const QString& caption, int maxBytes)
+// The caption as one message part (never cut). 2.2 compose (S0): escaped with backslashes, no [noparse].
+QString captionPart(const QString& caption)
 {
-    const QString clean = sanitizeCaption(caption);
-    if (clean.isEmpty())
-        return {};
-    const QString rich = captionToBBCode(clean);
-    if (utf8Size(rich) < maxBytes)
-        return rich;
-    if (!clean.contains(QLatin1Char('[')) && !clean.contains(QLatin1Char(']')))
-        return clean;
-    QString inner = clean;
-    inner.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"), Qt::CaseInsensitive);
-    return QStringLiteral("[noparse]") + inner + QStringLiteral("[/noparse]");
+    return captionToBBCode(sanitizeCaption(caption));
 }
 
 } // namespace
@@ -581,7 +574,7 @@ QVector<ComposedMessage> composeChatMessagesDetailed(const QList<MediaLink>& lin
     QVector<ComposedMessage> out;
     const QString            sep     = QString::fromLatin1(kMessageSeparator);
     const QString            url     = options.includeNotice ? bbcodeSafeUrl(options.downloadUrl) : QString();
-    const QString            caption = captionPart(options.caption, options.maxBytes);
+    const QString            caption = captionPart(options.caption);
     const auto               fits    = [&options](const QString& text) { return utf8Size(text) < options.maxBytes; };
     const auto               noteText = [&url](Note note) {
         switch (note) {
@@ -759,29 +752,16 @@ QString sanitizeCaption(const QString& typed)
 
 QString captionToBBCode(const QString& sanitized)
 {
-    static const QRegularExpression address(QStringLiteral("https?://[^\\s\\[\\]\"<>]{1,%1}").arg(kMaxUrlTokenChars), QRegularExpression::CaseInsensitiveOption);
-
-    const auto textRun = [](const QString& run) {
-        if (!run.contains(QLatin1Char('[')) && !run.contains(QLatin1Char(']')))
-            return run;
-        QString inner = run;
-        inner.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"), Qt::CaseInsensitive);
-        return QStringLiteral("[noparse]") + inner + QStringLiteral("[/noparse]");
-    };
-
+    // 2.2 compose (S0): TeamSpeak 3.6.2 ignores [noparse] (it removes the tags and still parses what is
+    // inside), but shows a bracket with a backslash right before it as a plain bracket and drops the
+    // backslash. Addresses need nothing: the chat links http(s) and www addresses by itself.
     QString out;
-    int     from = 0;
-    auto    it   = address.globalMatch(sanitized);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch match = it.next();
-        // Only at the start of a word: "xhttp://..." is not an address.
-        if (match.capturedStart() > 0 && !sanitized.at(match.capturedStart() - 1).isSpace())
-            continue;
-        out += textRun(sanitized.mid(from, match.capturedStart() - from));
-        out += QStringLiteral("[URL]") + match.captured() + QStringLiteral("[/URL]");
-        from = match.capturedEnd();
+    out.reserve(sanitized.size() + 8);
+    for (const QChar ch : sanitized) {
+        if (ch == QLatin1Char('[') || ch == QLatin1Char(']'))
+            out += QLatin1Char('\\');
+        out += ch;
     }
-    out += textRun(sanitized.mid(from));
     return out;
 }
 
