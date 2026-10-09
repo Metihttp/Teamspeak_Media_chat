@@ -46,6 +46,7 @@
 #include "inlinemedia.h"
 #include "mediaviewer.h"
 #include "settings.h"
+#include "uiutil.h"
 #include "uploadtoast.h"
 
 namespace {
@@ -210,6 +211,19 @@ QString previewKeyOf(const QTextCharFormat& format)
 bool isTs3FileAnchor(const QTextCharFormat& format)
 {
     return format.isAnchor() && format.anchorHref().contains(QLatin1String("ts3file"), Qt::CaseInsensitive);
+}
+
+// Pixels Core decodes the still at: the preview box (TS Media links) or the maximum box.
+QSize stillPixelsFor(const MediaEntry& e, const PreviewStyle& style)
+{
+    const bool hasDims = e.link.width > 0 && e.link.height > 0;
+    return (hasDims || e.kind == MediaKind::Video) ? previewLogicalSize(e, style) * style.dpr : QSize(style.maxWidth, style.maxHeight) * style.dpr;
+}
+
+// The video has started (a frame, a position): renderVideo() draws its control bar then.
+bool videoStarted(const PlaybackOverlay& o, bool hasFrame)
+{
+    return hasFrame || o.playing || o.ended || o.positionMs > 0;
 }
 
 } // namespace
@@ -619,6 +633,7 @@ PreviewStyle ChatIntegration::styleFor(QTextBrowser* browser) const
     style.dpr       = browser->devicePixelRatioF();
     style.maxWidth  = qMin(s.previewMaxWidth, qMax(160, previewAreaWidth(browser) - 48));
     style.maxHeight = s.previewMaxHeight;
+    style.animate   = ui::animationsEnabled();
     return style;
 }
 
@@ -645,21 +660,27 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     if (!e)
         return {};
 
-    const PreviewStyle style   = styleFor(browser);
-    const bool         hasDims = e->link.width > 0 && e->link.height > 0;
-    const bool         media   = isMediaKind(e->kind);
-    // Pixels Core decodes the still at: the preview box (TS Media links) or the maximum box.
-    const QSize stillPixels = (hasDims || e->kind == MediaKind::Video) ? previewLogicalSize(*e, style) * style.dpr
-                                                                        : QSize(style.maxWidth, style.maxHeight) * style.dpr;
-    QSize  size;
-    QImage img;
-    bool   fromStill = false;
+    PreviewStyle style   = styleFor(browser);
+    const bool   hasDims = e->link.width > 0 && e->link.height > 0;
+    const bool   media   = isMediaKind(e->kind);
+    // Pointer feedback: hovered while the mouse is over it, pressed while the left button that went
+    // down on it is held there (a seek drag is not a press of the picture).
+    style.hovered    = key == m_hoverKey;
+    style.pressed    = style.hovered && key == m_pressedKey && !m_seeking;
+    style.revealOnly = !media && e->state == MediaState::Ready && m_core->isUnsafeToOpen(key);
+    const QSize stillPixels = stillPixelsFor(*e, style);
+    QSize       size;
+    QImage      img;
+    bool        fromStill = false;
 
     const InlineMediaController::Mode mode = m_media ? m_media->mode(key) : InlineMediaController::Mode::Still;
     if (mode == InlineMediaController::Mode::Video) {
         const QImage     frame  = m_media->frame(key);
         const MediaStill poster = frame.isNull() ? m_core->still(key, stillPixels) : MediaStill();
-        img                     = renderVideo(*e, frame, poster, m_media->overlay(key), style, &size);
+        PlaybackOverlay  o      = m_media->overlay(key);
+        if (style.pressed) // hidden controls can't be aimed at: the press is on the picture
+            o.pressed = m_pressControlsVisible ? o.hover : VideoZone::Body;
+        img = renderVideo(*e, frame, poster, o, style, &size);
     } else if (mode == InlineMediaController::Mode::Animated) {
         const QImage frame = m_media->frame(key);
         if (!frame.isNull())
@@ -698,8 +719,12 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
         view->resourced.insert(key);
         // While a relayout is pending, the older previews still have the width it was queued for:
         // overwriting it would make the relayout believe they are up to date.
-        if (!view->relayoutQueued)
-            view->layoutWidth = styleFor(browser).maxWidth;
+        if (!view->relayoutQueued) {
+            const PreviewStyle style = styleFor(browser);
+            view->layoutWidth        = style.maxWidth;
+            view->layoutDpr          = style.dpr;
+            view->layoutDark         = style.dark;
+        }
     }
 
     m_mutating = true;
@@ -835,8 +860,11 @@ void ChatIntegration::refreshAll()
         scan(b);
         if (View* view = viewFor(b)) {
             ensurePositions(*view);
-            view->layoutWidth      = styleFor(b).maxWidth;
-            const QStringList keys = view->positionsByKey.keys();
+            const PreviewStyle style = styleFor(b);
+            view->layoutWidth        = style.maxWidth;
+            view->layoutDpr          = style.dpr;
+            view->layoutDark         = style.dark;
+            const QStringList keys   = view->positionsByKey.keys();
             for (const QString& key : keys)
                 refreshPreview(b, key, false);
         }
@@ -872,10 +900,14 @@ void ChatIntegration::scheduleRelayout(QTextBrowser* browser)
         if (!v)
             return;
         v->relayoutQueued = false;
-        const int width   = styleFor(guard.data()).maxWidth;
-        if (width == v->layoutWidth)
+        // A new width re-lays the previews out; a new device pixel ratio (the window moved to
+        // another monitor) or a theme switch re-renders them (sharp, in the chat's new colours).
+        const PreviewStyle style = styleFor(guard.data());
+        if (style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr && style.dark == v->layoutDark)
             return;
-        v->layoutWidth = width;
+        v->layoutWidth = style.maxWidth;
+        v->layoutDpr   = style.dpr;
+        v->layoutDark  = style.dark;
         ensurePositions(*v);
         const QStringList keys = v->positionsByKey.keys();
         for (const QString& key : keys)
@@ -1016,6 +1048,13 @@ void ChatIntegration::updateVisibleKeys()
         }
         if (!b->isVisible() || b->window()->isMinimized())
             continue;
+        // Moving to a monitor with another scale, or a theme switch that sent no palette or style
+        // event, is noticed here (this runs every 300 ms).
+        if (!view.previews.isEmpty() && view.layoutDpr > 0 && !view.relayoutQueued) {
+            const PreviewStyle style = styleFor(b);
+            if (style.dpr != view.layoutDpr || style.dark != view.layoutDark)
+                scheduleRelayout(b);
+        }
         const QRectF viewport(b->viewport()->rect());
         for (const PreviewPos& pp : qAsConst(view.previews)) {
             if (previewRect(b, pp.position, QSizeF(view.formatSizes.value(pp.key))).intersects(viewport))
@@ -1037,7 +1076,7 @@ void ChatIntegration::updateVisibleKeys()
 // Input: hover, clicks, context menu, drag & drop, paste
 // ============================================================================================
 
-void ChatIntegration::updateCursor(QTextBrowser* browser, bool overPreview, const QPoint& viewportPos)
+void ChatIntegration::updateCursor(QTextBrowser* browser, bool overPreview, const QPoint& viewportPos, bool actionable)
 {
     QWidget* vp = browser->viewport();
     if (overPreview) {
@@ -1047,8 +1086,10 @@ void ChatIntegration::updateCursor(QTextBrowser* browser, bool overPreview, cons
             m_cursorOwner = vp;
             m_savedCursor = vp->cursor().shape() == Qt::PointingHandCursor ? Qt::ArrowCursor : vp->cursor().shape();
         }
-        if (vp->cursor().shape() != Qt::PointingHandCursor)
-            vp->setCursor(Qt::PointingHandCursor);
+        // A preview a click can't help (file deleted, password-protected channel) is not a button.
+        const Qt::CursorShape shape = actionable ? Qt::PointingHandCursor : Qt::ArrowCursor;
+        if (vp->cursor().shape() != shape)
+            vp->setCursor(shape);
         return;
     }
     if (m_cursorOwner != vp)
@@ -1059,6 +1100,94 @@ void ChatIntegration::updateCursor(QTextBrowser* browser, bool overPreview, cons
         if (vp && b && b->anchorAt(viewportPos).isEmpty())
             vp->setCursor(shape);
     });
+}
+
+// Redraws key with the current hover / pressed look (renderFor reads m_hoverKey and m_pressedKey).
+// Videos already repaint on hover through InlineMediaController; a press needs it for them too.
+void ChatIntegration::repaintPointerState(QTextBrowser* browser, const QString& key, bool includeVideos)
+{
+    if (key.isEmpty() || !m_media)
+        return;
+    const InlineMediaController::Mode mode = m_media->mode(key);
+    if (mode == InlineMediaController::Mode::Still || (includeVideos && mode == InlineMediaController::Mode::Video))
+        refreshPreview(browser, key, true);
+}
+
+// The tooltip of the preview under viewportPos, as rich text (empty: none). Video controls get
+// their name ("Pause", "Mute", the time under the pointer on the seek bar), and area is narrowed to
+// that control so the tip goes away when the pointer leaves it. Everything else gets the file's
+// name and size, plus the full status where the preview shortens it or explains a failure.
+// Built from i18n::t / arg() only: QToolTip's label outlives the plugin DLL.
+QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, const QPointF& viewportPos, QRect* area) const
+{
+    const MediaEntry* e = m_core->entry(hit.key);
+    if (!e)
+        return {};
+    *area = hit.rect.toAlignedRect();
+
+    QString detail;
+    if (e->kind == MediaKind::Video && m_media) {
+        const PlaybackOverlay o = m_media->overlay(hit.key);
+        if (o.busy) {
+            if (e->state == MediaState::Downloading)
+                return i18n::t("Downloading… Click to cancel autoplay.");
+            if (e->state == MediaState::Ready)
+                return i18n::t("Opening… Click to cancel autoplay.");
+            return i18n::t("Waiting to download… Click to cancel autoplay.");
+        }
+        if (o.controlsVisible && videoStarted(o, !m_media->frame(hit.key).isNull())) {
+            const QSize   size   = hit.rect.size().toSize();
+            const QPointF local  = viewportPos - hit.rect.topLeft();
+            const bool    center = !o.playing;
+            *area                = videoZoneRect(size, local, center).translated(hit.rect.topLeft()).toAlignedRect();
+            switch (videoZoneAt(size, local, center)) {
+            case VideoZone::PlayPause:
+                return o.playing ? i18n::t("Pause") : o.ended ? i18n::t("Replay") : i18n::t("Play");
+            case VideoZone::Mute:
+                return o.muted ? i18n::t("Unmute") : i18n::t("Mute");
+            case VideoZone::Expand:
+                return i18n::t("Open in viewer");
+            case VideoZone::Seek:
+                return o.durationMs > 0 ? formatDuration(qRound64(seekFractionAt(size, local) * static_cast<double>(o.durationMs))) : QString();
+            case VideoZone::None:
+            case VideoZone::Body:
+                break;
+            }
+            return {};
+        }
+        if (o.playing)
+            return {}; // the picture itself: no tip over a playing video
+        if (o.externalOnly)
+            detail = i18n::t("Windows can't play this video here, so it opens in your default app.");
+    }
+
+    if (e->state == MediaState::Failed) {
+        detail = e->errorText.isEmpty() ? downloadErrorText(e->error) : e->errorText;
+        if (isRetryableDownload(*e))
+            detail += QLatin1Char(' ') + i18n::t("Click to retry.");
+    } else if (e->kind != MediaKind::Video) {
+        // Pictures shown inline need no status; cards (and pictures still on their way) get theirs
+        // in full, since the card may have shortened it.
+        const PreviewStyle style         = styleFor(browser);
+        const bool         picture       = isPreviewableImage(e->kind);
+        const bool         cannotPreview = picture && e->state == MediaState::Ready
+                                   && m_core->still(hit.key, stillPixelsFor(*e, style)).source == MediaStill::None;
+        const bool revealOnly = !picture && e->state == MediaState::Ready && m_core->isUnsafeToOpen(hit.key);
+        if (revealOnly)
+            detail = i18n::t("Programs and scripts from chat aren't opened directly. Click to show the file in its folder.");
+        else if (!picture || e->state != MediaState::Ready || cannotPreview)
+            detail = previewStatusText(*e, cannotPreview);
+    }
+
+    // The name comes from someone else's chat link: shown as plain text (escaped, since a tool tip
+    // would interpret markup), without bidi/control characters.
+    QString name = displayNameFor(e->link);
+    if (e->link.size)
+        name += QStringLiteral(" · ") + formatSize(e->link.size);
+    QString text = QStringLiteral("<div style='white-space:pre'>%1</div>").arg(name.toHtmlEscaped());
+    if (!detail.isEmpty())
+        text += QStringLiteral("<div>%1</div>").arg(detail.toHtmlEscaped());
+    return text;
 }
 
 void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool controlsVisible)
@@ -1075,12 +1204,15 @@ void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool 
         const QPointF local = viewportPos - hit.rect.topLeft();
         // Hidden controls cannot be aimed at: a click anywhere on the picture just toggles playback
         // (also on the seek bar's band). controlsVisible is the state when the button went down.
-        VideoZone zone = videoZoneAt(size, local);
+        VideoZone zone = videoZoneAt(size, local, !m_media->overlay(key).playing);
         if (!controlsVisible)
             zone = VideoZone::Body;
         m_media->click(key, zone, seekFractionAt(size, local));
         return;
     }
+
+    if (!isPreviewActionable(*e))
+        return; // deleted from the server / password-protected channel: retrying can't help
 
     switch (e->state) {
     case MediaState::Ready:
@@ -1090,7 +1222,7 @@ void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool 
             m_core->openExternally(key);
         break;
     case MediaState::Failed:
-        // "click to retry": pictures show up inline again, files open once they are there.
+        // "Click to retry": pictures show up inline again, files open once they are there.
         if (isPreviewableImage(e->kind))
             m_core->retry(key);
         else
@@ -1308,23 +1440,41 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             if ((me->buttons() & Qt::LeftButton) && m_pressBrowser == browser) {
                 const qint64 now = QDateTime::currentMSecsSinceEpoch();
                 if (now - m_lastSeekMs >= 60) {
-                    m_lastSeekMs = now;
-                    m_media->click(m_pressedKey, VideoZone::Seek, seekFractionAt(m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft()));
+                    m_lastSeekMs           = now;
+                    const double fraction  = seekFractionAt(m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft());
+                    m_media->click(m_pressedKey, VideoZone::Seek, fraction);
+                    // The time being sought to follows the pointer (hidden again by the release).
+                    const qint64 duration = m_media->overlay(m_pressedKey).durationMs;
+                    if (duration > 0)
+                        QToolTip::showText(me->globalPos(), formatDuration(qRound64(fraction * static_cast<double>(duration))), browser->viewport());
                 }
                 return true;
             }
             m_seeking = false;
         }
-        const Hit hit  = previewAt(browser, me->pos());
-        VideoZone zone = VideoZone::None;
+        const Hit         hit   = previewAt(browser, me->pos());
+        const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
+        VideoZone         zone  = VideoZone::None;
         if (!hit.key.isEmpty()) {
             zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video
-                       ? videoZoneAt(hit.rect.size().toSize(), me->localPos() - hit.rect.topLeft())
+                       ? videoZoneAt(hit.rect.size().toSize(), me->localPos() - hit.rect.topLeft(), !m_media->overlay(hit.key).playing)
                        : VideoZone::Body;
         }
-        m_hoverKey = hit.key;
+        if (hit.key != m_hoverKey) {
+            const QString left = m_hoverKey;
+            m_hoverKey         = hit.key;
+            repaintPointerState(browser, left, false);
+            repaintPointerState(browser, hit.key, false);
+        }
         m_media->hover(hit.key, zone);
-        updateCursor(browser, !hit.key.isEmpty(), me->pos());
+        updateCursor(browser, !hit.key.isEmpty(), me->pos(), !entry || isPreviewActionable(*entry));
+        // The seek bar's tip shows the time under the pointer: keep it current while it is shown.
+        if (zone == VideoZone::Seek && QToolTip::isVisible()) {
+            QRect         area;
+            const QString tip = toolTipText(browser, hit, me->localPos(), &area);
+            if (!tip.isEmpty())
+                QToolTip::showText(me->globalPos(), tip, browser->viewport(), area);
+        }
         if (!hit.key.isEmpty() && me->buttons() == Qt::NoButton)
             return true; // our cursor, not QTextBrowser's link hover handling
         break;
@@ -1335,8 +1485,10 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (!browser)
             break;
         if (!m_hoverKey.isEmpty() && m_media) {
+            const QString left = m_hoverKey;
             m_hoverKey.clear();
             m_media->hover(QString(), VideoZone::None);
+            repaintPointerState(browser, left, false);
         }
         updateCursor(browser, false, QPoint(-1, -1));
         break;
@@ -1367,12 +1519,13 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (video && m_media) {
             const QSize   size  = hit.rect.size().toSize();
             const QPointF local = me->localPos() - hit.rect.topLeft();
-            if (videoZoneAt(size, local) == VideoZone::Seek && m_pressControlsVisible) {
+            if (videoZoneAt(size, local, !m_media->overlay(hit.key).playing) == VideoZone::Seek && m_pressControlsVisible) {
                 m_seeking    = true;
                 m_lastSeekMs = QDateTime::currentMSecsSinceEpoch();
                 m_media->click(hit.key, VideoZone::Seek, seekFractionAt(size, local));
             }
         }
+        repaintPointerState(browser, hit.key, true); // the press shows before the release acts
         return true;
     }
 
@@ -1396,6 +1549,8 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
                 m_media->click(pressed, VideoZone::Seek, seekFractionAt(m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft()));
             return true;
         }
+        if (m_pressBrowser == browser)
+            repaintPointerState(browser, pressed, true);
         const Hit hit = previewAt(browser, me->pos());
         if (hit.key == pressed && m_pressBrowser == browser)
             activate(hit, me->localPos(), m_pressControlsVisible);
@@ -1423,25 +1578,20 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         const Hit hit = previewAt(browser, he->pos());
         if (hit.key.isEmpty())
             break;
-        const MediaEntry* e = m_core->entry(hit.key);
-        // Pictures and idle videos do not show their name; cards and running players need no tip.
-        const bool showName = e && (isPreviewableImage(e->kind)
-                                    || (e->kind == MediaKind::Video && m_media && !m_media->overlay(hit.key).controlsVisible && !m_media->overlay(hit.key).playing));
-        if (showName) {
-            // The name comes from someone else's chat link: shown as plain text (escaped, since a
-            // tool tip would interpret markup), without bidi/control characters.
-            QString text = displayFileName(e->link.fileName);
-            if (e->link.size)
-                text += QStringLiteral("  ·  ") + formatSize(e->link.size);
-            QToolTip::showText(he->globalPos(), QStringLiteral("<p style='white-space:pre'>%1</p>").arg(text.toHtmlEscaped()), browser->viewport(),
-                               hit.rect.toAlignedRect());
-        } else {
+        QRect         area;
+        const QString text = toolTipText(browser, hit, QPointF(he->pos()), &area);
+        if (text.isEmpty())
             QToolTip::hideText();
-        }
+        else
+            QToolTip::showText(he->globalPos(), text, browser->viewport(), area);
         return true;
     }
 
+    // A new chat width re-lays the previews out; a theme switch (palette / style sheet) re-renders
+    // them in the new colours.
     case QEvent::Resize:
+    case QEvent::PaletteChange:
+    case QEvent::StyleChange:
         if (QTextBrowser* browser = browserForViewport(watched))
             scheduleRelayout(browser);
         break;

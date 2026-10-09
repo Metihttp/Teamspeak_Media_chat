@@ -3,9 +3,12 @@
 // Renders every state of the chat previews (previewrenderer.cpp) without TeamSpeak or a Core
 // instance: entries and stills are built by hand the way Core would produce them. Writes one PNG
 // per state into <outdir>/<theme>_<dpr>x/ and a labelled contact sheet per theme and dpr
-// (<outdir>/sheet_<theme>_<dpr>x.png).
+// (<outdir>/sheet_<theme>_<dpr>x.png). Also prints the contrast of every text colour against what
+// it is drawn on (previewColorPairs, also written to <outdir>/contrast.txt) and fails if one is too
+// low.
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -19,6 +22,7 @@
 
 #include "blurhash.h"
 #include "previewrenderer.h"
+#include "uiutil.h"
 
 namespace {
 
@@ -157,6 +161,20 @@ struct Sample {
     std::function<QImage(const PreviewStyle&, QSize*)>        render;
 };
 
+// Pointer and system states that ChatIntegration sets per preview.
+PreviewStyle hovered(PreviewStyle st, bool pressed = false)
+{
+    st.hovered = true;
+    st.pressed = pressed;
+    return st;
+}
+
+PreviewStyle withChatFont(PreviewStyle st, qreal pointSize)
+{
+    st.font.setPointSizeF(pointSize);
+    return st;
+}
+
 QList<Sample> buildSamples()
 {
     QList<Sample> list;
@@ -237,6 +255,36 @@ QList<Sample> buildSamples()
     add(QStringLiteral("image_plain_link"), QStringLiteral("plain TS link (no dims) ready"), [=](const PreviewStyle& st, QSize* ls) {
         const MediaEntry e = makeEntry(QStringLiteral("from_friend.jpg"), 51934, 0, 0, 0, MediaState::Ready);
         return renderPreview(e, pictureStill(friendPic, MediaStill::Full, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("image_idle_hover"), QStringLiteral("blurhash idle, hover"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e      = makeEntry(QStringLiteral("scan.png"), 31457280, 4000, 3000, 0, MediaState::Idle);
+        e.tooLargeForAuto = true;
+        return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), hovered(st), ls);
+    });
+    add(QStringLiteral("image_idle_pressed"), QStringLiteral("blurhash idle, pressed"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e      = makeEntry(QStringLiteral("scan.png"), 31457280, 4000, 3000, 0, MediaState::Idle);
+        e.tooLargeForAuto = true;
+        return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), hovered(st, true), ls);
+    });
+    add(QStringLiteral("image_cannot_preview_hover"), QStringLiteral("cannot decode, hover"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = makeEntry(QStringLiteral("broken.webp"), 2048000, 1920, 1080, 0, MediaState::Ready);
+        return renderPreview(e, MediaStill(), hovered(st), ls);
+    });
+    add(QStringLiteral("image_failed_permission_hover"), QStringLiteral("failed: permission, hover"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(photoReady, MediaError::Permission);
+        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), hovered(st), ls);
+    });
+    add(QStringLiteral("image_failed_password"), QStringLiteral("failed: password (no retry, hover ignored)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(photoReady, MediaError::Password);
+        return renderPreview(e, pictureStill(fitScaled(sunset, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), hovered(st), ls);
+    });
+    add(QStringLiteral("image_failed_no_still"), QStringLiteral("failed, nothing behind it (not connected)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(makeEntry(QStringLiteral("holiday.jpg"), 845221, 1600, 1200, 0, MediaState::Idle), MediaError::NotConnected);
+        return renderPreview(e, MediaStill(), st, ls);
+    });
+    add(QStringLiteral("image_queued_small"), QStringLiteral("queued, small picture (160x120)"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = makeEntry(QStringLiteral("holiday.jpg"), 845221, 160, 120, 0, MediaState::Queued);
+        return renderPreview(e, hashStill(kReferenceHash, 160, 120, stillPixels(e, st)), st, ls);
     });
 
     // ---- GIFs ------------------------------------------------------------------------------
@@ -394,6 +442,85 @@ QList<Sample> buildSamples()
         o.durationMs      = 3723000;
         return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
     }, 220);
+    add(QStringLiteral("video_poster_pressed"), QStringLiteral("poster, play pressed"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = clip;
+        e.state      = MediaState::Ready;
+        PlaybackOverlay o;
+        o.durationMs = 10000;
+        o.hover      = VideoZone::PlayPause;
+        o.pressed    = VideoZone::PlayPause;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    });
+    add(QStringLiteral("video_mute_pressed"), QStringLiteral("playing, mute pressed"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = clip;
+        e.state      = MediaState::Ready;
+        PlaybackOverlay o;
+        o.controlsVisible = true;
+        o.playing         = true;
+        o.positionMs      = 5200;
+        o.durationMs      = 10000;
+        o.hover           = VideoZone::Mute;
+        o.pressed         = VideoZone::Mute;
+        return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
+    });
+    add(QStringLiteral("video_controls_fading"), QStringLiteral("playing, controls fading out (50%)"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = clip;
+        e.state      = MediaState::Ready;
+        PlaybackOverlay o;
+        o.controlsVisible = true;
+        o.controlsOpacity = 0.5;
+        o.playing         = true;
+        o.positionMs      = 7400;
+        o.durationMs      = 10000;
+        o.hover           = VideoZone::Body;
+        return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
+    });
+    add(QStringLiteral("video_external_only"), QStringLiteral("can't play inline (opens in default app)"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = makeEntry(QStringLiteral("camera_clip.mkv"), 18400000, 1280, 720, 42000, MediaState::Ready);
+        PlaybackOverlay o;
+        o.externalOnly = true;
+        o.durationMs   = 42000;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    });
+    add(QStringLiteral("video_external_only_narrow"), QStringLiteral("can't play inline, narrow (max 240 px)"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = makeEntry(QStringLiteral("camera_clip.mkv"), 18400000, 1280, 720, 3723000, MediaState::Ready);
+        PlaybackOverlay o;
+        o.externalOnly = true;
+        o.durationMs   = 3723000;
+        o.hover        = VideoZone::Body;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    }, 240);
+    add(QStringLiteral("video_opening_static"), QStringLiteral("opening, Windows animations off"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = clip;
+        e.state      = MediaState::Ready;
+        PlaybackOverlay o;
+        o.busy       = true;
+        o.durationMs = 10000;
+        PreviewStyle still = st;
+        still.animate      = false;
+        return renderVideo(e, QImage(), posterStill(e, st), o, still, ls);
+    });
+    add(QStringLiteral("video_busy_hover"), QStringLiteral("downloading 40% (pressed play), hover"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = downloading(clip, 0.4);
+        PlaybackOverlay  o;
+        o.busy         = true;
+        o.busyProgress = 0.4;
+        o.durationMs   = 10000;
+        o.hover        = VideoZone::Body;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    });
+    add(QStringLiteral("video_queued"), QStringLiteral("video queued for download"), [=](const PreviewStyle& st, QSize* ls) {
+        MediaEntry e = clip;
+        e.state      = MediaState::Queued;
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
+    add(QStringLiteral("video_small_poster"), QStringLiteral("small player (max 220 px), poster: 44 px button"), [=](const PreviewStyle& st, QSize* ls) {
+        return renderPreview(clip, posterStill(clip, st), st, ls);
+    }, 220);
+    add(QStringLiteral("video_failed_notfound"), QStringLiteral("video failed: deleted (no retry)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(clip, MediaError::NotFound);
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
 
     // ---- cards -----------------------------------------------------------------------------
     const MediaEntry zip = makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Idle);
@@ -433,7 +560,70 @@ QList<Sample> buildSamples()
     // A name with a RIGHT-TO-LEFT OVERRIDE must not fake its extension ("invoice_exe.pdf" look).
     card(QStringLiteral("card_bidi_override"), QStringLiteral("name with U+202E (shown without it)"),
          makeEntry(QStringLiteral("invoice_") + QChar(0x202E) + QStringLiteral("fdp.exe"), 88000, 0, 0, 0, MediaState::Idle));
+
+    // Cards in pointer and other per-preview states.
+    auto styled = [&add](const QString& name, const QString& label, const MediaEntry& e, std::function<PreviewStyle(const PreviewStyle&)> change, int maxWidth = 400) {
+        add(name, label, [e, change](const PreviewStyle& st, QSize* ls) { return renderPreview(e, MediaStill(), change(st), ls); }, maxWidth);
+    };
+    styled(QStringLiteral("card_idle_hover"), QStringLiteral("card idle, hover"), zip, [](const PreviewStyle& st) { return hovered(st); });
+    styled(QStringLiteral("card_idle_pressed"), QStringLiteral("card idle, pressed"), zip, [](const PreviewStyle& st) { return hovered(st, true); });
+    {
+        MediaEntry e = zip;
+        e.state      = MediaState::Queued;
+        styled(QStringLiteral("card_queued_hover"), QStringLiteral("card queued, hover"), e, [](const PreviewStyle& st) { return hovered(st); });
+    }
+    styled(QStringLiteral("card_failed_quota_hover"), QStringLiteral("card failed: quota, hover (Retry)"), failed(zip, MediaError::Quota),
+           [](const PreviewStyle& st) { return hovered(st); });
+    styled(QStringLiteral("card_failed_notfound_hover"), QStringLiteral("card failed: deleted, hover (inert)"), failed(zip, MediaError::NotFound),
+           [](const PreviewStyle& st) { return hovered(st); });
+    card(QStringLiteral("card_failed_quota_narrow"), QStringLiteral("card failed: quota, narrow (240 px)"), failed(zip, MediaError::Quota), 240);
+    card(QStringLiteral("card_downloading_narrow"), QStringLiteral("card downloading 62%, narrow (240 px)"),
+         downloading(makeEntry(QStringLiteral("holiday_video_raw_footage.zip"), 734003200, 0, 0, 0, MediaState::Idle), 0.62), 240);
+    styled(QStringLiteral("card_exe_ready"), QStringLiteral("program, downloaded (shown in folder)"), makeEntry(QStringLiteral("setup_tool.exe"), 8812000, 0, 0, 0, MediaState::Ready),
+           [](const PreviewStyle& st) {
+               PreviewStyle s = st;
+               s.revealOnly   = true;
+               return s;
+           });
+    styled(QStringLiteral("card_large_font"), QStringLiteral("card downloading, 11 pt chat font"), downloading(zip, 0.4),
+           [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
+    {
+        // TS Media upload names: the random suffix is not shown, pasted pictures get a real name.
+        MediaEntry e    = makeEntry(QStringLiteral("holiday_3f9a1c2e.zip"), 1530000, 0, 0, 0, MediaState::Idle);
+        e.link.protocol = MediaLink::kProtocol;
+        card(QStringLiteral("card_tsmedia_name"), QStringLiteral("TS Media upload holiday_3f9a1c2e.zip"), e);
+    }
     return list;
+}
+
+// Every text colour against what it is drawn on; the result is also saved to <outdir>/contrast.txt.
+int contrastReport(const QString& outDir)
+{
+    QString     report;
+    QTextStream out(&report);
+    int         failures = 0;
+    for (const bool dark : {false, true}) {
+        out << (dark ? "dark theme\n" : "light theme\n");
+        for (const PreviewColorPair& pair : previewColorPairs(dark)) {
+            const double ratio = ui::contrastRatio(pair.foreground, pair.background);
+            const bool   ok    = ratio + 0.005 >= pair.minimum;
+            failures += ok ? 0 : 1;
+            out << QStringLiteral("  %1 %2 on %3  %4:1 (needs %5)%6\n")
+                       .arg(pair.name, -38)
+                       .arg(pair.foreground.name(), pair.background.name())
+                       .arg(ratio, 5, 'f', 2)
+                       .arg(pair.minimum, 0, 'f', 1)
+                       .arg(ok ? QString() : QStringLiteral("  FAIL"));
+        }
+    }
+    out.flush();
+    QTextStream(stdout) << report;
+    QFile file(outDir + QStringLiteral("/contrast.txt"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(report.toUtf8());
+    if (failures)
+        QTextStream(stderr) << "error: " << failures << " colour pair(s) below their contrast minimum\n";
+    return failures;
 }
 
 // displayFileName() must strip what could reorder or hide parts of a name, and nothing else.
@@ -559,5 +749,5 @@ int main(int argc, char* argv[])
         }
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
-    return 0;
+    return contrastReport(outDir) == 0 ? 0 : 1;
 }

@@ -10,12 +10,14 @@
 #include "core.h"
 #include "settings.h"
 #include "ts3api.h"
+#include "uiutil.h"
 #include "video/mfvideo.h"
 
 namespace {
 
 constexpr int    kMaxPlayers         = 3;
 constexpr qint64 kControlsHideMs     = 2500;
+constexpr qint64 kControlsFadeMs     = 200; // the bar fades out over the last part of kControlsHideMs
 constexpr qint64 kMaxAnimationPixels = 80LL * 1000 * 1000; // all frames together
 constexpr int    kTickMs             = 50;
 constexpr qint64 kOrphanGraceMs      = 1000; // a preview missing this long is gone (not a rescan)
@@ -32,6 +34,19 @@ bool mayBeAnimated(const MediaEntry& e)
     if (e.kind == MediaKind::AnimatedImage)
         return true;
     return e.kind == MediaKind::Image && QFileInfo(e.link.fileName).suffix().compare(QLatin1String("webp"), Qt::CaseInsensitive) == 0;
+}
+
+// Pointer on one of the player's controls (not just on the picture).
+bool isControlZone(VideoZone zone)
+{
+    return zone == VideoZone::PlayPause || zone == VideoZone::Seek || zone == VideoZone::Mute || zone == VideoZone::Expand;
+}
+
+// GIFs play by themselves only when the setting allows it and Windows animations are on;
+// otherwise they play while hovered (the user starts them).
+bool gifsAutoplay()
+{
+    return Settings::instance().autoplayGifs && ui::animationsEnabled();
 }
 
 // Aspect-preserving fit of natural into box; never more than maxUpscale times the natural size.
@@ -174,6 +189,7 @@ PlaybackOverlay InlineMediaController::overlay(const QString& key) const
     const Video* v = m_videos.value(key);
     if (!v)
         return o;
+    o.externalOnly = v->failed; // a click opens it in the default app
     if (!v->player) {
         if (v->wantPlay && e && (e->state == MediaState::Idle || e->state == MediaState::Queued || e->state == MediaState::Downloading)) {
             o.busy         = true;
@@ -193,12 +209,29 @@ PlaybackOverlay InlineMediaController::overlay(const QString& key) const
     if (v->player->duration() > 0)
         o.durationMs = v->player->duration();
     o.controlsVisible = !o.playing || controlsShown(v);
+    if (o.playing && o.controlsVisible)
+        o.controlsOpacity = controlsOpacity(v);
     return o;
 }
 
 bool InlineMediaController::controlsShown(const Video* video) const
 {
-    return video->key == m_hoverKey && nowMs() - m_lastMoveMs < kControlsHideMs;
+    if (video->key != m_hoverKey)
+        return false;
+    // A pointer resting on a control keeps the bar: it must not vanish under the button about to be
+    // clicked (the click would then toggle playback instead). Only the picture itself times out.
+    if (isControlZone(m_hoverZone))
+        return true;
+    return nowMs() - m_lastMoveMs < kControlsHideMs;
+}
+
+double InlineMediaController::controlsOpacity(const Video* video) const
+{
+    // Exit is quicker than entry: the bar appears at once and fades out over the last 200 ms.
+    if (video->key != m_hoverKey || isControlZone(m_hoverZone) || !ui::animationsEnabled())
+        return 1.0;
+    const qint64 left = kControlsHideMs - (nowMs() - m_lastMoveMs);
+    return left >= kControlsFadeMs ? 1.0 : qBound(0.0, static_cast<double>(left) / kControlsFadeMs, 1.0);
 }
 
 bool InlineMediaController::isVideo(const QString& key) const
@@ -305,7 +338,7 @@ void InlineMediaController::click(const QString& key, VideoZone zone, double see
             v->wantPlay = true;
             startVideo(key);
         } else if (e->state == MediaState::Failed) {
-            if (e->error != MediaError::NotFound) {
+            if (isRetryableDownload(*e)) { // not for deleted files or password-protected channels
                 v->wantPlay = true;
                 m_core->retry(key);
             }
@@ -361,7 +394,7 @@ void InlineMediaController::hover(const QString& key, VideoZone zone)
                 old->controlsShown = false;
             emit frameChanged(oldKey);
         }
-        if (!Settings::instance().autoplayGifs)
+        if (!gifsAutoplay())
             updateAnimations();
     }
 
@@ -653,9 +686,10 @@ void InlineMediaController::tick()
 {
     ++m_ticks;
     const bool syncSettings = m_ticks % 20 == 0; // about once a second
+    const bool animate      = ui::animationsEnabled(); // off: spinners are static, nothing to redraw
     for (Video* v : qAsConst(m_videos)) {
         if (!v->player) {
-            if (v->wantPlay) {
+            if (v->wantPlay && animate) {
                 // Indeterminate spinner while waiting for the download to start (overlay() draws
                 // the download's own progress, and nothing in the other states).
                 const MediaEntry* e = m_core->entry(v->key);
@@ -665,13 +699,16 @@ void InlineMediaController::tick()
             continue;
         }
         if (!v->loaded) {
-            emit frameChanged(v->key); // spinner while opening
+            if (animate)
+                emit frameChanged(v->key); // spinner while opening
             continue;
         }
         const bool shown = controlsShown(v);
         if (shown != v->controlsShown) {
             v->controlsShown = shown;
             emit frameChanged(v->key);
+        } else if (shown && v->player->isPlaying() && controlsOpacity(v) < 1.0) {
+            emit frameChanged(v->key); // fading out: smooth even when the video has few frames
         }
         if (syncSettings)
             applySettings(v);
@@ -681,9 +718,11 @@ void InlineMediaController::tick()
 
 void InlineMediaController::updateTimer()
 {
-    bool needed = false;
+    // Waiting for a download only needs the timer for the spinner.
+    const bool animate = ui::animationsEnabled();
+    bool       needed  = false;
     for (const Video* v : qAsConst(m_videos)) {
-        if (v->player || v->wantPlay) {
+        if (v->player || (v->wantPlay && animate)) {
             needed = true;
             break;
         }
@@ -780,7 +819,7 @@ void InlineMediaController::destroyAnimation(const QString& key)
 
 void InlineMediaController::updateAnimations()
 {
-    const bool autoplay = Settings::instance().autoplayGifs;
+    const bool autoplay = gifsAutoplay();
 
     // Animations that scrolled out of view (or whose chat was hidden) are dropped.
     const QStringList running = m_animations.keys();

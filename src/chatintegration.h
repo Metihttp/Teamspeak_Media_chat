@@ -66,7 +66,9 @@ class ChatIntegration : public QObject
         QPointer<QTextDocument> document;
         bool                    scanQueued     = false;
         bool                    relayoutQueued = false;
-        int                     layoutWidth    = 0; // maxWidth the previews were laid out for
+        int                     layoutWidth    = 0;     // maxWidth the previews were laid out for
+        qreal                   layoutDpr      = 0.0;   // ... the device pixel ratio they were rendered at
+        bool                    layoutDark     = false; // ... and the theme
 
         // Our preview objects in document order; rebuilt lazily after the document changed.
         bool                         positionsValid = false;
@@ -115,7 +117,10 @@ class ChatIntegration : public QObject
     void         activate(const Hit& hit, const QPointF& viewportPos, bool controlsVisible);
     void         openKey(const QString& key);
     void         copyImage(const QString& key);
-    void         updateCursor(QTextBrowser* browser, bool overPreview, const QPoint& viewportPos);
+    // actionable: a click there does something (pointing hand); otherwise the arrow.
+    void         updateCursor(QTextBrowser* browser, bool overPreview, const QPoint& viewportPos, bool actionable = true);
+    void         repaintPointerState(QTextBrowser* browser, const QString& key, bool includeVideos); // hover / pressed look
+    QString      toolTipText(QTextBrowser* browser, const Hit& hit, const QPointF& viewportPos, QRect* area) const;
     void         scheduleVisibilityUpdate();
     void         scheduleRelayout(QTextBrowser* browser);
     bool         testShowsRawChat(const MediaLink& link) const;
