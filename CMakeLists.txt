@@ -63,6 +63,9 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    # 2.2 album
+    src/albums.cpp            src/albums.h
+    src/chatalbums.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -109,6 +112,9 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlog.cpp
         src/hashing.cpp
         src/floodgovernor.cpp
+        # 2.2 album
+        tests/tst_albums.cpp
+        src/albums.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -153,6 +159,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/blurhash.cpp
         src/i18n.cpp
         src/uiutil.cpp
+        src/albums.cpp # 2.2 album
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})

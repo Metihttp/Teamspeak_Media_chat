@@ -15,6 +15,7 @@
 #include <atomic>
 #include <memory>
 
+#include "albums.h" // 2.2 album
 #include "floodgovernor.h"
 #include "medialink.h"
 #include "mediaprobe.h"
@@ -225,9 +226,16 @@ class Core : public QObject
     // A command was flooded (or answered) on sch: Core re-plans its posts (a pause applies to both).
     void           floodStateChanged(uint64 sch);
 
+    // ---- albums (2.2) ----------------------------------------------------------------------------
+    // Who posted an album item: the album's sender (TeamSpeak's unique id) when key is the item at
+    // index of that album as it was received (onTextMessage) or posted by us; empty when unknown, e.g.
+    // after a plugin reload or for anyone else's item under the same album id.
+    QString albumSender(const QString& serverUid, quint32 albumId, int index, const QString& key) const;
+
     // ---- TeamSpeak callbacks (called on the GUI thread) ------------------------------------
     bool isOwnReturnCode(const QString& returnCode) const; // thread-safe
-    void onTextMessage(uint64 sch, const QString& message);
+    // 2.2 album: senderUid is TeamSpeak's unique id of the sender (fromUniqueIdentifier).
+    void onTextMessage(uint64 sch, const QString& message, const QString& senderUid = QString());
     void onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError);
     void onTransferStatus(anyID transferId, unsigned int status, const QString& message, uint64 sch);
     void onConnectionLost(uint64 sch);
@@ -406,6 +414,7 @@ class Core : public QObject
     QHash<uint64, FloodGovernor>    m_flood;         // connection -> its governor (posts and plugin commands)
     QTimer*                         m_postTimer = nullptr; // wakes pumpPosts() when a governor allows the next post
     QElapsedTimer                   m_clock;
+    albums::Registry                m_albums;        // 2.2 album: who posted which album
 
     QHash<QString, PendingOp> m_ops;
     mutable QMutex            m_returnCodesMutex;

@@ -16,6 +16,7 @@ class MediaViewer;
 class QMimeData;
 class QTabBar;
 class QTextBrowser;
+class QTextCharFormat;
 class QTextDocument;
 class QTimer;
 class UploadToast;
@@ -79,6 +80,7 @@ class ChatIntegration : public QObject
         QHash<QString, QSize>        formatSizes; // logical size each preview occupies in the layout
         QSet<QString>                resourced;   // keys with an image resource in this document
         QSet<QString>                stale;       // frames that changed while this chat was hidden
+        QHash<QString, QStringList>  albumsByKey; // 2.2 album: key -> album grids (object ids) that show it
 
         // Test builds: throttled chat snapshots.
         qint64  lastSnapshotMs  = 0;
@@ -90,6 +92,12 @@ class ChatIntegration : public QObject
     struct Hit {
         QString key;
         QRectF  rect; // preview rect in viewport coordinates
+        // 2.2 album: the object under the pointer (a single preview: its key; an album: its object id).
+        // On an album, key and rect are the tile's (key empty: an item that hasn't arrived), tile its
+        // index (-1: a gap between tiles), overflow the "+N" of the last tile (0: none).
+        QString object;
+        int     tile     = -1;
+        int     overflow = 0;
     };
 
     void discover();
@@ -103,7 +111,7 @@ class ChatIntegration : public QObject
     QImage renderFor(QTextBrowser* browser, const QString& key, QSize* logicalSize);
     Hit    previewAt(QTextBrowser* browser, const QPoint& viewportPos) const;
     void   updateVisibleKeys();
-    void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos);
+    void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, bool albumTile = false); // 2.2 album: albumTile
 
     void onEntryChanged(const QString& key);
     void onFrameChanged(const QString& key);
@@ -148,6 +156,57 @@ class ChatIntegration : public QObject
     QTextBrowser* visibleChatBrowser() const;
     QTextBrowser* browserForViewport(QObject* viewport) const;
 
+    // ---- 2.2 album grid (chatalbums.cpp) ---------------------------------------------------------
+    // An album's items show as one grid (an image object named "tsmedia:" + albums::objectId) right
+    // after the last of its links in its message. The other item links of that message are collapsed
+    // into one zero-width character that keeps the link (its text is kept in the format and given back
+    // on restore), and later messages of an album (the rare album sent as several messages) are hidden
+    // with QTextBlock::setVisible. Both are tagged, so they are found and undone by property.
+    struct AlbumPlan {
+        struct Collapse {
+            int from  = 0; // the line breaks in front of the link start here (end of the previous item)
+            int start = 0; // the link
+            int end   = 0;
+        };
+        struct Object {
+            QString           id;        // albums::objectId
+            int               block = 0; // block number of the message it goes into
+            int               after = 0; // document position it goes after (end of its last item's link there)
+            QVector<Collapse> collapse;  // the message's other item links
+        };
+        bool                active = false; // album items in the chat, or marks of ours to undo
+        QSet<int>           members;        // start positions of album item links: no preview of their own
+        QVector<Object>     objects;
+        QSet<int>           hide;           // block numbers of messages to hide
+        QVector<int>        restore;        // collapsed links to give back
+        QVector<int>        staleSingles;   // single previews of album items (from before they were grouped)
+        // What the document holds now.
+        QHash<int, QString> existing; // position -> album object id
+        QVector<int>        markers;  // positions of collapsed links
+        QSet<int>           hidden;   // block numbers we hid (tagged and not visible)
+        QSet<int>           tagged;   // block numbers with our tag; a message appended after a hidden one can inherit it
+    };
+    AlbumPlan   planAlbums(QTextBrowser* browser) const;
+    void        applyAlbums(QTextBrowser* browser, const AlbumPlan& plan);
+    void        restoreAlbums(QTextBrowser* browser); // shows hidden messages and gives collapsed links back
+    void        indexAlbums(View& view) const;        // View::albumsByKey from positionsByKey
+    void        refreshAlbumsOf(QTextBrowser* browser, const QString& key, bool pixelsOnly);
+    void        scheduleAlbumRefresh(QTextBrowser* browser, const QString& id);
+    void        flushAlbumRefresh();
+    QImage      renderAlbumFor(QTextBrowser* browser, const QString& id, QSize* logicalSize);
+    Hit         albumHit(QTextBrowser* browser, const QString& id, const QRectF& rect, const QPointF& viewportPos) const;
+    void        albumVisibleKeys(QTextBrowser* browser, const QString& id, const QRectF& rect, const QRectF& viewport, QSet<QString>* keys) const;
+    QString     albumToolTip(const Hit& hit, QRect* area) const;
+    void        activateAlbumTile(const Hit& hit);
+    bool        shownAlone(const QString& key) const; // key has a single preview of its own in some chat
+    static QStringList albumKeysOf(const QString& id);
+    // chatintegration.cpp's document helpers, for chatalbums.cpp.
+    static QString resourceName(const QString& id);
+    static QString objectIdOf(const QTextCharFormat& format);
+    static bool    isOwnSeparator(QTextDocument* document, int position);
+    static bool    isFileAnchor(const QTextCharFormat& format);
+    static bool    atBottom(QTextBrowser* browser);
+
     Core*                      m_core;
     InlineMediaController*     m_media         = nullptr;
     QTimer*                    m_discoverTimer = nullptr;
@@ -176,4 +235,12 @@ class ChatIntegration : public QObject
     SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget
     ChatTarget             m_dropTarget;
     QThreadPool            m_thumbnailPool; // paste prompt thumbnails of copied pictures (waited for on destruction)
+
+    // 2.2 album: pointer state per tile (a single preview's object is its key, its tile -1)
+    QString                                 m_hoverObject;
+    int                                     m_hoverTile   = -1;
+    QString                                 m_pressedObject;
+    int                                     m_pressedTile = -1;
+    QTimer*                                 m_albumTimer  = nullptr; // redraws albums with new GIF frames, ~30 per second
+    QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
 };

@@ -35,6 +35,7 @@ uint64        connectionForServerUid(const QString& uid);
 
 anyID   ownClientId(uint64 sch);
 uint64  ownChannel(uint64 sch);
+QString ownUid(uint64 sch); // 2.2 album: our own unique identifier on sch (empty if not connected)
 QString serverUid(uint64 sch);
 QString serverName(uint64 sch);
 QString channelName(uint64 sch, uint64 channelId);

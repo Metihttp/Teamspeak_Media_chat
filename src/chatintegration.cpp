@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <functional>
 
+#include "albums.h" // 2.2 album
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
@@ -243,6 +244,13 @@ ChatIntegration::~ChatIntegration()
     // Thumbnail workers run code of this DLL: they are done before it can be unloaded.
     m_thumbnailPool.clear();
     m_thumbnailPool.waitForDone();
+    // 2.2 album: the chats stay with TeamSpeak: messages we hid are shown and collapsed album links
+    // given back (the grids stay, like single previews). m_mutating stays set: no rescan is queued now.
+    m_mutating = true;
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->browser && it->document == it->browser->document())
+            restoreAlbums(it->browser);
+    }
     // Inline players are shut down here, synchronously, while Core still exists.
     delete m_media;
     m_media = nullptr;
@@ -476,6 +484,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
     QVector<Op>   ops;
     QSet<QString> present;
     int           hiddenNotes = 0;
+    // 2.2 album: the items of an album get no preview of their own (applyAlbums draws their grid).
+    const AlbumPlan albumPlan = planAlbums(browser);
 
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
         QVector<Link> links;
@@ -583,7 +593,7 @@ void ChatIntegration::scan(QTextBrowser* browser)
                     ++hiddenNotes;
             }
 
-            if (!hasPreview && previewsOn && !raw)
+            if (!hasPreview && previewsOn && !raw && !albumPlan.members.contains(hit.start)) // 2.2 album
                 ops.append({hit.end, 0, hit.key});
         }
     }
@@ -596,6 +606,7 @@ void ChatIntegration::scan(QTextBrowser* browser)
     }
 
     if (ops.isEmpty()) {
+        applyAlbums(browser, albumPlan); // 2.2 album
         if (!present.isEmpty())
             browser->viewport()->update();
         return;
@@ -623,6 +634,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
     }
     if (bottom)
         browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
+    if (albumPlan.active)
+        applyAlbums(browser, planAlbums(browser)); // 2.2 album: planned again, the positions moved
 
     if (hiddenNotes > 0) {
 #ifdef TSMEDIA_TESTHOOKS
@@ -669,6 +682,8 @@ int ChatIntegration::previewAreaWidth(QTextBrowser* browser) const
 
 QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSize* logicalSize)
 {
+    if (albums::isObjectId(key))
+        return renderAlbumFor(browser, key, logicalSize); // 2.2 album
     const MediaEntry* e = m_core->entry(key);
     if (!e)
         return {};
@@ -678,7 +693,7 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     const bool   media   = isMediaKind(e->kind);
     // Pointer feedback: hovered while the mouse is over it, pressed while the left button that went
     // down on it is held there (a seek drag is not a press of the picture).
-    style.hovered    = key == m_hoverKey;
+    style.hovered    = key == m_hoverKey && m_hoverObject == key; // 2.2 album: not while it is hovered in an album
     style.pressed    = style.hovered && key == m_pressedKey && !m_seeking;
     style.revealOnly = !media && e->state == MediaState::Ready && m_core->isUnsafeToOpen(key);
     const QSize stillPixels = stillPixelsFor(*e, style);
@@ -769,6 +784,8 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
     if (!view)
         return;
     ensurePositions(*view);
+    if (!albums::isObjectId(key))
+        refreshAlbumsOf(browser, key, pixelsOnly); // 2.2 album: the grids that show it are drawn again too
     const auto found = view->positionsByKey.constFind(key);
     if (found == view->positionsByKey.constEnd())
         return;
@@ -958,6 +975,7 @@ void ChatIntegration::ensurePositions(View& view)
             view.formatSizes.insert(key, contentSizeOf(cf.toImageFormat()).toSize());
         }
     }
+    indexAlbums(view); // 2.2 album
     view.positionsValid = true;
 }
 
@@ -1010,7 +1028,7 @@ ChatIntegration::Hit ChatIntegration::previewAt(QTextBrowser* browser, const QPo
         // The rect of what is drawn: the gaps around it belong to the chat text, not the preview.
         const QRectF r = previewRect(browser, p, contentSizeOf(cf.toImageFormat()));
         if (r.contains(viewportPos))
-            return {key, r};
+            return albums::isObjectId(key) ? albumHit(browser, key, r, viewportPos) : Hit{key, r, key}; // 2.2 album: per tile
     }
     return {};
 }
@@ -1070,7 +1088,12 @@ void ChatIntegration::updateVisibleKeys()
         }
         const QRectF viewport(b->viewport()->rect());
         for (const PreviewPos& pp : qAsConst(view.previews)) {
-            if (previewRect(b, pp.position, QSizeF(view.formatSizes.value(pp.key))).intersects(viewport))
+            const QRectF r = previewRect(b, pp.position, QSizeF(view.formatSizes.value(pp.key)));
+            if (!r.intersects(viewport))
+                continue;
+            if (albums::isObjectId(pp.key))
+                albumVisibleKeys(b, pp.key, r, viewport, &keys); // 2.2 album: its tiles on screen
+            else
                 keys.insert(pp.key);
         }
         if (!view.stale.isEmpty()) {
@@ -1133,6 +1156,8 @@ void ChatIntegration::repaintPointerState(QTextBrowser* browser, const QString& 
 // Built from i18n::t / arg() only: QToolTip's label outlives the plugin DLL.
 QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, const QPointF& viewportPos, QRect* area) const
 {
+    if (hit.tile >= 0)
+        return albumToolTip(hit, area); // 2.2 album
     const MediaEntry* e = m_core->entry(hit.key);
     if (!e)
         return {};
@@ -1205,6 +1230,10 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
 
 void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool controlsVisible)
 {
+    if (hit.tile >= 0) {
+        activateAlbumTile(hit); // 2.2 album: tiles open the viewer, videos never play inside one
+        return;
+    }
     const MediaEntry* e = m_core->entry(hit.key);
     if (!e)
         return;
@@ -1283,7 +1312,7 @@ void ChatIntegration::openViewer(const QString& key)
         if (!v || !v->browser)
             return false;
         ensurePositions(*v);
-        return v->positionsByKey.contains(key);
+        return v->positionsByKey.contains(key) || v->albumsByKey.contains(key); // 2.2 album
     };
     QTextBrowser* source = nullptr;
     if (holds(m_lastBrowser.data()))
@@ -1302,12 +1331,16 @@ void ChatIntegration::openViewer(const QString& key)
     if (View* v = viewFor(source)) {
         QSet<QString> seen;
         for (const PreviewPos& pp : qAsConst(v->previews)) {
-            if (seen.contains(pp.key))
-                continue;
-            seen.insert(pp.key);
-            const MediaEntry* e = m_core->entry(pp.key);
-            if (e && isMediaKind(e->kind))
-                keys.append(pp.key);
+            // 2.2 album: a grid adds its items in grid order, the ones behind "+N" too.
+            const QStringList shown = albums::isObjectId(pp.key) ? albumKeysOf(pp.key) : QStringList{pp.key};
+            for (const QString& k : shown) {
+                if (k.isEmpty() || seen.contains(k))
+                    continue;
+                seen.insert(k);
+                const MediaEntry* e = m_core->entry(k);
+                if (e && isMediaKind(e->kind))
+                    keys.append(k);
+            }
         }
     }
     int index = keys.indexOf(key);
@@ -1362,7 +1395,7 @@ void ChatIntegration::showFeedback(QWidget* widget, const QString& text, bool er
     QToolTip::showText(QCursor::pos(), text, widget, QRect(), error ? qMax(4000, ui::notificationDurationMs()) : 1800);
 }
 
-void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos)
+void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, bool albumTile)
 {
     const MediaEntry* e = m_core->entry(key);
     if (!e)
@@ -1388,7 +1421,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     if (gone) {
         menu->addAction(downloadErrorTitle(e->error))->setEnabled(false);
     } else {
-        if (e->kind == MediaKind::Video && m_media) {
+        if (e->kind == MediaKind::Video && m_media && !albumTile) { // 2.2 album: tiles open in the viewer
             const PlaybackOverlay o      = m_media->overlay(key);
             const bool            active = o.playing || o.ended || o.positionMs > 0;
             // The click hands such a video to the default app, as its preview says ("Opens in default app").
@@ -1421,7 +1454,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     // Opening it.
     if (!gone && !unsafe) {
         QAction* open = menu->addAction(i18n::t("&Open"), this, [this, key] { openKey(key); });
-        if (!primary)
+        if (!primary || albumTile) // 2.2 album: what a click on a tile does
             primary = open;
     }
     if (media && ready && !external)
@@ -1783,9 +1816,18 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
         VideoZone         zone  = VideoZone::None;
         if (!hit.key.isEmpty()) {
-            zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video
+            zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video && hit.tile < 0 // 2.2 album: tiles have no controls
                        ? videoZoneAt(hit.rect.size().toSize(), me->localPos() - hit.rect.topLeft(), !m_media->overlay(hit.key).playing)
                        : VideoZone::Body;
+        }
+        if (hit.object != m_hoverObject || hit.tile != m_hoverTile) { // 2.2 album: hover per tile
+            const QString left = m_hoverObject;
+            m_hoverObject      = hit.object;
+            m_hoverTile        = hit.tile;
+            if (albums::isObjectId(left))
+                refreshPreview(browser, left, true);
+            if (albums::isObjectId(hit.object) && hit.object != left)
+                refreshPreview(browser, hit.object, true);
         }
         if (hit.key != m_hoverKey) {
             const QString left = m_hoverKey;
@@ -1817,6 +1859,13 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             m_media->hover(QString(), VideoZone::None);
             repaintPointerState(browser, left, false);
         }
+        if (!m_hoverObject.isEmpty()) { // 2.2 album
+            const QString left = m_hoverObject;
+            m_hoverObject.clear();
+            m_hoverTile = -1;
+            if (albums::isObjectId(left))
+                refreshPreview(browser, left, true);
+        }
         updateCursor(browser, false, QPoint(-1, -1));
         break;
     }
@@ -1828,16 +1877,21 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             break;
         auto*     me  = static_cast<QMouseEvent*>(event);
         const Hit hit = previewAt(browser, me->pos());
-        if (hit.key.isEmpty())
+        if (hit.key.isEmpty()) {
+            if (albums::isObjectId(hit.object) && me->button() == Qt::LeftButton)
+                return true; // 2.2 album: a gap or an item still on its way; no text selection from there
             break;
+        }
         if (me->button() == Qt::RightButton)
             return true; // the context menu event follows
         if (me->button() != Qt::LeftButton)
             break;
         const MediaEntry* e     = m_core->entry(hit.key);
-        const bool        video = e && e->kind == MediaKind::Video;
+        const bool        video = e && e->kind == MediaKind::Video && hit.tile < 0; // 2.2 album: a tile is no player
         if (event->type() == QEvent::MouseButtonDblClick && !video)
             return true; // the first click already opened it
+        m_pressedObject        = hit.object; // 2.2 album
+        m_pressedTile          = hit.tile;
         m_pressedKey           = hit.key;
         m_pressBrowser         = browser;
         m_pressRect            = hit.rect;
@@ -1852,7 +1906,10 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
                 m_media->click(hit.key, VideoZone::Seek, seekFractionAt(size, local));
             }
         }
-        repaintPointerState(browser, hit.key, true); // the press shows before the release acts
+        if (albums::isObjectId(hit.object))
+            refreshPreview(browser, hit.object, true); // 2.2 album: the pressed tile
+        else
+            repaintPointerState(browser, hit.key, true); // the press shows before the release acts
         return true;
     }
 
@@ -1868,18 +1925,26 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         }
         if (me->button() != Qt::LeftButton || m_pressedKey.isEmpty())
             break;
-        const QString pressed = m_pressedKey;
+        const QString pressed       = m_pressedKey;
+        const QString pressedObject = m_pressedObject; // 2.2 album
+        const int     pressedTile   = m_pressedTile;
         m_pressedKey.clear();
+        m_pressedObject.clear();
+        m_pressedTile = -1;
         if (m_seeking) {
             m_seeking = false;
             if (m_media)
                 m_media->click(pressed, VideoZone::Seek, seekFractionAt(m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft()));
             return true;
         }
-        if (m_pressBrowser == browser)
-            repaintPointerState(browser, pressed, true);
+        if (m_pressBrowser == browser) {
+            if (albums::isObjectId(pressedObject))
+                refreshPreview(browser, pressedObject, true); // 2.2 album
+            else
+                repaintPointerState(browser, pressed, true);
+        }
         const Hit hit = previewAt(browser, me->pos());
-        if (hit.key == pressed && m_pressBrowser == browser)
+        if (hit.key == pressed && hit.object == pressedObject && hit.tile == pressedTile && m_pressBrowser == browser) // 2.2 album: the same tile
             activate(hit, me->localPos(), m_pressControlsVisible);
         return true;
     }
@@ -1893,7 +1958,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (hit.key.isEmpty())
             break;
         m_lastBrowser = browser;
-        showContextMenu(browser, hit.key, ce->globalPos());
+        showContextMenu(browser, hit.key, ce->globalPos(), hit.tile >= 0); // 2.2 album
         return true;
     }
 
@@ -1903,8 +1968,12 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             break;
         auto*     he  = static_cast<QHelpEvent*>(event);
         const Hit hit = previewAt(browser, he->pos());
-        if (hit.key.isEmpty())
-            break;
+        if (hit.key.isEmpty() && hit.tile < 0) { // 2.2 album: an item still on its way has a tip, a gap none
+            if (!albums::isObjectId(hit.object))
+                break;
+            QToolTip::hideText();
+            return true;
+        }
         QRect         area;
         const QString text = toolTipText(browser, hit, QPointF(he->pos()), &area);
         if (text.isEmpty())
@@ -2542,4 +2611,33 @@ QString ChatIntegration::dumpWidgetTree() const
             dump(top, 0);
     }
     return out;
+}
+
+// ============================================================================================
+// 2.2 album: the document helpers above, for chatalbums.cpp
+// ============================================================================================
+
+QString ChatIntegration::resourceName(const QString& id)
+{
+    return kScheme + id;
+}
+
+QString ChatIntegration::objectIdOf(const QTextCharFormat& format)
+{
+    return previewKeyOf(format);
+}
+
+bool ChatIntegration::isOwnSeparator(QTextDocument* document, int position)
+{
+    return isOurSeparator(document, position);
+}
+
+bool ChatIntegration::isFileAnchor(const QTextCharFormat& format)
+{
+    return isTs3FileAnchor(format);
+}
+
+bool ChatIntegration::atBottom(QTextBrowser* browser)
+{
+    return isAtBottom(browser);
 }
