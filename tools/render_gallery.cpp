@@ -20,6 +20,7 @@
 
 #include <functional>
 
+#include "audiocard.h"
 #include "blurhash.h"
 #include "previewrenderer.h"
 #include "uiutil.h"
@@ -30,6 +31,7 @@ namespace {
 const QString kReferenceHash = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj");
 
 QString g_mediaDir;
+int     g_layoutFailures = 0; // samples whose box differs from what the chat reserves (a layout jump)
 
 QImage loadSource(const QString& fileName)
 {
@@ -593,6 +595,136 @@ QList<Sample> buildSamples()
         e.link.protocol = MediaLink::kProtocol;
         card(QStringLiteral("card_tsmedia_name"), QStringLiteral("TS Media upload holiday_3f9a1c2e.zip"), e);
     }
+
+    // ---- 2.2 audio cards -------------------------------------------------------------------
+    // Every state must keep the file card's box (checked: no layout jump when a card starts playing).
+    const MediaEntry song = [] {
+        MediaEntry e    = makeEntry(QStringLiteral("summer_mix_3f9a1c2e.mp3"), 4404019, 0, 0, 205000, MediaState::Idle);
+        e.link.protocol = MediaLink::kProtocol;
+        return e;
+    }();
+    auto audioOverlay = [](const MediaEntry& e) {
+        PlaybackOverlay o;
+        o.durationMs      = e.link.durationMs;
+        o.controlsVisible = true;
+        return o;
+    };
+    auto audio = [&add](const QString& name, const QString& label, const MediaEntry& e, const PlaybackOverlay& o,
+                        std::function<PreviewStyle(const PreviewStyle&)> change = nullptr, int maxWidth = 400) {
+        add(name, label, [e, o, change](const PreviewStyle& st, QSize* ls) {
+            const PreviewStyle s = change ? change(st) : st;
+            QSize              logical;
+            const QImage       img = renderAudioCard(e, o, s, &logical);
+            if (logical != previewLogicalSize(e, s)) {
+                QTextStream(stderr) << "error: audio card " << e.link.fileName << " is " << logical.width() << "x" << logical.height()
+                                    << ", the chat reserves " << previewLogicalSize(e, s).width() << "x" << previewLogicalSize(e, s).height() << "\n";
+                ++g_layoutFailures;
+            }
+            if (ls)
+                *ls = logical;
+            return img;
+        }, maxWidth);
+    };
+    audio(QStringLiteral("audio_idle"), QStringLiteral("audio idle (not downloaded)"), song, audioOverlay(song));
+    audio(QStringLiteral("audio_idle_hover"), QStringLiteral("audio idle, hover on play"), song, [&] {
+        PlaybackOverlay o = audioOverlay(song);
+        o.hover           = VideoZone::PlayPause;
+        return o;
+    }(), [](const PreviewStyle& st) { return hovered(st); });
+    {
+        MediaEntry e      = song;
+        e.link.durationMs = 0;
+        e.link.protocol   = 0;
+        e.link.fileName   = QStringLiteral("from_teamspeak.mp3");
+        audio(QStringLiteral("audio_idle_no_duration"), QStringLiteral("plain link, no duration"), e, audioOverlay(e));
+    }
+    {
+        MediaEntry e = song;
+        e.state      = MediaState::Queued;
+        PlaybackOverlay o = audioOverlay(e);
+        o.busy            = true;
+        audio(QStringLiteral("audio_queued"), QStringLiteral("audio queued (pressed play)"), e, o);
+    }
+    {
+        const MediaEntry e = downloading(song, 0.45);
+        PlaybackOverlay  o = audioOverlay(e);
+        o.busy             = true;
+        o.busyProgress     = 0.45;
+        audio(QStringLiteral("audio_downloading"), QStringLiteral("audio downloading 45% (pressed play)"), e, o);
+        audio(QStringLiteral("audio_auto_downloading"), QStringLiteral("audio auto-downloading 45%"), e, audioOverlay(e));
+    }
+    MediaEntry songReady = song;
+    songReady.state      = MediaState::Ready;
+    songReady.progress   = 1.0;
+    {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.busy            = true;
+        audio(QStringLiteral("audio_opening"), QStringLiteral("audio opening"), songReady, o);
+        audio(QStringLiteral("audio_opening_static"), QStringLiteral("audio opening, animations off"), songReady, o, [](const PreviewStyle& st) {
+            PreviewStyle s = st;
+            s.animate      = false;
+            return s;
+        });
+    }
+    audio(QStringLiteral("audio_ready"), QStringLiteral("audio downloaded, at rest"), songReady, audioOverlay(songReady));
+    {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.playing         = true;
+        o.positionMs      = 71750;
+        audio(QStringLiteral("audio_playing"), QStringLiteral("audio playing 35%"), songReady, o);
+        o.hover = VideoZone::Seek;
+        audio(QStringLiteral("audio_playing_seek_hover"), QStringLiteral("audio playing, hover on the seek bar"), songReady, o,
+              [](const PreviewStyle& st) { return hovered(st); });
+        o.hover   = VideoZone::PlayPause;
+        o.pressed = VideoZone::PlayPause;
+        audio(QStringLiteral("audio_pause_pressed"), QStringLiteral("audio playing, pause pressed"), songReady, o,
+              [](const PreviewStyle& st) { return hovered(st, true); });
+    }
+    {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.positionMs      = 42000;
+        audio(QStringLiteral("audio_paused"), QStringLiteral("audio paused at 0:42"), songReady, o);
+        PlaybackOverlay e = audioOverlay(songReady);
+        e.ended           = true;
+        e.positionMs      = 205000;
+        audio(QStringLiteral("audio_ended"), QStringLiteral("audio ended (replay)"), songReady, e);
+        PlaybackOverlay x = audioOverlay(songReady);
+        x.externalOnly    = true;
+        audio(QStringLiteral("audio_external"), QStringLiteral("audio can't play here (opens externally)"), songReady, x);
+    }
+    audio(QStringLiteral("audio_failed_permission"), QStringLiteral("audio failed: permission (retry)"), failed(song, MediaError::Permission), audioOverlay(song));
+    audio(QStringLiteral("audio_failed_permission_hover"), QStringLiteral("audio failed: permission, hover"), failed(song, MediaError::Permission), [&] {
+        PlaybackOverlay o = audioOverlay(song);
+        o.hover           = VideoZone::PlayPause;
+        return o;
+    }(), [](const PreviewStyle& st) { return hovered(st); });
+    audio(QStringLiteral("audio_failed_notfound"), QStringLiteral("audio failed: deleted (no retry)"), failed(song, MediaError::NotFound), audioOverlay(song));
+    {
+        MediaEntry e      = songReady;
+        e.link.durationMs = 3723000;
+        e.link.fileName   = QStringLiteral("podcast_episode_42_the_long_one_3f9a1c2e.m4a");
+        PlaybackOverlay o = audioOverlay(e);
+        o.playing         = true;
+        o.positionMs      = 1830000;
+        audio(QStringLiteral("audio_1h_playing"), QStringLiteral("1 h audio playing, long name"), e, o);
+        audio(QStringLiteral("audio_narrow_240"), QStringLiteral("long name, narrow (240 px)"), e, o, nullptr, 240);
+        audio(QStringLiteral("audio_narrow_160"), QStringLiteral("smallest card (160 px)"), e, o, nullptr, 160);
+    }
+    {
+        // Right-to-left name keeps its own direction; the card stays left-to-right.
+        MediaEntry e    = songReady;
+        e.link.fileName = QString::fromUtf8("آهنگ تابستانی_3f9a1c2e.ogg");
+        e.kind          = kindForFileName(e.link.fileName);
+        PlaybackOverlay o = audioOverlay(e);
+        o.positionMs      = 12000;
+        audio(QStringLiteral("audio_rtl_name"), QStringLiteral("right-to-left name, paused"), e, o);
+    }
+    audio(QStringLiteral("audio_large_font"), QStringLiteral("audio playing, 11 pt chat font"), songReady, [&] {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.playing         = true;
+        o.positionMs      = 100000;
+        return o;
+    }(), [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
     return list;
 }
 
@@ -604,7 +736,7 @@ int contrastReport(const QString& outDir)
     int         failures = 0;
     for (const bool dark : {false, true}) {
         out << (dark ? "dark theme\n" : "light theme\n");
-        for (const PreviewColorPair& pair : previewColorPairs(dark)) {
+        for (const PreviewColorPair& pair : previewColorPairs(dark) + audioCardColorPairs(dark)) {
             const double ratio = ui::contrastRatio(pair.foreground, pair.background);
             const bool   ok    = ratio + 0.005 >= pair.minimum;
             failures += ok ? 0 : 1;
@@ -749,5 +881,8 @@ int main(int argc, char* argv[])
         }
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
-    return contrastReport(outDir) == 0 ? 0 : 1;
+    const int contrastFailures = contrastReport(outDir);
+    if (g_layoutFailures)
+        QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
+    return contrastFailures == 0 && g_layoutFailures == 0 ? 0 : 1;
 }

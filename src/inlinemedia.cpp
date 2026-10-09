@@ -87,8 +87,13 @@ void testLog(const QString&) {}
 
 } // namespace
 
+// A player record: an inline video, or (2.2) an audio card's audio-only player.
 struct InlineMediaController::Video {
     QString          key;
+    bool             audio            = false;   // 2.2 audio: audio-only engine, no mute / loop / frames
+    double           pendingSeek      = -1.0;    // 2.2 audio: 0..1 to seek to once the file is open
+    int              drawnStep        = -1;      // 2.2 audio: played pixels last drawn
+    qint64           drawnSecond      = -1;      // 2.2 audio: time label last drawn (s)
     mf::VideoPlayer* player           = nullptr; // owned; deleted synchronously
     quint64          playerGeneration = 0;       // identifies player across deferred callbacks
     bool             loaded           = false;
@@ -163,6 +168,8 @@ InlineMediaController::Mode InlineMediaController::mode(const QString& key) cons
 {
     if (isVideo(key))
         return Mode::Video;
+    if (isInlineAudio(key)) // 2.2 audio
+        return Mode::Audio;
     if (m_animations.contains(key))
         return Mode::Animated;
     return Mode::Still;
@@ -185,11 +192,19 @@ PlaybackOverlay InlineMediaController::overlay(const QString& key) const
         o.durationMs = e->link.durationMs;
     o.muted = m_muted;
     o.hover = key == m_hoverKey ? m_hoverZone : VideoZone::None;
+    // 2.2 audio: the card's controls are always shown, and it never plays muted.
+    const bool audio = e && e->kind == MediaKind::Audio;
+    if (audio) {
+        o.controlsVisible = true;
+        o.muted           = false;
+    }
 
     const Video* v = m_videos.value(key);
     if (!v)
         return o;
     o.externalOnly = v->failed; // a click opens it in the default app
+    if (audio && v->pendingSeek >= 0.0 && o.durationMs > 0 && !v->loaded) // 2.2 audio: where it will start
+        o.positionMs = qRound64(v->pendingSeek * static_cast<double>(o.durationMs));
     if (!v->player) {
         if (v->wantPlay && e && (e->state == MediaState::Idle || e->state == MediaState::Queued || e->state == MediaState::Downloading)) {
             o.busy         = true;
@@ -208,6 +223,8 @@ PlaybackOverlay InlineMediaController::overlay(const QString& key) const
     o.positionMs = v->player->position();
     if (v->player->duration() > 0)
         o.durationMs = v->player->duration();
+    if (audio)
+        return o;
     o.controlsVisible = !o.playing || controlsShown(v);
     if (o.playing && o.controlsVisible)
         o.controlsOpacity = controlsOpacity(v);
@@ -238,6 +255,19 @@ bool InlineMediaController::isVideo(const QString& key) const
 {
     const MediaEntry* e = m_core->entry(key);
     return e && e->kind == MediaKind::Video;
+}
+
+// 2.2 audio: without Media Foundation (Windows N without the Media Feature Pack) audio files stay
+// plain file cards that open in the default app.
+bool InlineMediaController::isInlineAudio(const QString& key) const
+{
+    const MediaEntry* e = m_core->entry(key);
+    return e && e->kind == MediaKind::Audio && mf::available();
+}
+
+bool InlineMediaController::isPlayable(const QString& key) const
+{
+    return isVideo(key) || isInlineAudio(key);
 }
 
 // ============================================================================================
@@ -282,7 +312,7 @@ void InlineMediaController::setFrameSize(const QString& key, const QSize& device
         return;
     m_frameSizes.insert(key, devicePixels);
 
-    if (Video* v = m_videos.value(key); v && v->player && v->loaded)
+    if (Video* v = m_videos.value(key); v && v->player && v->loaded && !v->audio) // 2.2 audio: no frames
         v->player->setFrameSize(videoFrameSize(v));
     if (Animation* a = m_animations.value(key); a && !a->natural.isEmpty())
         a->movie->setScaledSize(fitWithin(a->natural, devicePixels, 4.0));
@@ -308,8 +338,11 @@ QSize InlineMediaController::videoFrameSize(const Video* video) const
 void InlineMediaController::click(const QString& key, VideoZone zone, double seekFraction)
 {
     const MediaEntry* e = m_core->entry(key);
-    if (!e || e->kind != MediaKind::Video)
+    if (!e || !isPlayable(key)) // 2.2 audio: audio cards too
         return;
+    const bool audio = e->kind == MediaKind::Audio;
+    if (audio && (zone == VideoZone::Mute || zone == VideoZone::Expand))
+        zone = VideoZone::Body; // the card has neither
 
     Video*     v      = m_videos.value(key);
     const bool active = v && v->player && v->loaded;
@@ -330,10 +363,14 @@ void InlineMediaController::click(const QString& key, VideoZone zone, double see
             m_core->openExternally(key); // e.g. a codec Media Foundation does not have
             return;
         }
+        // 2.2 audio: a seek on a card that isn't open yet starts it from there (never cancels).
+        const bool seekStart = audio && zone == VideoZone::Seek;
+        if (seekStart)
+            v->pendingSeek = qBound(0.0, seekFraction, 1.0);
         if (v->player) {
-            v->wantPlay = !v->wantPlay; // still opening: a second click cancels the autoplay
+            v->wantPlay = seekStart || !v->wantPlay; // still opening: a second click cancels the autoplay
         } else if (v->wantPlay) {
-            v->wantPlay = false; // pressed again while downloading
+            v->wantPlay = seekStart; // pressed again while downloading
         } else if (e->state == MediaState::Ready) {
             v->wantPlay = true;
             startVideo(key);
@@ -346,6 +383,8 @@ void InlineMediaController::click(const QString& key, VideoZone zone, double see
             v->wantPlay = true;
             m_core->download(key, false);
         }
+        if (!v->wantPlay)
+            v->pendingSeek = -1.0; // canceled: the next play starts from the beginning
         emit frameChanged(key);
         updateTimer();
         return;
@@ -362,7 +401,7 @@ void InlineMediaController::click(const QString& key, VideoZone zone, double see
     case VideoZone::Mute:
         m_muted = !v->player->isMuted();
         for (Video* other : qAsConst(m_videos)) {
-            if (other->player)
+            if (other->player && !other->audio) // 2.2 audio: cards are never muted
                 other->player->setMuted(m_muted);
         }
         break;
@@ -389,7 +428,7 @@ void InlineMediaController::hover(const QString& key, VideoZone zone)
     m_lastMoveMs            = nowMs();
 
     if (oldKey != key) {
-        if (!oldKey.isEmpty() && isVideo(oldKey)) {
+        if (!oldKey.isEmpty() && isPlayable(oldKey)) { // 2.2 audio: cards show hover too
             if (Video* old = m_videos.value(oldKey))
                 old->controlsShown = false;
             emit frameChanged(oldKey);
@@ -398,9 +437,9 @@ void InlineMediaController::hover(const QString& key, VideoZone zone)
             updateAnimations();
     }
 
-    if (!key.isEmpty() && isVideo(key)) {
+    if (!key.isEmpty() && isPlayable(key)) {
         bool changed = oldKey != key || oldZone != m_hoverZone;
-        if (Video* v = m_videos.value(key); v && v->player && v->loaded) {
+        if (Video* v = m_videos.value(key); v && v->player && v->loaded && !v->audio) {
             const bool shown = controlsShown(v);
             if (shown != v->controlsShown) {
                 v->controlsShown = shown;
@@ -416,6 +455,20 @@ void InlineMediaController::hover(const QString& key, VideoZone zone)
 void InlineMediaController::pauseAll()
 {
     for (Video* v : qAsConst(m_videos)) {
+        v->wantPlay = false;
+        if (v->player && v->player->isPlaying()) {
+            v->player->pause();
+            emit frameChanged(v->key);
+        }
+    }
+    updateTimer();
+}
+
+void InlineMediaController::pauseVideos()
+{
+    for (Video* v : qAsConst(m_videos)) {
+        if (v->audio)
+            continue;
         v->wantPlay = false;
         if (v->player && v->player->isPlaying()) {
             v->player->pause();
@@ -441,6 +494,8 @@ void InlineMediaController::setMuted(bool muted)
         return;
     m_muted = muted;
     for (Video* v : qAsConst(m_videos)) {
+        if (v->audio) // 2.2 audio: cards don't follow the session mute
+            continue;
         if (v->player && v->player->isMuted() != m_muted)
             v->player->setMuted(m_muted);
         emit frameChanged(v->key); // the mute icon
@@ -476,6 +531,8 @@ InlineMediaController::Video* InlineMediaController::videoRecord(const QString& 
     if (!v) {
         v      = new Video;
         v->key = key;
+        if (const MediaEntry* e = m_core->entry(key))
+            v->audio = e->kind == MediaKind::Audio; // 2.2 audio
         m_videos.insert(key, v);
     }
     return v;
@@ -484,7 +541,7 @@ InlineMediaController::Video* InlineMediaController::videoRecord(const QString& 
 void InlineMediaController::startVideo(const QString& key)
 {
     const MediaEntry* e = m_core->entry(key);
-    if (!e || e->kind != MediaKind::Video || e->state != MediaState::Ready || e->localPath.isEmpty())
+    if (!e || !isPlayable(key) || e->state != MediaState::Ready || e->localPath.isEmpty()) // 2.2 audio: audio too
         return;
 
     Video* v = videoRecord(key);
@@ -513,8 +570,13 @@ void InlineMediaController::startVideo(const QString& key)
             return;
         video->loaded = true;
         testLog(QStringLiteral("player loaded ") + key);
-        video->player->setFrameSize(videoFrameSize(video));
+        if (!video->audio)
+            video->player->setFrameSize(videoFrameSize(video));
         applySettings(video);
+        // 2.2 audio: a click on the seek bar before the file was open starts it there.
+        if (video->pendingSeek >= 0.0 && video->player->duration() > 0)
+            video->player->seek(qRound64(video->pendingSeek * static_cast<double>(video->player->duration())));
+        video->pendingSeek = -1.0;
         if (video->wantPlay) {
             video->wantPlay = false;
             play(video);
@@ -526,7 +588,8 @@ void InlineMediaController::startVideo(const QString& key)
         Video* video = m_videos.value(key);
         if (!video || !video->player || video->playerGeneration != generation)
             return;
-        ts3::log(QStringLiteral("Inline video %1 cannot be played: %2").arg(key, error), LogLevel_WARNING);
+        ts3::log((video->audio ? QStringLiteral("Inline audio %1 cannot be played: %2") : QStringLiteral("Inline video %1 cannot be played: %2")).arg(key, error),
+                 LogLevel_WARNING);
         const bool beforeStart = !video->loaded;
         video->wantPlay        = false;
         // A file that does not even open (missing decoder, unsupported format) is played externally
@@ -558,6 +621,8 @@ void InlineMediaController::startVideo(const QString& key)
         emit frameChanged(key);
         updateTimer();
     });
+    if (v->audio) // 2.2 audio: no frames; a finished seek (also while paused) moves the bar and the time
+        connect(player, &mf::VideoPlayer::positionChanged, this, [this, key](qint64) { emit frameChanged(key); });
     connect(player, &mf::VideoPlayer::videoSizeChanged, this, [this, key] {
         // The stream switched resolution / aspect: refit the frames to the new picture. The preview
         // box itself stays as the link's metadata says (the chat never relayouts for this).
@@ -568,8 +633,11 @@ void InlineMediaController::startVideo(const QString& key)
         emit frameChanged(key);
     });
 
-    player->setMuted(m_muted);
-    player->open(e->localPath);
+    // 2.2 audio: audio files use the audio-only engine (no graphics device), never muted. The volume
+    // is set before opening, so nothing can ever start at the engine's default full volume.
+    player->setVolume(qBound(0, Settings::instance().videoVolume, 100) / 100.0);
+    player->setMuted(v->audio ? false : m_muted);
+    player->open(e->localPath, v->audio ? mf::OpenMode::AudioOnly : mf::OpenMode::Auto);
     testLog(QStringLiteral("open() returned"));
     emit frameChanged(key);
     updateTimer();
@@ -637,13 +705,15 @@ void InlineMediaController::applySettings(Video* video)
     const double    volume = qBound(0, s.videoVolume, 100) / 100.0;
     if (qAbs(video->player->volume() - volume) > 0.001)
         video->player->setVolume(volume);
-    const int loop = s.loopVideos ? 1 : 0;
+    // 2.2 audio: audio cards never loop and never follow the video session mute.
+    const int loop = s.loopVideos && !video->audio ? 1 : 0;
     if (video->appliedLoop != loop) {
-        video->player->setLoop(s.loopVideos);
+        video->player->setLoop(loop == 1);
         video->appliedLoop = loop;
     }
-    if (video->player->isMuted() != m_muted)
-        video->player->setMuted(m_muted);
+    const bool muted = video->audio ? false : m_muted;
+    if (video->player->isMuted() != muted)
+        video->player->setMuted(muted);
 }
 
 void InlineMediaController::onEntryChanged(const QString& key)
@@ -660,8 +730,10 @@ void InlineMediaController::onEntryChanged(const QString& key)
                 destroyPlayer(v);
                 emit frameChanged(key);
             }
-            if (!e || e->state == MediaState::Failed)
-                v->wantPlay = false;
+            if (!e || e->state == MediaState::Failed) {
+                v->wantPlay    = false;
+                v->pendingSeek = -1.0;
+            }
             if (!e) {
                 m_videos.remove(key);
                 delete v;
@@ -703,6 +775,12 @@ void InlineMediaController::tick()
                 emit frameChanged(v->key); // spinner while opening
             continue;
         }
+        if (v->audio) { // 2.2 audio: no frames; the card follows the position
+            repaintAudioProgress(v);
+            if (syncSettings)
+                applySettings(v);
+            continue;
+        }
         const bool shown = controlsShown(v);
         if (shown != v->controlsShown) {
             v->controlsShown = shown;
@@ -714,6 +792,24 @@ void InlineMediaController::tick()
             applySettings(v);
     }
     updateTimer();
+}
+
+// 2.2 audio: while an audio card plays, redraw it only when something visible moves: the played
+// part of the seek bar by a device pixel (the card's width bounds the bar's), or the time by a second.
+void InlineMediaController::repaintAudioProgress(Video* video)
+{
+    if (!video->player || !video->player->isPlaying())
+        return;
+    const qint64 position = video->player->position();
+    const qint64 duration = video->player->duration();
+    const int    pixels   = qMax(1, m_frameSizes.value(video->key).width());
+    const int    step     = duration > 0 ? static_cast<int>(static_cast<double>(position) / static_cast<double>(duration) * pixels) : 0;
+    const qint64 second   = position / 1000;
+    if (step == video->drawnStep && second == video->drawnSecond)
+        return;
+    video->drawnStep   = step;
+    video->drawnSecond = second;
+    emit frameChanged(video->key);
 }
 
 void InlineMediaController::updateTimer()

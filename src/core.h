@@ -159,6 +159,7 @@ class Core : public QObject
     //  * preview/poster (link.previewFile) always, it is small
     //  * images/GIFs up to autoDownloadMaxMB (otherwise only the preview)
     //  * videos up to videoAutoDownloadMB (0 = never automatically)
+    //  * audio files by audioplayback::autoDownloadLimit() (2.2 audio: plain audio like videos)
     void ensure(const MediaLink& link);
 
     // Downloads the main file if it is not Ready / in progress. With openWhenReady, emits

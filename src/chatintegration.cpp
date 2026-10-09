@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <functional>
 
+#include "audiocard.h" // 2.2 audio
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
@@ -706,6 +707,13 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
         if (style.pressed) // hidden controls can't be aimed at: the press is on the picture
             o.pressed = m_pressControlsVisible ? o.hover : VideoZone::Body;
         img = renderVideo(*e, frame, poster, o, style, &size);
+    } else if (mode == InlineMediaController::Mode::Audio) { // 2.2 audio: the player card
+        PlaybackOverlay o = m_media->overlay(key);
+        if (browser != m_hoverBrowser)
+            o.hover = VideoZone::None; // the pointer is over this card in another chat
+        o.pressed = style.pressed ? o.hover : VideoZone::None;
+        img       = renderAudioCard(*e, o, style, &size);
+        m_media->setFrameSize(key, size * style.dpr); // paces the card's progress repaints
     } else if (mode == InlineMediaController::Mode::Animated) {
         const QImage frame = m_media->frame(key);
         if (!frame.isNull())
@@ -1134,7 +1142,8 @@ void ChatIntegration::repaintPointerState(QTextBrowser* browser, const QString& 
     if (key.isEmpty() || !m_media)
         return;
     const InlineMediaController::Mode mode = m_media->mode(key);
-    if (mode == InlineMediaController::Mode::Still || (includeVideos && mode == InlineMediaController::Mode::Video))
+    const bool player = mode == InlineMediaController::Mode::Video || mode == InlineMediaController::Mode::Audio; // 2.2 audio
+    if (mode == InlineMediaController::Mode::Still || (includeVideos && player))
         refreshPreview(browser, key, true);
 }
 
@@ -1150,8 +1159,22 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
         return {};
     *area = hit.rect.toAlignedRect();
 
-    QString detail;
-    if (e->kind == MediaKind::Video && m_media) {
+    QString    detail;
+    const bool audioCard = m_media && m_media->mode(hit.key) == InlineMediaController::Mode::Audio; // 2.2 audio
+    if (audioCard) {
+        const PlaybackOverlay o      = m_media->overlay(hit.key);
+        const PreviewStyle    style  = styleFor(browser);
+        const QSize           size   = hit.rect.size().toSize();
+        const QPointF         local  = viewportPos - hit.rect.topLeft();
+        const VideoZone       zone   = audioZoneAt(*e, o, style, size, local);
+        const QString         button = audioZoneToolTip(*e, o, zone, audioSeekFractionAt(*e, o, style, size, local));
+        if (!button.isEmpty()) {
+            if (!o.busy)
+                *area = audioZoneRect(*e, o, style, size, local).translated(hit.rect.topLeft()).toAlignedRect();
+            return button;
+        }
+        detail = audioToolTipDetail(*e, o);
+    } else if (e->kind == MediaKind::Video && m_media) {
         const PlaybackOverlay o = m_media->overlay(hit.key);
         if (o.busy) {
             if (e->state == MediaState::Downloading)
@@ -1186,7 +1209,9 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
             detail = i18n::t("Windows can't play this video here, so it opens in your default app.");
     }
 
-    if (e->state == MediaState::Failed) {
+    if (audioCard) {
+        // 2.2 audio: detail set above (a click on the card plays it: no "Click to open")
+    } else if (e->state == MediaState::Failed) {
         detail = e->errorText.isEmpty() ? downloadErrorText(e->error) : e->errorText;
         if (isRetryableDownload(*e))
             detail += QLatin1Char(' ') + i18n::t("Click to retry.");
@@ -1221,6 +1246,19 @@ void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool 
     if (!e)
         return;
     const QString key = hit.key;
+
+    // 2.2 audio: the card plays inline; its controls are always shown, so the zone is taken as is.
+    if (m_media && m_media->mode(key) == InlineMediaController::Mode::Audio) {
+        QTextBrowser* browser = m_pressBrowser ? m_pressBrowser.data() : m_lastBrowser.data(); // the chat the click was in
+        if (!browser)
+            return;
+        const PlaybackOverlay o     = m_media->overlay(key);
+        const PreviewStyle    style = styleFor(browser);
+        const QSize           size  = hit.rect.size().toSize();
+        const QPointF         local = viewportPos - hit.rect.topLeft();
+        m_media->click(key, audioZoneAt(*e, o, style, size, local), audioSeekFractionAt(*e, o, style, size, local));
+        return;
+    }
 
     if (e->kind == MediaKind::Video) {
         if (!m_media)
@@ -1331,7 +1369,9 @@ void ChatIntegration::openViewer(const QString& key)
         MediaViewer::open(m_core, keys, index);
         return;
     }
-    m_media->pauseAll();
+    // 2.2 audio: an audio card keeps playing while pictures are viewed; the viewer's own playback
+    // pauses it (playbackStarted below).
+    m_media->pauseVideos();
     // The viewer starts with the chat's session mute, and the inline players follow what the user
     // changes there. Only one thing plays at a time: playback starting in the viewer pauses the inline
     // players, and an inline video starting pauses the viewer (see start()).
@@ -1419,6 +1459,14 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
                         m_media->click(key, VideoZone::Mute, 0.0);
                 });
             }
+        } else if (m_media && m_media->mode(key) == InlineMediaController::Mode::Audio) { // 2.2 audio
+            const PlaybackOverlay o = m_media->overlay(key);
+            external                = o.externalOnly && !o.playing;
+            primary = menu->addAction(o.playing ? i18n::t("&Pause") : external ? i18n::t("Open in &default app") : o.ended ? i18n::t("&Replay") : i18n::t("&Play"),
+                                      this, [this, key] {
+                                          if (m_media)
+                                              m_media->click(key, VideoZone::PlayPause, 0.0);
+                                      });
         }
         QAction* fetch = nullptr;
         if (e->state == MediaState::Idle)
@@ -1772,9 +1820,13 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
     const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
     VideoZone         zone  = VideoZone::None;
     if (!hit.key.isEmpty()) {
-        zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video
-                   ? videoZoneAt(hit.rect.size().toSize(), viewportPos - hit.rect.topLeft(), !m_media->overlay(hit.key).playing)
-                   : VideoZone::Body;
+        const InlineMediaController::Mode mode = m_media->mode(hit.key);
+        if (mode == InlineMediaController::Mode::Video)
+            zone = videoZoneAt(hit.rect.size().toSize(), viewportPos - hit.rect.topLeft(), !m_media->overlay(hit.key).playing);
+        else if (mode == InlineMediaController::Mode::Audio && entry) // 2.2 audio
+            zone = audioZoneAt(*entry, m_media->overlay(hit.key), styleFor(browser), hit.rect.size().toSize(), viewportPos - hit.rect.topLeft());
+        else
+            zone = VideoZone::Body;
     }
     const bool otherPreview = hit.key != m_hoverKey || (!hit.key.isEmpty() && browser != m_hoverBrowser);
     const bool changed      = otherPreview || zone != m_hoverZone;
@@ -1802,6 +1854,14 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
 bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
 {
     const Settings& s = Settings::instance();
+    // 2.2 audio: the seek position under the pointer, on a video player or an audio card.
+    auto seekFraction = [this](QTextBrowser* browser, const QString& key, const QSize& size, const QPointF& local) {
+        if (m_media && m_media->mode(key) == InlineMediaController::Mode::Audio) {
+            if (const MediaEntry* e = m_core->entry(key))
+                return audioSeekFractionAt(*e, m_media->overlay(key), styleFor(browser), size, local);
+        }
+        return seekFractionAt(size, local);
+    };
 
     switch (event->type()) {
     case QEvent::MouseMove: {
@@ -1814,7 +1874,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
                 const qint64 now = QDateTime::currentMSecsSinceEpoch();
                 if (now - m_lastSeekMs >= 60) {
                     m_lastSeekMs           = now;
-                    const double fraction  = seekFractionAt(m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft());
+                    const double fraction  = seekFraction(browser, m_pressedKey, m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft());
                     m_media->click(m_pressedKey, VideoZone::Seek, fraction);
                     // The time being sought to follows the pointer (hidden again by the release).
                     const qint64 duration = m_media->overlay(m_pressedKey).durationMs;
@@ -1872,14 +1932,25 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             break;
         const MediaEntry* e     = m_core->entry(hit.key);
         const bool        video = e && e->kind == MediaKind::Video;
-        if (event->type() == QEvent::MouseButtonDblClick && !video)
+        const bool        audio = e && m_media && m_media->mode(hit.key) == InlineMediaController::Mode::Audio; // 2.2 audio
+        if (event->type() == QEvent::MouseButtonDblClick && !video && !audio)
             return true; // the first click already opened it
         m_pressedKey           = hit.key;
         m_pressBrowser         = browser;
         m_pressRect            = hit.rect;
         m_lastBrowser          = browser;
-        m_pressControlsVisible = video && m_media && m_media->overlay(hit.key).controlsVisible;
-        if (video && m_media) {
+        m_pressControlsVisible = audio || (video && m_media && m_media->overlay(hit.key).controlsVisible);
+        if (audio) { // 2.2 audio: the card's seek bar is always there; a press on it seeks (and drags)
+            const QSize           size  = hit.rect.size().toSize();
+            const QPointF         local = me->localPos() - hit.rect.topLeft();
+            const PlaybackOverlay o     = m_media->overlay(hit.key);
+            const PreviewStyle    style = styleFor(browser);
+            if (audioZoneAt(*e, o, style, size, local) == VideoZone::Seek) {
+                m_seeking    = true;
+                m_lastSeekMs = QDateTime::currentMSecsSinceEpoch();
+                m_media->click(hit.key, VideoZone::Seek, audioSeekFractionAt(*e, o, style, size, local));
+            }
+        } else if (video && m_media) {
             const QSize   size  = hit.rect.size().toSize();
             const QPointF local = me->localPos() - hit.rect.topLeft();
             if (videoZoneAt(size, local, !m_media->overlay(hit.key).playing) == VideoZone::Seek && m_pressControlsVisible) {
@@ -1909,7 +1980,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (m_seeking) {
             m_seeking = false;
             if (m_media)
-                m_media->click(pressed, VideoZone::Seek, seekFractionAt(m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft()));
+                m_media->click(pressed, VideoZone::Seek, seekFraction(browser, pressed, m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft()));
             return true;
         }
         if (m_pressBrowser == browser)
