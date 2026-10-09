@@ -641,6 +641,13 @@ void Core::startAutoDownloads(const QString& key)
             wantMain = videoLimit > 0 && e.link.size <= videoLimit;
     }
 
+    // 2.2 spoiler: a hidden spoiler loads only what its cover is made from (the preview); the file follows
+    // the same rules once it is revealed (setSpoilerRevealed).
+    if (wantMain && isSpoilerHidden(key)) {
+        wantMain = false;
+        m_spoilers.holdDownload(key);
+    }
+
     // Previews first: they are what the chat shows until the real file is there.
     if (wantPreview)
         startPreviewDownload(key);
@@ -1542,8 +1549,12 @@ bool Core::isSpoiler(const QString& key) const
 
 void Core::setSpoilerRevealed(const QString& key, bool revealed)
 {
-    if (m_spoilers.setRevealed(key, revealed))
-        emit entryChanged(key);
+    if (!m_spoilers.setRevealed(key, revealed))
+        return;
+    // An automatic download that waited for the reveal starts now (the preview shows its progress).
+    if (revealed && m_spoilers.releaseDownload(key) && Settings::instance().inlinePreviews)
+        startAutoDownloads(key);
+    emit entryChanged(key);
 }
 
 void Core::noteShownOpen(const QString& key)
@@ -1554,8 +1565,11 @@ void Core::noteShownOpen(const QString& key)
 void Core::spoilerSettingChanged()
 {
     const QStringList keys = m_spoilers.spoilers();
-    for (const QString& key : keys)
+    for (const QString& key : keys) {
+        if (!isSpoilerHidden(key) && m_spoilers.releaseDownload(key) && Settings::instance().inlinePreviews)
+            startAutoDownloads(key); // shown without blurring now: loads like any other picture
         emit entryChanged(key);
+    }
 }
 
 // ============================================================================================

@@ -103,6 +103,7 @@ class TestSpoiler : public QObject
     void stateRepostCantCoverWhatWasSeen();
     void stateHiddenOnPurposeStaysHidden();
     void stateIgnoresEmptyKeys();
+    void stateHeldDownloads();
     void keyIgnoresSpoilerFlag();
 
     // kinds and labels
@@ -199,6 +200,22 @@ void TestSpoiler::stateIgnoresEmptyKeys()
     s.noteShownOpen(QString());
     QVERIFY(!s.isHidden(QString(), false));
     QVERIFY(s.spoilers().isEmpty());
+}
+
+void TestSpoiler::stateHeldDownloads()
+{
+    // Core holds a hidden spoiler's automatic download and starts it when it is revealed, once.
+    SpoilerState s;
+    QVERIFY(!s.releaseDownload(QStringLiteral("a")));
+    s.holdDownload(QStringLiteral("a"));
+    s.holdDownload(QStringLiteral("a"));
+    s.holdDownload(QString());
+    QVERIFY(s.releaseDownload(QStringLiteral("a")));
+    QVERIFY(!s.releaseDownload(QStringLiteral("a")));
+    QVERIFY(!s.releaseDownload(QString()));
+    s.holdDownload(QStringLiteral("b"));
+    s.clear();
+    QVERIFY(!s.releaseDownload(QStringLiteral("b")));
 }
 
 void TestSpoiler::keyIgnoresSpoilerFlag()

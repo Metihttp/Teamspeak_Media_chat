@@ -285,6 +285,18 @@ void SpoilerState::clear()
     m_spoilers.clear();
     m_revealed.clear();
     m_shownOpen.clear();
+    m_heldDownloads.clear();
+}
+
+void SpoilerState::holdDownload(const QString& key)
+{
+    if (!key.isEmpty())
+        m_heldDownloads.insert(key);
+}
+
+bool SpoilerState::releaseDownload(const QString& key)
+{
+    return m_heldDownloads.remove(key);
 }
 
 // ---- RevealFades ----------------------------------------------------------------------------------

@@ -108,10 +108,15 @@ class SpoilerState
     QStringList spoilers() const;
     void        clear();
 
+    // An automatic download that waits for the reveal (Core loads only what the cover needs meanwhile).
+    void holdDownload(const QString& key);
+    bool releaseDownload(const QString& key); // true if one was waiting (it is forgotten either way)
+
   private:
     QSet<QString> m_spoilers;
     QSet<QString> m_revealed;
     QSet<QString> m_shownOpen;
+    QSet<QString> m_heldDownloads;
 };
 
 // The chat's reveal crossfade: after start(key) the cover of key fades out over spoiler::kRevealMs
