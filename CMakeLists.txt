@@ -22,6 +22,22 @@ else()
     set(TSMEDIA_ARCH win32)
 endif()
 
+# 2.2 updater tests: a test build can report another version, to play the "next release" on the local
+# test server (docs/UPDATES.md). Refused without TSMEDIA_TESTHOOKS.
+set(TSMEDIA_VERSION_OVERRIDE "" CACHE STRING "Test builds only: the version to build instead of the project version")
+if(TSMEDIA_VERSION_OVERRIDE)
+    if(NOT TSMEDIA_TESTHOOKS)
+        message(FATAL_ERROR "TSMEDIA_VERSION_OVERRIDE needs -DTSMEDIA_TESTHOOKS=ON")
+    endif()
+    if(NOT TSMEDIA_VERSION_OVERRIDE MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+        message(FATAL_ERROR "TSMEDIA_VERSION_OVERRIDE must look like 2.1.9")
+    endif()
+    set(PROJECT_VERSION ${TSMEDIA_VERSION_OVERRIDE})
+    set(PROJECT_VERSION_MAJOR ${CMAKE_MATCH_1})
+    set(PROJECT_VERSION_MINOR ${CMAKE_MATCH_2})
+    set(PROJECT_VERSION_PATCH ${CMAKE_MATCH_3})
+endif()
+
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/version.h @ONLY)
 configure_file(src/version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc @ONLY)
 
@@ -85,6 +101,47 @@ if(TSMEDIA_TESTHOOKS)
     target_compile_definitions(tsmedia PRIVATE TSMEDIA_TESTHOOKS)
 endif()
 
+# 2.2 updater (docs/UPDATES.md). The install/rollback/manifest parts are always built (a DLL installed by
+# an update must be able to settle or roll back its state). The network part and the checks are only
+# built with TSMEDIA_UPDATER=ON, which scripts/build.ps1 sets for signed release builds: a copy you build
+# yourself never replaces itself with the author's build, and never loads winhttp.dll.
+option(TSMEDIA_UPDATER "Build the GitHub update check (official signed releases)" OFF)
+set(TSMEDIA_UPDATE_SOURCES
+    src/crypto.cpp                    src/crypto.h
+    src/update/updatekeys.h
+    src/update/updatemanifest.cpp     src/update/updatemanifest.h
+    src/update/updatepolicy.cpp       src/update/updatepolicy.h
+    src/update/pecheck.cpp            src/update/pecheck.h
+    src/update/updatefiles.cpp        src/update/updatefiles.h
+    src/update/updateinstaller.cpp    src/update/updateinstaller.h
+)
+target_sources(tsmedia PRIVATE ${TSMEDIA_UPDATE_SOURCES}
+    src/update/updatesettings.cpp       src/update/updatesettings.h
+    src/update/updater.cpp              src/update/updater.h
+    src/update/updatedialog.cpp         src/update/updatedialog.h
+    src/update/updatesettingsgroup.cpp  src/update/updatesettingsgroup.h
+)
+target_link_libraries(tsmedia PRIVATE bcrypt)
+if(TSMEDIA_UPDATER)
+    target_sources(tsmedia PRIVATE
+        src/update/httpclient.cpp     src/update/httpclient.h
+        src/update/updateworker.cpp   src/update/updateworker.h
+    )
+    target_compile_definitions(tsmedia PRIVATE TSMEDIA_UPDATER)
+endif()
+
+# The restart helper (tools/update_helper): Win32 only, static CRT, published as a signed release asset
+# (TSMedia-<ver>-helper-<arch>.update), never embedded in the DLL.
+add_executable(tsmedia_update_helper WIN32 tools/update_helper/main.cpp)
+target_compile_definitions(tsmedia_update_helper PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+set_target_properties(tsmedia_update_helper PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+if(MSVC)
+    target_compile_options(tsmedia_update_helper PRIVATE /W4 /utf-8 /permissive-)
+    # Load DLLs it depends on from System32 only (not from the user-writable folder it runs in).
+    target_link_options(tsmedia_update_helper PRIVATE /DEPENDENTLOADFLAG:0x800)
+endif()
+target_link_libraries(tsmedia_update_helper PRIVATE bcrypt)
+
 set_target_properties(tsmedia PROPERTIES
     OUTPUT_NAME "tsmedia_${TSMEDIA_ARCH}"
     PREFIX ""
@@ -126,6 +183,22 @@ if(TSMEDIA_BUILD_TESTS)
     else()
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
+    endif()
+
+    # 2.2 updater tests: manifest, signatures, schedule, PE checks, installer (own executable).
+    add_executable(tsmedia_update_tests tests/tst_updater.cpp ${TSMEDIA_UPDATE_SOURCES} src/update/updatesettings.cpp)
+    target_include_directories(tsmedia_update_tests PRIVATE src)
+    target_compile_definitions(tsmedia_update_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
+        TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update")
+    if(MSVC)
+        target_compile_options(tsmedia_update_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(tsmedia_update_tests PRIVATE Qt5::Core Qt5::Test bcrypt)
+    add_test(NAME tsmedia_update_tests COMMAND tsmedia_update_tests)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+        set_tests_properties(tsmedia_update_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
+    else()
+        set_tests_properties(tsmedia_update_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 

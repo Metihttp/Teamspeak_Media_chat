@@ -30,6 +30,7 @@
 #include "medialink.h"
 #include "settingssection.h"
 #include "uiutil.h"
+#include "update/updatesettingsgroup.h" // 2.2 updater
 #include "version.h"
 
 namespace {
@@ -495,6 +496,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
         m_tabs->setTabVisible(static_cast<int>(empty), false);
         m_tabs->setTabEnabled(static_cast<int>(empty), false);
     }
+    // 2.2 updater: a self-contained group with its own keys (apply() below; Restore defaults leaves them
+    // alone). Added before the dirty tracking below, so its checkbox enables Apply.
+    addSection(Tab::PrivacyUpdates, new upd::UpdateSettingsGroup(this));
     if (g_lastTab > 0 && g_lastTab < m_tabs->count() && m_tabs->isTabVisible(g_lastTab))
         m_tabs->setCurrentIndex(g_lastTab);
     connect(m_tabs, &QTabWidget::currentChanged, this, [](int index) { g_lastTab = index; });
@@ -846,6 +850,8 @@ bool SettingsDialog::apply()
     }
     s.save();
     m_loaded = form;
+    if (auto* updates = findChild<upd::UpdateSettingsGroup*>()) // 2.2 updater: its own keys; Restore defaults leaves them alone
+        updates->apply();
 
     // After Apply the dialog stays open: show what was saved ("/tsmedia" for an empty folder, the
     // link with its https://).
