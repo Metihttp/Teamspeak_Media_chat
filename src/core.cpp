@@ -3070,6 +3070,7 @@ void Core::clearCache()
         if (e != m_entries.end())
             touch(e.value());
     }
+    emit cacheCleared(); // 2.2 protocol: reactions.json goes with it
 }
 
 void Core::openCacheFolder() const

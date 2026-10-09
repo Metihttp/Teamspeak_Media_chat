@@ -11,6 +11,7 @@
 #include "core.h"
 #include "previewrenderer.h"
 
+class ChatReactions; // 2.2 reactions
 class InlineMediaController;
 class MediaViewer;
 class QMimeData;
@@ -58,6 +59,8 @@ class ChatIntegration : public QObject
 
     // ---- implementation (owned by chatintegration.cpp; may be reorganised freely) --------------
   private:
+    friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
+
     struct PreviewPos {
         int     position = 0; // document position of the preview object
         QString key;
@@ -176,4 +179,5 @@ class ChatIntegration : public QObject
     SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget
     ChatTarget             m_dropTarget;
     QThreadPool            m_thumbnailPool; // paste prompt thumbnails of copied pictures (waited for on destruction)
+    ChatReactions*         m_reactions = nullptr; // 2.2 reactions
 };

@@ -22,6 +22,7 @@
 
 #include "blurhash.h"
 #include "previewrenderer.h"
+#include "reactionart.h" // 2.2 reactions
 #include "uiutil.h"
 
 namespace {
@@ -593,6 +594,124 @@ QList<Sample> buildSamples()
         e.link.protocol = MediaLink::kProtocol;
         card(QStringLiteral("card_tsmedia_name"), QStringLiteral("TS Media upload holiday_3f9a1c2e.zip"), e);
     }
+
+    // ---- 2.2 reactions: the row under media, the add button, hover / pressed -----------------------
+    {
+        // A preview as ChatIntegration draws it: the media first, then rx::composeObject over it.
+        using Picture = std::function<QImage(const PreviewStyle&, QSize*)>;
+        auto view     = [](std::initializer_list<std::pair<int, int>> counts, int mineMask) {
+            ReactionView v;
+            for (const auto& c : counts)
+                v.per[c.first].count = c.second;
+            for (int i = 0; i < proto::kReactionCount; ++i) {
+                v.per[i].mine = (mineMask >> i) & 1;
+                for (int n = 0; n < v.per[i].count - (v.per[i].mine ? 1 : 0) && n < 3; ++n)
+                    v.per[i].others << QStringLiteral("Friend %1").arg(n + 1);
+            }
+            return v;
+        };
+        auto reacted = [&add](const QString& name, const QString& label, Picture picture, ReactionView v, std::function<void(rx::ObjectState&)> change,
+                              int maxWidth = 400) {
+            add(name, label, [picture, v, change](const PreviewStyle& st, QSize* ls) {
+                QSize           size;
+                const QImage    img = picture(st, &size);
+                rx::ObjectState state;
+                state.dark     = st.dark;
+                state.base     = st.dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff); // the sheet: TeamSpeak's chat
+                state.font     = st.font;
+                state.dpr      = st.dpr;
+                state.maxWidth = st.maxWidth;
+                state.canAdd   = true;
+                change(state);
+                return rx::composeObject(img, size, v, state, nullptr, ls);
+            }, maxWidth);
+        };
+        const Picture photoPicture = [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), st, ls);
+        };
+        const auto none  = [](rx::ObjectState&) {};
+        const auto hover = [](rx::ObjectState& s) { s.hovered = true; };
+        using rx::Zone;
+        const int up = proto::ThumbsUp, heart = proto::Heart, lol = proto::Laughing, wow = proto::Surprised, sad = proto::Sad, fire = proto::Fire;
+
+        reacted(QStringLiteral("reactions_none_hover"), QStringLiteral("reactions: none, hover (add button)"), photoPicture, ReactionView(), hover);
+        reacted(QStringLiteral("reactions_button_hover"), QStringLiteral("reactions: add button under the pointer"), photoPicture, ReactionView(),
+                [](rx::ObjectState& s) {
+                    s.hovered   = true;
+                    s.hoverZone = Zone::AddButton;
+                });
+        reacted(QStringLiteral("reactions_one_mine"), QStringLiteral("reactions: one, yours"), photoPicture, view({{up, 1}}, 1 << up), none);
+        reacted(QStringLiteral("reactions_mixed_hover_pill"), QStringLiteral("reactions: mixed, hover on a pill (add pill shows)"), photoPicture,
+                view({{up, 3}, {heart, 12}, {lol, 1}}, 1 << up), [](rx::ObjectState& s) {
+                    s.hovered    = true;
+                    s.hoverZone  = Zone::Pill;
+                    s.hoverIndex = proto::Heart;
+                });
+        reacted(QStringLiteral("reactions_pressed_pill"), QStringLiteral("reactions: pill pressed"), photoPicture, view({{up, 3}, {fire, 2}}, 0),
+                [](rx::ObjectState& s) {
+                    s.hovered    = true;
+                    s.hoverZone  = s.pressZone = Zone::Pill;
+                    s.hoverIndex = s.pressIndex = proto::Fire;
+                });
+        reacted(QStringLiteral("reactions_six_99plus"), QStringLiteral("reactions: all six, 99+, two yours"), photoPicture,
+                view({{up, 120}, {heart, 42}, {lol, 7}, {wow, 1}, {sad, 2}, {fire, 99}}, (1 << heart) | (1 << fire)), hover);
+        reacted(QStringLiteral("reactions_add_pill_hover"), QStringLiteral("reactions: add pill under the pointer"), photoPicture, view({{sad, 1}}, 0),
+                [](rx::ObjectState& s) {
+                    s.hovered   = true;
+                    s.hoverZone = Zone::AddPill;
+                });
+        reacted(QStringLiteral("reactions_row_kept_empty"), QStringLiteral("reactions: last one removed, pointer still on the row"), photoPicture,
+                ReactionView(), [](rx::ObjectState& s) {
+                    s.hovered = true;
+                    s.keep    = true;
+                });
+        reacted(QStringLiteral("reactions_cant_react_hover"), QStringLiteral("reactions: hover where you can't react (no add pill)"), photoPicture,
+                view({{up, 2}, {heart, 1}}, 0), [](rx::ObjectState& s) {
+                    s.hovered = true;
+                    s.canAdd  = false;
+                });
+        reacted(QStringLiteral("reactions_narrow_wrap"), QStringLiteral("reactions: narrow chat (160 px), wraps"),
+                [=](const PreviewStyle& st, QSize* ls) {
+                    const QImage     tall = cropToAspect(friendPic, 3.0 / 4.0);
+                    const MediaEntry e    = makeEntry(QStringLiteral("portrait.jpg"), 120000, tall.width(), tall.height(), 0, MediaState::Ready);
+                    return renderPreview(e, pictureStill(tall, MediaStill::Full, stillPixels(e, st)), st, ls);
+                },
+                view({{up, 4}, {heart, 2}, {lol, 13}, {wow, 1}, {fire, 5}}, 1 << lol), hover, 160);
+        reacted(QStringLiteral("reactions_gif_badge_button"), QStringLiteral("reactions: GIF badge and add button"),
+                [=](const PreviewStyle& st, QSize* ls) { return renderAnimatedFrame(gifReady, gifFrame(12, stillPixels(gifReady, st)), st, ls); },
+                ReactionView(), hover);
+        reacted(QStringLiteral("reactions_video_controls_row"), QStringLiteral("reactions: video controls and a row"),
+                [=](const PreviewStyle& st, QSize* ls) {
+                    MediaEntry e = clip;
+                    e.state      = MediaState::Ready;
+                    PlaybackOverlay o;
+                    o.controlsVisible = true;
+                    o.playing         = true;
+                    o.positionMs      = 3200;
+                    o.durationMs      = 10000;
+                    o.hover           = VideoZone::Body;
+                    return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
+                },
+                view({{fire, 3}, {wow, 1}}, 1 << wow), hover);
+        // The pictures themselves, large and at pill size, to look at the drawing.
+        add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 72, 36, 24 and 16 px"), [](const PreviewStyle& st, QSize* ls) {
+            const QSize size(6 * 80, 72 + 8 + 36 + 8 + 24 + 8 + 16);
+            QImage      out(size * st.dpr, QImage::Format_ARGB32_Premultiplied);
+            out.setDevicePixelRatio(st.dpr);
+            out.fill(Qt::transparent);
+            QPainter p(&out);
+            for (int i = 0; i < proto::kReactionCount; ++i) {
+                qreal y = 0;
+                for (const int px : {72, 36, 24, 16}) {
+                    rx::drawReaction(p, QRectF(i * 80 + (72 - px) / 2.0, y, px, px), i);
+                    y += px + 8;
+                }
+            }
+            p.end();
+            *ls = size;
+            return out;
+        });
+    }
     return list;
 }
 
@@ -604,7 +723,11 @@ int contrastReport(const QString& outDir)
     int         failures = 0;
     for (const bool dark : {false, true}) {
         out << (dark ? "dark theme\n" : "light theme\n");
-        for (const PreviewColorPair& pair : previewColorPairs(dark)) {
+        QVector<PreviewColorPair> pairs = previewColorPairs(dark);
+        // 2.2 reactions: the row's colours on TeamSpeak's chat background
+        for (const rx::ColorPair& pair : rx::colorPairs(dark, dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff)))
+            pairs.append({pair.name, pair.foreground, pair.background, pair.minimum});
+        for (const PreviewColorPair& pair : qAsConst(pairs)) {
             const double ratio = ui::contrastRatio(pair.foreground, pair.background);
             const bool   ok    = ratio + 0.005 >= pair.minimum;
             failures += ok ? 0 : 1;

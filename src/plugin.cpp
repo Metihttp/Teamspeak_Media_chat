@@ -17,8 +17,10 @@
 #include "core.h"
 #include "i18n.h"
 #include "inlinemedia.h"
+#include "peerhub.h"        // 2.2 protocol
 #include "pluginlog.h"
 #include "previewrenderer.h"
+#include "privacysection.h" // 2.2 protocol
 #include "settings.h"
 #include "settingsdialog.h"
 #include "ts3api.h"
@@ -33,6 +35,7 @@ namespace {
 QPointer<Core>            g_core;
 QPointer<ChatIntegration> g_chat;
 QPointer<SettingsDialog>  g_settings;
+QPointer<PeerHub>         g_peers;                   // 2.2 protocol: presence and reactions
 bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
 enum MenuId { MenuSend = 1, MenuSettings, MenuCache };
@@ -75,7 +78,10 @@ void showSettings(QWidget* parent)
     // Heap allocated and non-blocking so plugin shutdown can always close it.
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection); // 2.2 protocol
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
+        if (g_peers)
+            g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
         if (g_core)
             g_core->applyCacheLimit(); // a lower limit counts now, not after the next download
         if (g_chat)
@@ -263,6 +269,10 @@ TS3_EXPORT int ts3plugin_init()
         if (!g_mediaFoundation)
             ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
         core->start();
+        // 2.2 protocol: after Core (its flood governors), before the chat (reaction rows).
+        auto* peers = new PeerHub(core);
+        g_peers     = peers;
+        peers->start();
         chat->start();
         updateMenus();
         ts3::log(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded");
@@ -273,6 +283,10 @@ TS3_EXPORT int ts3plugin_init()
 TS3_EXPORT void ts3plugin_shutdown()
 {
     auto cleanup = [] {
+        // 2.2 protocol: BYE where we said hello (not waiting for an answer), reactions.json written.
+        if (g_peers)
+            g_peers->prepareShutdown();
+
         // Our windows must be gone before the DLL is unloaded. Deleting one window can delete
         // another (owned dialogs), hence the guarded second pass.
         QList<QPointer<QWidget>> windows;
@@ -294,6 +308,8 @@ TS3_EXPORT void ts3plugin_shutdown()
         }
         for (const QPointer<QWidget>& w : leftovers)
             delete w.data();
+
+        delete g_peers.data(); // 2.2 protocol: the store, the presence directory, the transport
 
         delete g_core.data(); // waits for probe workers
 
@@ -498,6 +514,7 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
         });
     }
 #endif
+    PeerHub::onConnectStatus(sch, newStatus); // 2.2 protocol: HELLO once connected, forget on disconnect
     onGuiThread([] { updateMenus(); });
     if (newStatus != STATUS_DISCONNECTED)
         return;
@@ -535,7 +552,9 @@ TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, an
 
 TS3_EXPORT int ts3plugin_onServerErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, const char* extraMessage)
 {
-    Q_UNUSED(extraMessage);
+    // 2.2 protocol: answers to plugin commands (the extra message has the flood "retry in N ms").
+    if (PeerHub::onServerError(serverConnectionHandlerID, error, returnCode, extraMessage, false))
+        return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
@@ -551,6 +570,8 @@ TS3_EXPORT int ts3plugin_onServerErrorEvent(uint64 serverConnectionHandlerID, co
 TS3_EXPORT int ts3plugin_onServerPermissionErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, unsigned int failedPermissionID)
 {
     Q_UNUSED(failedPermissionID);
+    if (PeerHub::onServerError(serverConnectionHandlerID, error, returnCode, nullptr, true)) // 2.2 protocol
+        return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
@@ -572,4 +593,74 @@ TS3_EXPORT void ts3plugin_onFileTransferStatusEvent(anyID transferID, unsigned i
         if (g_core)
             g_core->onTransferStatus(transferID, status, msg, sch);
     });
+}
+
+// ============================================================================================
+// 2.2 protocol: plugin commands and channel membership (presence, reactions)
+// ============================================================================================
+
+TS3_EXPORT void ts3plugin_onPluginCommandEvent(uint64 serverConnectionHandlerID, const char* pluginName, const char* pluginCommand, anyID invokerClientID,
+                                               const char* invokerName, const char* invokerUniqueIdentity)
+{
+    // Checked (ours, size, magic) before anything is copied; the invoker fields come from the server.
+    PeerHub::onPluginCommand(serverConnectionHandlerID, pluginName, pluginCommand, invokerClientID, invokerName, invokerUniqueIdentity);
+}
+
+TS3_EXPORT void ts3plugin_onClientMoveEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, const char* moveMessage)
+{
+    Q_UNUSED(moveMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientMoveTimeoutEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, const char* timeoutMessage)
+{
+    Q_UNUSED(timeoutMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientMoveMovedEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID moverID,
+                                                 const char* moverName, const char* moverUniqueIdentifier, const char* moveMessage)
+{
+    Q_UNUSED(moverID);
+    Q_UNUSED(moverName);
+    Q_UNUSED(moverUniqueIdentifier);
+    Q_UNUSED(moveMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientKickFromChannelEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
+                                                       const char* kickerName, const char* kickerUniqueIdentifier, const char* kickMessage)
+{
+    Q_UNUSED(kickerID);
+    Q_UNUSED(kickerName);
+    Q_UNUSED(kickerUniqueIdentifier);
+    Q_UNUSED(kickMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientKickFromServerEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
+                                                      const char* kickerName, const char* kickerUniqueIdentifier, const char* kickMessage)
+{
+    Q_UNUSED(kickerID);
+    Q_UNUSED(kickerName);
+    Q_UNUSED(kickerUniqueIdentifier);
+    Q_UNUSED(kickMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientBanFromServerEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
+                                                     const char* kickerName, const char* kickerUniqueIdentifier, uint64 time, const char* kickMessage)
+{
+    Q_UNUSED(kickerID);
+    Q_UNUSED(kickerName);
+    Q_UNUSED(kickerUniqueIdentifier);
+    Q_UNUSED(time);
+    Q_UNUSED(kickMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientDisplayNameChanged(uint64 serverConnectionHandlerID, anyID clientID, const char* displayName, const char* uniqueClientIdentifier)
+{
+    Q_UNUSED(uniqueClientIdentifier);
+    PeerHub::onClientRenamed(serverConnectionHandlerID, clientID, displayName);
 }

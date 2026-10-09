@@ -128,6 +128,10 @@ void Settings::load()
 
     // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
+
+    // 2.2 protocol
+    showReactions = readBool(s, "showReactions", d.showReactions);
+    sharePresence = readBool(s, "sharePresence", d.sharePresence);
 }
 
 void Settings::save() const
@@ -158,5 +162,9 @@ void Settings::save() const
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
 
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
+
+    // 2.2 protocol
+    s.setValue(key("showReactions"), showReactions);
+    s.setValue(key("sharePresence"), sharePresence);
     s.sync();
 }
