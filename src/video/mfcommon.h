@@ -85,6 +85,8 @@ QString failureText(HRESULT hr, const GUID& videoSubtype = GUID_NULL, Wording wo
 
 HRESULT createSourceReader(const QString& path, IMFAttributes* attributes, IMFSourceReader** reader);
 GUID    videoSubtypeOf(const QString& path); // GUID_NULL if the file has no readable video stream
+// 2.4 compress: "H.264", "HEVC (H.265)", "VP9", ... (the names of the decoder texts); empty if unknown.
+QString videoCodecName(const GUID& subtype);
 
 QSize applyPixelAspect(const QSize& size, UINT32 num, UINT32 den);
 

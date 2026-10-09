@@ -74,6 +74,7 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 
 - **Drag & drop** files onto the chat. While you drag, the chat shows where the files will go (or why they can't be sent there). A drop opens the send window; hold <kbd>Ctrl</kbd> to send right away, or <kbd>Shift</kbd> to get TeamSpeak's normal behaviour.
 - **Paste** a screenshot or copied files into the chat input with <kbd>Ctrl</kbd>+<kbd>V</kbd>. The send window shows what will be sent and where, with a preview or thumbnails, a caption field and *Mark as spoiler*. Nothing is sent until you click **Send**.
+- **Crop and draw** before sending: **Edit…** in the send window crops and rotates a picture, adds arrows, frames, lines and text, and pixelates or blacks out what others shouldn't see. The edited copy is sent without its photo metadata (no location); unedited photos are sent as they are. See [Editing a picture](docs/USAGE.md#editing-a-picture).
 - **Menu:** **Plugins → TS Media chat → Send files to chat…** (available while you are connected).
 - **Hotkeys:** assign *Send files to the current chat* and *Cancel all uploads* in **Tools → Options → Hotkeys**.
 - **Commands:** type `/tsmedia send`, or `/tsmedia cancel` to stop running uploads. `/tsmedia help` lists the commands.

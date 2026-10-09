@@ -17,6 +17,16 @@ struct LocalMediaInfo {
     qint64    durationMs = 0;     // video / audio
     QString   blurHash;
     QImage    preview;            // non-null => upload as preview/poster
+
+    // 2.4 compress: what the compression planner needs (filled for videos).
+    bool    probed        = false; // mf::probe could read the container
+    bool    hasVideo      = false;
+    bool    decodable     = false; // a frame could be decoded here
+    double  frameRate     = 0.0;   // nominal, 0 if unknown
+    bool    hasAudio      = false;
+    int     audioChannels = 0;
+    QString videoCodec;            // readable codec name ("HEVC (H.265)"), empty if unknown
+    QString probeError;            // why it can't be decoded (mf's text)
 };
 
 // Synchronous; call from a worker thread. Never throws. Rules:
@@ -28,6 +38,10 @@ struct LocalMediaInfo {
 //  * audio: duration via mf::probe
 //  * anything else: kind only
 LocalMediaInfo probeLocalMedia(const QString& path, bool generatePreviews);
+
+// 2.4 compress: the video rules above for any file (camcorder .mts, phone .3gp ... are not video kinds by
+// name), kind Video. For files that may be compressed.
+LocalMediaInfo probeLocalVideo(const QString& path, bool generatePreviews);
 
 // JPEG (quality 82) of an image, flattened onto black if it has alpha.
 QByteArray encodePreviewJpeg(const QImage& image);

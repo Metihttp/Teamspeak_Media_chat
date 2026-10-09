@@ -23,7 +23,7 @@ Settings are stored in `%APPDATA%\TS3Client\plugins\tsmedia\settings.ini` (a por
 | Setting | Default | Range and notes |
 | --- | --- | --- |
 | Show images, videos and file cards in the chat | on | The other Receiving options only apply while this is on. |
-| Download images and GIFs automatically up to | on, 15 MB | 1–500 MB. Larger images and GIFs load when clicked. |
+| Download images, GIFs and voice messages automatically up to | on, 15 MB | 1–500 MB. Larger images and GIFs load when clicked. Voice messages download up to this size, but never above 16 MB; larger ones load when played. |
 | Play GIFs automatically | on | When off, a GIF plays while the pointer is over it. |
 | Download videos automatically | Off (download when played) | 0–4096 MB, in steps of 10 MB. Videos up to this size download automatically. |
 | Maximum preview size | 400 × 300 px | Width 120–1200 px, height 80–1200 px. |
@@ -53,6 +53,19 @@ Changing the volume in the gallery viewer updates this setting too.
 - **Clear cache** asks first and says how much it will delete. Files on the server aren't affected: media still in the chat downloads again when you view it. Media that is playing or open in the viewer is kept.
 - The cache lives in `%APPDATA%\TS3Client\plugins\tsmedia\cache`.
 
+## Voice messages
+
+On the **General** tab. See [Voice messages](USAGE.md#voice-messages) for how recording works.
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Microphone | Same as TeamSpeak (recommended) | Or one of Windows' microphones by name. When the plugin can't tell which microphone TeamSpeak uses, it records from Windows' default communications microphone and the recording window says so. A microphone picked here that is unplugged shows as *not connected*; until it is back, the TeamSpeak one is used. |
+| Mute my TeamSpeak microphone while recording | on | So people in your channel don't hear you live (voice activation). Others see your microphone as muted until you finish. It is always unmuted again when recording stops, unless you unmuted it yourself meanwhile. |
+| Let me listen before sending (hotkey) | on | Off: the hotkey's second press sends right away instead of stopping for a listen. |
+| Play a sound when recording starts and stops | on | A short beep through TeamSpeak's playback device; only you hear it. |
+
+The line under the options shows the record hotkey (*Record hotkey: F9*, or *not set*); **Set up hotkeys…** opens TeamSpeak's hotkey setup, where it is listed under TS Media chat as *Record a voice message*.
+
 ## Sending
 
 | Setting | Default | Range and notes |
@@ -68,6 +81,7 @@ Changing the volume in the gallery viewer updates this setting too.
 - **Upload a small preview**: the [usage guide](USAGE.md#file-names-and-folders) lists which files get a preview and where it is stored.
 - **Upload size limit** is your own limit. The server's transfer quotas still apply. The send window marks files over the limit before you click **Send**.
 - **Upload folder** is per user: each person sends into the folder set in their own settings. Without permission to create folders, files go to the channel root.
+- The picture editor (*Edit…* in the send window) remembers the colour, size and *Hide details* mode you used last. They are kept in `settings.ini` (`editorColor`, `editorStroke`, `editorHideMode`) and have no control in this dialog. **Convert pasted images over 2 MB to JPEG** also applies to edited pictures saved as PNG.
 
 ### Dropping files
 
@@ -76,6 +90,23 @@ Changing the volume in the gallery viewer updates this setting too.
 | When you drop files on the chat | Open the send window | Or *Send right away*. Hold Ctrl while dropping to do the other; hold Shift for TeamSpeak's own drop. Only matters while *Send files dropped on the chat* is on. |
 
 - **Open the send window** lets you add a caption, mark spoilers and see what can't be sent before anything goes out. **Send right away** sends dropped files as soon as you let go (as in 2.1), except when none of them could be sent: the window then opens and says why.
+
+### Videos
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Compress videos larger than | on, 25 MB | 1–4096 MB. The video becomes an H.264/AAC MP4 before it is uploaded. |
+| Convert iPhone (HEVC), AV1, VP9 and camcorder videos too | on | Of any size, and only when this computer can play them. |
+| Quality | Balanced (720p) | Smaller (480p, up to 30 fps), Balanced (720p, up to 60 fps) or High (1080p, up to 60 fps). |
+| Use the graphics card when possible | on | Off when no graphics card video encoder was found; the processor is used then. |
+
+- Compressing happens on your computer only; nothing is sent anywhere else. One video is compressed at a time, at a lower priority than TeamSpeak's own work.
+- A video is only compressed when that makes it at least 30% smaller. A video larger than your **upload size limit** is made small enough to fit when possible (a lower bitrate first, then a smaller picture); the send window then picks that quality by itself.
+- The send window has a **Quality** list for each video, with the size each choice is expected to have; *Original* sends the file as it is.
+- If compressing fails and the original fits your upload limit, the original is sent and the upload panel says so.
+- The result has the same random part in its name, with the extension `.mp4`. Extra sound tracks, subtitles and metadata (including any location data in phone videos) are not kept.
+- Needs Windows Media Foundation. On Windows N editions without the Media Feature Pack, videos are sent as they are.
+- Settings keys (`settings.ini`): `compressVideos`, `compressVideosOverMB`, `compressVideoQuality` (480, 720 or 1080), `convertUnplayableVideos`, `compressUseGpu`.
 
 ## Note for people without the plugin
 

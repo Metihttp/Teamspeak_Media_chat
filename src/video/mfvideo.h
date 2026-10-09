@@ -34,6 +34,12 @@ struct ProbeResult {
     bool    hasAudio   = false;
     QImage  poster;          // a representative frame (around 1 s, or 10% for short clips), max side posterMaxSide
     QString error;
+    // 2.4 compress: what the compression planner needs to know.
+    double  frameRate       = 0.0; // nominal frames per second of the video stream, 0 if unknown
+    int     rotation        = 0;   // clockwise degrees that turn the stored picture upright (0/90/180/270)
+    QString videoCodec;            // readable codec name ("H.264", "HEVC (H.265)", "VP9"), empty if unknown
+    int     audioChannels   = 0;
+    int     audioSampleRate = 0;
 };
 
 // Synchronous. Safe to call from any thread (initializes COM/MF for that thread as needed).

@@ -26,6 +26,7 @@ class QTextEdit;
 class QTimer;
 class RevealFades;
 class UploadToast;
+class VoiceController; // 2.2 voice
 
 // Hooks into the TeamSpeak chat widgets (QTextBrowser based):
 //  * finds ts3file:// links in chat and inserts inline previews / players / file cards right below them
@@ -69,6 +70,21 @@ class ChatIntegration : public QObject
             count += input.isNull() ? 0 : 1; // isNull(): no complete QWidget needed here
         return count;
     }
+    // ---- 2.2 voice: the recorder (voicecontroller.h), owned here so it goes before the players and Core
+    VoiceController* voice() const { return m_voice; }
+    // The visible chat as a voice message's destination, its description ("the channel “Lobby”") and
+    // the chat input the recorder sits above. False (the chat already says why) when nothing can be
+    // sent from there.
+    bool voiceTarget(ChatTarget* target, QString* description, QWidget** anchor);
+    // Pauses every inline player and the viewer.
+    void pauseAllPlayback();
+    // The destination as the recorder window names it ("the channel “Lobby”"); for the channel it
+    // follows a channel switch (the message goes to the channel the user is in when it is sent).
+    QString voiceTargetText(const ChatTarget& target) const { return describeTarget(target); }
+
+  signals:
+    // 2.2 voice: an inline player or the viewer started playing (the recorder pauses it again).
+    void playbackStarted();
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -247,6 +263,7 @@ class ChatIntegration : public QObject
 
     Core*                      m_core;
     InlineMediaController*     m_media         = nullptr;
+    VoiceController*           m_voice         = nullptr; // 2.2 voice
     QTimer*                    m_discoverTimer = nullptr;
     QTimer*                    m_visibilityTimer = nullptr;
     QHash<QTextBrowser*, View> m_views;

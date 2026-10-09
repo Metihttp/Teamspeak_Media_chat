@@ -64,6 +64,8 @@
 #include "composedialog.h"
 #include "composehooks.h"
 #include "composemodel.h"
+#include "voicecard.h"       // 2.2 voice
+#include "voicecontroller.h" // 2.2 voice
 
 namespace {
 
@@ -249,6 +251,9 @@ ChatIntegration::ChatIntegration(Core* core, QObject* parent)
 
 ChatIntegration::~ChatIntegration()
 {
+    // 2.2 voice: first, while the players and Core exist: a recording is canceled, the mic given back.
+    delete m_voice;
+    m_voice = nullptr;
     // 2.2 reactions: its picker and hover state go first.
     delete m_reactions;
     m_reactions = nullptr;
@@ -300,11 +305,13 @@ void ChatIntegration::start()
     connect(m_media, &InlineMediaController::playbackStarted, this, [this] {
         if (m_viewer)
             m_viewer->pausePlayback();
+        emit playbackStarted(); // 2.2 voice
     });
     // 2.2 spoiler: each step of a reveal crossfade is redrawn like a frame.
     m_reveals = new RevealFades(this);
     connect(m_reveals, &RevealFades::changed, this, &ChatIntegration::onFrameChanged);
     m_reactions = new ChatReactions(this, m_core); // 2.2 reactions
+    m_voice = new VoiceController(this, m_core, this); // 2.2 voice
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -1298,7 +1305,7 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
 
     // The name comes from someone else's chat link: shown as plain text (escaped, since a tool tip
     // would interpret markup), without bidi/control characters.
-    QString name = displayNameFor(e->link);
+    QString name = isVoiceCard(*e) ? voiceToolTipName(*e) : displayNameFor(e->link); // 2.2 voice: "Voice message · 0:12"
     if (e->link.size)
         name += QStringLiteral(" · ") + formatSize(e->link.size);
     QString text = QStringLiteral("<div style='white-space:pre'>%1</div>").arg(name.toHtmlEscaped());
@@ -1458,6 +1465,7 @@ void ChatIntegration::openViewer(const QString& key)
         m_viewer = viewer;
         connect(viewer, &MediaViewer::mutedChanged, m_media, &InlineMediaController::setMuted, Qt::UniqueConnection);
         connect(viewer, &MediaViewer::playbackStarted, m_media, &InlineMediaController::pauseAll, Qt::UniqueConnection);
+        connect(viewer, &MediaViewer::playbackStarted, this, &ChatIntegration::playbackStarted, Qt::UniqueConnection); // 2.2 voice
     }
 }
 
@@ -2563,6 +2571,27 @@ void ChatIntegration::openCompose(QWidget* source, const QStringList& files, con
         }
     };
     host.albumDefault = Settings::instance().sendAsAlbum;
+    // 2.4 compress: the Quality combo; 2.2 per-server: with the upload limit of the server the chat is on.
+    host.compressOptions = [sch = target.sch] { return Core::compressOptions(SendQuality::Auto, ts3::serverUid(sch)); };
+    // 2.2 editor: edited copies under <dataDir>/edit (Core clears it at start-up), the paste rule, and
+    // the editor's last choices.
+    {
+        const Settings& s           = Settings::instance();
+        host.editDirectory          = ts3::dataDir() + QStringLiteral("/edit");
+        host.convertLargePngToJpeg  = s.convertLargePngToJpeg;
+        host.editorPrefs.color      = s.editorColor;
+        host.editorPrefs.stroke     = s.editorStroke;
+        host.editorPrefs.hideMode   = s.editorHideMode;
+        host.rememberEditorPrefs    = [](const imageedit::Prefs& prefs) {
+            Settings& settings = Settings::instance();
+            if (settings.editorColor == prefs.color && settings.editorStroke == prefs.stroke && settings.editorHideMode == prefs.hideMode)
+                return;
+            settings.editorColor    = prefs.color;
+            settings.editorStroke   = prefs.stroke;
+            settings.editorHideMode = prefs.hideMode;
+            settings.save();
+        };
+    }
 
     QWidget* parent = mainWindow();
     if (!parent && source)
@@ -2585,6 +2614,49 @@ void ChatIntegration::openCompose(QWidget* source, const QStringList& files, con
     dialog->raise();
     dialog->activateWindow();
 }
+
+// ---- 2.2 voice -------------------------------------------------------------------------------------
+
+bool ChatIntegration::voiceTarget(ChatTarget* target, QString* description, QWidget** anchor)
+{
+    QWidget* source = nullptr;
+    resolveCurrentTarget(target, &source);
+    const SendBlock block = checkSend(source, target);
+    if (block == SendBlock::Password) {
+        // The file goes to the own channel's file browser, which a password channel doesn't allow.
+        const QString text = i18n::t("Voice messages can't be sent from password-protected channels. Join another channel, then try again.");
+        if (QTextBrowser* chat = chatBrowserFor(source))
+            ts3::setChatDark(styleFor(chat).dark);
+        ts3::printWarning(ts3::currentConnection(), text);
+        if (source && source->isVisible())
+            QToolTip::showText(source->mapToGlobal(QPoint(12, source->height() / 2)), text, source);
+        return false;
+    }
+    if (block != SendBlock::None) {
+        warnCantSend(source, block);
+        return false;
+    }
+    *description = describeTarget(*target);
+    QWidget* input = nullptr; // the recorder sits right above the chat input
+    for (const auto& w : m_inputs) {
+        if (w && w->isVisible()) {
+            input = w;
+            break;
+        }
+    }
+    *anchor = input ? input : source;
+    return true;
+}
+
+void ChatIntegration::pauseAllPlayback()
+{
+    if (m_media)
+        m_media->pauseAll();
+    if (m_viewer)
+        m_viewer->pausePlayback();
+}
+
+// ---- end 2.2 voice ---------------------------------------------------------------------------------
 
 ChatTarget ChatIntegration::currentTarget() const
 {
@@ -2638,7 +2710,7 @@ void ChatIntegration::pickAndSendFiles()
     const QPointer<QWidget>         from(source);
     const QStringList               files = QFileDialog::getOpenFileNames(
         mainWindow(), i18n::t("Send files to %1").arg(describeTarget(target)), lastDir,
-        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v)"));
+        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v *.3gp *.mts *.m2ts *.mpg)"));
     if (!guard || files.isEmpty())
         return;
     lastDir = QFileInfo(files.first()).absolutePath();

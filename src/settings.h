@@ -55,6 +55,21 @@ struct Settings {
     // 2.2 compose: a drop opens the send window (Ctrl held: sends right away); false: the other way round.
     bool dropOpensSendWindow = true;
     bool sendAsAlbum         = true; // the send window's "Send as an album", as last chosen
+    // 2.4 compress: videos are made smaller (an MP4 that plays everywhere) before they are sent.
+    static constexpr Range compressVideosOverMBRange = {1, 4096};
+    bool compressVideos          = true; // videos larger than compressVideosOverMB
+    int  compressVideosOverMB    = 25;
+    int  compressVideoQuality    = 720;  // the short side: 480 | 720 | 1080 (anything else reads as 720)
+    bool convertUnplayableVideos = true; // HEVC, AV1, VP9, camcorder .mts ... of any size, when this PC can decode them
+    bool compressUseGpu          = true; // the graphics card's encoder when there is one
+    // 2.2 editor: the picture editor's last colour (Red, Yellow, Green, Blue, White, Black), size
+    // (Thin, Medium, Thick) and "Hide details" mode (Pixelate, Black box).
+    static constexpr Range editorColorRange    = {0, 5};
+    static constexpr Range editorStrokeRange   = {0, 2};
+    static constexpr Range editorHideModeRange = {0, 1};
+    int editorColor    = 0;
+    int editorStroke   = 1;
+    int editorHideMode = 0;
 
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this
@@ -66,6 +81,14 @@ struct Settings {
     // 2.2 protocol: Privacy (both global, never per server)
     bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
     bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
+    // 2.2 voice: voice messages
+    static constexpr int maxVoiceMicrophoneLength = 512;
+    QString voiceMicrophone;               // Windows endpoint id of the microphone; empty = the one TeamSpeak uses
+    bool    voiceMuteTeamSpeakMic = true;  // mute the TeamSpeak microphone while recording (always given back)
+    bool    voiceReview           = true;  // the hotkey's second press stops for a listen; off: it sends
+    bool    voiceSounds           = true;  // a short sound when recording starts and stops
+    // A stored microphone id as load() keeps it: printable ASCII up to maxVoiceMicrophoneLength, else empty.
+    static QString validVoiceMicrophone(const QString& value);
 
     static Settings& instance();
     void             load();
@@ -82,6 +105,8 @@ struct Settings {
 
     // " a\b/ " -> "/a/b"; empty -> defaultUploadDirectory.
     static QString normalizeUploadDirectory(const QString& dir);
+    // 2.4 compress: 480 and 1080 stay, anything else is 720.
+    static int normalizeVideoQuality(int shortSide);
 
     // Why a link for the note can't be used (SettingsDialog shows a message for each).
     enum class DownloadUrlProblem { None, NotWebAddress, Scheme, Brackets, TooLong };

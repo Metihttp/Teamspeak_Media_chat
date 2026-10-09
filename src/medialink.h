@@ -200,6 +200,11 @@ QString displayFileName(const QString& name);
 // server keep using link.fileName.
 QString displayNameFor(const MediaLink& link);
 
+// 2.2 voice: a voice message (vm=1) is "Voice message.m4a" in displayNameFor(), whatever its file is
+// called; Save as suggests "Voice message 2026-10-09 18-02.m4a" (the link's time, local; without one
+// "Voice message.m4a").
+QString voiceSaveName(const MediaLink& link);
+
 // ---- numbers -------------------------------------------------------------------------------------
 
 // "512 B", "1.0 KB", "24.1 KB", "700 MB", "1.5 GB": 1024-based, one decimal below 100 (so the width

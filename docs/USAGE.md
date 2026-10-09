@@ -40,10 +40,36 @@ Pasting, dropping and the file picker all open the same window. It names where t
 
 - **Caption:** one line of up to 300 characters, shown in the chat right above the file (above the first one when you send several). A counter appears from 250 characters. A caption that doesn't fit in the same chat message as the file is sent as its own message right above it; it is never shortened.
 - **Mark as spoiler:** pictures, GIFs and videos can be marked one by one (the eye button in the list, <kbd>S</kbd> on a focused row). People with TS Media chat see them blurred until they click. People on TS Media 2.1 or older, and people without the plugin, see them unblurred.
+- **Edit…** (the pencil in the list, <kbd>E</kbd> on a focused row): crop and draw on a picture before you send it, see [Editing a picture](#editing-a-picture). The item then says *Edited*; **Revert to original** (the arrow next to the pencil) brings the original back. Animated GIFs and pictures over 33 megapixels (16 in 32-bit TeamSpeak) can't be edited.
 - **Add files…** (<kbd>Ctrl</kbd>+<kbd>O</kbd>), dropping more files on the window, or <kbd>Ctrl</kbd>+<kbd>V</kbd> add files; the **×** button (or <kbd>Delete</kbd> on a focused row) removes one. Up to 100 files can be sent at once.
 - Files that can't be sent (empty, larger than your upload limit, missing or open in another program) are marked with the reason before you click **Send**, and left out. The button says what will be sent (*Send 3 images*, *Send 5 files*). While you are not connected, or the person of a private chat has left, the window says so and **Send** stays off; what you entered is kept.
 
 The clipboard may hold something old you forgot about, so a paste never sends anything without the window.
+
+### Large videos
+
+Videos larger than 25 MB, and iPhone (HEVC), AV1, VP9 or camcorder videos of any size, are converted on your computer to an MP4 (H.264 and AAC) that plays everywhere, before they are uploaded. In the send window each video has a **Quality** list (*Original*, *High (1080p)*, *Balanced (720p)*, *Smaller (480p)*) with the size each choice is expected to have; the default is what your [settings](SETTINGS.md#videos) say. A video over your upload limit gets a smaller quality that fits, picked for you.
+
+While a video is compressed, the upload panel shows *Compressing · 240 MB → about 18 MB · 1 min left*, a **Send original** button (when the original fits your upload limit) and **×** to cancel. Other files of the same send keep going, and their messages still appear in the order you chose. When it is done, the panel shows *Sent · 240 MB → 18.0 MB*. If compressing fails, the original is sent when it fits (*Sent the original*; the panel's tooltip says why).
+### Editing a picture
+
+**Edit…** opens the picture in its own window. Nothing changes the original file: the edited picture is a new copy, and you can open the editor again to change or undo what you did.
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| Crop | <kbd>C</kbd> | Drag the frame or its corners. *Free*, *Original*, *Square*, *4:3* and *16:9* set the shape, **Swap** (<kbd>X</kbd>) turns it between landscape and portrait, **Rotate** (<kbd>Ctrl</kbd>+<kbd>R</kbd>) turns the picture 90° clockwise, **Reset crop** shows the whole picture again. The arrow keys move the frame and <kbd>Shift</kbd>+arrows resize it. <kbd>Enter</kbd> applies the crop, <kbd>Esc</kbd> leaves it as it was. |
+| Pen | <kbd>P</kbd> | Draw freehand. Hold <kbd>Shift</kbd> for a straight line. |
+| Arrow | <kbd>A</kbd> | Drag from the tail to the tip. <kbd>Shift</kbd> keeps it at 45° steps. |
+| Rectangle | <kbd>R</kbd> | Drag a frame. <kbd>Shift</kbd> makes a square. |
+| Text | <kbd>T</kbd> | Click where the text should start, type, then <kbd>Enter</kbd>. Light colours get a dark outline and dark ones a light outline, so the text stays readable. |
+| Hide details | <kbd>H</kbd> | Drag over something to hide it: *Pixelate* or *Black box*. Pixelate hides most details; for passwords, codes and addresses use *Black box*. |
+
+- **Colours** (<kbd>1</kbd>–<kbd>6</kbd>): red, yellow, green, blue, white, black. **Sizes** (<kbd>[</kbd> and <kbd>]</kbd>): thin, medium and thick lines, or small, medium and large text. The editor remembers your last choice.
+- <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes, <kbd>Ctrl</kbd>+<kbd>Y</kbd> (or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>) redoes. <kbd>Ctrl</kbd>+wheel zooms, <kbd>Ctrl</kbd>+<kbd>0</kbd> fits the window, <kbd>Ctrl</kbd>+<kbd>1</kbd> shows the picture at its actual size; hold <kbd>Space</kbd> and drag (or drag with the middle button) to move around.
+- **Done** (<kbd>Enter</kbd>) keeps the edit, **Cancel** (<kbd>Esc</kbd>) asks first if you changed something.
+- Lines and text keep the size you see on screen, at any zoom, and the edited picture is saved at the full resolution of what you kept (it is never enlarged).
+- The edited picture keeps its name. JPEG and WebP photos are saved as JPEG (quality 92); screenshots (PNG, BMP), pasted pictures and anything with transparency as PNG, which becomes JPEG (quality 90) when it is over 2 MB without transparency and *Convert pasted images over 2 MB to JPEG* is on.
+- The edited copy has no metadata: no EXIF, so no camera details and no location. Pictures you send without editing are sent as they are.
 
 ### Upload progress
 
@@ -79,6 +105,21 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - You have to be connected to the server the file is on. Up to 3 downloads run at once, previews first. A file waiting for its turn says *Waiting to download…*.
 - When something goes wrong, the reason is written on the preview or card. Failed cards have a **Retry** button, and clicking a failed picture tries again. Deleted files and files in password-protected channels can't be retried: their previews show the normal pointer and do nothing when clicked. The [FAQ](FAQ.md#what-do-the-messages-on-a-preview-mean) explains every message.
 - With Windows animations turned off (**Settings → Accessibility → Visual effects → Animation effects**), GIFs play only while the pointer is over them, and loading indicators stand still.
+
+## Voice messages
+
+Record a short message and send it to the chat you are looking at, like in Discord or Telegram.
+
+- **Start:** **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice`, or the hotkey *Record a voice message* (set it up in **Tools → Options → Hotkeys**, under TS Media chat; the plugin's settings have a **Set up hotkeys…** button).
+- **While recording** a small *Voice message* window shows a red dot and *Recording*, who the message goes to, a live waveform of the last 3 seconds, and the time out of 5:00. A short sound plays when recording starts and stops (TeamSpeak plays it on your own speakers or headset; others don't hear it). The window stays on screen for as long as the microphone is in use; closing it cancels the recording.
+- **Your TeamSpeak microphone is muted** while you record, so people in your channel don't hear you live (others see you as muted until you finish). It is unmuted again as soon as recording stops, however it stops. If you unmute it yourself meanwhile, the plugin leaves it alone.
+- **Stop** (<kbd>Space</kbd>) lets you listen first: play it back, then **Send** (<kbd>Enter</kbd>), **Re-record** or **Discard** (<kbd>Esc</kbd>). **Send** while recording sends it straight away. Discarding 3 seconds or more asks first.
+- **With the hotkey:** the first press starts, the second stops so you can listen (or sends, if *Let me listen before sending* is off in the settings), the third sends. Opened by the hotkey, the window doesn't take the focus away from a game.
+- **Limits:** at 4:30 the time turns red and the window says *30 seconds left*; at 5:00 recording stops and you get the review. Under half a second, nothing is sent.
+- **The microphone** is the one TeamSpeak uses when the plugin can tell which one that is; otherwise Windows' default communications microphone, and the window says so. You can pick a microphone in the settings.
+- **Sent as** an `.m4a` file (AAC, about 0.73 MB a minute) through the normal upload, with the upload panel showing *Voice message*. People without the plugin get a *Voice message (0:12)* link that downloads a file any player can play.
+- **Receiving:** a voice message is a compact card with a play button, its waveform and its length. It downloads by itself while *Download images, GIFs and voice messages automatically* is on (up to that limit, at most 16 MB), so it plays at once. Click the waveform to jump to a point; starting it pauses any other video or audio. **Save as…** suggests *Voice message 2026-10-09 18-02.m4a*.
+- The FAQ lists the messages the window can show (*Microphone access is blocked*, *No microphone found*, *The microphone is busy*, …) with their fixes.
 
 ## Right-click menu
 
@@ -145,6 +186,7 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 | Command | What it does |
 | --- | --- |
 | `/tsmedia send` | pick files and send them to the current chat |
+| `/tsmedia voice` | record a voice message for the current chat |
 | `/tsmedia cancel` | cancel all running uploads |
 | `/tsmedia settings` | open the settings |
 | `/tsmedia cache` | open the media cache folder |

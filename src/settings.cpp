@@ -48,6 +48,20 @@ int readInt(const QSettings& s, const char* name, int fallback, Settings::Range 
 
 } // namespace
 
+// 2.2 voice: an endpoint id is printable ASCII ("{0.0.1.00000000}.{guid}"); anything else (edited by
+// hand, too long) means "the microphone TeamSpeak uses".
+QString Settings::validVoiceMicrophone(const QString& value)
+{
+    const QString v = value.trimmed();
+    if (v.size() > maxVoiceMicrophoneLength)
+        return {};
+    for (const QChar c : v) {
+        if (c.unicode() < 0x20 || c.unicode() > 0x7e)
+            return {};
+    }
+    return ownedCopy(v);
+}
+
 QString Settings::normalizeUploadDirectory(const QString& input)
 {
     QString dir = input.trimmed();
@@ -59,6 +73,11 @@ QString Settings::normalizeUploadDirectory(const QString& input)
     while (dir.length() > 1 && dir.endsWith(QLatin1Char('/')))
         dir.chop(1);
     return dir;
+}
+
+int Settings::normalizeVideoQuality(int shortSide) // 2.4 compress
+{
+    return shortSide == 480 || shortSide == 1080 ? shortSide : 720;
 }
 
 Settings::DownloadUrlProblem Settings::checkDownloadUrl(const QString& input, QString* normalized)
@@ -134,6 +153,15 @@ void Settings::load(const QString& file)
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
     dropOpensSendWindow = readBool(s, "dropOpensSendWindow", d.dropOpensSendWindow); // 2.2 compose
     sendAsAlbum         = readBool(s, "sendAsAlbum", d.sendAsAlbum);
+    // 2.4 compress
+    compressVideos          = readBool(s, "compressVideos", d.compressVideos);
+    compressVideosOverMB    = readInt(s, "compressVideosOverMB", d.compressVideosOverMB, compressVideosOverMBRange);
+    compressVideoQuality    = normalizeVideoQuality(s.value(key("compressVideoQuality")).toInt());
+    convertUnplayableVideos = readBool(s, "convertUnplayableVideos", d.convertUnplayableVideos);
+    compressUseGpu          = readBool(s, "compressUseGpu", d.compressUseGpu);
+    editorColor         = readInt(s, "editorColor", d.editorColor, editorColorRange); // 2.2 editor
+    editorStroke        = readInt(s, "editorStroke", d.editorStroke, editorStrokeRange);
+    editorHideMode      = readInt(s, "editorHideMode", d.editorHideMode, editorHideModeRange);
 
     // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
@@ -144,6 +172,11 @@ void Settings::load(const QString& file)
     // 2.2 protocol
     showReactions = readBool(s, "showReactions", d.showReactions);
     sharePresence = readBool(s, "sharePresence", d.sharePresence);
+    // 2.2 voice
+    voiceMicrophone       = validVoiceMicrophone(s.value(key("voiceMicrophone")).toString());
+    voiceMuteTeamSpeakMic = readBool(s, "voiceMuteTeamSpeakMic", d.voiceMuteTeamSpeakMic);
+    voiceReview           = readBool(s, "voiceReview", d.voiceReview);
+    voiceSounds           = readBool(s, "voiceSounds", d.voiceSounds);
 }
 
 void Settings::save() const
@@ -181,6 +214,14 @@ void Settings::save(const QString& file) const
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
     s.setValue(key("dropOpensSendWindow"), dropOpensSendWindow); // 2.2 compose
     s.setValue(key("sendAsAlbum"), sendAsAlbum);
+    s.setValue(key("compressVideos"), compressVideos); // 2.4 compress
+    s.setValue(key("compressVideosOverMB"), compressVideosOverMB);
+    s.setValue(key("compressVideoQuality"), normalizeVideoQuality(compressVideoQuality));
+    s.setValue(key("convertUnplayableVideos"), convertUnplayableVideos);
+    s.setValue(key("compressUseGpu"), compressUseGpu);
+    s.setValue(key("editorColor"), editorColor); // 2.2 editor
+    s.setValue(key("editorStroke"), editorStroke);
+    s.setValue(key("editorHideMode"), editorHideMode);
 
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
 
@@ -190,6 +231,11 @@ void Settings::save(const QString& file) const
     // 2.2 protocol
     s.setValue(key("showReactions"), showReactions);
     s.setValue(key("sharePresence"), sharePresence);
+    // 2.2 voice
+    s.setValue(key("voiceMicrophone"), ownedCopy(validVoiceMicrophone(voiceMicrophone)));
+    s.setValue(key("voiceMuteTeamSpeakMic"), voiceMuteTeamSpeakMic);
+    s.setValue(key("voiceReview"), voiceReview);
+    s.setValue(key("voiceSounds"), voiceSounds);
     s.sync();
 }
 

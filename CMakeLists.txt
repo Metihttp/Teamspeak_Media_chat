@@ -135,6 +135,28 @@ add_library(tsmedia SHARED
     src/composehooks.cpp      src/composehooks.h
     src/peerhub.cpp           src/peerhub.h
     src/chatreactions.cpp     src/chatreactions.h
+    # 2.4 compress: video compression before upload
+    src/videocompress.cpp     src/videocompress.h
+    src/video/mftranscode.cpp src/video/mftranscode.h
+    src/compresssettings.cpp  src/compresssettings.h
+    # 2.2 editor: crop & annotate (opened from the send window)
+    src/imageeditmodel.cpp    src/imageeditmodel.h
+    src/imageeditor.cpp       src/imageeditor.h
+    src/imageeditorcanvas.cpp src/imageeditor_p.h
+    # 2.2 voice
+    src/audio/capture.h
+    src/audio/waveform.cpp      src/audio/waveform.h
+    src/audio/capturedevice.cpp src/audio/capturedevice.h
+    src/audio/wasapicapture.cpp src/audio/wasapicapture.h
+    src/audio/fakecapture.cpp   src/audio/fakecapture.h
+    src/audio/aacwriter.cpp     src/audio/aacwriter.h
+    src/audio/voicerecorder.cpp src/audio/voicerecorder.h
+    src/audio/micguard.cpp      src/audio/micguard.h
+    src/audio/cues.cpp          src/audio/cues.h
+    src/voicecard.cpp           src/voicecard.h
+    src/voicepanel.cpp          src/voicepanel.h
+    src/voicecontroller.cpp     src/voicecontroller.h
+    src/voicesection.cpp        src/voicesection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -276,6 +298,27 @@ if(TSMEDIA_BUILD_TESTS)
         src/mediaprobe.cpp
         src/video/mfvideo.cpp
         src/video/mfcommon.cpp
+        # 2.4 compress: the compression planner (and the transcoder, which the real core.cpp calls)
+        tests/tst_videocompress.cpp
+        src/videocompress.cpp
+        src/video/mftranscode.cpp
+        # 2.2 editor
+        tests/tst_imageedit.cpp
+        src/imageeditmodel.cpp
+        # 2.2 voice: waveform, MicGuard (fake TeamSpeak), microphone mapping, cues
+        tests/tst_voice.cpp
+        src/audio/waveform.cpp
+        src/audio/micguard.cpp
+        src/audio/capturedevice.cpp
+        src/audio/cues.cpp
+        # 2.2 voice: the encoder (generated sound -> .m4a -> probe), the recorder with FakeCapture (never a
+        # real microphone) and the voice card (audiocard.cpp hands voice messages over to it)
+        tests/tst_voicemedia.cpp
+        src/audio/aacwriter.cpp
+        src/audio/voicerecorder.cpp
+        src/audio/fakecapture.cpp
+        src/audio/wasapicapture.cpp # only lists endpoints in the tests; never opens one
+        src/voicecard.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
@@ -316,12 +359,33 @@ if(TSMEDIA_BUILD_TOOLS)
     target_link_libraries(mfvideo_smoketest PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
     tsmedia_delay_load_media_foundation(mfvideo_smoketest) # exercises the same loading path as the plugin
 
+    # 2.4 compress: mftranscode_smoketest <video> <outdir> [options]: plans and transcodes a video like the
+    # plugin does and prints the encoder, realtime factor, CPU time, peak memory and size vs. estimate.
+    add_executable(mftranscode_smoketest
+        tools/mftranscode_smoketest.cpp
+        src/video/mftranscode.cpp
+        src/video/mfvideo.cpp
+        src/video/mfcommon.cpp
+        src/videocompress.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+    )
+    target_include_directories(mftranscode_smoketest PRIVATE src)
+    target_compile_definitions(mftranscode_smoketest PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(mftranscode_smoketest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(mftranscode_smoketest PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(mftranscode_smoketest)
+
     # render_gallery <outdir>: renders every preview/card/player state (light + dark) to PNG files.
     add_executable(render_gallery
         tools/render_gallery.cpp
         src/previewrenderer.cpp
         src/audiocard.cpp # 2.2 audio
         src/dragpixmap.cpp # 2.2 drag-out
+        src/voicecard.cpp src/audio/waveform.cpp # 2.2 voice
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp

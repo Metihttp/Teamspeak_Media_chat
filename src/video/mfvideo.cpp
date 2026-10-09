@@ -310,12 +310,27 @@ ProbeResult probe(const QString& path, int posterMaxSide)
         result.durationMs = static_cast<qint64>(duration.uhVal.QuadPart / kHnsPerMs);
     PropVariantClear(&duration);
 
+    // 2.4 compress: frame rate, codec and sound layout for the compression planner.
+    if (result.hasAudio) {
+        result.audioChannels   = static_cast<int>(MFGetAttributeUINT32(nativeAudio.Get(), MF_MT_AUDIO_NUM_CHANNELS, 0));
+        result.audioSampleRate = static_cast<int>(MFGetAttributeUINT32(nativeAudio.Get(), MF_MT_AUDIO_SAMPLES_PER_SECOND, 0));
+    }
+    if (result.hasVideo) {
+        UINT32 rateNum = 0, rateDen = 0;
+        if (SUCCEEDED(MFGetAttributeRatio(nativeVideo.Get(), MF_MT_FRAME_RATE, &rateNum, &rateDen)) && rateNum > 0 && rateDen > 0)
+            result.frameRate = static_cast<double>(rateNum) / rateDen;
+        GUID subtype = GUID_NULL;
+        nativeVideo->GetGUID(MF_MT_SUBTYPE, &subtype);
+        result.videoCodec = detail::videoCodecName(subtype);
+    }
+
     result.ok = true;
     if (!result.hasVideo)
         return result;
 
     const Geometry native = geometryOf(nativeVideo.Get());
     result.size           = native.display;
+    result.rotation       = native.rotation; // 2.4 compress
     if (posterMaxSide <= 0)
         return result;
 
