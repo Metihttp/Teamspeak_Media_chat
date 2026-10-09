@@ -25,12 +25,11 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
-#include <iterator>
 #include <limits>
 #include <mutex>
-#include <string>
 
 #include "i18n.h"
+#include "mfcommon.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -42,6 +41,7 @@ constexpr LONGLONG kHnsPerMs              = 10000;
 constexpr int      kMaxImageSide          = 16384;
 constexpr int      kMaxTextureSide        = 8192;
 constexpr int      kFrameIntervalMs       = 10;
+constexpr int      kAudioIntervalMs       = 50; // audio only: no frames, the timer only reports the position
 constexpr int      kPositionIntervalMs    = 250;
 constexpr int      kFirstFramePollMs      = 3000; // keep polling this long after load for the first frame
 constexpr LONGLONG kNoFrame               = std::numeric_limits<LONGLONG>::min(); // OnVideoStreamTick: nothing presented yet
@@ -55,257 +55,14 @@ constexpr DWORD    kMediaSource           = static_cast<DWORD>(MF_SOURCE_READER_
 std::mutex g_platformMutex;
 int        g_platformRefs = 0;
 
-// The plugin delay-loads mfplat.dll / mfreadwrite.dll so it still loads on Windows N editions without
-// the Media Feature Pack. Nothing may call into Media Foundation before this returned true.
-bool mediaFoundationPresent()
-{
-    static const bool present = [] {
-        for (const wchar_t* dll : {L"mfplat.dll", L"mfreadwrite.dll"}) {
-            const HMODULE module = LoadLibraryExW(dll, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-            if (!module)
-                return false;
-            FreeLibrary(module);
-        }
-        return true;
-    }();
-    return present;
-}
-
-// CoInitializeEx for the current thread, balanced on destruction. RPC_E_CHANGED_MODE means the thread
-// already lives in the other apartment type, which Media Foundation is fine with.
-class ComScope
-{
-  public:
-    explicit ComScope(DWORD model)
-        : m_hr(CoInitializeEx(nullptr, model | COINIT_DISABLE_OLE1DDE))
-    {
-    }
-    ~ComScope()
-    {
-        if (SUCCEEDED(m_hr))
-            CoUninitialize();
-    }
-
-    bool    usable() const { return SUCCEEDED(m_hr) || m_hr == RPC_E_CHANGED_MODE; }
-    HRESULT result() const { return m_hr; }
-
-  private:
-    Q_DISABLE_COPY(ComScope)
-    HRESULT m_hr;
-};
-
-// MFStartup/MFShutdown for the duration of a probe (Media Foundation counts these itself).
-class PlatformScope
-{
-  public:
-    PlatformScope()
-        : m_hr(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))
-    {
-    }
-    ~PlatformScope()
-    {
-        if (SUCCEEDED(m_hr))
-            MFShutdown();
-    }
-
-    HRESULT result() const { return m_hr; }
-
-  private:
-    Q_DISABLE_COPY(PlatformScope)
-    HRESULT m_hr;
-};
-
-// ---- error texts --------------------------------------------------------------------------------
-
-struct CodecInfo {
-    const GUID* subtype;
-    const char* name;
-    const char* storeApp; // Microsoft Store extension that provides the decoder
-};
-
-const CodecInfo kCodecs[] = {
-    {&MFVideoFormat_H264, "H.264", nullptr},
-    {&MFVideoFormat_HEVC, "HEVC (H.265)", "HEVC Video Extensions"},
-    {&MFVideoFormat_VP90, "VP9", "VP9 Video Extensions"},
-    {&MFVideoFormat_VP80, "VP8", nullptr},
-    {&MFVideoFormat_AV1, "AV1", "AV1 Video Extension"},
-    {&MFVideoFormat_MPEG2, "MPEG-2", "MPEG-2 Video Extension"},
-    {&MFVideoFormat_MP4V, "MPEG-4 Part 2", nullptr},
-    {&MFVideoFormat_WMV3, "WMV 9", nullptr},
-    {&MFVideoFormat_WVC1, "VC-1", nullptr},
-    {&MFVideoFormat_MJPG, "Motion JPEG", nullptr},
-};
-
-// Codecs Windows has no decoder for, which media sources still expose with their FourCC.
-struct ForeignCodec {
-    const char* fourCC;
-    const char* name;
-};
-
-const ForeignCodec kForeignCodecs[] = {
-    {"apch", "Apple ProRes"}, {"apcn", "Apple ProRes"}, {"apcs", "Apple ProRes"}, {"apco", "Apple ProRes"},
-    {"ap4h", "Apple ProRes"}, {"ap4x", "Apple ProRes"}, {"avdn", "Avid DNxHD"},   {"avdh", "Avid DNxHR"},
-    {"ffv1", "FFV1"},         {"theo", "Theora"},       {"cvid", "Cinepak"},      {"cfhd", "GoPro CineForm"},
-};
-
-QString hexCode(HRESULT hr)
-{
-    return QStringLiteral("0x") + QString::number(static_cast<quint32>(hr), 16).toUpper().rightJustified(8, QLatin1Char('0'));
-}
-
-// Readable codec name of a video subtype, empty if unknown.
-QString codecName(const GUID& subtype, const char** storeApp)
-{
-    *storeApp = nullptr;
-    for (const CodecInfo& codec : kCodecs) {
-        if (*codec.subtype == subtype) {
-            *storeApp = codec.storeApp;
-            return QString::fromLatin1(codec.name);
-        }
-    }
-    if (subtype == GUID_NULL)
-        return {};
-    // Media sources are not consistent about the byte order of FourCCs they do not know: try both.
-    QByteArray lowFirst, highFirst;
-    for (int i = 0; i < 4; ++i) {
-        lowFirst.append(static_cast<char>((subtype.Data1 >> (8 * i)) & 0xFF));
-        highFirst.append(static_cast<char>((subtype.Data1 >> (8 * (3 - i))) & 0xFF));
-    }
-    for (const ForeignCodec& codec : kForeignCodecs) {
-        if (qstricmp(lowFirst.constData(), codec.fourCC) == 0 || qstricmp(highFirst.constData(), codec.fourCC) == 0)
-            return QString::fromLatin1(codec.name);
-    }
-    return {};
-}
-
-QString platformUnavailableText()
-{
-    return i18n::t("Windows video support (Media Foundation) is not available. On Windows N editions, install the Media Feature Pack.");
-}
-
-QString unsupportedFormatText()
-{
-    return i18n::t("This file format can't be played on this computer.");
-}
-
-QString damagedText()
-{
-    return i18n::t("Couldn't decode this file. It may be damaged.");
-}
-
-QString missingDecoderText(const GUID& subtype)
-{
-    const char*   storeApp = nullptr;
-    const QString codec    = codecName(subtype, &storeApp);
-    if (codec.isEmpty())
-        return unsupportedFormatText();
-    if (storeApp) {
-        return i18n::t("No %1 video decoder is installed on this computer. Install “%2” from the Microsoft Store.")
-            .arg(codec, QString::fromLatin1(storeApp));
-    }
-    return i18n::t("No %1 video decoder is installed on this computer.").arg(codec);
-}
-
-bool isMissingDecoder(HRESULT hr)
-{
-    return hr == MF_E_TOPO_CODEC_NOT_FOUND || hr == MF_E_INVALIDMEDIATYPE || hr == MF_E_TRANSFORM_TYPE_NOT_SET
-        || hr == MF_E_NO_MORE_TYPES || hr == MF_E_TOPO_UNSUPPORTED || hr == MF_E_UNSUPPORTED_D3D_TYPE;
-}
-
-// Empty if hr is not about reaching the file.
-QString fileErrorText(HRESULT hr)
-{
-    if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)
-        || hr == HRESULT_FROM_WIN32(ERROR_INVALID_NAME))
-        return i18n::t("The file was not found.");
-    if (hr == E_ACCESSDENIED || hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) || hr == HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION))
-        return i18n::t("The file is in use by another program, or access was denied.");
-    return {};
-}
-
-// videoSubtype (if known) names the codec when a decoder is missing.
-QString failureText(HRESULT hr, const GUID& videoSubtype = GUID_NULL)
-{
-    const QString fileError = fileErrorText(hr);
-    if (!fileError.isEmpty())
-        return fileError;
-    if (hr == MF_E_PLATFORM_NOT_INITIALIZED || hr == REGDB_E_CLASSNOTREG || hr == HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND))
-        return platformUnavailableText();
-    if (hr == MF_E_UNSUPPORTED_BYTESTREAM_TYPE || hr == MF_E_UNSUPPORTED_SCHEME || hr == MF_E_UNSUPPORTED_FORMAT
-        || hr == MF_E_INVALID_FILE_FORMAT || hr == MF_E_BYTESTREAM_NOT_SEEKABLE)
-        return unsupportedFormatText();
-    if (isMissingDecoder(hr))
-        return missingDecoderText(videoSubtype);
-    if (hr == MF_E_INVALID_STREAM_DATA || hr == MF_E_INVALIDREQUEST || hr == E_UNEXPECTED)
-        return damagedText();
-    return i18n::t("Couldn't play this file (error %1).").arg(hexCode(hr));
-}
-
-// ---- source reader helpers ----------------------------------------------------------------------
-
-HRESULT createReader(const QString& path, IMFAttributes* attributes, IMFSourceReader** reader)
-{
-    const std::wstring native = QDir::toNativeSeparators(path).toStdWString();
-    return MFCreateSourceReaderFromURL(native.c_str(), attributes, reader);
-}
-
-GUID videoSubtypeOf(const QString& path)
-{
-    GUID                    subtype = GUID_NULL;
-    ComPtr<IMFSourceReader> reader;
-    ComPtr<IMFMediaType>    type;
-    if (SUCCEEDED(createReader(path, nullptr, &reader)) && SUCCEEDED(reader->GetNativeMediaType(kFirstVideoStream, 0, &type)))
-        type->GetGUID(MF_MT_SUBTYPE, &subtype);
-    return subtype;
-}
-
-QSize applyPixelAspect(const QSize& size, UINT32 num, UINT32 den)
-{
-    if (num == 0 || den == 0 || num == den || size.isEmpty())
-        return size;
-    if (num > den)
-        return QSize(qBound(1, qRound(size.width() * static_cast<double>(num) / den), kMaxImageSide), size.height());
-    return QSize(size.width(), qBound(1, qRound(size.height() * static_cast<double>(den) / num), kMaxImageSide));
-}
-
-struct Geometry {
-    QSize frame;        // coded frame size
-    QRect aperture;     // visible part of the frame
-    QSize display;      // aperture with pixel aspect ratio and rotation applied
-    int   rotation = 0; // clockwise degrees that turn the decoded picture upright
-};
-
-Geometry geometryOf(IMFMediaType* type)
-{
-    Geometry g;
-    UINT32   width = 0, height = 0;
-    if (FAILED(MFGetAttributeSize(type, MF_MT_FRAME_SIZE, &width, &height)) || width == 0 || height == 0
-        || width > static_cast<UINT32>(kMaxImageSide) || height > static_cast<UINT32>(kMaxImageSide))
-        return g;
-    g.frame    = QSize(static_cast<int>(width), static_cast<int>(height));
-    g.aperture = QRect(QPoint(), g.frame);
-
-    MFVideoArea area     = {};
-    UINT32      areaSize = 0;
-    if (SUCCEEDED(type->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, reinterpret_cast<UINT8*>(&area), sizeof(area), &areaSize))
-        || SUCCEEDED(type->GetBlob(MF_MT_GEOMETRIC_APERTURE, reinterpret_cast<UINT8*>(&area), sizeof(area), &areaSize))) {
-        const QRect visible = QRect(area.OffsetX.value, area.OffsetY.value, area.Area.cx, area.Area.cy) & g.aperture;
-        if (!visible.isEmpty())
-            g.aperture = visible;
-    }
-
-    UINT32 num = 1, den = 1;
-    MFGetAttributeRatio(type, MF_MT_PIXEL_ASPECT_RATIO, &num, &den);
-    g.display = applyPixelAspect(g.aperture.size(), num, den);
-
-    // MF_MT_VIDEO_ROTATION is how far the stored picture is rotated counter-clockwise.
-    const UINT32 rotation = MFGetAttributeUINT32(type, MF_MT_VIDEO_ROTATION, 0);
-    if (rotation == 90 || rotation == 180 || rotation == 270)
-        g.rotation = static_cast<int>(rotation);
-    if (g.rotation == 90 || g.rotation == 270)
-        g.display.transpose();
-    return g;
-}
+using detail::ComScope;
+using detail::failureText;
+using detail::Geometry;
+using detail::geometryOf;
+using detail::mediaFoundationPresent;
+using detail::PlatformScope;
+using detail::platformUnavailableText;
+using detail::Wording;
 
 LONG defaultStride(IMFMediaType* type)
 {
@@ -489,6 +246,11 @@ void shutdown()
         MFShutdown();
 }
 
+bool available()
+{
+    return mediaFoundationPresent();
+}
+
 // ================================================================================================
 // Probe
 // ================================================================================================
@@ -520,7 +282,7 @@ ProbeResult probe(const QString& path, int posterMaxSide)
         hr = attributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
     ComPtr<IMFSourceReader> reader;
     if (SUCCEEDED(hr))
-        hr = createReader(path, attributes.Get(), &reader);
+        hr = detail::createSourceReader(path, attributes.Get(), &reader);
     if (FAILED(hr)) {
         result.error = failureText(hr);
         return result;
@@ -531,7 +293,7 @@ ProbeResult probe(const QString& path, int posterMaxSide)
     result.hasVideo = SUCCEEDED(reader->GetNativeMediaType(kFirstVideoStream, 0, &nativeVideo));
     result.hasAudio = SUCCEEDED(reader->GetNativeMediaType(kFirstAudioStream, 0, &nativeAudio));
     if (!result.hasVideo && !result.hasAudio) {
-        result.error = unsupportedFormatText(); // media sources hide tracks they cannot handle
+        result.error = detail::unsupportedFormatText(); // media sources hide tracks they cannot handle
         return result;
     }
 
@@ -653,11 +415,11 @@ struct VideoPlayer::Private
     }
 
     bool    createEngine(QString* error);
-    HRESULT createDevice();
     void    release();
     void    failLater(const QString& error);
     void    onEngineEvent(quint64 eventGeneration, DWORD event, DWORD_PTR param1, DWORD param2);
     QString engineErrorText(DWORD_PTR code, HRESULT hr) const;
+    Wording wording() const { return audioOnly ? Wording::Audio : Wording::Video; }
     void    tick();
     bool    transferFrame();
     bool    ensureTextures(const QSize& size);
@@ -674,7 +436,7 @@ struct VideoPlayer::Private
     bool         platformStarted = startup();
 
     std::shared_ptr<Guard>       guard;
-    ComPtr<ID3D11Device>         device;
+    ComPtr<ID3D11Device>         device;  // none in audio-only mode
     ComPtr<ID3D11DeviceContext>  context;
     ComPtr<IMFDXGIDeviceManager> deviceManager;
     ComPtr<IMFMediaEngine>       engine;
@@ -687,6 +449,7 @@ struct VideoPlayer::Private
     QElapsedTimer loadClock;
     QString       path;
     quint64       generation           = 0;
+    bool          audioOnly            = false; // OpenMode::AudioOnly: no device, no frames
     bool          loaded               = false;
     bool          failed               = false;
     bool          refresh              = false; // transfer the current frame even if the stream tick did not change
@@ -702,54 +465,30 @@ struct VideoPlayer::Private
     State         lastState;
 };
 
-HRESULT VideoPlayer::Private::createDevice()
-{
-    static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
-                                               D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2,  D3D_FEATURE_LEVEL_9_1};
-    const UINT                     flags    = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    const UINT                     count    = static_cast<UINT>(std::size(levels));
-
-    HRESULT hr = E_FAIL;
-    for (const D3D_DRIVER_TYPE type : {D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP}) {
-        hr = D3D11CreateDevice(nullptr, type, nullptr, flags, levels, count, D3D11_SDK_VERSION, &device, nullptr, &context);
-        if (hr == E_INVALIDARG) // runtimes without 11.1 reject the whole list
-            hr = D3D11CreateDevice(nullptr, type, nullptr, flags, levels + 1, count - 1, D3D11_SDK_VERSION, &device, nullptr, &context);
-        if (SUCCEEDED(hr))
-            break;
-    }
-    if (FAILED(hr))
-        return hr;
-
-    // The engine decodes on its own threads while frames are read back on the GUI thread.
-    ComPtr<ID3D10Multithread> multithread;
-    if (SUCCEEDED(device.As(&multithread)))
-        multithread->SetMultithreadProtected(TRUE);
-
-    UINT resetToken = 0;
-    hr              = MFCreateDXGIDeviceManager(&resetToken, &deviceManager);
-    if (SUCCEEDED(hr))
-        hr = deviceManager->ResetDevice(device.Get(), resetToken);
-    return hr;
-}
-
 bool VideoPlayer::Private::createEngine(QString* error)
 {
     if (!com.usable() || !platformStarted) {
-        *error = platformUnavailableText();
+        *error = platformUnavailableText(wording());
         return false;
     }
 
-    HRESULT hr = createDevice();
-    if (FAILED(hr)) {
-        *error = i18n::t("Couldn't start the player (graphics error %1). Updating your graphics driver may help.")
-                     .arg(hexCode(hr));
-        return false;
+    // Audio files need no graphics device at all: the audio-only engine never renders frames.
+    HRESULT hr = S_OK;
+    if (!audioOnly) {
+        hr = detail::createD3D11Device(true, &device, &context);
+        if (SUCCEEDED(hr))
+            hr = detail::createDxgiDeviceManager(device.Get(), &deviceManager);
+        if (FAILED(hr)) {
+            *error = i18n::t("Couldn't start the player (graphics error %1). Updating your graphics driver may help.")
+                         .arg(detail::hexCode(hr));
+            return false;
+        }
     }
 
     ComPtr<IMFMediaEngineClassFactory> factory;
     hr = CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
     if (FAILED(hr)) {
-        *error = platformUnavailableText();
+        *error = platformUnavailableText(wording());
         return false;
     }
 
@@ -759,16 +498,18 @@ bool VideoPlayer::Private::createEngine(QString* error)
     ComPtr<IMFAttributes> attributes;
     hr = MFCreateAttributes(&attributes, 3);
     if (SUCCEEDED(hr))
-        hr = attributes->SetUnknown(MF_MEDIA_ENGINE_DXGI_MANAGER, deviceManager.Get());
-    if (SUCCEEDED(hr))
         hr = attributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, notify.Get());
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr) && !audioOnly)
+        hr = attributes->SetUnknown(MF_MEDIA_ENGINE_DXGI_MANAGER, deviceManager.Get());
+    if (SUCCEEDED(hr) && !audioOnly)
         hr = attributes->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM);
-    if (SUCCEEDED(hr)) // no MF_MEDIA_ENGINE_PLAYBACK_HWND: frame-server mode
-        hr = factory->CreateInstance(0, attributes.Get(), &engine);
+    // No MF_MEDIA_ENGINE_PLAYBACK_HWND: frame-server mode (or no video at all with AUDIOONLY).
+    const DWORD flags = audioOnly ? static_cast<DWORD>(MF_MEDIA_ENGINE_AUDIOONLY) : 0;
+    if (SUCCEEDED(hr))
+        hr = factory->CreateInstance(flags, attributes.Get(), &engine);
     if (FAILED(hr)) {
         engine.Reset();
-        *error = failureText(hr);
+        *error = failureText(hr, GUID_NULL, wording(), path);
         return false;
     }
 
@@ -804,6 +545,7 @@ void VideoPlayer::Private::release()
     device.Reset();
 
     path.clear();
+    audioOnly            = false;
     loaded               = false;
     failed               = false;
     refresh              = false;
@@ -847,17 +589,21 @@ QString VideoPlayer::Private::engineErrorText(DWORD_PTR code, HRESULT hr) const
     case MF_MEDIA_ENGINE_ERR_NETWORK:
         return i18n::t("Couldn't read the file.");
     case MF_MEDIA_ENGINE_ERR_DECODE:
-        return damagedText();
+        return detail::damagedText();
     case MF_MEDIA_ENGINE_ERR_ENCRYPTED:
-        return i18n::t("This video is copy-protected and can't be played here.");
+        return audioOnly ? i18n::t("This file is copy-protected and can't be played here.")
+                         : i18n::t("This video is copy-protected and can't be played here.");
     case MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED: {
-        if (isMissingDecoder(hr))
-            return missingDecoderText(videoSubtypeOf(path));
-        const QString fileError = fileErrorText(hr);
-        return fileError.isEmpty() ? unsupportedFormatText() : fileError;
+        if (detail::isMissingDecoder(hr))
+            return detail::missingDecoderText(audioOnly ? GUID_NULL : detail::videoSubtypeOf(path), wording());
+        const QString fileError = detail::fileErrorText(hr);
+        if (!fileError.isEmpty())
+            return fileError;
+        // The engine often reports a plain E_FAIL here: name the Store extension where it applies.
+        return failureText(MF_E_UNSUPPORTED_BYTESTREAM_TYPE, GUID_NULL, wording(), path);
     }
     default:
-        return failureText(FAILED(hr) ? hr : E_FAIL);
+        return failureText(FAILED(hr) ? hr : E_FAIL, GUID_NULL, wording(), path);
     }
 }
 
@@ -903,9 +649,13 @@ void VideoPlayer::Private::onEngineEvent(quint64 eventGeneration, DWORD event, D
     case MF_MEDIA_ENGINE_EVENT_ERROR:
     case MF_MEDIA_ENGINE_EVENT_RESOURCELOST:
     case MF_MEDIA_ENGINE_EVENT_STREAMRENDERINGERROR: {
-        const QString message = event == MF_MEDIA_ENGINE_EVENT_ERROR
-                                    ? engineErrorText(param1, static_cast<HRESULT>(param2))
-                                    : i18n::t("Playback stopped because the graphics device was reset. Open the file again.");
+        QString message;
+        if (event == MF_MEDIA_ENGINE_EVENT_ERROR)
+            message = engineErrorText(param1, static_cast<HRESULT>(param2));
+        else if (audioOnly)
+            message = i18n::t("Playback stopped unexpectedly. Play it again.");
+        else
+            message = i18n::t("Playback stopped because the graphics device was reset. Open the file again.");
         failed = true;
         timer.stop();
         emit q->failed(message);
@@ -933,7 +683,7 @@ void VideoPlayer::Private::onEngineEvent(quint64 eventGeneration, DWORD event, D
 QSize VideoPlayer::Private::nativeVideoSize() const
 {
     DWORD width = 0, height = 0;
-    if (!engine || !engine->HasVideo() || FAILED(engine->GetNativeVideoSize(&width, &height)) || width == 0 || height == 0)
+    if (!engine || audioOnly || !engine->HasVideo() || FAILED(engine->GetNativeVideoSize(&width, &height)) || width == 0 || height == 0)
         return {};
     QSize size(static_cast<int>(qMin<DWORD>(width, kMaxImageSide)), static_cast<int>(qMin<DWORD>(height, kMaxImageSide)));
 
@@ -995,6 +745,8 @@ MFVideoNormalizedRect VideoPlayer::Private::sourceRect(const QSize& target) cons
 
 bool VideoPlayer::Private::ensureTextures(const QSize& size)
 {
+    if (!device)
+        return false;
     if (renderTarget && staging && textureSize == size)
         return true;
     renderTarget.Reset();
@@ -1053,7 +805,7 @@ bool VideoPlayer::Private::transferFrame()
 // While paused right after loading, keep polling until the engine reports its first stream tick.
 bool VideoPlayer::Private::waitingForFirstFrame() const
 {
-    return loaded && lastPts == kNoFrame && loadClock.isValid() && loadClock.elapsed() < kFirstFramePollMs && engine->HasVideo();
+    return !audioOnly && loaded && lastPts == kNoFrame && loadClock.isValid() && loadClock.elapsed() < kFirstFramePollMs && engine->HasVideo();
 }
 
 void VideoPlayer::Private::tick()
@@ -1064,7 +816,7 @@ void VideoPlayer::Private::tick()
     }
 
     bool newFrame = false;
-    if (engine->HasVideo()) {
+    if (!audioOnly && engine->HasVideo()) {
         // S_FALSE (no new frame) reports the frame already presented. Before the first frame the engine
         // reports LLONG_MIN, and a transfer would succeed with a black surface.
         LONGLONG      pts    = lastPts;
@@ -1136,13 +888,17 @@ VideoPlayer::~VideoPlayer()
     d->release();
 }
 
-void VideoPlayer::open(const QString& path)
+void VideoPlayer::open(const QString& path, OpenMode mode)
 {
     close();
     d->path              = path;
+    d->audioOnly         = mode == OpenMode::AudioOnly;
     d->guard             = std::make_shared<Private::Guard>();
     d->guard->player     = this;
     d->guard->generation = d->generation;
+    // Without frames the timer only reports the position: no need to wake up every 10 ms.
+    d->timer.setTimerType(d->audioOnly ? Qt::CoarseTimer : Qt::PreciseTimer);
+    d->timer.setInterval(d->audioOnly ? kAudioIntervalMs : kFrameIntervalMs);
 
     QString error;
     if (!d->createEngine(&error)) {
@@ -1156,7 +912,7 @@ void VideoPlayer::open(const QString& path)
     const HRESULT hr     = source ? d->engine->SetSource(source) : E_OUTOFMEMORY;
     SysFreeString(source);
     if (FAILED(hr)) {
-        d->failLater(failureText(hr));
+        d->failLater(failureText(hr, GUID_NULL, d->wording(), path));
         return;
     }
     d->updateTimer();
@@ -1171,6 +927,16 @@ void VideoPlayer::close()
 bool VideoPlayer::isLoaded() const
 {
     return d->loaded && !d->failed;
+}
+
+bool VideoPlayer::isAudioOnly() const
+{
+    return d->audioOnly;
+}
+
+bool VideoPlayer::hasGraphicsDevice() const
+{
+    return d->device != nullptr;
 }
 
 void VideoPlayer::play()
@@ -1227,7 +993,12 @@ void VideoPlayer::seek(qint64 ms)
         return;
     const qint64 total  = duration();
     const qint64 target = qBound<qint64>(0, ms, total > 0 ? total : std::numeric_limits<qint64>::max());
+    // At the end the engine is not paused, so a seek would quietly resume playback (past the owner's
+    // one-at-a-time rule). Seeking never starts playback: an ended file waits at the new position.
+    const bool wasEnded = d->engine->IsEnded();
     d->engine->SetCurrentTime(static_cast<double>(target) / 1000.0);
+    if (wasEnded)
+        d->engine->Pause();
     d->refresh = true;
     d->positionClock.start();
     d->updateTimer();
@@ -1300,13 +1071,39 @@ void VideoPlayer::setLoop(bool loop)
         d->engine->SetLoop(loop ? TRUE : FALSE);
 }
 
+bool VideoPlayer::isPlaybackRateSupported(double rate) const
+{
+    if (!d->engine || d->failed || !d->loaded || !std::isfinite(rate) || rate <= 0.0 || rate > 16.0)
+        return false;
+    ComPtr<IMFMediaEngineEx> ex;
+    if (FAILED(d->engine.As(&ex)))
+        return qFuzzyCompare(rate, 1.0);
+    return ex->IsPlaybackRateSupported(rate) != FALSE;
+}
+
+bool VideoPlayer::setPlaybackRate(double rate)
+{
+    if (!isPlaybackRateSupported(rate))
+        return false;
+    // The default rate is what playback returns to after a pause or seek; the current one applies now.
+    return SUCCEEDED(d->engine->SetDefaultPlaybackRate(rate)) && SUCCEEDED(d->engine->SetPlaybackRate(rate));
+}
+
+double VideoPlayer::playbackRate() const
+{
+    if (!d->engine || d->failed)
+        return 1.0;
+    const double rate = d->engine->GetPlaybackRate();
+    return std::isfinite(rate) && rate > 0.0 ? rate : 1.0;
+}
+
 void VideoPlayer::setFrameSize(const QSize& pixels)
 {
     const QSize size   = pixels.isEmpty() ? QSize() : pixels.boundedTo(QSize(kMaxTextureSide, kMaxTextureSide));
     const QSize before = d->outputSize();
     d->requestedSize   = size;
     d->requestedFor    = d->videoSize; // also when the size is the same: the owner has seen the current picture
-    if (d->outputSize() == before)
+    if (d->outputSize() == before || d->audioOnly)
         return;
     d->refresh = true;
     d->updateTimer();

@@ -29,7 +29,9 @@ class InlineMediaController : public QObject
     explicit InlineMediaController(Core* core, QObject* parent = nullptr);
     ~InlineMediaController() override; // destroys all players/movies synchronously
 
-    enum class Mode { Still, Animated, Video };
+    // 2.2 audio: Audio = the audio player card (audiocard.h), for every Audio-kind entry while Windows
+    // can play media (mf::available()); otherwise audio files stay plain file cards (Still).
+    enum class Mode { Still, Animated, Video, Audio };
 
     // What ChatIntegration should draw for key right now.
     Mode            mode(const QString& key) const;  // Video for every Video-kind entry, Animated while a movie exists
@@ -49,23 +51,28 @@ class InlineMediaController : public QObject
 
     // Input on a preview. For videos: Body/PlayPause toggle playback (downloading the file first if
     // needed), Seek jumps to seekFraction, Mute toggles mute, Expand emits openRequested.
+    // For audio cards (Mode::Audio): Body/PlayPause toggle playback, Seek jumps there (before the file
+    // is open: downloads / opens it and starts playing from there).
     // The zone is applied as given; pointer input on hidden controls is mapped to Body by the caller.
     // For other kinds only hover matters (GIF hover-to-play); clicks are handled by ChatIntegration.
+    // Only one video or audio file plays at a time: starting one pauses the others.
     void click(const QString& key, VideoZone zone, double seekFraction);
     void hover(const QString& key, VideoZone zone); // empty key = mouse left all previews
 
     void pauseAll();
+    void pauseVideos(); // 2.2 audio: videos only (opening the viewer on a picture lets audio play on)
     void stopAll();
     void settingsChanged(); // after the settings dialog: picks up a changed "start videos muted"
 
-    // Session mute shared by all inline players (the mute button, "start videos muted", the viewer).
+    // Session mute shared by all inline video players (the mute button, "start videos muted", the
+    // viewer). Audio cards never follow it: they have no mute button and always play out loud.
     bool isMuted() const { return m_muted; }
     void setMuted(bool muted);
 
   signals:
     void frameChanged(const QString& key);
     void openRequested(const QString& key);   // expand button: open in MediaViewer
-    void playbackStarted(const QString& key); // an inline video starts playing (other players should pause)
+    void playbackStarted(const QString& key); // an inline video or audio file starts playing (other players should pause)
 
     // ---- implementation (owned by inlinemedia.cpp; may be reorganised freely) ------------------
   private:
@@ -87,6 +94,9 @@ class InlineMediaController : public QObject
     bool   controlsShown(const Video* video) const;
     double controlsOpacity(const Video* video) const; // < 1 while the bar fades out
     bool   isVideo(const QString& key) const;
+    bool   isInlineAudio(const QString& key) const; // 2.2 audio: drawn as the audio card
+    bool   isPlayable(const QString& key) const;    // isVideo || isInlineAudio
+    void   repaintAudioProgress(Video* video);      // 2.2 audio: redraw when the played pixel or second moves
     bool   isAnimatable(const QString& key);
     QSize  videoFrameSize(const Video* video) const;
     void   updateTimer();

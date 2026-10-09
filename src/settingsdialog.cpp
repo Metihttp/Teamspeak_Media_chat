@@ -215,7 +215,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     gifRows->addWidget(m_autoplayGifs);
     gifRows->addWidget(m_gifHint);
     receiveDetailsForm->addRow(gifRows);
-    receiveDetailsForm->addRow(i18n::t("Download &videos automatically"), m_videoAutoDownload);
+    receiveDetailsForm->addRow(i18n::t("Download &videos and audio automatically"), m_videoAutoDownload); // 2.2 audio: the same limit
     receiveDetailsForm->addRow(previewSizeLabel, previewSizeRow);
     auto* receiveForm = form(receive);
     receiveForm->addRow(m_inlinePreviews);
