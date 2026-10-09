@@ -38,6 +38,7 @@ class SettingsDialog : public QDialog
     // 2.2 per-server settings: the connected servers or saved server settings changed (connection,
     // Plugins menu, command). Values edited in the dialog and not applied yet are kept.
     void reloadServers();
+    void showTab(Tab tab); // e.g. Privacy & updates after "Check for updates…" in the Plugins menu
 
   signals:
     void settingsChanged();
@@ -61,7 +62,6 @@ class SettingsDialog : public QDialog
     void applyTheme();
     void fitToContents();
     QVBoxLayout* tabLayout(Tab tab) const;
-    void         showTab(Tab tab);
     void         showTabOf(QWidget* widget); // the tab a widget is on becomes the current one
 
     Core* m_core;

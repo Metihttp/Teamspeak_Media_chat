@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "accessgroup.h"
@@ -186,9 +187,15 @@ void AccessGroupBox::showPreview(const access::ViewInput& view, const QString& s
 void AccessGroupBox::showEvent(QShowEvent* event)
 {
     QGroupBox::showEvent(event);
+    // Only once the box is still visible after this event: the settings dialog shows every tab for a
+    // moment to size itself (SettingsDialog::showEvent), and that must not check the server.
     if (!m_watching && m_access && !m_preview) {
-        m_watching = true;
-        m_access->setWatching(true); // checks the current server
+        QTimer::singleShot(0, this, [this] {
+            if (!m_watching && m_access && !m_preview && isVisible()) {
+                m_watching = true;
+                m_access->setWatching(true); // checks the current server
+            }
+        });
     }
     refreshView();
 }

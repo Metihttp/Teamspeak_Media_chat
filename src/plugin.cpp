@@ -183,14 +183,18 @@ void cancelUploads(uint64 sch)
         ts3::printInfo(where, i18n::t("Canceled %1 uploads.").arg(canceled));
 }
 
-// 2.2 updater: uploads a TeamSpeak restart would cancel.
+// 2.2 updater: uploads a TeamSpeak restart would cancel. Posting too: the file is on the server, but
+// its chat message may still wait (for earlier files, the album, or the flood governor) and would never
+// be sent.
 int runningUploads()
 {
     int running = 0;
     if (g_core) {
         for (int id : g_core->uploadIds()) {
             const UploadJob* job = g_core->upload(id);
-            if (job && (job->state == UploadState::Preparing || job->state == UploadState::Uploading))
+            if (job
+                && (job->state == UploadState::Preparing || job->state == UploadState::Compressing || job->state == UploadState::Uploading
+                    || job->state == UploadState::Posting))
                 ++running;
         }
     }
@@ -625,6 +629,8 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
     case MenuUpdate: // 2.2 updater: the result shows in Settings → Updates (or the update dialog)
         onGuiThread([] {
             showSettings(nullptr);
+            if (g_settings) // the dialog opens on the tab used last; the result is on this one
+                g_settings->showTab(SettingsDialog::Tab::PrivacyUpdates);
             if (g_updater)
                 g_updater->checkNow(upd::Updater::Origin::Settings);
         });
