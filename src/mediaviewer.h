@@ -6,9 +6,11 @@
 // Items that are not downloaded yet are fetched through Core with a progress display: pictures and
 // the item the viewer was opened on right away; other videos / audio only within the automatic
 // download limit (Settings::videoAutoDownloadMB), otherwise when the user presses play.
+// Everything works from the keyboard: Tab reaches the buttons, ? (or F1) lists the shortcuts.
 // The window's objectName starts with "tsmedia" so plugin shutdown can close it.
 
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QPointer>
 #include <QStringList>
@@ -16,24 +18,38 @@
 #include <optional>
 
 class Core;
+class QThreadPool;
+class QTimer;
 
-// Zoomable image canvas: fit-to-window by default, wheel to zoom around the cursor, drag to pan,
-// double-click toggles between fit and 100%.
+// Zoomable image canvas: fit-to-window by default, wheel to zoom around the cursor, drag (or the
+// arrow keys, through panBy) to pan, double-click toggles between fit and 100% (200% when the
+// picture already fits at 100%). Zoom counts device pixels: 100% shows one image pixel per screen
+// pixel, also on a scaled display. Strong downscales are drawn from a smoothly resampled copy that
+// is made once the zoom stops changing (on a worker thread for very large pictures).
 class ImageCanvas : public QWidget
 {
     Q_OBJECT
 
   public:
     explicit ImageCanvas(QWidget* parent = nullptr);
+    ~ImageCanvas() override; // waits for a resampling worker
 
     void  setImage(const QImage& image, bool resetView);
     void  setFit();
     void  setActualSize();
-    qreal zoom() const;
+    void  zoomTo(qreal zoom, const QPointF& anchor); // anchor: the widget point that stays in place
+    void  zoomBy(qreal factor);                      // around the centre
+    void  panBy(const QPointF& delta);               // logical pixels
+    void  setCursorHidden(bool hidden);              // full screen: no pointer over the picture
+    bool  canPan() const;
+    bool  isFit() const;
+    qreal zoom() const;    // device pixels per image pixel
+    qreal fitZoom() const; // the zoom of setFit(); 1.0 when the picture fits at 100%
 
   signals:
     void zoomChanged(qreal zoom);
     void clicked();
+    void activity(); // the pointer moved over the picture (at most every 50 ms)
 
   protected:
     void paintEvent(QPaintEvent* event) override;
@@ -45,17 +61,32 @@ class ImageCanvas : public QWidget
     void resizeEvent(QResizeEvent* event) override;
 
   private:
-    qreal fitZoom() const;
+    qreal scale() const; // logical pixels per image pixel
+    void  applyZoom();
     void  clampOffset();
+    void  updateCursor();
+    void  scheduleRescale();
+    void  rescale();
+    void  setDisplay(quint64 job, qreal zoom, qreal dpr, QImage image);
 
-    QImage  m_image;
-    bool    m_fit  = true;
-    qreal   m_zoom = 1.0;
-    QPointF m_offset;
-    QPoint  m_dragStart;
-    QPointF m_dragOffset;
-    bool    m_dragging = false;
-    bool    m_moved    = false;
+    QImage        m_image;
+    bool          m_fit  = true;
+    qreal         m_zoom = 1.0;
+    QPointF       m_offset;
+    QPoint        m_dragStart;
+    QPointF       m_dragOffset;
+    bool          m_dragging     = false;
+    bool          m_moved        = false;
+    bool          m_cursorHidden = false;
+    QElapsedTimer m_activityClock;
+
+    // m_image resampled for m_displayZoom at m_displayDpr (null while none matches).
+    QImage       m_display;
+    qreal        m_displayZoom = 0;
+    qreal        m_displayDpr  = 0;
+    quint64      m_displayJob  = 0; // results of older resampling jobs are dropped
+    QTimer*      m_rescale     = nullptr;
+    QThreadPool* m_pool        = nullptr;
 };
 
 class MediaViewer : public QDialog
