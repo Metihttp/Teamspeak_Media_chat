@@ -24,8 +24,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
+#include "audioplayback.h" // 2.2 audio
 #include "blurhash.h"
+#include "filenames.h" // 2.2 drag-out
+#include "hashing.h" // 2.2 sha
 #include "i18n.h"
 #include "ownedtimer.h"
 #include "settings.h"
@@ -66,6 +70,10 @@ constexpr qint64  kSyncDecodeBytes      = 8LL * 1024 * 1024;
 constexpr int     kResumeIntervalMs     = 2000;
 constexpr int     kMaxResumeAttempts    = 3; // automatic restarts of a download without a success
 constexpr int     kMaxUploadRenames     = 3; // new names after "file already exists"
+constexpr int     kMaxFloodRetries      = 5; // folder / upload requests sent again after 0x020c (each after the pause)
+constexpr qint64  kExportMaxAgeMs       = 24LL * 3600 * 1000; // 2.2 drag-out: staged copies are kept this long
+constexpr qint64  kMaxExportCopyBytes   = 64LL * 1024 * 1024; // 2.2 drag-out: copied (when no hard link) only up to this
+constexpr int     kShowCheckMs          = 300; // 2.2 sha: "Checking file…" only for checks that take longer
 
 Core* g_instance = nullptr;
 
@@ -192,9 +200,40 @@ QString fileChangedText()
     return i18n::t("The file on the server was replaced after it was sent.");
 }
 
-QString uploadLimitText(int limitMB)
+QString uploadLimitText(int limitMB, bool serverLimit = false)
 {
+    // 2.2 per-server settings: a server's own limit is changed where it was set.
+    if (serverLimit)
+        return i18n::t("This file is larger than this server's %1 MB upload limit. You can change it in Settings → Servers.").arg(limitMB);
     return i18n::t("This file is larger than your %1 MB upload limit. You can raise the limit in Settings → Sending.").arg(limitMB);
+}
+
+// 2.2 per-server settings: the server has its own upload size limit.
+bool hasOwnUploadLimit(const QString& serverUid)
+{
+    const ServerOverrides* own = Settings::instance().overridesFor(serverUid);
+    return own && own->uploadMaxMB.has_value();
+}
+
+// 2.2 drag-out: the Windows Mark-of-the-Web, as browsers add it to downloads. Written only when the
+// file has no Zone.Identifier stream yet. Not through QFile: alternate data streams need Win32 calls.
+bool markOfTheWeb(const QString& path)
+{
+    const QString stream = QDir::toNativeSeparators(path) + QLatin1String(":Zone.Identifier");
+    const HANDLE  file   = CreateFileW(reinterpret_cast<LPCWSTR>(stream.utf16()), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_FILE_EXISTS; // already marked
+    static const char kZone[] = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    DWORD             written = 0;
+    const BOOL        ok      = WriteFile(file, kZone, static_cast<DWORD>(sizeof(kZone) - 1), &written, nullptr);
+    CloseHandle(file);
+    return ok && written == sizeof(kZone) - 1;
+}
+
+// An upload still on its way to the server (its chat message can't be composed yet).
+bool isPreparing(UploadState state)
+{
+    return state == UploadState::Preparing || state == UploadState::Compressing || state == UploadState::Uploading;
 }
 
 // Transfer failures caused by the connection rather than by the file: restarted automatically.
@@ -284,6 +323,7 @@ MediaLink sanitized(MediaLink link)
         link.blurHash.clear();
     if (!link.previewFile.isEmpty())
         link.previewFile = safePreviewPath(link.previewFile, link.remoteFile());
+    link.dropInvalidMetadata(); // 2.2 fields: after the preview check (ph needs a valid pv)
     return link;
 }
 
@@ -402,6 +442,16 @@ bool hasUnwrittenTail(const QString& path, const QString& fileName)
     return tail.size() == run && tail.count('\0') == run;
 }
 
+// 2.2 sha: a preview's bytes for its ph check (at most kMaxPreviewBytes are read; previews are never
+// larger, see finishPreviewDownload). Empty if it can't be read.
+QByteArray readPreview(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.read(static_cast<qint64>(kMaxPreviewBytes) + 1);
+}
+
 // Previews are staged next to (not inside) the main staging folder so names can never collide.
 QString previewStagingDir(const QString& stagingDir)
 {
@@ -437,10 +487,23 @@ Core::Core(QObject* parent)
     g_instance = this;
     m_pool.setMaxThreadCount(kProbeThreads);
     m_stillPool.setMaxThreadCount(kStillThreads);
+    m_clock.start();
+
+    // 2.2 sha: downloads whose link has a sha are checked on the verifier's own threads before they
+    // are cached. Its second pass waits while TeamSpeak still has the file open for writing.
+    fileverify::Environment check;
+    check.isBeingWritten = [](const QString& path) { return isOpenForWriting(path); };
+    m_verifier           = new fileverify::Verifier(check, this);
+    connect(m_verifier, &fileverify::Verifier::progressChanged, this, &Core::onCheckProgress);
+    connect(m_verifier, &fileverify::Verifier::finished, this, &Core::onCheckFinished);
 }
 
 Core::~Core()
 {
+    // 2.2 sha: running checks stop within one chunk read; nothing is reported any more.
+    if (m_verifier)
+        m_verifier->shutdown();
+
     // Workers only read files and post their result back; stop running staging copies, then join them.
     for (const auto& cancel : qAsConst(m_stagingCancel))
         cancel->store(true);
@@ -501,10 +564,20 @@ void Core::start()
     if (!m_resume.isEmpty())
         m_resumeTimer->start();
 
+    // 2.2: the next chat post, when a connection's FloodGovernor allows it.
+    m_postTimer = new QTimer(this);
+    m_postTimer->setSingleShot(true);
+    connect(m_postTimer, &QTimer::timeout, this, &Core::pumpPosts);
+    // ... and the next folder request or upload start (same counter).
+    m_fileTimer = new QTimer(this);
+    m_fileTimer->setSingleShot(true);
+    connect(m_fileTimer, &QTimer::timeout, this, &Core::runFileQueue);
+
     // Leftovers from a previous session (crash, client closed mid-transfer).
     QDir(cacheDir() + QStringLiteral("/.partial")).removeRecursively();
     QDir(ts3::dataDir() + QStringLiteral("/upload")).removeRecursively();
     QDir(ts3::dataDir() + QStringLiteral("/paste")).removeRecursively();
+    pruneExports(kExportMaxAgeMs); // 2.2 drag-out
 
     // The limit may have been lowered while TeamSpeak was closed.
     singleShotOwned(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
@@ -535,8 +608,11 @@ QString Core::cacheDir() const
 QString Core::cachePathFor(const MediaLink& link) const
 {
     const QString server = QString::fromLatin1(QCryptographicHash::hash(link.serverUid.toUtf8(), QCryptographicHash::Sha1).toHex().left(12));
-    return cacheDir() + QLatin1Char('/') + server + QLatin1Char('/') + QString::number(link.channelId) + QLatin1Char('/') + link.key().left(8) + QLatin1Char('_')
-           + localFileName(link.fileName);
+    // 2.2 sha: links with a sha use the whole key (80 bits). Only checked files are stored under it, and
+    // 8 hex digits would let a made-up hash be tuned to share the real file's cache name.
+    const int keyChars = link.isTsMedia() && link.sha256.size() == fileverify::kShaBytes ? 20 : 8;
+    return cacheDir() + QLatin1Char('/') + server + QLatin1Char('/') + QString::number(link.channelId) + QLatin1Char('/') + link.key().left(keyChars)
+           + QLatin1Char('_') + localFileName(link.fileName);
 }
 
 QString Core::partialDir(const QString& key, bool preview) const
@@ -557,6 +633,8 @@ void Core::ensure(const MediaLink& rawLink)
 
     const MediaLink link = sanitized(rawLink);
     const QString   key  = link.key();
+    // 2.2 spoiler: one link with sp=1 makes the file a spoiler for the session (key() ignores sp).
+    const bool newSpoiler = m_spoilers.noteSighting(key, link.spoiler && spoiler::appliesTo(kindForFileName(link.fileName)));
     if (m_entries.contains(key)) {
         // Seen while inline previews were off, or its files left the cache (cleared / evicted) while
         // it is still in a chat: start what would start for a new link.
@@ -566,6 +644,8 @@ void Core::ensure(const MediaLink& rawLink)
             if (pending || rearm)
                 startAutoDownloads(key);
         }
+        if (newSpoiler)
+            emit entryChanged(key); // 2.2 spoiler: its previews get the cover
         return;
     }
 
@@ -582,6 +662,9 @@ void Core::ensure(const MediaLink& rawLink)
         } else {
             e.state    = MediaState::Ready;
             e.progress = 1.0;
+            // 2.2 sha: only files that matched are ever stored under a sha key, so this one did; it
+            // isn't hashed again.
+            e.check.verified = !link.sha256.isEmpty();
         }
     }
 
@@ -591,12 +674,13 @@ void Core::ensure(const MediaLink& rawLink)
         const QFileInfo pf(e.previewPath);
         if (pf.isFile() && hasUnwrittenTail(e.previewPath, e.previewPath))
             QFile::remove(e.previewPath);
-        else if (pf.isFile() && static_cast<quint64>(pf.size()) <= kMaxPreviewBytes)
+        else if (pf.isFile() && static_cast<quint64>(pf.size()) <= kMaxPreviewBytes && previewFileMatches(e.previewPath, link.previewSha)) // 2.2 sha: ph
             e.previewState = MediaState::Ready;
     }
 
     m_entries.insert(key, e);
     m_order.append(key);
+    refuseForgedHash(key); // 2.2 sha: a hash that contradicts this file's known one is refused at once
 
     if (!Settings::instance().inlinePreviews) {
         m_autoPending.insert(key);
@@ -611,15 +695,21 @@ void Core::startAutoDownloads(const QString& key)
     if (it == m_entries.end())
         return;
     MediaEntry&     e          = it.value();
-    const Settings& s          = Settings::instance();
+    // 2.2 per-server settings: the server the download goes to (where the data is spent) decides.
+    const Settings  s          = Settings::instance().forServer(e.link.serverUid);
     const bool      isImage    = isPreviewableImage(e.kind);
     const bool      isVideo    = e.kind == MediaKind::Video;
     const quint64   imageLimit = megabytes(s.autoDownloadMaxMB);
     const quint64   videoLimit = megabytes(s.videoAutoDownloadMB);
+    // 2.2 audio: audio files have their own rule (audioplayback.h); voice messages (vm) download like images.
+    const bool    isAudio    = e.kind == MediaKind::Audio;
+    const quint64 audioLimit = isAudio ? audioplayback::autoDownloadLimit(s, e.link.voice) : 0;
     if (isImage)
         e.tooLargeForAuto = e.link.size > imageLimit;
     else if (isVideo)
         e.tooLargeForAuto = videoLimit > 0 && e.link.size > videoLimit;
+    else if (isAudio)
+        e.tooLargeForAuto = audioLimit > 0 && e.link.size > audioLimit;
 
     // Images that are already cached do not need their preview; video posters are always useful.
     const bool wantPreview = e.previewState == MediaState::Idle && !e.previewPath.isEmpty() && (e.state != MediaState::Ready || !isImage);
@@ -629,6 +719,24 @@ void Core::startAutoDownloads(const QString& key)
             wantMain = s.autoDownloadImages && !e.tooLargeForAuto;
         else if (isVideo)
             wantMain = videoLimit > 0 && e.link.size <= videoLimit;
+        else if (isAudio) // 2.2 audio
+            wantMain = audioLimit > 0 && e.link.size <= audioLimit;
+        // 2.2 data saver: the full file waits for a click (previews still load).
+        const bool held = wantMain && s.dataSaver;
+        if (held)
+            wantMain = false;
+        if (held != e.heldByDataSaver) {
+            e.heldByDataSaver = held;
+            if (!wantPreview)
+                touch(e); // the card's status line changes
+        }
+    }
+
+    // 2.2 spoiler: a hidden spoiler loads only what its cover is made from (the preview); the file follows
+    // the same rules once it is revealed (setSpoilerRevealed).
+    if (wantMain && isSpoilerHidden(key)) {
+        wantMain = false;
+        m_spoilers.holdDownload(key);
     }
 
     // Previews first: they are what the chat shows until the real file is there.
@@ -676,7 +784,7 @@ void Core::download(const QString& key, bool openWhenReady)
         e.openWhenReady = e.openWhenReady || openWhenReady;
         return;
     case MediaState::Failed:
-        if (e.error == MediaError::NotFound)
+        if (e.error == MediaError::NotFound || e.error == MediaError::Mismatch) // 2.2 sha: the same bytes again
             return;
         break;
     case MediaState::Idle:
@@ -692,7 +800,7 @@ void Core::retry(const QString& key)
     auto it = m_entries.find(key);
     if (it == m_entries.end())
         return;
-    if (it->state == MediaState::Failed && it->error == MediaError::NotFound)
+    if (it->state == MediaState::Failed && (it->error == MediaError::NotFound || it->error == MediaError::Mismatch)) // 2.2 sha
         return;
 
     // A missing preview (failed, or removed from the cache) comes back too.
@@ -717,6 +825,7 @@ void Core::startDownload(const QString& key)
         return;
     if (e.state == MediaState::Failed)
         e.state = MediaState::Idle; // so a new failure is reported
+    e.heldByDataSaver = false; // 2.2 data saver: fetched now
 
     // Link sizes are untrusted. When the real size of this file on the server is already known and
     // differs (the file was replaced, or the link has a made-up size, e.g. to fetch one file many
@@ -731,6 +840,9 @@ void Core::startDownload(const QString& key)
             return;
         }
     }
+    // 2.2 sha: the real digest of this file became known meanwhile and contradicts the link's.
+    if (refuseForgedHash(key))
+        return;
 
     const uint64 sch = ts3::connectionForServerUid(e.link.serverUid);
     if (!sch) {
@@ -758,6 +870,7 @@ void Core::startDownload(const QString& key)
     anyID          tid = 0;
     const unsigned err = ts3::funcs.requestFile(sch, e.link.channelId, "", e.link.remoteFile().toUtf8().constData(), 1, 0, utf8Native(partial).constData(), &tid,
                                                 rc.toUtf8().constData());
+    floodGovernor(sch).charge(FloodGovernor::Cost::Transfer, floodClockMs()); // the attempt counts either way
     if (err != ERROR_ok) {
         forgetOp(rc);
         failDownload(key, mapError(err), ts3::errorText(err));
@@ -789,7 +902,7 @@ void Core::startPreviewDownload(const QString& key)
     // Links that differ only in size (or messages sharing a preview) use the same preview file:
     // fetched once.
     const QFileInfo cached(e.previewPath);
-    if (cached.isFile() && cached.size() > 0 && static_cast<quint64>(cached.size()) <= kMaxPreviewBytes) {
+    if (cached.isFile() && cached.size() > 0 && static_cast<quint64>(cached.size()) <= kMaxPreviewBytes && previewFileMatches(e.previewPath, e.link.previewSha)) { // 2.2 sha: ph
         e.previewState = MediaState::Ready;
         invalidateStill(key, MediaStill::Preview);
         touch(e);
@@ -819,6 +932,7 @@ void Core::startPreviewDownload(const QString& key)
     anyID          tid = 0;
     const unsigned err = ts3::funcs.requestFile(sch, e.link.channelId, "", preview.remoteFile().toUtf8().constData(), 1, 0, utf8Native(partial).constData(), &tid,
                                                 rc.toUtf8().constData());
+    floodGovernor(sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         failPreviewDownload(key, ts3::errorText(err), mapError(err) == MediaError::NotConnected);
@@ -896,6 +1010,24 @@ void Core::finishDownload(const QString& key)
             return;
         }
     }
+
+    // 2.2 sha: a link with a sha is cached only once the file matches it (checked off the GUI thread;
+    // onCheckFinished stores it). The transfer slot is free meanwhile.
+    if (!found.isEmpty() && startCheck(key, found)) {
+        pumpDownloadQueue();
+        return;
+    }
+    storeDownload(key, found);
+}
+
+// The tail of a finished download: moves the file from its partial folder into the cache.
+void Core::storeDownload(const QString& key, const QString& found)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end())
+        return;
+    MediaEntry&   e       = it.value();
+    const QString partial = partialDir(key, false);
 
     QString error;
     if (found.isEmpty()) {
@@ -976,9 +1108,15 @@ void Core::finishPreviewDownload(const QString& key)
     } else if (static_cast<quint64>(QFileInfo(found).size()) > kMaxPreviewBytes) {
         // Finished before the progress timer could stop it; never decode it.
         error = QStringLiteral("the preview is larger than 5 MB");
+    } else if (!e.link.previewSha.isEmpty() && fileverify::previewDigest(readPreview(found)) != e.link.previewSha) {
+        // 2.2 sha: not the preview that was sent (ph). Never cached; the placeholder stays.
+        fileverify::count(fileverify::Counter::PreviewMismatched);
+        ts3::log(LogLevel_WARNING, m_previewSch.value(key), "Preview of %1 doesn't match its checksum; showing the placeholder instead", {ts3::file(e.link.remoteFile())});
+        error = QStringLiteral("the preview doesn't match its checksum");
     } else {
         QDir().mkpath(QFileInfo(e.previewPath).absolutePath());
         QFile::remove(e.previewPath);
+        m_previewDigests.remove(e.previewPath); // 2.2 sha: new bytes
         if (!QFile::rename(found, e.previewPath) && !QFile::copy(found, e.previewPath))
             error = QStringLiteral("could not write to the media cache");
     }
@@ -1170,6 +1308,8 @@ void Core::resumeInterrupted()
 quint64 Core::autoDownloadLimit(const MediaEntry& e) const
 {
     const Settings& s = Settings::instance();
+    if (e.kind == MediaKind::Audio) // 2.2 audio
+        return audioplayback::autoDownloadLimit(s, e.link.voice);
     return e.kind == MediaKind::Video ? megabytes(s.videoAutoDownloadMB) : megabytes(s.autoDownloadMaxMB);
 }
 
@@ -1462,7 +1602,8 @@ QString Core::saveAs(const QString& key, QWidget* parent) const
     // The dialog runs an event loop: copy what is needed, the entry may change meanwhile.
     const QString   localPath = e->localPath;
     const MediaKind kind      = e->kind;
-    const QString   name      = localFileName(displayNameFor(e->link)); // without the cache prefix and the random part
+    // Without the cache prefix and the random part. 2.2: also safe from device names ("CON.txt").
+    const QString   name      = filenames::safeLocalFileName(displayNameFor(e->link));
 
     static QString lastDir;
     QString        dir = lastDir;
@@ -1518,6 +1659,173 @@ void Core::setInUse(const QString& key, bool inUse)
     }
 }
 
+// ---- 2.2 spoiler ---------------------------------------------------------------------------------
+
+bool Core::isSpoilerHidden(const QString& key) const
+{
+    const MediaEntry* e = entry(key);
+    return e && spoiler::appliesTo(e->kind) && m_spoilers.isHidden(key, Settings::instance().revealSpoilers);
+}
+
+bool Core::isSpoiler(const QString& key) const
+{
+    const MediaEntry* e = entry(key);
+    return e && spoiler::appliesTo(e->kind) && m_spoilers.isSpoiler(key);
+}
+
+void Core::setSpoilerRevealed(const QString& key, bool revealed)
+{
+    if (!m_spoilers.setRevealed(key, revealed))
+        return;
+    // An automatic download that waited for the reveal starts now (the preview shows its progress).
+    if (revealed && m_spoilers.releaseDownload(key) && Settings::instance().inlinePreviews)
+        startAutoDownloads(key);
+    emit entryChanged(key);
+}
+
+void Core::noteShownOpen(const QString& key)
+{
+    m_spoilers.noteShownOpen(key);
+}
+
+void Core::spoilerSettingChanged()
+{
+    const QStringList keys = m_spoilers.spoilers();
+    for (const QString& key : keys) {
+        if (!isSpoilerHidden(key) && m_spoilers.releaseDownload(key) && Settings::instance().inlinePreviews)
+            startAutoDownloads(key); // shown without blurring now: loads like any other picture
+        emit entryChanged(key);
+    }
+}
+
+// ============================================================================================
+// 2.2 drag-out: copies handed to Explorer and other apps
+// ============================================================================================
+
+QString Core::prepareExport(const QString& key, QString* error)
+{
+    const MediaEntry* e = entry(key);
+    if (!e || e->state != MediaState::Ready || !QFileInfo(e->localPath).isFile()) {
+        if (error)
+            *error = QStringLiteral("not downloaded");
+        return {};
+    }
+    const QString localPath = e->localPath;
+    const MediaLink link    = e->link;
+    pruneExports(kExportMaxAgeMs);
+
+    // Outside the cache folder: the cache size and its eviction never count or touch it.
+    const QString root = ts3::dataDir() + QStringLiteral("/export");
+    QString       dir;
+    for (int attempt = 0; attempt < 5 && dir.isEmpty(); ++attempt) {
+        const QString candidate = root + QLatin1Char('/') + uniqueSuffix();
+        if (!QFileInfo::exists(candidate) && QDir().mkpath(candidate))
+            dir = candidate;
+    }
+
+    QString result;
+    if (!dir.isEmpty()) {
+        const QString target = dir + QLatin1Char('/') + filenames::exportFileName(link, QDir::toNativeSeparators(dir).length() + 1);
+        // A hard link is instant and takes no space (Explorer copies it). Copies are for file systems
+        // without hard links, and only for files that copy quickly: this runs on the GUI thread.
+        if (hardLink(localPath, target) || (QFileInfo(localPath).size() <= kMaxExportCopyBytes && QFile::copy(localPath, target)))
+            result = target;
+        else
+            QDir(dir).removeRecursively();
+    }
+    if (result.isEmpty()) {
+        // The cache file itself: the copy then gets the cache name ("3f9a1c2e_holiday_3f9a1c2e.jpg").
+        // No file name: 2.2 log lines name files only through the structured log API (diagnostics).
+        ts3::log(QStringLiteral("Could not stage a file for dragging out; the cached file itself is used"), LogLevel_WARNING);
+        result = localPath;
+    }
+    // With a hard link the stream lands on the file record the cache shares, so the cached file is
+    // marked too: Save as and Explorer copies (CopyFileW copies streams) keep the mark as well.
+    if (!markOfTheWeb(result))
+        ts3::log(QStringLiteral("Could not add the downloaded-from-the-internet mark to a dragged-out file (error %1)").arg(GetLastError()), LogLevel_WARNING);
+    refreshFileTime(localPath);
+    return result;
+}
+
+void Core::pruneExports(qint64 maxAgeMs)
+{
+    const QString root = ts3::dataDir() + QStringLiteral("/export");
+    if (!QFileInfo(root).isDir())
+        return;
+    const QDateTime   oldest  = QDateTime::currentDateTimeUtc().addMSecs(-maxAgeMs);
+    const QFileInfoList folders = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& folder : folders) {
+        if (folder.lastModified().toUTC() < oldest)
+            QDir(folder.absoluteFilePath()).removeRecursively(); // files Explorer still copies stay (locked)
+    }
+}
+
+// ============================================================================================
+// 2.2 data saver
+// ============================================================================================
+
+void Core::onDataSaverChanged()
+{
+    QHash<QString, bool> saving; // server uid -> data saver on (resolved once per server)
+    const Settings&      global = Settings::instance();
+    auto                 saves  = [&saving, &global](const QString& uid) {
+        auto it = saving.constFind(uid);
+        if (it == saving.constEnd())
+            it = saving.insert(uid, global.forServer(uid).dataSaver);
+        return it.value();
+    };
+
+    // Collected first: touch() and the transfer calls below may call back into Core.
+    QStringList pause;
+    QStringList resume;
+    for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
+        const MediaEntry& e = it.value();
+        if (saves(e.link.serverUid)) {
+            if (m_autoDownloads.contains(it.key()) && (e.state == MediaState::Queued || e.state == MediaState::Downloading))
+                pause.append(it.key());
+        } else if (e.heldByDataSaver && e.state == MediaState::Idle) {
+            resume.append(it.key());
+        }
+    }
+
+    for (const QString& key : qAsConst(pause)) {
+        auto it = m_entries.find(key);
+        if (it == m_entries.end())
+            continue;
+        MediaEntry& e = it.value();
+        if (e.state == MediaState::Downloading) {
+            haltDownload(e.sch, e.transferId);
+            if (m_downloadsByTransfer.value(e.transferId) == key)
+                m_downloadsByTransfer.remove(e.transferId);
+            --m_activeDownloads;
+            QDir(partialDir(key, false)).removeRecursively();
+        }
+        m_downloadQueue.removeAll(key);
+        m_autoDownloads.remove(key);
+        e.state           = MediaState::Idle;
+        e.progress        = 0.0;
+        e.transferId      = 0;
+        e.openWhenReady   = false;
+        e.heldByDataSaver = true;
+        touch(e);
+    }
+
+    // Started again like media whose files left the cache: once a chat or the viewer shows them
+    // (rearmIfNeeded), not every held item of a long chat history at once.
+    for (const QString& key : qAsConst(resume)) {
+        auto it = m_entries.find(key);
+        if (it == m_entries.end())
+            continue;
+        it->heldByDataSaver = false;
+        m_rearm.insert(key);
+        touch(it.value());
+    }
+    if (!pause.isEmpty())
+        pumpDownloadQueue();
+    if (!pause.isEmpty() || !resume.isEmpty())
+        ts3::log(QStringLiteral("Data saver changed: %1 automatic downloads paused, %2 held items released").arg(pause.size()).arg(resume.size()), LogLevel_INFO);
+}
+
 // ============================================================================================
 // Uploads
 // ============================================================================================
@@ -1531,7 +1839,8 @@ QString Core::makeRemoteName(const QString& originalName)
     // Keep names readable but safe for the file browser, BBCode and every OS.
     base.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|\[\]%#&+=]+)")), QStringLiteral("_"));
     base.replace(QRegularExpression(QStringLiteral(R"(\s+)")), QStringLiteral("_"));
-    base = base.left(48);
+    // 2.2: at most 48 characters and 64 UTF-8 bytes, so a non-Latin name can't crowd the message.
+    base = boundRemoteBase(base);
     if (base.isEmpty())
         base = QStringLiteral("file");
     // "new_photo_<hex>" is how pasted pictures are named (uploadImage), and receivers show those as
@@ -1551,6 +1860,7 @@ QString Core::renamedRemoteName(const QString& remoteName)
     QString         base = fi.completeBaseName();
     const QString   ext  = fi.suffix();
     base.remove(QRegularExpression(QStringLiteral("_[0-9a-f]{8}$")));
+    base = boundRemoteBase(base);
     if (base.isEmpty())
         base = QStringLiteral("file");
     return base + QLatin1Char('_') + uniqueSuffix() + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
@@ -1558,29 +1868,130 @@ QString Core::renamedRemoteName(const QString& remoteName)
 
 void Core::uploadFiles(const QStringList& paths, const ChatTarget& target)
 {
-    if (paths.isEmpty())
-        return;
+    SendRequest request;
+    request.target = target;
+    for (const QString& path : paths) {
+        SendItem item;
+        item.path = path;
+        request.items.append(item);
+    }
+    send(request);
+}
+
+namespace {
+
+bool isAlbumKind(const SendItem& item)
+{
+    if (item.voice)
+        return false;
+    const MediaKind kind = kindForFileName(item.path);
+    return kind == MediaKind::Image || kind == MediaKind::AnimatedImage || kind == MediaKind::Video;
+}
+
+// The name a file gets on the server.
+QString remoteNameFor(const SendItem& item, const QString& makeName)
+{
+    static const QRegularExpression pastedName(QStringLiteral("^new_photo_[0-9a-f]{8}\\.[a-z]+$"));
+    const QFileInfo                 fi(item.path);
+    if (item.pasted) {
+        // Our own paste keeps the name it was written under (a retry sends the same name).
+        if (pastedName.match(fi.fileName()).hasMatch())
+            return fi.fileName();
+        const QString ext = fi.suffix().toLower();
+        return QStringLiteral("new_photo_") + uniqueSuffix() + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
+    }
+    if (item.voice)
+        return QStringLiteral("voice_message_") + uniqueSuffix() + QStringLiteral(".m4a");
+    return makeName;
+}
+
+} // namespace
+
+int Core::send(const SendRequest& request)
+{
+    if (request.items.isEmpty())
+        return 0;
+    const auto dropTemps = [&request] {
+        for (const SendItem& item : request.items) {
+            if (item.ownTemp)
+                QFile::remove(item.path);
+        }
+    };
     // Checked once, so a dropped batch gives one line in the chat, not one per file.
-    const uint64 sch = target.sch ? target.sch : ts3::currentConnection();
-    if (!ts3::isConnected(sch)) {
+    ChatTarget target = request.target;
+    if (!target.sch)
+        target.sch = ts3::currentConnection();
+    if (!ts3::isConnected(target.sch)) {
         ts3::printWarning(ts3::currentConnection(), notConnectedText());
-        return;
+        dropTemps();
+        return 0;
     }
 
-    const int   batch = ++m_nextBatch;
-    QStringList missing;
-    for (const QString& path : paths) {
-        const QFileInfo fi(path);
+    QVector<SendItem> items;
+    QStringList       missing;
+    for (const SendItem& requested : request.items) {
+        const QFileInfo fi(requested.path);
         if (!fi.exists() || !fi.isFile()) {
-            missing.append(QDir::toNativeSeparators(path));
+            missing.append(QDir::toNativeSeparators(requested.path));
             continue;
         }
-        createUpload(fi.absoluteFilePath(), makeRemoteName(fi.fileName()), target, false, false, batch);
+        SendItem item = requested;
+        item.path     = fi.absoluteFilePath();
+        items.append(item);
     }
+    // Names in curly quotes: the plugin log marks those as private (diagnostics leave them out).
     if (missing.size() == 1)
-        ts3::printWarning(sch, i18n::t("Couldn't find %1. It may have been moved or deleted.").arg(missing.first()));
+        ts3::printWarning(target.sch, i18n::t("Couldn't find “%1”. It may have been moved or deleted.").arg(missing.first()));
     else if (missing.size() > 1)
-        ts3::printWarning(sch, i18n::t("Couldn't find %1 files: %2. They may have been moved or deleted.").arg(missing.size()).arg(missing.join(QStringLiteral(", "))));
+        ts3::printWarning(target.sch, i18n::t("Couldn't find %1 files: “%2”. They may have been moved or deleted.").arg(missing.size()).arg(missing.join(QStringLiteral("”, “"))));
+    if (items.isEmpty())
+        return 0;
+
+    // Post order: the albums (pictures and videos in their order, up to kMaxAlbumItems each; a last
+    // chunk of one is a single file), then everything else in its order.
+    QVector<QVector<int>> units;
+    QVector<int>          media;
+    for (int i = 0; i < items.size(); ++i) {
+        if (request.album && albums::enabled() && isAlbumKind(items.at(i))) // 2.2 album: the feature switch
+            media.append(i);
+    }
+    if (media.size() >= 2) {
+        for (int at = 0; at < media.size(); at += MediaLink::kMaxAlbumItems)
+            units.append(media.mid(at, MediaLink::kMaxAlbumItems));
+    } else {
+        media.clear();
+    }
+    for (int i = 0; i < items.size(); ++i) {
+        if (!media.contains(i))
+            units.append({i});
+    }
+
+    const int batch                = ++m_nextBatch;
+    m_batches[batch].caption       = request.caption;
+    m_batches[batch].captionOrigin = batch;
+    for (const QVector<int>& indexes : qAsConst(units)) {
+        PostUnit unit;
+        unit.album = indexes.size() >= 2;
+        for (int index : indexes) {
+            const SendItem& item = items.at(index);
+            const int       id   = createUpload(item, remoteNameFor(item, makeRemoteName(QFileInfo(item.path).fileName())), target, batch);
+            if (id == 0)
+                continue;
+            unit.jobs.append(id);
+            if (unit.album)
+                m_uploads[id].inAlbum = true;
+        }
+        if (!unit.jobs.isEmpty())
+            m_batches[batch].units.append(unit);
+    }
+    if (m_batches.value(batch).units.isEmpty()) {
+        m_batches.remove(batch);
+        return 0;
+    }
+    if (!request.caption.isEmpty())
+        m_captionsPending.insert(batch); // captionSettled() says when it is posted (or can't be)
+    scheduleUploadQueue(); // files that failed at once may let the rest of their batch post
+    return batch;
 }
 
 void Core::uploadImage(const QImage& image, const ChatTarget& target)
@@ -1613,12 +2024,21 @@ void Core::uploadImage(const QImage& image, const ChatTarget& target)
         QFile::remove(path);
         return;
     }
-    createUpload(path, name, target, true, true, ++m_nextBatch);
+    SendRequest request;
+    request.target = target;
+    SendItem item;
+    item.path    = path;
+    item.pasted  = true;
+    item.ownTemp = true;
+    request.items.append(item);
+    send(request);
 }
 
-int Core::createUpload(const QString& sourcePath, const QString& remoteName, const ChatTarget& requested, bool deleteSource, bool pasted, int batch)
+int Core::createUpload(const SendItem& item, const QString& remoteName, const ChatTarget& requested, int batch)
 {
-    ChatTarget target = requested;
+    const QString& sourcePath   = item.path;
+    const bool     deleteSource = item.ownTemp;
+    ChatTarget     target       = requested;
     if (!target.sch)
         target.sch = ts3::currentConnection();
 
@@ -1631,7 +2051,9 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     if (target.serverUid.isEmpty())
         target.serverUid = ts3::serverUid(target.sch);
 
-    const Settings& s = Settings::instance();
+    // 2.2 per-server settings: the upload folder and size limit of the server it goes to.
+    const QString   serverUid = target.serverUid;
+    const Settings  s         = Settings::instance().forServer(serverUid);
     UploadJob       job;
     job.id           = ++m_nextUploadId;
     job.batch        = batch;
@@ -1639,7 +2061,9 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     job.channelId    = ts3::ownChannel(target.sch);
     job.sourcePath   = sourcePath;
     job.deleteSource = deleteSource;
-    job.pasted       = pasted;
+    job.pasted       = item.pasted;
+    job.displayName  = item.displayName;
+    job.spoiler      = item.spoiler;
     job.remoteDir    = normalizeRemoteDir(s.uploadDirectory);
     job.remoteName   = remoteName;
     job.size         = static_cast<quint64>(QFileInfo(sourcePath).size());
@@ -1648,12 +2072,13 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     job.message      = i18n::t("Waiting to upload…");
     const int id     = job.id;
     m_uploads.insert(id, job);
+    m_jobItems.insert(id, item);
     emit uploadChanged(id);
 
     UploadJob&    j     = m_uploads[id];
     const quint64 limit = megabytes(s.uploadMaxMB);
     if (j.size > limit) {
-        failUpload(id, uploadLimitText(s.uploadMaxMB));
+        failUpload(id, uploadLimitText(s.uploadMaxMB, hasOwnUploadLimit(serverUid)));
         return id;
     }
     if (j.size == 0) {
@@ -1714,6 +2139,17 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
             info = probeLocalMedia(staged, previews);
             jpeg = info.preview.isNull() ? QByteArray() : encodePreviewJpeg(info.preview);
         }
+        // 2.2 sha: the final staged bytes, hashed once, right before the preview and the file are
+        // uploaded (queued before onProbed, so it arrives first).
+        if (ok && !cancel->load()) {
+            const fileverify::StagedDigest digest = fileverify::finalizeStaged(staged, jpeg, cancel.get());
+            if (Core* core = self.data()) {
+                QMetaObject::invokeMethod(core, [self, id, digest] {
+                    if (self)
+                        self->onStagedFinalized(id, digest);
+                }, Qt::QueuedConnection);
+            }
+        }
         // ~Core waits for this pool, so the object is alive here; the queued call is dropped if it dies first.
         if (Core* core = self.data()) {
             QMetaObject::invokeMethod(core, [self, id, ok, size, info, jpeg] {
@@ -1750,14 +2186,15 @@ void Core::onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInf
         return;
     }
     // The staged copy is what gets uploaded: its size goes into the link (the original may have
-    // changed since it was checked).
-    const Settings& s = Settings::instance();
+    // changed since it was checked). 2.2 per-server settings: the limit of the server it goes to.
+    const QString  serverUid = it->target.serverUid;
+    const Settings s         = Settings::instance().forServer(serverUid);
     if (stagedSize == 0) {
         failUpload(id, i18n::t("This file is empty."));
         return;
     }
     if (stagedSize > megabytes(s.uploadMaxMB)) {
-        failUpload(id, uploadLimitText(s.uploadMaxMB));
+        failUpload(id, uploadLimitText(s.uploadMaxMB, hasOwnUploadLimit(serverUid)));
         return;
     }
     UploadJob& job = it.value();
@@ -1785,6 +2222,11 @@ QString Core::previewDirFor(const UploadJob& job) const
     return joinRemote(job.remoteDir, QStringLiteral("previews"));
 }
 
+QString Core::remoteDirKey(uint64 sch, uint64 channelId, const QString& dir)
+{
+    return QString::number(sch) + QLatin1Char('|') + QString::number(channelId) + QLatin1Char('|') + dir;
+}
+
 void Core::createRemoteDirectory(int id, bool previews)
 {
     auto it = m_uploads.find(id);
@@ -1792,21 +2234,127 @@ void Core::createRemoteDirectory(int id, bool previews)
         return;
     UploadJob& job = it.value();
 
-    const QString  dir = previews ? previewDirFor(job) : job.remoteDir;
-    const QString  rc  = registerOp(OpType::MakeDirectory, {}, id, previews);
+    const QString dir = previews ? previewDirFor(job) : job.remoteDir;
+    const QString key = remoteDirKey(job.target.sch, job.channelId, dir);
+    // Asked once per folder and connection (each request costs flood points, S0).
+    const auto known = m_remoteDirs.constFind(key);
+    if (known != m_remoteDirs.constEnd()) {
+        onDirectoryReady(id, previews, known.value());
+        return;
+    }
+    if (!takeFileSlot(job.target.sch, id, previews ? FileStep::PreviewFolder : FileStep::MainFolder))
+        return;
+    const QString  rc  = registerOp(OpType::MakeDirectory, key, id, previews); // the answer records the folder
     const unsigned err = ts3::funcs.requestCreateDirectory(job.target.sch, job.channelId, "", dir.toUtf8().constData(), rc.toUtf8().constData());
+    floodGovernor(job.target.sch).charge(FloodGovernor::Cost::Mkdir, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         onDirectoryReady(id, previews, false);
         return;
     }
     // Not every server answers a mkdir for an existing folder; don't wait forever.
-    singleShotOwned(kMkdirTimeoutMs, this, [this, rc, id, previews] {
+    singleShotOwned(kMkdirTimeoutMs, this, [this, rc, id, previews, key] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
+        m_remoteDirs.insert(key, true);
         onDirectoryReady(id, previews, true);
     });
+}
+
+// 2.2: a folder request or an upload start of upload id goes now if the governor of sch allows it,
+// after those already waiting; otherwise it waits (the job says so) and runFileQueue runs it later.
+bool Core::takeFileSlot(uint64 sch, int id, FileStep step)
+{
+    const bool                 head = std::exchange(m_fileStepHead, false);
+    const FloodGovernor::Cost  cost = step == FileStep::MainFolder || step == FileStep::PreviewFolder ? FloodGovernor::Cost::Mkdir : FloodGovernor::Cost::Transfer;
+    const auto                 queue = m_fileQueue.constFind(sch);
+    const bool                 first = head || queue == m_fileQueue.constEnd() || queue->isEmpty();
+    if (first && floodGovernor(sch).generalReady(cost, floodClockMs()))
+        return true;
+    QList<FileWait>& waiting = m_fileQueue[sch];
+    if (head)
+        waiting.prepend({id, step});
+    else
+        waiting.append({id, step});
+    auto job = m_uploads.find(id);
+    if (job != m_uploads.end() && job->state == UploadState::Preparing && !job->waiting)
+        setUploadState(job.value(), UploadState::Preparing, i18n::t("Waiting to upload…"), true);
+    scheduleFileQueue();
+    return false;
+}
+
+void Core::runFileQueue()
+{
+    for (const uint64 sch : m_fileQueue.keys()) {
+        for (;;) {
+            auto queue = m_fileQueue.find(sch);
+            if (queue == m_fileQueue.end())
+                break;
+            if (queue->isEmpty()) {
+                m_fileQueue.erase(queue);
+                break;
+            }
+            const FileWait next = queue->first();
+            const auto     cost = next.step == FileStep::MainFolder || next.step == FileStep::PreviewFolder ? FloodGovernor::Cost::Mkdir : FloodGovernor::Cost::Transfer;
+            if (!ts3::isConnected(sch) || !floodGovernor(sch).generalReady(cost, floodClockMs()))
+                break;
+            queue->removeFirst();
+            // The step checks its job again (it may have been canceled meanwhile) and asks for its slot,
+            // which it gets: it is the head and the governor allows it.
+            m_fileStepHead = true;
+            switch (next.step) {
+            case FileStep::MainFolder:
+                createRemoteDirectory(next.id, false);
+                break;
+            case FileStep::PreviewFolder:
+                createRemoteDirectory(next.id, true);
+                break;
+            case FileStep::Preview:
+                startPreviewSend(next.id);
+                break;
+            case FileStep::Main:
+                startSend(next.id);
+                break;
+            }
+            m_fileStepHead = false;
+        }
+    }
+    scheduleFileQueue();
+}
+
+void Core::scheduleFileQueue()
+{
+    if (!m_fileTimer)
+        return;
+    const qint64 now  = floodClockMs();
+    qint64       wake = -1;
+    for (auto it = m_fileQueue.cbegin(); it != m_fileQueue.cend(); ++it) {
+        if (it->isEmpty() || !ts3::isConnected(it.key()))
+            continue;
+        const FileStep step = it->first().step;
+        const auto     cost = step == FileStep::MainFolder || step == FileStep::PreviewFolder ? FloodGovernor::Cost::Mkdir : FloodGovernor::Cost::Transfer;
+        const qint64   at   = floodGovernor(it.key()).nextGeneralCheckMs(cost, now);
+        wake                = wake < 0 ? at : qMin(wake, at);
+    }
+    if (wake < 0)
+        m_fileTimer->stop();
+    else
+        m_fileTimer->start(static_cast<int>(qBound<qint64>(0, wake - now, 60 * 60 * 1000)));
+}
+
+// After 0x020c on a folder request or an upload start: true while it may be sent again (after the pause
+// the governor now holds). Every rejected attempt costs full points (S0), so this is bounded.
+bool Core::retryFlooded(int id)
+{
+    auto it = m_uploads.constFind(id);
+    if (it == m_uploads.constEnd() || !isPreparing(it->state))
+        return false;
+    UploadExtra& extra = m_uploadExtra[id];
+    if (extra.floodRetries >= kMaxFloodRetries)
+        return false;
+    ++extra.floodRetries;
+    return true;
 }
 
 void Core::onDirectoryReady(int id, bool previews, bool ok)
@@ -1833,10 +2381,14 @@ void Core::onDirectoryReady(int id, bool previews, bool ok)
     startPreviewSend(id);
 }
 
-// The preview is named after the file: <dir>/previews/<base>.jpg, or <dir>/<base>.preview.jpg.
+// 2.2: the preview is named after the random part of the file's name, <dir>/previews/<8 hex>.jpg, or
+// <dir>/<8 hex>.preview.jpg: short, so the name isn't in the message twice (2.1 accepts any pv path).
+// A new name for the file (renameUpload) gives the preview a new one too.
 QString Core::previewRemoteFor(const UploadJob& job, bool inFolder) const
 {
-    const QString base = QFileInfo(job.remoteName).completeBaseName();
+    QString base = remoteSuffixOf(job.remoteName);
+    if (base.isEmpty())
+        base = QFileInfo(job.remoteName).completeBaseName();
     return inFolder ? joinRemote(previewDirFor(job), base + QStringLiteral(".jpg")) : joinRemote(job.remoteDir, base + QStringLiteral(".preview.jpg"));
 }
 
@@ -1844,6 +2396,8 @@ void Core::startPreviewSend(int id)
 {
     auto it = m_uploads.find(id);
     if (it == m_uploads.end() || it->state != UploadState::Preparing)
+        return;
+    if (!takeFileSlot(it->target.sch, id, FileStep::Preview))
         return;
     UploadJob&   job   = it.value();
     UploadExtra& extra = m_uploadExtra[id];
@@ -1868,6 +2422,7 @@ void Core::startPreviewSend(int id)
     anyID          tid = 0;
     const unsigned err = ts3::funcs.sendFile(job.target.sch, job.channelId, "", extra.previewRemote.toUtf8().constData(), 0, 0, utf8Native(source).constData(), &tid,
                                              rc.toUtf8().constData());
+    floodGovernor(job.target.sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         ts3::log(QStringLiteral("Preview upload for %1 not started (%2); sending without it").arg(job.remoteName, ts3::errorText(err)), LogLevel_WARNING, job.target.sch);
@@ -1893,6 +2448,10 @@ void Core::finishPreviewUpload(int id, bool ok, const QString& reason, unsigned 
     auto it = m_uploads.find(id);
     if (it == m_uploads.end() || it->state != UploadState::Preparing)
         return;
+    if (!ok && error == ERROR_client_is_flooding && retryFlooded(id)) {
+        startPreviewSend(id); // after the pause the governor holds now
+        return;
+    }
     if (!ok && error == ERROR_file_already_exists && renameUpload(it.value())) {
         // Someone else's preview has this name. The preview is named after the file, so both get
         // a new name.
@@ -1939,6 +2498,8 @@ void Core::startSend(int id)
         return;
     }
     m_sendQueue.removeAll(id);
+    if (!takeFileSlot(job.target.sch, id, FileStep::Main))
+        return; // waits for the governor (runFileQueue starts it)
     job.waiting = false;
 
     // Never overwrite: everyone uploads into the same folder, and an existing file of that name
@@ -1948,6 +2509,7 @@ void Core::startSend(int id)
     anyID          tid    = 0;
     const unsigned err    = ts3::funcs.sendFile(job.target.sch, job.channelId, "", remote.toUtf8().constData(), 0, 0, utf8Native(job.stagingDir).constData(), &tid,
                                                 rc.toUtf8().constData());
+    floodGovernor(job.target.sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         if (err == ERROR_file_already_exists && renameUpload(job)) {
@@ -2048,7 +2610,30 @@ void Core::finishUpload(int id)
     link.durationMs  = job.info.durationMs;
     link.blurHash    = job.info.blurHash;
     link.previewFile = job.previewRemotePath;
-    link             = sanitized(link); // what receivers will see
+    if (const auto item = m_jobItems.constFind(id); item != m_jobItems.constEnd()) {
+        link.spoiler = item->spoiler;
+        link.voice   = item->voice;
+        if (item->voice) {
+            if (item->durationMs > 0)
+                link.durationMs = item->durationMs;
+            link.waveform = item->waveform;
+        }
+    }
+    // 2.2 sha: what finalizeStaged measured. Without it (the staged file couldn't be read) the link goes
+    // out without one; receivers then show the file unchecked, as from 2.1.
+    if (const auto xt = m_uploadExtra.constFind(id); xt != m_uploadExtra.constEnd() && xt->hashed) {
+        link.sha256     = xt->digest.sha256;
+        link.previewSha = job.previewRemotePath.isEmpty() ? QByteArray() : xt->digest.previewSha;
+    }
+    link = sanitized(link); // what receivers will see
+    if (!link.sha256.isEmpty()) {
+        m_knownDigests.note(remoteId(link), link.size, link.sha256); // our own bytes: the forged-hash guard's surest source
+        fileverify::count(fileverify::Counter::SentWithSha);
+    } else {
+        fileverify::count(fileverify::Counter::SentWithoutSha);
+        ts3::log(LogLevel_WARNING, job.target.sch, "Sending %1 without a checksum: the file couldn't be read for hashing",
+                 {ts3::file(joinRemote(job.remoteDir, job.remoteName))});
+    }
 
     // Seed the cache so the sender sees the media instantly.
     seedCache(job, link);
@@ -2056,80 +2641,437 @@ void Core::finishUpload(int id)
     ts3::log(QStringLiteral("Uploaded %1 (%2)").arg(joinRemote(job.remoteDir, job.remoteName), formatSize(job.size)), LogLevel_INFO, job.target.sch);
     scheduleCacheLimit(link.key());
 
-    // The messages of one send appear in the order the files were chosen: a file that finishes
-    // before an earlier one waits for it (runUploadQueue posts it then).
-    if (waitsForEarlierPosts(job)) {
-        setUploadState(job, UploadState::Posting, i18n::t("Waiting for earlier files…"), true);
-        return;
-    }
-    postUploadMessage(id);
+    // The messages of one send appear in its order: a file that finishes before an earlier one (or
+    // before the rest of its album) waits; pumpPostUnits posts it when its turn has come.
+    const QString held = heldText(job);
+    setUploadState(job, UploadState::Posting, held.isEmpty() ? i18n::t("Posting to chat…") : held, !held.isEmpty());
 }
 
-// Posts the chat message announcing an uploaded file (straight from finishUpload, or once a held
-// message's turn has come).
-void Core::postUploadMessage(int id)
+// What an uploaded file's message waits for: an earlier part of its send that still has to be posted,
+// or the rest of its album (an upload still preparing, compressing or uploading). Empty when its turn
+// has come. The one rule for holding messages: pumpPostUnits and the toast texts follow it.
+QString Core::heldText(const UploadJob& job) const
 {
-    auto it = m_uploads.find(id);
-    if (it == m_uploads.end() || !it->uploaded || (it->state != UploadState::Uploading && !(it->state == UploadState::Posting && it->waiting)))
-        return;
-    UploadJob&       job     = it.value();
-    const MediaLink  link    = m_uploadExtra.value(id).link;
-    const Settings&  s       = Settings::instance();
-    const QByteArray message = composeChatMessage(link, s.addRequiredNotice, s.pluginDownloadUrl).toUtf8();
-    const QString    rc      = registerOp(OpType::PostMessage, {}, id);
-    unsigned         err     = ERROR_ok;
-    switch (job.target.mode) {
-    case TextMessageTarget_SERVER:
-        err = ts3::funcs.requestSendServerTextMsg(job.target.sch, message.constData(), rc.toUtf8().constData());
-        break;
-    case TextMessageTarget_CLIENT: {
-        // The upload may have taken long (or waited for earlier files) and client ids are reused once
-        // someone leaves: find the partner again by identity, so it never reaches someone else.
-        anyID client = job.target.clientId;
-        if (!job.target.clientUid.isEmpty() && ts3::clientUid(job.target.sch, client) != job.target.clientUid)
-            client = ts3::clientIdByUid(job.target.sch, job.target.clientUid);
-        if (!client) {
-            forgetOp(rc);
-            failUpload(id, i18n::t("Uploaded, but the person it was meant for has left the server, so nothing was sent to them. The file is in the channel's file browser."));
-            return;
+    const auto batch = m_batches.constFind(job.batch);
+    if (batch == m_batches.constEnd())
+        return {};
+    for (const PostUnit& unit : batch->units) {
+        if (!unit.jobs.contains(job.id)) {
+            if (!unit.composed)
+                return i18n::t("Waiting for earlier files…");
+            continue;
         }
-        job.target.clientId = client;
-        err = ts3::funcs.requestSendPrivateTextMsg(job.target.sch, message.constData(), client, rc.toUtf8().constData());
-        break;
+        if (unit.composed)
+            return {};
+        for (int id : unit.jobs) {
+            const UploadJob* other = upload(id);
+            if (id != job.id && other && isPreparing(other->state))
+                return i18n::t("Waiting for the rest of the album…");
+        }
+        return {};
     }
-    default:
-        err = ts3::funcs.requestSendChannelTextMsg(job.target.sch, message.constData(), job.channelId, rc.toUtf8().constData());
-        break;
+    return {};
+}
+
+// Composes the units whose turn has come: in each batch, in order, every unit whose uploads are all
+// settled (uploaded, failed or canceled) until one isn't. Also keeps the waiting texts right.
+void Core::pumpPostUnits()
+{
+    QList<int> batches = m_batches.keys();
+    std::sort(batches.begin(), batches.end());
+    for (int batch : qAsConst(batches)) {
+        bool earlierPending = false;
+        // Looked up again on every step and copied: state changes emit signals, and whatever reacts
+        // to them may change the batches.
+        for (int u = 0;; ++u) {
+            const auto b = m_batches.constFind(batch);
+            if (b == m_batches.constEnd() || u >= b->units.size())
+                break;
+            const PostUnit unit = b->units.at(u);
+            if (unit.composed)
+                continue;
+            bool settled = true;
+            for (int id : unit.jobs) {
+                const UploadJob* job = upload(id);
+                if (job && isPreparing(job->state))
+                    settled = false;
+            }
+            if (!earlierPending && settled) {
+                composeUnit(batch, u);
+                continue;
+            }
+            // Held: say what it waits for (only when that changed: every update runs the queue again).
+            for (int id : unit.jobs) {
+                auto job = m_uploads.find(id);
+                if (job == m_uploads.end() || job->state != UploadState::Posting || !job->waiting)
+                    continue;
+                const QString text = heldText(job.value());
+                if (!text.isEmpty() && job->message != text)
+                    setUploadState(job.value(), UploadState::Posting, text, true);
+            }
+            earlierPending = true;
+        }
     }
-    if (err != ERROR_ok) {
-        forgetOp(rc);
-        failUpload(id, postErrorText(mapError(err), ts3::errorText(err)));
+    pumpPosts();
+}
+
+void Core::composeUnit(int batch, int index)
+{
+    auto b = m_batches.find(batch);
+    if (b == m_batches.end() || index < 0 || index >= b->units.size() || b->units.at(index).composed)
         return;
+    b->units[index].composed = true;
+    const PostUnit unit      = b->units.at(index);
+    // The caption goes with the first unit that posts something (marked as done below).
+    const QString    caption = b->captionDone ? QString() : b->caption;
+    const int        origin  = b->captionOrigin ? b->captionOrigin : batch;
+    QVector<int>     ids;
+    QList<MediaLink> links;
+    QStringList      files; // remote paths, for the log
+    for (int id : qAsConst(unit.jobs)) {
+        const UploadJob* job = upload(id);
+        if (job && job->uploaded && job->state == UploadState::Posting && m_uploadExtra.contains(id)) {
+            ids.append(id);
+            links.append(m_uploadExtra.value(id).link);
+            files.append(joinRemote(job->remoteDir, job->remoteName));
+        }
+    }
+    if (ids.isEmpty())
+        return; // nothing of it reached the server: the caption waits for the next unit
+    // Taken now: touch() below emits signals, and nothing may be assumed about the jobs afterwards.
+    const UploadJob first = *upload(ids.first());
+
+    // An album is numbered over what was uploaded; a single survivor is a normal file.
+    if (unit.album && ids.size() >= 2) {
+        quint32 album = 0;
+        while (album == 0)
+            album = QRandomGenerator::global()->generate();
+        const QString own = ts3::ownUid(first.target.sch); // 2.2 album: our own albums group without waiting for the echo
+        for (int i = 0; i < links.size(); ++i) {
+            links[i].albumId    = album;
+            links[i].albumIndex = i + 1;
+            links[i].albumCount = links.size();
+            m_albums.note(links.at(i).serverUid, album, i + 1, links.size(), links.at(i).key(), own); // 2.2 album
+            m_uploadExtra[ids.at(i)].link = links.at(i);
+            // The sender's own copy knows its album too (the key doesn't change).
+            auto e = m_entries.find(links.at(i).key());
+            if (e != m_entries.end() && e->isOwnUpload) {
+                e->link.albumId    = album;
+                e->link.albumIndex = i + 1;
+                e->link.albumCount = links.size();
+                touch(e.value());
+            }
+        }
     }
 
-    setUploadState(job, UploadState::Posting, i18n::t("Posting to chat…"));
-    singleShotOwned(kPostTimeoutMs, this, [this, rc, id] {
+    const Settings s = Settings::instance().forServer(links.first().serverUid); // 2.2 per-server settings: the note
+    ComposeOptions options;
+    options.includeNotice = s.addRequiredNotice;
+    options.downloadUrl   = s.pluginDownloadUrl;
+    options.caption       = caption;
+    if (!caption.isEmpty()) {
+        auto info = m_batches.find(batch);
+        if (info != m_batches.end())
+            info->captionDone = true;
+    }
+
+    bool firstMessage = true;
+    for (const ComposedMessage& message : composeChatMessagesDetailed(links, options)) {
+        PostItem post;
+        post.sch       = first.target.sch;
+        post.target    = first.target;
+        post.channelId = first.channelId;
+        post.text      = message.text.toUtf8();
+        post.batch     = batch;
+        post.captionOf = firstMessage && !caption.isEmpty() ? origin : 0; // the caption is in the first message
+        firstMessage   = false;
+        for (int link : message.links)
+            post.jobs.append(ids.at(link));
+        if (!message.dropped.isEmpty() || message.tooLong) {
+            const QString file = message.links.isEmpty() ? QString() : files.at(message.links.first());
+            if (!message.dropped.isEmpty())
+                ts3::log(LogLevel_WARNING, post.sch, "Message for %1 dropped %2 to fit TeamSpeak's message limit",
+                         {ts3::file(file), ts3::pub(message.dropped.join(QStringLiteral(", ")))});
+            if (message.tooLong)
+                ts3::log(LogLevel_WARNING, post.sch, "Message for %1 is %2 bytes, more than TeamSpeak's message limit allows (%3); sending it anyway",
+                         {ts3::file(file), ts3::pub(post.text.size()), ts3::pub(kMaxMessageBytes)});
+        }
+        enqueuePost(post, false);
+    }
+    for (int id : qAsConst(ids)) {
+        auto job = m_uploads.find(id);
+        if (job != m_uploads.end())
+            setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
+    }
+}
+
+// Sends what the governors allow now and plans the next wake-up.
+void Core::pumpPosts()
+{
+    const qint64 now  = floodClockMs();
+    qint64       wake = -1;
+    for (const uint64 sch : m_postQueue.keys()) {
+        FloodGovernor& governor = floodGovernor(sch);
+        bool           held     = false;
+        while (!m_postQueue[sch].isEmpty() && governor.postReady(now)) {
+            // The messages of one send go strictly one after another: the next waits for the answer to
+            // the one before it (or its timeout), so a late flood answer can't put them out of order.
+            if (batchPostInFlight(sch, m_postQueue[sch].first().batch)) {
+                held = true; // finishPost / unansweredPost pump again
+                break;
+            }
+            PostItem post = m_postQueue[sch].takeFirst();
+            sendPost(post);
+        }
+        const int pending = m_postQueue.value(sch).size();
+        governor.setPendingPosts(pending);
+        if (pending == 0) {
+            m_postQueue.remove(sch);
+            emit floodGovernorChanged(sch); // plugin commands may go again
+            continue;
+        }
+        if (held)
+            continue;
+        const qint64 at = governor.nextPostCheckMs(now);
+        wake            = wake < 0 ? at : qMin(wake, at);
+    }
+    if (m_postTimer) {
+        if (wake >= 0)
+            m_postTimer->start(static_cast<int>(qBound<qint64>(0, wake - now, 60 * 60 * 1000)));
+        else
+            m_postTimer->stop();
+    }
+}
+
+bool Core::sendPost(PostItem& post)
+{
+    if (post.target.mode == TextMessageTarget_CLIENT) {
+        // The upload may have taken long (or waited for earlier files) and client ids are reused once
+        // someone leaves: find the partner again by identity, so it never reaches someone else.
+        anyID client = post.target.clientId;
+        if (!post.target.clientUid.isEmpty() && ts3::clientUid(post.sch, client) != post.target.clientUid)
+            client = ts3::clientIdByUid(post.sch, post.target.clientUid);
+        if (!client) {
+            failPost(post, i18n::t("Uploaded, but the person it was meant for has left the server, so nothing was sent to them. The file is in the channel's file browser."));
+            return false;
+        }
+        post.target.clientId = client;
+    }
+    const QString rc  = registerOp(OpType::PostMessage, {}, post.jobs.value(0));
+    unsigned      err = ERROR_ok;
+    switch (post.target.mode) {
+    case TextMessageTarget_SERVER:
+        err = ts3::funcs.requestSendServerTextMsg(post.sch, post.text.constData(), rc.toUtf8().constData());
+        break;
+    case TextMessageTarget_CLIENT:
+        err = ts3::funcs.requestSendPrivateTextMsg(post.sch, post.text.constData(), post.target.clientId, rc.toUtf8().constData());
+        break;
+    default:
+        err = ts3::funcs.requestSendChannelTextMsg(post.sch, post.text.constData(), post.channelId, rc.toUtf8().constData());
+        break;
+    }
+    ++post.attempts;
+    if (err != ERROR_ok) {
+        forgetOp(rc);
+        failPost(post, postErrorText(mapError(err), ts3::errorText(err)));
+        return false;
+    }
+
+    InFlightPost flight;
+    flight.item   = post;
+    flight.ticket = floodGovernor(post.sch).postSent(floodClockMs());
+    m_postsInFlight.insert(rc, flight);
+    for (int id : qAsConst(post.jobs)) {
+        auto job = m_uploads.find(id);
+        if (job != m_uploads.end() && job->state == UploadState::Posting && job->message != i18n::t("Posting to chat…"))
+            setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
+    }
+    // The governor lets the next post go after a second without an answer. A message that gets no
+    // answer at all is never counted as sent (S0: TeamSpeak drops oversized commands without one): it
+    // fails, and Retry posts it again.
+    singleShotOwned(kPostTimeoutMs, this, [this, rc] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
-        auto jt = m_uploads.find(id);
-        if (jt != m_uploads.end() && jt->state == UploadState::Posting)
-            setUploadState(jt.value(), UploadState::Done, i18n::t("Sent"));
+        unansweredPost(rc);
     });
+    return true;
 }
 
-// True while an earlier job of the same batch may still post its message.
-bool Core::waitsForEarlierPosts(const UploadJob& job) const
+void Core::unansweredPost(const QString& returnCode)
 {
-    for (const UploadJob& other : m_uploads) {
-        if (other.batch != job.batch || other.id >= job.id)
-            continue;
-        const bool pending = other.state == UploadState::Preparing || other.state == UploadState::Uploading
-                             || (other.state == UploadState::Posting && other.waiting);
-        if (pending)
+    auto it = m_postsInFlight.find(returnCode);
+    if (it == m_postsInFlight.end())
+        return;
+    const InFlightPost flight = it.value();
+    m_postsInFlight.erase(it);
+    floodGovernor(flight.item.sch).postAnswered(flight.ticket, floodClockMs(), false, flight.item.attempts);
+    ts3::log(LogLevel_WARNING, flight.item.sch, "TeamSpeak didn't answer a chat message of %1 bytes within %2 s; it counts as not sent",
+             {ts3::pub(escapedMessageSize(QString::fromUtf8(flight.item.text))), ts3::pub(kPostTimeoutMs / 1000)});
+    failPost(flight.item, i18n::t("TeamSpeak didn't confirm the chat message, so it may not have been sent. Click Retry to post it again."),
+             i18n::t("TeamSpeak didn't confirm it, so it may not have been sent"));
+    pumpPosts();
+}
+
+// The answer to a chat post. retryHintMs: FloodGovernor::retryHintMs() of the answer.
+void Core::finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError, int retryHintMs)
+{
+    auto it = m_postsInFlight.find(returnCode);
+    if (it == m_postsInFlight.end())
+        return;
+    InFlightPost flight = it.value();
+    m_postsInFlight.erase(it);
+    FloodGovernor& governor = floodGovernor(flight.item.sch);
+    const bool     flooded  = error == ERROR_client_is_flooding && !permissionError;
+    const bool     retry    = governor.postAnswered(flight.ticket, floodClockMs(), flooded, flight.item.attempts, retryHintMs);
+    if (flooded && retry) {
+        ts3::log(LogLevel_WARNING, flight.item.sch, "TeamSpeak's flood protection held back a chat message (attempt %1); sending it again in %2 ms",
+                 {ts3::pub(flight.item.attempts), ts3::pub(governor.counters().lastPauseMs)});
+        for (int id : qAsConst(flight.item.jobs)) {
+            auto job = m_uploads.find(id);
+            if (job != m_uploads.end() && job->state == UploadState::Posting)
+                setUploadState(job.value(), UploadState::Posting, i18n::t("TeamSpeak is limiting messages. Retrying…"));
+        }
+        enqueuePost(flight.item, true); // back to its place, before what came after it
+    } else if (error == ERROR_ok && !permissionError) {
+        if (flight.item.captionOf)
+            settleCaption(flight.item.captionOf, true);
+        for (int id : qAsConst(flight.item.jobs)) {
+            auto job = m_uploads.find(id);
+            if (job != m_uploads.end() && job->state == UploadState::Posting)
+                setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
+        }
+    } else {
+        failPost(flight.item, postErrorText(permissionError ? MediaError::Permission : mapError(error), message));
+    }
+    pumpPosts();
+}
+
+// The files are on the server, only their message didn't go: Retry posts the same message again
+// (retryUpload), with every file it announces. captionText: the reason for a caption of its own.
+void Core::failPost(const PostItem& post, const QString& text, const QString& captionText)
+{
+    if (post.jobs.isEmpty()) {
+        // A caption of its own: the files are posted anyway (nothing posts it again).
+        ts3::printWarning(post.sch, i18n::t("Couldn't send the caption: %1").arg(captionText.isEmpty() ? text : captionText));
+        if (post.captionOf)
+            settleCaption(post.captionOf, false);
+        return;
+    }
+    for (int id : post.jobs) {
+        if (const UploadJob* job = upload(id); job && job->uploaded)
+            m_failedPosts.insert(id, post);
+    }
+    // One chat line for the message, however many files it announces.
+    warnFailed(post.sch, post.jobs, text);
+    for (int id : post.jobs)
+        failUpload(id, text, true);
+}
+
+// One chat warning for uploads that fail together (a message for an album, a lost connection): the
+// file's name for one, the count for several. Jobs that already finished are not counted.
+void Core::warnFailed(uint64 sch, const QVector<int>& ids, const QString& text)
+{
+    QVector<int> failing;
+    for (int id : ids) {
+        const UploadJob* job = upload(id);
+        if (job && job->state != UploadState::Done && job->state != UploadState::Failed && job->state != UploadState::Canceled && !failing.contains(id))
+            failing.append(id);
+    }
+    if (failing.isEmpty())
+        return;
+    if (failing.size() == 1) {
+        const UploadJob* job = upload(failing.first());
+        ts3::printWarning(sch, job->pasted ? i18n::t("Couldn't send the pasted image: %1").arg(text)
+                                           : i18n::t("Couldn't send “%1”: %2").arg(displayNameFor(*job), text));
+        return;
+    }
+    ts3::printWarning(sch, i18n::t("Couldn't send %1 files: %2").arg(failing.size()).arg(text));
+}
+
+// Queues a chat post: new ones at the end; a flooded one (keepSeq) back at its place by its number.
+void Core::enqueuePost(PostItem post, bool keepSeq)
+{
+    QList<PostItem>& queue = m_postQueue[post.sch];
+    if (!keepSeq || post.seq == 0) {
+        post.seq = ++m_nextPostSeq;
+        queue.append(post);
+        return;
+    }
+    int at = 0;
+    while (at < queue.size() && queue.at(at).seq < post.seq)
+        ++at;
+    queue.insert(at, post);
+}
+
+bool Core::batchPostInFlight(uint64 sch, int batch) const
+{
+    if (batch == 0)
+        return false;
+    for (const InFlightPost& flight : m_postsInFlight) {
+        if (flight.item.sch == sch && flight.item.batch == batch)
             return true;
     }
     return false;
+}
+
+// Whether a file of batch other than exceptId can still bring a message to the chat: uploading, or
+// uploaded and waiting for its turn or in the post queue.
+bool Core::batchCanStillPost(int batch, int exceptId) const
+{
+    for (const UploadJob& job : m_uploads) {
+        if (job.batch == batch && job.id != exceptId && (isPreparing(job.state) || job.state == UploadState::Posting))
+            return true;
+    }
+    return false;
+}
+
+void Core::settleCaption(int origin, bool posted)
+{
+    if (origin != 0 && m_captionsPending.remove(origin))
+        emit captionSettled(origin, posted);
+}
+
+FloodGovernor& Core::floodGovernor(uint64 sch)
+{
+    return m_flood[sch];
+}
+
+qint64 Core::floodClockMs() const
+{
+    return m_clock.isValid() ? m_clock.elapsed() : 0;
+}
+
+void Core::floodStateChanged(uint64 sch)
+{
+    if (m_postQueue.contains(sch))
+        pumpPosts();
+    if (m_fileQueue.contains(sch))
+        scheduleFileQueue(); // a pause moves the next folder request / upload start too
+}
+
+void Core::forgetBatchIfDone(int batch)
+{
+    for (const UploadJob& job : qAsConst(m_uploads)) {
+        if (job.batch == batch)
+            return;
+    }
+    const auto info = m_batches.constFind(batch);
+    if (info == m_batches.constEnd())
+        return;
+    // Its caption can't be posted any more, unless a message carrying it is still on its way (or it was
+    // handed on to a retry, which reports it).
+    const int  origin  = info->captionOrigin ? info->captionOrigin : batch;
+    bool       carried = info->caption.isEmpty();
+    for (auto q = m_postQueue.cbegin(); q != m_postQueue.cend() && !carried; ++q) {
+        for (const PostItem& post : q.value())
+            carried = carried || post.captionOf == origin;
+    }
+    for (const InFlightPost& flight : qAsConst(m_postsInFlight))
+        carried = carried || flight.item.captionOf == origin;
+    m_batches.remove(batch);
+    if (!carried)
+        settleCaption(origin, false);
 }
 
 void Core::seedCache(const UploadJob& job, const MediaLink& link)
@@ -2147,8 +3089,9 @@ void Core::seedCache(const UploadJob& job, const MediaLink& link)
     if (!linkOrCopy(job.stagingDir + QLatin1Char('/') + job.remoteName, e.localPath))
         return; // the posted message registers it like any other link
     refreshFileTime(e.localPath);
-    e.state    = MediaState::Ready;
-    e.progress = 1.0;
+    e.state          = MediaState::Ready;
+    e.progress       = 1.0;
+    e.check.verified = !link.sha256.isEmpty(); // 2.2 sha: the very bytes that were hashed
 
     const MediaLink  preview = link.previewLink();
     const QByteArray jpeg    = m_uploadExtra.value(job.id).previewJpeg;
@@ -2165,7 +3108,7 @@ void Core::seedCache(const UploadJob& job, const MediaLink& link)
     touch(m_entries[key]);
 }
 
-void Core::failUpload(int id, const QString& text)
+void Core::failUpload(int id, const QString& text, bool quiet)
 {
     auto it = m_uploads.find(id);
     if (it == m_uploads.end())
@@ -2177,9 +3120,11 @@ void Core::failUpload(int id, const QString& text)
         m_uploadsByTransfer.remove(job.transferId);
     job.transferActive = false;
     m_sendQueue.removeAll(id);
-    const QString warning = job.pasted ? i18n::t("Couldn't send the pasted image: %1").arg(text)
-                                       : i18n::t("Couldn't send “%1”: %2").arg(displayNameFor(job), text);
-    ts3::printWarning(job.target.sch, warning);
+    if (!quiet) {
+        const QString warning = job.pasted ? i18n::t("Couldn't send the pasted image: %1").arg(text)
+                                           : i18n::t("Couldn't send “%1”: %2").arg(displayNameFor(job), text);
+        ts3::printWarning(job.target.sch, warning);
+    }
     setUploadState(job, UploadState::Failed, text);
 }
 
@@ -2187,7 +3132,7 @@ bool Core::canCancelUpload(int id) const
 {
     const UploadJob* job = upload(id);
     return job
-           && (job->state == UploadState::Preparing || job->state == UploadState::Uploading || (job->state == UploadState::Posting && job->waiting));
+           && (isPreparing(job->state) || (job->state == UploadState::Posting && job->waiting));
 }
 
 void Core::cancelUpload(int id)
@@ -2196,10 +3141,10 @@ void Core::cancelUpload(int id)
         return;
     UploadJob& job = m_uploads[id];
     if (job.state == UploadState::Posting) {
-        // Uploaded, but its message still waits for earlier files: nothing was posted, so no message
-        // will ever point at the file or its preview. Don't leave them in the channel's file browser
-        // (without delete permission they stay; deleteRemoteFile logs it). The cached copy is left to
-        // the cache limit.
+        // Uploaded, but its message still waits for earlier files or the rest of its album: nothing
+        // was posted, so no message will ever point at the file or its preview. Don't leave them in the
+        // channel's file browser (without delete permission they stay; deleteRemoteFile logs it). The
+        // cached copy is left to the cache limit. Its unit is composed without it, like a failed item.
         deleteRemoteFile(job.target.sch, job.channelId, joinRemote(job.remoteDir, job.remoteName));
         if (!job.previewRemotePath.isEmpty())
             deleteRemoteFile(job.target.sch, job.channelId, job.previewRemotePath);
@@ -2243,7 +3188,12 @@ void Core::dismissUpload(int id)
 bool Core::canRetryUpload(int id) const
 {
     const UploadJob* job = upload(id);
-    return job && job->state == UploadState::Failed && !job->uploaded && QFileInfo(job->sourcePath).isFile();
+    if (!job || job->state != UploadState::Failed)
+        return false;
+    // Uploaded, only its message failed: the message is posted again (no second upload).
+    if (job->uploaded)
+        return m_failedPosts.contains(id);
+    return QFileInfo(job->sourcePath).isFile();
 }
 
 int Core::retryUpload(int id)
@@ -2269,15 +3219,65 @@ int Core::retryUpload(int id)
             return 0;
         }
     }
-    const QString source = job.sourcePath;
-    const bool    pasted = job.pasted;
-    const bool    owned  = job.deleteSource;
-    job.deleteSource     = false; // a pasted image now belongs to the new job
+    if (job.uploaded)
+        return repostFailed(id, target);
+    SendItem item    = m_jobItems.value(id);
+    item.path        = job.sourcePath;
+    item.pasted      = job.pasted;
+    item.ownTemp     = job.deleteSource;
+    job.deleteSource = false; // a pasted image now belongs to the new job
+
+    // A caption that nothing of its send can carry any more (every other file failed or was canceled)
+    // goes with the retry. While an album or file of it is still on its way, that one keeps it.
+    SendRequest request;
+    request.target = target;
+    request.items.append(item);
+    int  captionOrigin = 0;
+    auto batch         = m_batches.find(job.batch);
+    if (batch != m_batches.end() && !batch->captionDone && !batch->caption.isEmpty() && !batchCanStillPost(job.batch, id)) {
+        request.caption    = batch->caption;
+        captionOrigin      = batch->captionOrigin ? batch->captionOrigin : job.batch;
+        batch->captionDone = true;
+        batch->caption.clear(); // handed on: the retry reports it (captionSettled)
+    }
     forgetUpload(id);
 
     // A pasted image keeps its name; anything else gets a new random part, as a new send would.
-    const QString name = QFileInfo(source).fileName();
-    return createUpload(source, pasted ? name : makeRemoteName(name), target, owned, pasted, ++m_nextBatch);
+    const int newBatch = send(request);
+    if (captionOrigin != 0) {
+        if (newBatch == 0) {
+            settleCaption(captionOrigin, false);
+        } else {
+            m_captionsPending.remove(newBatch); // reported under the batch it came from
+            m_captionsPending.insert(captionOrigin);
+            m_batches[newBatch].captionOrigin = captionOrigin;
+        }
+    }
+    if (newBatch == 0)
+        return 0;
+    const PostUnit& unit = m_batches[newBatch].units.first();
+    return unit.jobs.value(0);
+}
+
+// Posts a failed chat message again, for every file it announces (they are on the server already).
+int Core::repostFailed(int id, const ChatTarget& target)
+{
+    const auto failed = m_failedPosts.constFind(id);
+    if (failed == m_failedPosts.constEnd())
+        return 0;
+    PostItem post = failed.value();
+    post.target   = target; // checked by retryUpload: the same server, the partner found again
+    post.attempts = 0;
+    for (int other : qAsConst(post.jobs)) {
+        m_failedPosts.remove(other);
+        auto job = m_uploads.find(other);
+        if (job != m_uploads.end() && job->state == UploadState::Failed)
+            setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
+    }
+    ts3::log(LogLevel_INFO, post.sch, "Posting a chat message again (%1 files)", {ts3::pub(post.jobs.size())});
+    enqueuePost(post, false); // a new place at the end
+    pumpPosts();
+    return id;
 }
 
 void Core::forgetUpload(int id)
@@ -2285,9 +3285,13 @@ void Core::forgetUpload(int id)
     auto it = m_uploads.find(id);
     if (it == m_uploads.end())
         return;
+    m_failedPosts.remove(id);
+    const int batch = it->batch;
     releaseSource(it.value());
     m_uploads.erase(it);
+    m_jobItems.remove(id);
     m_sendQueue.removeAll(id);
+    forgetBatchIfDone(batch);
     emit uploadChanged(id); // upload(id) is nullptr now
     scheduleUploadQueue();
 }
@@ -2346,18 +3350,8 @@ void Core::runUploadQueue()
             startSend(id);
     }
 
-    QList<int> held;
-    for (const UploadJob& job : qAsConst(m_uploads)) {
-        if (job.state == UploadState::Posting && job.waiting)
-            held.append(job.id);
-    }
-    // In id order: posting one lets the next of its batch go in the same pass.
-    std::sort(held.begin(), held.end());
-    for (int id : qAsConst(held)) {
-        const UploadJob* job = upload(id);
-        if (job && job->state == UploadState::Posting && job->waiting && !waitsForEarlierPosts(*job))
-            postUploadMessage(id);
-    }
+    // Held chat messages whose turn has come (2.2: per send unit, an album or a file).
+    pumpPostUnits();
 }
 
 void Core::cleanupUpload(UploadJob& job)
@@ -2369,6 +3363,8 @@ void Core::cleanupUpload(UploadJob& job)
                                && (job.state == UploadState::Failed || job.state == UploadState::Canceled);
     abortPreviewUpload(job);
     m_uploadExtra.remove(job.id);
+    for (QList<FileWait>& waiting : m_fileQueue) // its folder request or upload start won't go any more
+        waiting.erase(std::remove_if(waiting.begin(), waiting.end(), [&job](const FileWait& w) { return w.id == job.id; }), waiting.end());
     if (removePreview) {
         deleteRemoteFile(job.target.sch, job.channelId, job.previewRemotePath);
         job.previewRemotePath.clear();
@@ -2489,6 +3485,180 @@ void Core::updateProgress()
 }
 
 // ============================================================================================
+// 2.2 sha: hashing what is sent, checking what is received (fileverify.h)
+// ============================================================================================
+
+void Core::onStagedFinalized(int id, const fileverify::StagedDigest& digest)
+{
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || (it->state != UploadState::Preparing && it->state != UploadState::Compressing))
+        return; // canceled or failed meanwhile
+    UploadExtra& extra = m_uploadExtra[id];
+    extra.digest       = digest;
+    extra.hashed       = true;
+    if (digest.sha256.isEmpty())
+        ts3::log(LogLevel_WARNING, it->target.sch, "Couldn't hash %1 (%2)", {ts3::file(it->remoteName), ts3::pub(digest.error)});
+}
+
+// Starts checking a finished download against its link's sha. The entry stays Downloading at 100%
+// until onCheckFinished.
+bool Core::startCheck(const QString& key, const QString& found)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || !m_verifier || it->link.sha256.size() != fileverify::kShaBytes)
+        return false;
+    MediaEntry& e   = it.value();
+    e.progress      = 1.0;
+    e.check         = ShaCheck();
+    e.check.running = true;
+    m_checks.insert(key, {floodClockMs(), found});
+    if (!m_checkTimer) {
+        // A member timer, never a functor singleShot: nothing of ours may be pending once the plugin is gone.
+        m_checkTimer = new QTimer(this);
+        m_checkTimer->setSingleShot(true);
+        connect(m_checkTimer, &QTimer::timeout, this, &Core::showSlowChecks);
+    }
+    if (!m_checkTimer->isActive())
+        m_checkTimer->start(kShowCheckMs);
+    m_verifier->start(key, found, e.link.sha256);
+    touch(e);
+    return true;
+}
+
+// Checks running for kShowCheckMs say so ("Checking file…"); quicker ones never do (no flashing).
+void Core::showSlowChecks()
+{
+    const qint64 now  = floodClockMs();
+    qint64       next = -1;
+    QStringList  shown;
+    for (auto it = m_checks.cbegin(); it != m_checks.cend(); ++it) {
+        auto e = m_entries.find(it.key());
+        if (e == m_entries.end() || !e->check.running || e->check.shown)
+            continue;
+        const qint64 due = it->startedAt + kShowCheckMs;
+        if (due > now) {
+            next = next < 0 ? due : qMin(next, due);
+            continue;
+        }
+        e->check.shown    = true;
+        e->check.progress = qMax(e->check.progress, m_verifier->progress(it.key()));
+        shown.append(it.key());
+    }
+    if (next >= 0 && m_checkTimer)
+        m_checkTimer->start(static_cast<int>(qMax<qint64>(1, next - now)));
+    for (const QString& key : qAsConst(shown)) {
+        auto e = m_entries.find(key);
+        if (e != m_entries.end())
+            touch(e.value());
+    }
+}
+
+void Core::onCheckProgress(const QString& key, double fraction, bool secondPass)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || !it->check.running)
+        return;
+    ShaCheck&    check  = it->check;
+    const bool   again  = check.again != secondPass;
+    const double before = check.progress;
+    check.again         = secondPass;
+    check.progress      = fraction;
+    // Repaint only for what a preview shows: whole percents of a shown check, or its second pass.
+    if (check.shown && (again || qRound(before * 100.0) != qRound(fraction * 100.0)))
+        touch(it.value());
+}
+
+void Core::onCheckFinished(const fileverify::Result& result)
+{
+    const QString      key   = result.key;
+    const RunningCheck check = m_checks.take(key);
+    auto               it    = m_entries.find(key);
+    if (it == m_entries.end() || !it->check.running || it->state != MediaState::Downloading)
+        return; // nothing waits for it any more
+    MediaEntry&   e       = it.value();
+    const QString remote  = e.link.remoteFile();
+    const QString partial = partialDir(key, false);
+    e.check               = ShaCheck();
+
+    switch (result.outcome) {
+    case fileverify::Outcome::Match:
+        e.check.verified = true;
+        m_knownDigests.note(remoteId(e.link), e.link.size, result.received);
+        if (result.rechecked)
+            ts3::log(LogLevel_WARNING, e.sch, "%1 matched its SHA-256 only on the second check: it was still being written", {ts3::file(remote)});
+        ts3::log(LogLevel_DEBUG, e.sch, "Checked %1 against its SHA-256 in %2 ms", {ts3::file(remote), ts3::pub(result.elapsedMs)});
+        storeDownload(key, QFileInfo::exists(check.path) ? check.path : findDownloaded(partial, e.link.fileName));
+        return;
+
+    case fileverify::Outcome::Mismatch:
+        // Final: a new download would get the same bytes. The file is never shown, cached or saved.
+        e.check.received = result.received;
+        if (result.stableMismatch())
+            m_knownDigests.note(remoteId(e.link), e.link.size, result.received); // later links with this made-up hash fail at once
+        ts3::log(LogLevel_WARNING, e.sch, "SHA-256 mismatch for %1: expected %2, got %3",
+                 {ts3::file(remote), ts3::pub(hashing::toHex(result.expected)), ts3::pub(hashing::toHex(result.received))});
+        if (result.rechecked && result.firstReceived != result.received)
+            ts3::log(LogLevel_WARNING, e.sch, "The first check of %1 got %2: the file changed between the checks",
+                     {ts3::file(remote), ts3::pub(result.firstReceived.isEmpty() ? QStringLiteral("nothing") : hashing::toHex(result.firstReceived))});
+        QDir(partial).removeRecursively();
+        e.state = MediaState::Idle; // finishDownload already let go of the transfer (failDownload's guard)
+        failDownload(key, MediaError::Mismatch, downloadErrorText(MediaError::Mismatch), false, true);
+        return;
+
+    case fileverify::Outcome::ReadError:
+        ts3::log(LogLevel_WARNING, e.sch, "Couldn't check %1 against its SHA-256: %2", {ts3::file(remote), ts3::pub(result.error)});
+        QDir(partial).removeRecursively();
+        e.state = MediaState::Idle;
+        failDownload(key, MediaError::Other, i18n::t("Couldn't check the downloaded file. Try again."), false, true);
+        return;
+    }
+}
+
+// A link whose sha contradicts the real digest of the same file (same server path and size) can only
+// be a made-up hash, or one for a file that was replaced: it fails as Mismatch without a download, so
+// links with ever new made-up hashes can't make everyone fetch the file again and again.
+bool Core::refuseForgedHash(const QString& key)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || it->link.sha256.isEmpty() || it->state == MediaState::Ready || it->state == MediaState::Failed
+        || it->state == MediaState::Downloading)
+        return false;
+    MediaEntry& e = it.value();
+    if (m_knownDigests.check(remoteId(e.link), e.link.size, e.link.sha256) != fileverify::KnownDigests::Verdict::Contradicts)
+        return false;
+    fileverify::count(fileverify::Counter::ForgedBlocked);
+    e.check          = ShaCheck();
+    e.check.received = m_knownDigests.known(remoteId(e.link), e.link.size);
+    ts3::log(LogLevel_WARNING, e.sch, "Not downloading %1: its link names another SHA-256 than the file has", {ts3::file(e.link.remoteFile())});
+    if (e.state == MediaState::Queued)
+        e.state = MediaState::Idle;
+    failDownload(key, MediaError::Mismatch, downloadErrorText(MediaError::Mismatch), false, true);
+    return true;
+}
+
+// A cached preview matches ph (true without one). Hashed once per file version: the result is kept
+// until the file's size or time changes.
+bool Core::previewFileMatches(const QString& path, const QByteArray& previewSha)
+{
+    if (previewSha.isEmpty())
+        return true;
+    const QFileInfo info(path);
+    const qint64    size     = info.size();
+    const qint64    modified = info.lastModified().toMSecsSinceEpoch();
+    auto            it       = m_previewDigests.find(path);
+    if (it == m_previewDigests.end() || it->size != size || it->modified != modified) {
+        PreviewDigest digest;
+        digest.size     = size;
+        digest.modified = modified;
+        digest.digest   = fileverify::previewDigest(readPreview(path));
+        it              = m_previewDigests.insert(path, digest);
+        if (it->digest != previewSha)
+            ts3::log(LogLevel_INFO, 0, "The cached preview %1 isn't the one a link names; that one is downloaded", {ts3::local(QFileInfo(path).fileName())});
+    }
+    return it->digest == previewSha;
+}
+
+// ============================================================================================
 // TeamSpeak events
 // ============================================================================================
 
@@ -2524,14 +3694,24 @@ bool Core::isOwnReturnCode(const QString& returnCode) const
     return m_returnCodes.contains(returnCode);
 }
 
-void Core::onTextMessage(uint64 sch, const QString& message)
+void Core::onTextMessage(uint64 sch, const QString& message, const QString& senderUid)
 {
     Q_UNUSED(sch);
-    for (const MediaLink& link : MediaLink::findInMessage(message))
+    for (const MediaLink& link : MediaLink::findInMessage(message)) {
         ensure(link);
+        // 2.2 album: the first sender of an album owns it (ChatIntegration groups by it).
+        if (link.hasAlbum())
+            m_albums.note(link.serverUid, link.albumId, link.albumIndex, link.albumCount, link.key(), senderUid);
+    }
 }
 
-void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError)
+// 2.2 album
+QString Core::albumSender(const QString& serverUid, quint32 albumId, int index, const QString& key) const
+{
+    return m_albums.senderOf(serverUid, albumId, index, key);
+}
+
+void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError, const QString& extraMessage)
 {
     auto it = m_ops.find(returnCode);
     if (it == m_ops.end())
@@ -2540,6 +3720,16 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
     const bool       ok     = error == ERROR_ok && !permissionError;
     const MediaError mapped = permissionError ? MediaError::Permission : mapError(error);
     forgetOp(returnCode);
+    // TeamSpeak's flood protection says how long to wait ("retry in <n>ms"). Transfers, folders and file
+    // info count on the same counter as chat messages: posts wait too.
+    const bool flooded   = error == ERROR_client_is_flooding && !permissionError;
+    const int  retryHint = flooded ? FloodGovernor::retryHintMs(extraMessage) : -1;
+    if (flooded && op.type != OpType::PostMessage) {
+        floodGovernor(sch).generalFlooded(floodClockMs(), retryHint);
+        ts3::log(LogLevel_WARNING, sch, "TeamSpeak's flood protection held back a file request; chat posts wait %1 ms",
+                 {ts3::pub(floodGovernor(sch).counters().lastPauseMs)});
+        floodStateChanged(sch);
+    }
 
     switch (op.type) {
     case OpType::Download: {
@@ -2558,9 +3748,23 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
         break;
     }
 
-    case OpType::MakeDirectory:
-        onDirectoryReady(op.uploadId, op.preview, ok || error == ERROR_file_already_exists);
+    case OpType::MakeDirectory: {
+        // Flooded: asked again after the pause, never the channel root because of it.
+        if (flooded) {
+            if (retryFlooded(op.uploadId))
+                createRemoteDirectory(op.uploadId, op.preview);
+            else if (op.preview)
+                onDirectoryReady(op.uploadId, true, false); // the preview goes next to the file
+            else
+                failUpload(op.uploadId, uploadErrorText(mapped, message));
+            break;
+        }
+        const bool created = ok || error == ERROR_file_already_exists;
+        if (!op.key.isEmpty())
+            m_remoteDirs.insert(op.key, created); // refused (no permission): the next file doesn't ask again
+        onDirectoryReady(op.uploadId, op.preview, created);
         break;
+    }
 
     case OpType::Upload: {
         if (ok)
@@ -2572,13 +3776,24 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
             break;
         }
         // Only the attempt this answer belongs to (a renamed attempt may already be running).
-        auto job = m_uploads.constFind(op.uploadId);
-        if (job == m_uploads.constEnd() || !job->transferActive || job->transferId != op.transferId)
+        auto job = m_uploads.find(op.uploadId);
+        if (job == m_uploads.end() || !job->transferActive || job->transferId != op.transferId)
             break;
-        if (error == ERROR_file_already_exists && !permissionError)
+        if (error == ERROR_file_already_exists && !permissionError) {
             resendWithNewName(op.uploadId, op.transferId);
-        else
+        } else if (flooded && retryFlooded(op.uploadId)) {
+            // Not started: it goes again once the governor allows it (the pause is on now).
+            m_uploadsByTransfer.remove(job->transferId);
+            job->transferActive = false;
+            job->transferId     = 0;
+            job->state          = UploadState::Preparing; // startSend starts from there
+            job->progress       = 0.0;
+            startSend(op.uploadId);
+        } else {
+            // The folder may be gone (deleted on the server): the next file asks for it again.
+            m_remoteDirs.remove(remoteDirKey(sch, job->channelId, job->remoteDir));
             failUpload(op.uploadId, uploadErrorText(mapped, message));
+        }
         break;
     }
 
@@ -2587,16 +3802,9 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
             ts3::log(QStringLiteral("Could not remove %1 from the file browser: %2").arg(op.key, message), LogLevel_WARNING, sch);
         break;
 
-    case OpType::PostMessage: {
-        auto job = m_uploads.find(op.uploadId);
-        if (job == m_uploads.end())
-            break;
-        if (ok)
-            setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
-        else
-            failUpload(op.uploadId, postErrorText(mapped, message));
+    case OpType::PostMessage:
+        finishPost(returnCode, error, message, permissionError, retryHint);
         break;
-    }
     }
 }
 
@@ -2654,7 +3862,8 @@ void Core::onConnectionLost(uint64 sch)
     QStringList mains;
     QStringList previews;
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
-        if (it->sch == sch && (it->state == MediaState::Downloading || it->state == MediaState::Queued))
+        // 2.2 sha: a file being checked is complete already; the check goes on without the server.
+        if (it->sch == sch && (it->state == MediaState::Downloading || it->state == MediaState::Queued) && !it->check.running)
             mains.append(it.key());
         if ((it->previewState == MediaState::Downloading || it->previewState == MediaState::Queued) && m_previewSch.value(it.key()) == sch)
             previews.append(it.key());
@@ -2664,22 +3873,65 @@ void Core::onConnectionLost(uint64 sch)
     for (const QString& key : qAsConst(previews))
         failPreviewDownload(key, QStringLiteral("disconnected"), true);
 
-    QList<int> ids;
-    QList<int> held; // uploaded, their chat message still waiting for earlier files
+    QVector<int> ids;
+    QList<int>   heldBatches; // sends with uploaded files whose message waits for earlier files or the rest of the album
     for (const auto& job : qAsConst(m_uploads)) {
         if (job.target.sch != sch)
             continue;
-        if (job.state == UploadState::Preparing || job.state == UploadState::Uploading)
+        if (isPreparing(job.state))
             ids.append(job.id);
-        else if (job.state == UploadState::Posting && job.waiting)
-            held.append(job.id);
+        else if (job.state == UploadState::Posting && job.waiting && !heldBatches.contains(job.batch))
+            heldBatches.append(job.batch);
     }
     std::sort(ids.begin(), ids.end());
-    std::sort(held.begin(), held.end());
+    std::sort(heldBatches.begin(), heldBatches.end());
+    m_fileQueue.remove(sch);
+    for (auto it = m_remoteDirs.begin(); it != m_remoteDirs.end();) { // folders are asked for again
+        if (it.key().startsWith(QString::number(sch) + QLatin1Char('|')))
+            it = m_remoteDirs.erase(it);
+        else
+            ++it;
+    }
+    // Uploaded files that wait for their turn: their messages are composed now, without the files still
+    // on their way, so they fail like the queued ones below and Retry posts them once connected again.
+    for (int batch : qAsConst(heldBatches)) {
+        for (int u = 0;; ++u) {
+            const auto b = m_batches.constFind(batch);
+            if (b == m_batches.constEnd() || u >= b->units.size())
+                break;
+            if (!b->units.at(u).composed)
+                composeUnit(batch, u);
+        }
+    }
+    // Messages that were waiting for their turn won't be sent on this connection any more.
+    const QList<PostItem> queued = m_postQueue.take(sch);
+    QVector<int>          posted; // uploaded files whose message failed
+    for (const PostItem& post : queued) {
+        for (int id : post.jobs) {
+            if (const UploadJob* job = upload(id); job && job->uploaded) {
+                m_failedPosts.insert(id, post);
+                posted.append(id);
+            }
+        }
+    }
+    // One chat line for all of them; each job keeps its own reason.
+    warnFailed(sch, ids + posted, ids.isEmpty() ? postErrorText(MediaError::NotConnected) : uploadErrorText(MediaError::NotConnected));
     for (int id : qAsConst(ids))
-        failUpload(id, uploadErrorText(MediaError::NotConnected));
-    for (int id : qAsConst(held))
+        failUpload(id, uploadErrorText(MediaError::NotConnected), true);
+    for (const PostItem& post : queued) {
+        if (post.jobs.isEmpty())
+            failPost(post, postErrorText(MediaError::NotConnected)); // a caption of its own: says so
+        for (int id : post.jobs)
+            failUpload(id, postErrorText(MediaError::NotConnected), true);
+    }
+    QVector<int> leftovers; // held without a message of their own (none expected)
+    for (const auto& job : qAsConst(m_uploads)) {
+        if (job.target.sch == sch && job.state == UploadState::Posting && job.waiting)
+            leftovers.append(job.id);
+    }
+    for (int id : qAsConst(leftovers))
         failUpload(id, postErrorText(MediaError::NotConnected));
+    m_flood.remove(sch); // a new connection starts with a fresh budget
 }
 
 // ============================================================================================
@@ -2750,6 +4002,7 @@ void Core::clearCache()
         if (e != m_entries.end())
             touch(e.value());
     }
+    emit cacheCleared(); // 2.2 protocol: reactions.json goes with it
 }
 
 void Core::openCacheFolder() const
@@ -2901,6 +4154,8 @@ MediaError Core::mapError(unsigned int error)
 
 QString displayNameFor(const UploadJob& job)
 {
+    if (!job.displayName.isEmpty())
+        return displayFileName(job.displayName);
     return job.pasted ? i18n::t("Pasted image") : displayFileName(QFileInfo(job.sourcePath).fileName());
 }
 

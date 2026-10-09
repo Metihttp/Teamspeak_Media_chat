@@ -5,3 +5,7 @@ reference/
 .vs/
 *.user
 CMakeUserPresets.json
+# Release signing keys never belong in the repository (docs/UPDATES.md)
+*.dpapi
+*.pkey
+*.backup

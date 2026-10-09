@@ -95,7 +95,12 @@ Settings& Settings::instance()
 
 void Settings::load()
 {
-    const QSettings s(settingsFile(), QSettings::IniFormat);
+    load(settingsFile());
+}
+
+void Settings::load(const QString& file)
+{
+    const QSettings s(file, QSettings::IniFormat);
     const Settings  d;
 
     // Receiving
@@ -106,6 +111,8 @@ void Settings::load()
     videoAutoDownloadMB = readInt(s, "videoAutoDownloadMB", d.videoAutoDownloadMB, videoAutoDownloadMBRange);
     previewMaxWidth     = readInt(s, "previewMaxWidth", d.previewMaxWidth, previewMaxWidthRange);
     previewMaxHeight    = readInt(s, "previewMaxHeight", d.previewMaxHeight, previewMaxHeightRange);
+    dataSaver           = readBool(s, "dataSaver", d.dataSaver); // 2.2 data saver
+    revealSpoilers      = readBool(s, "revealSpoilers", d.revealSpoilers); // 2.2 spoiler
 
     // Playback
     videoVolume      = readInt(s, "videoVolume", d.videoVolume, videoVolumeRange);
@@ -125,15 +132,29 @@ void Settings::load()
     uploadMaxMB     = readInt(s, "uploadMaxMB", d.uploadMaxMB, uploadMaxMBRange);
     // Empty means the default folder, like an empty field in the dialog ("/" is the top level).
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
+    dropOpensSendWindow = readBool(s, "dropOpensSendWindow", d.dropOpensSendWindow); // 2.2 compose
+    sendAsAlbum         = readBool(s, "sendAsAlbum", d.sendAsAlbum);
 
     // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
+
+    // 2.2 per-server settings: the [server_<id>] groups, validated.
+    servers = serversettings::readAll(s);
+
+    // 2.2 protocol
+    showReactions = readBool(s, "showReactions", d.showReactions);
+    sharePresence = readBool(s, "sharePresence", d.sharePresence);
 }
 
 void Settings::save() const
 {
+    save(settingsFile());
+}
+
+void Settings::save(const QString& file) const
+{
     // Keys via key() and strings via ownedCopy(): see the note at the top of this file.
-    QSettings s(settingsFile(), QSettings::IniFormat);
+    QSettings s(file, QSettings::IniFormat);
 
     s.setValue(key("inlinePreviews"), inlinePreviews);
     s.setValue(key("autoDownloadImages"), autoDownloadImages);
@@ -142,6 +163,8 @@ void Settings::save() const
     s.setValue(key("videoAutoDownloadMB"), videoAutoDownloadMB);
     s.setValue(key("previewMaxWidth"), previewMaxWidth);
     s.setValue(key("previewMaxHeight"), previewMaxHeight);
+    s.setValue(key("dataSaver"), dataSaver); // 2.2 data saver
+    s.setValue(key("revealSpoilers"), revealSpoilers); // 2.2 spoiler
 
     s.setValue(key("videoVolume"), videoVolume);
     s.setValue(key("videosStartMuted"), videosStartMuted);
@@ -156,7 +179,33 @@ void Settings::save() const
     s.setValue(key("uploadMaxMB"), uploadMaxMB);
     // QSettings' INI writer drops backslashes inside values, so store the normalised form.
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
+    s.setValue(key("dropOpensSendWindow"), dropOpensSendWindow); // 2.2 compose
+    s.setValue(key("sendAsAlbum"), sendAsAlbum);
 
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
+
+    // 2.2 per-server settings: servers without own values are not stored (forgotten ones are removed).
+    serversettings::writeAll(s, servers);
+
+    // 2.2 protocol
+    s.setValue(key("showReactions"), showReactions);
+    s.setValue(key("sharePresence"), sharePresence);
     s.sync();
+}
+
+// 2.2 per-server settings
+Settings Settings::forServer(const QString& serverUid) const
+{
+    Settings result = *this;
+    if (const ServerOverrides* own = overridesFor(serverUid))
+        serversettings::applyOverrides(result, *own);
+    return result;
+}
+
+const ServerOverrides* Settings::overridesFor(const QString& serverUid) const
+{
+    if (serverUid.isEmpty() || servers.isEmpty())
+        return nullptr;
+    const auto it = servers.constFind(serversettings::serverKey(serverUid));
+    return it == servers.constEnd() ? nullptr : &it.value();
 }

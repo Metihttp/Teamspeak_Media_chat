@@ -10,6 +10,7 @@ Every option of TS Media chat, with its default and its range.
 
 Open the settings with **Plugins → TS Media chat → Settings…**, by typing `/tsmedia settings` in the chat, or with the plugin's Settings button in **Tools → Options → Addons**.
 
+- The options are on tabs: **General** (media cache, and *Diagnostic info…* under *Troubleshooting*), **Sending** (sending, and the note for people without the plugin), **Receiving & playback** (data saver, receiving, playback), **Servers** (settings for single servers, and *Server access* for server admins) and **Privacy & updates** (the update check). On a small screen the tabs scroll; the window keeps its size when you switch tabs. <kbd>Ctrl</kbd>+<kbd>Tab</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> switch tabs, and the dialog opens on the tab you used last.
 - **OK** saves and closes, **Apply** saves and keeps the dialog open, **Cancel** closes without saving.
 - **Restore defaults** only fills in the default of every option; nothing is saved until you click **OK** or **Apply**.
 - Only the options you changed are saved. The volume you set in the gallery viewer is kept, and the dialog follows it.
@@ -57,7 +58,7 @@ Changing the volume in the gallery viewer updates this setting too.
 | Setting | Default | Range and notes |
 | --- | --- | --- |
 | Send files dropped on the chat (hold Shift for TeamSpeak's own drop) | on | |
-| Send screenshots and files pasted into the chat input (Ctrl+V) | on | Always asks before sending. |
+| Send screenshots and files pasted into the chat input (Ctrl+V) | on | Opens the send window; nothing is sent before you click **Send**. |
 | Convert pasted images over 2 MB to JPEG | on | Images with transparency stay PNG. |
 | Upload a small preview with large images and videos | on | Others see a sharp preview while the full file downloads. |
 | Upload size limit | 100 MB | 1–4096 MB. |
@@ -65,8 +66,16 @@ Changing the volume in the gallery viewer updates this setting too.
 
 - **Convert pasted images over 2 MB to JPEG** uses JPEG quality 90.
 - **Upload a small preview**: the [usage guide](USAGE.md#file-names-and-folders) lists which files get a preview and where it is stored.
-- **Upload size limit** is your own limit. The server's transfer quotas still apply. The paste dialog marks files over the limit before you click **Send**.
+- **Upload size limit** is your own limit. The server's transfer quotas still apply. The send window marks files over the limit before you click **Send**.
 - **Upload folder** is per user: each person sends into the folder set in their own settings. Without permission to create folders, files go to the channel root.
+
+### Dropping files
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| When you drop files on the chat | Open the send window | Or *Send right away*. Hold Ctrl while dropping to do the other; hold Shift for TeamSpeak's own drop. Only matters while *Send files dropped on the chat* is on. |
+
+- **Open the send window** lets you add a caption, mark spoilers and see what can't be sent before anything goes out. **Send right away** sends dropped files as soon as you let go (as in 2.1), except when none of them could be sent: the window then opens and says why.
 
 ## Note for people without the plugin
 
@@ -76,3 +85,12 @@ Changing the volume in the gallery viewer updates this setting too.
 | Link in the note | the project's GitHub page | Where "TS Media chat" in the note links to. |
 
 - **Link in the note** must be an `http://` or `https://` address; `https://` is added when it is missing (you see it once you leave the field). Empty means the official page, `https://github.com/Metihttp/Teamspeak_Media_chat`. The link is checked when you leave the field: a problem (not a web address, another scheme, `[` or `]`, more than 512 characters) is explained right under it. The field can only be edited while the note is on.
+
+## Server access
+
+For server admins: creates and repairs the `tsmediachat` server group whose members can send files with TS Media chat, on the server of the tab you're looking at. These actions take effect on the server right away; **OK**, **Apply**, **Cancel** and **Restore defaults** don't affect them. The box contacts the server only while it is visible.
+
+- **Create TS Media chat group** creates the group with its icon, file permissions at power 75 and a copy of the default group's permissions. **Details…** lists every permission first. See the [server admin guide](SERVER-ADMIN.md#one-click-ts-media-chat-group).
+- **Repair TS Media chat group** appears when something is missing and adds only that. Permissions your server permissions can't grant are listed as needing a higher admin.
+- **Check again** reads the group from the server again.
+- People who can't create server groups only see whether they are in the group.

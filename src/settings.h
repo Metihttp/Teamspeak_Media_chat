@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QHash>
 #include <QString>
+
+#include "serversettings.h" // 2.2 per-server settings
 
 struct Settings {
     // Valid values of the numeric settings, defined once: load() clamps to them and SettingsDialog
@@ -26,6 +29,9 @@ struct Settings {
     int  videoAutoDownloadMB = 0;    // videos up to this size download automatically; 0 = when you press play
     int  previewMaxWidth     = 400;
     int  previewMaxHeight    = 300;
+    // 2.2 data saver: no automatic downloads of full files (previews still load); the limits above are kept.
+    bool dataSaver = false;
+    bool revealSpoilers      = false; // 2.2 spoiler: "Show spoilers without blurring" (no covers at all)
 
     // Playback
     int  videoVolume      = 80; // percent
@@ -46,13 +52,33 @@ struct Settings {
     static constexpr const char* defaultUploadDirectory = "/tsmedia";
     // Not QStringLiteral: settings values must never share data with the DLL image (see settings.cpp).
     QString uploadDirectory = QString::fromLatin1(defaultUploadDirectory);
+    // 2.2 compose: a drop opens the send window (Ctrl held: sends right away); false: the other way round.
+    bool dropOpensSendWindow = true;
+    bool sendAsAlbum         = true; // the send window's "Send as an album", as last chosen
 
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this
 
+    // 2.2 per-server settings: own values of single servers, by serversettings::serverKey(uid).
+    // "Restore defaults" never clears them.
+    QHash<QString, ServerOverrides> servers;
+
+    // 2.2 protocol: Privacy (both global, never per server)
+    bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
+    bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
+
     static Settings& instance();
     void             load();
     void             save() const;
+    // 2.2 per-server settings: the same with another ini file (tests).
+    void load(const QString& file);
+    void save(const QString& file) const;
+
+    // 2.2 per-server settings: these settings with the own values of the server with this unique
+    // identifier applied (data saver, upload folder, upload size limit, the note). Unknown or empty
+    // uid: the settings for all servers.
+    Settings               forServer(const QString& serverUid) const;
+    const ServerOverrides* overridesFor(const QString& serverUid) const; // nullptr: none
 
     // " a\b/ " -> "/a/b"; empty -> defaultUploadDirectory.
     static QString normalizeUploadDirectory(const QString& dir);

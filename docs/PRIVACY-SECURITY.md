@@ -7,13 +7,16 @@ Where your files go, what stays on your computer, and how the plugin protects yo
 ## Where your files go
 
 - **Files only go to your TeamSpeak server.** Uploads and downloads use TeamSpeak's own file transfer into the channel's file browser. There is no other server or cloud service.
-- **No web requests, no telemetry.** The only web address involved is the link in the note for people without the plugin, which opens only if someone clicks it.
+- **No telemetry, and only one kind of web request.** Official builds can check GitHub for updates, but only after you turn that on (it asks once, at most twice); see [Updates](UPDATES.md) for exactly what is sent. Otherwise the only web address involved is the link in the note for people without the plugin, which opens only if someone clicks it.
+- **The plugin's own log** (`%APPDATA%\TS3Client\plugins\tsmedia\logs\tsmedia.log`, at most about 512 KB) holds the plugin's messages, including the names of files you send and receive. It stays on your computer; the diagnostic info leaves those names out unless you include them.
 - **Channel members can open what you send.** Anyone on the server with download permission for that channel can get the file. Treat sent files like any other file in the file browser: they stay on the server until someone deletes them.
 
 ## What stays on your computer
 
 - **Local cache:** downloaded media is kept in `%APPDATA%\TS3Client\plugins\tsmedia\cache`, limited by the cache size you choose. You can clear it at any time in the settings.
 - **Temporary copies:** files being sent are staged in the `upload` and `paste` folders next to the cache. They are deleted once they have been sent or dismissed, and at the latest at the next start.
+- **Dragged and copied files:** dragging a file out of the chat or using *Copy file* makes a copy with a clean name in the `export` folder next to the cache (a hard link where possible). These are removed after 24 hours, even if the cache limit removed the cached file earlier. Like downloads from a browser, they carry Windows' "downloaded from the internet" mark, so Windows warns before running a program from the chat.
+- **Diagnostic info** (`/tsmedia diag`) is built only when you open it and leaves your computer only if you paste it somewhere. It shows exactly what *Copy* copies: plugin, Qt, TeamSpeak and Windows versions, which video and audio codecs Windows has, your settings (custom folders and links only as "changed"), counts of this session's transfers and the recent TS Media lines of the log. File names and paths in those lines read `<file 1>`, `<path 1>` unless you tick *Include file names* (your user folder then shows as `%USERPROFILE%`). Server addresses, server and channel names, unique IDs and nicknames are never included. *Copy and open bug report* opens GitHub's form in your browser with only the version fields filled in; the plugin itself sends nothing.
 
 ## Nothing is sent by accident
 

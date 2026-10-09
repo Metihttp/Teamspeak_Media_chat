@@ -8,17 +8,17 @@ How to send files, what you see in the chat, how the gallery viewer works, and t
 
 | Method | How |
 | --- | --- |
-| Drag & drop | Drop files on the chat messages or the chat input. They are sent right away. |
-| Paste | Press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input. Always asks first. |
+| Drag & drop | Drop files on the chat messages or the chat input. The send window opens; hold <kbd>Ctrl</kbd> while dropping to send them right away. |
+| Paste | Press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input. The send window opens. |
 | Menu | **Plugins → TS Media chat → Send files to chat…** (greyed out while the current server tab is not connected) |
 | Hotkey | Set it up once in **Tools → Options → Hotkeys** (see below). |
 | Chat command | `/tsmedia send` |
 
-- **Drag & drop:** you can drop one or more files at once. While you drag, the chat shows *Drop to send …* and where the files will go, or *Can't send files here* and the reason. Hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour. Drags from TeamSpeak's own file browser keep working as before.
-- **Paste:** take a screenshot (for example with <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>) or copy files in Explorer, click the chat input and press <kbd>Ctrl</kbd>+<kbd>V</kbd>. Plain text still pastes as usual.
+- **Drag & drop:** you can drop one or more files at once. While you drag, the chat shows *Drop to send …*, where the files will go and what the drop does, or *Can't send files here* and the reason. A drop opens the send window; hold <kbd>Ctrl</kbd> while dropping to send right away instead (the setting *When you drop files on the chat* turns this round). Hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour. Drags from TeamSpeak's own file browser keep working as before, and files dragged out of the chat are never sent again.
+- **Paste:** take a screenshot (for example with <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>) or copy files in Explorer, click the chat input and press <kbd>Ctrl</kbd>+<kbd>V</kbd>. Plain text still pastes as usual. Text you already typed in the chat input becomes the caption; it is removed from the input once the caption is in the chat, and stays there if you cancel or the send fails.
 - **Hotkeys:** in **Tools → Options → Hotkeys**, click **Add**, then **Show Advanced Actions**, and pick **Plugins → Plugin Hotkey → TS Media chat → Send files to the current chat**. **Cancel all uploads** is there too.
 
-Before the file picker opens, before the paste dialog and when you drop files, the plugin checks that you are connected, that your channel has no password and that it knows who a private chat is with. If something is missing, it says why (next to where you are and in the chat), and nothing is sent.
+Before the file picker opens, before the send window and when you drop files, the plugin checks that you are connected, that your channel has no password and that it knows who a private chat is with. If something is missing, it says why (next to where you are and in the chat), and nothing is sent.
 
 Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS.md#sending).
 
@@ -29,13 +29,21 @@ Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS
 - When you send several files at once, their messages appear in the chat in the order you chose the files. Up to two files upload at the same time; the others wait their turn.
 - Messages from the plugin itself (an upload failed, a command's answer) appear in the chat tab you are looking at. If you have switched to another server's tab meanwhile, they go to the channel tab of the server they belong to.
 
-### The paste confirmation
+### The send window
 
+<!-- TODO(2.2): replace with a screenshot of the send window. -->
 <p align="center">
-  <img src="images/paste-dialog.png" width="480" alt="The Send pasted image dialog after pressing Ctrl+V: a thumbnail of the pasted screenshot, the question whether to send it to the current channel, its size in pixels, and Send and Cancel buttons">
+  <img src="images/paste-dialog.png" width="480" alt="The Send to chat window after pressing Ctrl+V: a preview of the pasted screenshot, where it goes, a caption field, and Send and Cancel buttons">
 </p>
 
-Pressing Ctrl+V with a screenshot or copied files opens a small dialog that asks whether to send them and names where they go (the channel, the whole server or a private chat). A screenshot or a single copied picture shows a thumbnail; other files show their type icon, their names and sizes, and the total size. Files that are empty or larger than your upload limit are listed first, marked and skipped, and the button says how many files will be sent (*Send 7 files*). Nothing is sent until you click **Send**. The clipboard may hold something old you forgot about, so the plugin always asks.
+Pasting, dropping and the file picker all open the same window. It names where the files go (the channel, the whole server or a private chat) and shows what will be sent: a large preview for one picture or video, or a list with a thumbnail, the name and the size of each file. Nothing is sent until you click **Send** (or press <kbd>Enter</kbd>); <kbd>Esc</kbd> closes it, and asks first if you changed something.
+
+- **Caption:** one line of up to 300 characters, shown in the chat right above the file (above the first one when you send several). A counter appears from 250 characters. A caption that doesn't fit in the same chat message as the file is sent as its own message right above it; it is never shortened.
+- **Mark as spoiler:** pictures, GIFs and videos can be marked one by one (the eye button in the list, <kbd>S</kbd> on a focused row). People with TS Media chat see them blurred until they click. People on TS Media 2.1 or older, and people without the plugin, see them unblurred.
+- **Add files…** (<kbd>Ctrl</kbd>+<kbd>O</kbd>), dropping more files on the window, or <kbd>Ctrl</kbd>+<kbd>V</kbd> add files; the **×** button (or <kbd>Delete</kbd> on a focused row) removes one. Up to 100 files can be sent at once.
+- Files that can't be sent (empty, larger than your upload limit, missing or open in another program) are marked with the reason before you click **Send**, and left out. The button says what will be sent (*Send 3 images*, *Send 5 files*). While you are not connected, or the person of a private chat has left, the window says so and **Send** stays off; what you entered is kept.
+
+The clipboard may hold something old you forgot about, so a paste never sends anything without the window.
 
 ### Upload progress
 
@@ -140,6 +148,7 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 | `/tsmedia cancel` | cancel all running uploads |
 | `/tsmedia settings` | open the settings |
 | `/tsmedia cache` | open the media cache folder |
+| `/tsmedia diag` | open *Diagnostic info* (also *Settings → General → Diagnostic info…*): versions, settings, session counts and recent plugin messages to copy into a bug report. File names are hidden unless you tick *Include file names*; server addresses, server and channel names and nicknames are never included. *Copy and open bug report* also opens the GitHub form in your browser with the version fields filled in. |
 | `/tsmedia help` or `/tsmedia` | print the version and the list of commands |
 | `/tsmedia debug` | write a list of TeamSpeak's chat widgets to `widget_dump.txt` in the plugin's data folder (`%APPDATA%\TS3Client\plugins\tsmedia`) for bug reports; the chat says *Diagnostics saved to …* |
 

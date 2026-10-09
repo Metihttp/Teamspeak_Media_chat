@@ -11,13 +11,20 @@
 #include "core.h"
 #include "previewrenderer.h"
 
+class ComposeDialog; // 2.2 compose
+class ChatReactions; // 2.2 reactions
 class InlineMediaController;
 class MediaViewer;
+class QDropEvent;
+class QMenu;
 class QMimeData;
 class QTabBar;
 class QTextBrowser;
+class QTextCharFormat;
 class QTextDocument;
+class QTextEdit;
 class QTimer;
+class RevealFades;
 class UploadToast;
 
 // Hooks into the TeamSpeak chat widgets (QTextBrowser based):
@@ -26,8 +33,8 @@ class UploadToast;
 //  * forwards hover/clicks to InlineMediaController (GIFs, video controls) and opens MediaViewer
 //  * right-click menu on previews (open, save, copy, show in folder, ...)
 //  * lets users drop files on the chat or paste screenshots/copied files into the chat input to send
-//    them (a paste asks first: the clipboard may hold something old the user did not mean to send;
-//    a drag shows where the drop will go)
+//    them (2.2: paste, drop and the file picker open the send window, ComposeDialog; a drop can send
+//    right away instead, see Settings::dropOpensSendWindow; a drag shows where the drop will go)
 class ChatIntegration : public QObject
 {
     Q_OBJECT
@@ -53,11 +60,23 @@ class ChatIntegration : public QObject
 
     InlineMediaController* media() const { return m_media; }
 
+    // 2.2 diagnostics: how many of TeamSpeak's chat views and input lines are hooked (counts only).
+    int hookedChatViews() const { return m_views.size(); }
+    int hookedInputs() const
+    {
+        int count = 0;
+        for (const QPointer<QWidget>& input : m_inputs)
+            count += input.isNull() ? 0 : 1; // isNull(): no complete QWidget needed here
+        return count;
+    }
+
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
     // ---- implementation (owned by chatintegration.cpp; may be reorganised freely) --------------
   private:
+    friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
+
     struct PreviewPos {
         int     position = 0; // document position of the preview object
         QString key;
@@ -79,6 +98,7 @@ class ChatIntegration : public QObject
         QHash<QString, QSize>        formatSizes; // logical size each preview occupies in the layout
         QSet<QString>                resourced;   // keys with an image resource in this document
         QSet<QString>                stale;       // frames that changed while this chat was hidden
+        QHash<QString, QStringList>  albumsByKey; // 2.2 album: key -> album grids (object ids) that show it
 
         // Test builds: throttled chat snapshots.
         qint64  lastSnapshotMs  = 0;
@@ -90,6 +110,12 @@ class ChatIntegration : public QObject
     struct Hit {
         QString key;
         QRectF  rect; // preview rect in viewport coordinates
+        // 2.2 album: the object under the pointer (a single preview: its key; an album: its object id).
+        // On an album, key and rect are the tile's (key empty: an item that hasn't arrived), tile its
+        // index (-1: a gap between tiles), overflow the "+N" of the last tile (0: none).
+        QString object;
+        int     tile     = -1;
+        int     overflow = 0;
     };
 
     void discover();
@@ -107,11 +133,13 @@ class ChatIntegration : public QObject
     // change of preview or control counts. *zone: the video control there.
     Hit    updateHoverAt(QTextBrowser* browser, const QPointF& viewportPos, bool moved, VideoZone* zone = nullptr);
     void   updateVisibleKeys();
-    void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos);
+    // 2.2 album: album is the grid's object id when key is one of its tiles (its reactions are the album's).
+    void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, const QString& album = QString());
 
     void onEntryChanged(const QString& key);
     void onFrameChanged(const QString& key);
     void onUploadChanged(int id);
+    void onCaptionSettled(int batch, bool posted); // 2.2 compose
     void onOpenRequested(const QString& key);
 
     View*        viewFor(QTextBrowser* browser);
@@ -132,12 +160,25 @@ class ChatIntegration : public QObject
     bool         testShowsRawChat(const MediaLink& link) const;
     void         requestSnapshot(QTextBrowser* browser, const QString& reason);
 
+    // 2.2 spoiler (chatintegration_spoiler.cpp): a click on a covered preview only reveals it (with a
+    // short crossfade); its menu offers "Reveal spoiler" and leaves out what would show the content.
+    void    revealSpoiler(const QString& key);
+    void    showSpoilerMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, const QString& album = QString());
+    void    addHideSpoilerAction(QMenu* menu, const QString& key); // revealed spoilers: cover it again
+    qreal   spoilerCoverOpacity(const QString& key) const;          // PreviewStyle::concealOpacity
+    QString spoilerToolTip() const;
+
     // Why nothing can be sent from a chat right now (checked before a picker, paste prompt or drop).
     enum class SendBlock { None, NoRecipient, NotConnected, Password };
 
     bool          acceptsDrop(const QMimeData* mime) const;
     void          sendMime(const QMimeData* mime, const ChatTarget& target);
-    void          confirmPaste(QWidget* input, const QStringList& files, const QImage& image, const ChatTarget& target);
+    // 2.2 compose: the send window for files or a picture (raised, and given them when it is already
+    // open for the same chat). caption: text from the chat input; input is cleared after a send when it
+    // still holds exactly inputText.
+    void          openCompose(QWidget* source, const QStringList& files, const QImage& image, const ChatTarget& target,
+                              const QString& caption = {}, QTextEdit* input = nullptr, const QString& inputText = {});
+    bool          dropSendsNow(const QDropEvent* drop) const; // 2.2 compose: the setting, inverted by Ctrl
     bool          resolveTarget(QWidget* widget, ChatTarget* target) const; // false: unknown private chat partner
     bool          resolveCurrentTarget(ChatTarget* target, QWidget** source) const;
     SendBlock     checkSend(QWidget* widget, ChatTarget* target) const; // resolveTarget, connection, channel password
@@ -151,6 +192,58 @@ class ChatIntegration : public QObject
     QTabBar*      chatTabBarFor(QWidget* widget) const;
     QTextBrowser* visibleChatBrowser() const;
     QTextBrowser* browserForViewport(QObject* viewport) const;
+
+    // ---- 2.2 album grid (chatalbums.cpp) ---------------------------------------------------------
+    // An album's items show as one grid (an image object named "tsmedia:" + albums::objectId) right
+    // after the last of its links in its message. The other item links of that message are collapsed
+    // into one zero-width character that keeps the link (its text is kept in the format and given back
+    // on restore), and later messages of an album (the rare album sent as several messages) are hidden
+    // with QTextBlock::setVisible. Both are tagged, so they are found and undone by property.
+    struct AlbumPlan {
+        struct Collapse {
+            int from  = 0; // the line breaks in front of the link start here (end of the previous item)
+            int start = 0; // the link
+            int end   = 0;
+        };
+        struct Object {
+            QString           id;        // albums::objectId
+            int               block = 0; // block number of the message it goes into
+            int               after = 0; // document position it goes after (end of its last item's link there)
+            QVector<Collapse> collapse;  // the message's other item links
+        };
+        bool                active = false; // album items in the chat, or marks of ours to undo
+        QSet<int>           members;        // start positions of album item links: no preview of their own
+        QHash<int, QSet<QString>> memberKeys; // block number -> its album items' keys: no link to them there gets a preview (albums::memberKeys)
+        QVector<Object>     objects;
+        QSet<int>           hide;           // block numbers of messages to hide
+        QVector<int>        restore;        // collapsed links to give back
+        QVector<int>        staleSingles;   // single previews of album items (from before they were grouped)
+        // What the document holds now.
+        QHash<int, QString> existing; // position -> album object id
+        QVector<int>        markers;  // positions of collapsed links
+        QSet<int>           hidden;   // block numbers we hid (tagged and not visible)
+        QSet<int>           tagged;   // block numbers with our tag; a message appended after a hidden one can inherit it
+    };
+    AlbumPlan   planAlbums(QTextBrowser* browser) const;
+    void        applyAlbums(QTextBrowser* browser, const AlbumPlan& plan);
+    void        restoreAlbums(QTextBrowser* browser); // shows hidden messages and gives collapsed links back
+    void        indexAlbums(View& view) const;        // View::albumsByKey from positionsByKey
+    void        refreshAlbumsOf(QTextBrowser* browser, const QString& key, bool pixelsOnly);
+    void        scheduleAlbumRefresh(QTextBrowser* browser, const QString& id);
+    void        flushAlbumRefresh();
+    QImage      renderAlbumFor(QTextBrowser* browser, const QString& id, QSize* logicalSize);
+    Hit         albumHit(QTextBrowser* browser, const QString& id, const QRectF& rect, const QPointF& viewportPos) const;
+    void        albumVisibleKeys(QTextBrowser* browser, const QString& id, const QRectF& rect, const QRectF& viewport, QSet<QString>* keys) const;
+    QString     albumToolTip(const Hit& hit, QRect* area) const;
+    void        activateAlbumTile(const Hit& hit);
+    bool        shownAlone(const QString& key) const; // key has a single preview of its own in some chat
+    static QStringList albumKeysOf(const QString& id);
+    // chatintegration.cpp's document helpers, for chatalbums.cpp.
+    static QString resourceName(const QString& id);
+    static QString objectIdOf(const QTextCharFormat& format);
+    static bool    isOwnSeparator(QTextDocument* document, int position);
+    static bool    isFileAnchor(const QTextCharFormat& format);
+    static bool    atBottom(QTextBrowser* browser);
 
     Core*                      m_core;
     InlineMediaController*     m_media         = nullptr;
@@ -169,6 +262,7 @@ class ChatIntegration : public QObject
     QPointer<QTextBrowser> m_lastBrowser;  // chat the user last interacted with (viewer gallery source)
     QPointer<QTextBrowser> m_pressBrowser;
     QRectF                 m_pressRect;
+    QPoint                 m_pressPos; // 2.2 drag-out: where the left button went down (viewport coordinates)
     bool                   m_pressControlsVisible = false; // video controls were shown when the button went down
     bool                   m_seeking          = false; // dragging on a video's seek bar
     qint64                 m_lastSeekMs       = 0;
@@ -176,10 +270,28 @@ class ChatIntegration : public QObject
     bool                   m_visibilityQueued = false;
     bool                   m_testRawChat      = false; // TSMEDIA_TESTHOOKS "nohide"
     mutable int            m_scrollBarExtent  = 0;     // width a shown vertical scroll bar takes (measured)
-    QPointer<QWidget>      m_pasteConfirm;             // open "send what was pasted?" prompt
+    QPointer<ComposeDialog> m_compose;                 // 2.2 compose: the open send window
+    // 2.2 compose: chat input text that went out as a send's caption, cleared once Core posted it
+    // (Core::captionSettled; batch id -> the input and its text then).
+    struct CaptionClear {
+        QPointer<QObject> input; // the chat input (a QTextEdit)
+        QString           text;
+    };
+    QHash<int, CaptionClear> m_captionClears;
     QPointer<MediaViewer>  m_viewer;                   // viewer opened from the chat (paused when an inline video starts)
     QPointer<QWidget>      m_dropOverlay;              // "Drop to send" over the chat during a drag
     SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget
     ChatTarget             m_dropTarget;
-    QThreadPool            m_thumbnailPool; // paste prompt thumbnails of copied pictures (waited for on destruction)
+    bool                   m_dropNow = false;          // 2.2 compose: the overlay says the drop sends right away
+    RevealFades*           m_reveals = nullptr;        // 2.2 spoiler: reveal crossfades (a child: stops with us)
+
+    // 2.2 album: pointer state per tile (a single preview's object is its key, its tile -1)
+    QString                                 m_hoverObject;
+    int                                     m_hoverTile   = -1;
+    QPointer<QTextBrowser>                  m_hoverObjectIn; // the chat m_hoverObject is hovered in
+    QString                                 m_pressedObject;
+    int                                     m_pressedTile = -1;
+    QTimer*                                 m_albumTimer  = nullptr; // redraws albums with new GIF frames, ~30 per second
+    QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
+    ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
 };

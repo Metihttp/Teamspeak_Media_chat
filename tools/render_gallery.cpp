@@ -20,8 +20,12 @@
 
 #include <functional>
 
+#include "audiocard.h"
+#include "albums.h" // 2.2 album
 #include "blurhash.h"
+#include "dragpixmap.h" // 2.2 drag-out
 #include "previewrenderer.h"
+#include "reactionart.h" // 2.2 reactions
 #include "uiutil.h"
 
 namespace {
@@ -30,6 +34,8 @@ namespace {
 const QString kReferenceHash = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj");
 
 QString g_mediaDir;
+int     g_layoutFailures = 0; // samples whose box differs from what the chat reserves (a layout jump)
+int     g_layoutErrors = 0; // 2.2 album: grids whose size depended on what their tiles show
 
 QImage loadSource(const QString& fileName)
 {
@@ -304,6 +310,160 @@ QList<Sample> buildSamples()
         return renderPreview(e, hashStill(gifHash, 480, 270, stillPixels(e, st)), st, ls);
     });
 
+    // ---- 2.2 album grid ---------------------------------------------------------------------
+    // Every grid must have albumLogicalSize(): what its tiles show never changes its size.
+    {
+        struct TileSpec {
+            MediaEntry         entry;
+            QImage             picture;                    // what the still is made from (Full / Preview)
+            MediaStill::Source source    = MediaStill::Full; // BlurHash: decoded from entry.link.blurHash
+            QImage             frame;                      // a GIF frame while it animates
+            bool               arrived   = true;
+            bool               concealed = false;
+            qreal              fading    = 0.0; // 2.2 spoiler: the reveal crossfade over a revealed tile
+            bool               hovered   = false;
+            bool               pressed   = false;
+        };
+        const QImage gifStill = gif;
+        const QImage pictures[] = {photo, sunset, friendPic, cropToAspect(friendPic, 1.0).mirrored(true, false), photo.mirrored(true, false), sunset.mirrored(true, true),
+                                   cropToAspect(photo, 9.0 / 16.0), cropToAspect(sunset, 1.0)};
+        auto ready = [&pictures](int n) {
+            const QImage& pic = pictures[n % 8];
+            TileSpec      t;
+            t.entry         = makeEntry(QStringLiteral("trip_%1_3f9a1c2e.jpg").arg(n + 1), 845221 + static_cast<quint64>(n) * 91733, pic.width(), pic.height(), 0, MediaState::Ready);
+            t.entry.link.protocol = MediaLink::kProtocol;
+            t.entry.link.blurHash = hashOf(pic);
+            t.picture       = pic;
+            return t;
+        };
+        auto withState = [](TileSpec t, MediaState state, double progress = 0.0) {
+            t.entry.state    = state;
+            t.entry.progress = progress;
+            t.source         = MediaStill::BlurHash;
+            return t;
+        };
+        auto readyAlbum = [&ready](int count) {
+            QVector<TileSpec> specs;
+            for (int i = 0; i < count; ++i)
+                specs.append(ready(i));
+            return specs;
+        };
+        auto album = [&add](const QString& name, const QString& label, const QVector<TileSpec>& specs, int maxWidth = 400) {
+            add(name, label, [specs, name](const PreviewStyle& st, QSize* ls) {
+                const albums::Geometry g = albums::layout(specs.size(), st.maxWidth, st.maxHeight);
+                QVector<AlbumTile>     tiles(specs.size());
+                for (int i = 0; i < specs.size() && i < g.tiles.size(); ++i) {
+                    const TileSpec& s = specs.at(i);
+                    if (!s.arrived)
+                        continue;
+                    AlbumTile& t     = tiles[i];
+                    t.entry          = &s.entry;
+                    const QSize px   = albumTileStillPixels(s.entry, g.tiles.at(i).size(), st.dpr);
+                    if (s.source == MediaStill::BlurHash)
+                        t.still = hashStill(s.entry.link.blurHash, s.entry.link.width, s.entry.link.height, px);
+                    else if (!s.picture.isNull())
+                        t.still = pictureStill(s.picture, s.source, px);
+                    if (!s.frame.isNull())
+                        t.frame = fitScaled(s.frame, px);
+                    t.concealed      = s.concealed;
+                    t.concealOpacity = s.concealed ? 1.0 : s.fading;
+                    t.hovered        = s.hovered;
+                    t.pressed   = s.pressed;
+                }
+                const QImage image = renderAlbum(tiles, st, ls);
+                if (!ls || *ls != albumLogicalSize(specs.size(), st)) {
+                    QTextStream(stderr) << "error: " << name << " is not albumLogicalSize()\n";
+                    ++g_layoutErrors;
+                }
+                return image;
+            }, maxWidth);
+        };
+
+        for (const int count : {2, 3, 4, 5})
+            album(QStringLiteral("album_%1").arg(count), QStringLiteral("album, %1 pictures").arg(count), readyAlbum(count));
+        album(QStringLiteral("album_7_plus2"), QStringLiteral("album, 7 pictures (+2)"), readyAlbum(7));
+        album(QStringLiteral("album_10_plus5"), QStringLiteral("album, 10 pictures (+5)"), readyAlbum(10));
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[1]                = withState(specs[1], MediaState::Downloading, 0.35);
+            specs[2]                = withState(specs[2], MediaState::Idle);
+            specs[2].entry.link.size = 31457280;
+            specs[3].entry          = failed(specs[3].entry, MediaError::Permission);
+            specs[3].source         = MediaStill::Preview;
+            album(QStringLiteral("album_4_mixed"), QStringLiteral("album: ready / 35% / not downloaded / failed"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[2].arrived        = false;
+            specs[3].arrived        = false;
+            album(QStringLiteral("album_4_open_placeholders"), QStringLiteral("album: 2 of 4 arrived"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(3);
+            for (TileSpec& s : specs)
+                s = withState(s, MediaState::Queued);
+            specs[0] = withState(specs[0], MediaState::Downloading, 0.6);
+            album(QStringLiteral("album_3_loading"), QStringLiteral("album: loading (blurhash, queued)"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            TileSpec          g     = ready(0);
+            g.entry                 = makeEntry(QStringLiteral("funny_3f9a1c2e.gif"), 387333, gifStill.width(), gifStill.height(), 0, MediaState::Ready);
+            g.entry.link.protocol   = MediaLink::kProtocol;
+            g.picture               = gifStill;
+            g.frame                 = gifFrame(12, QSize(800, 800));
+            specs[0]                = g;
+            TileSpec v              = ready(1);
+            v.entry                 = makeEntry(QStringLiteral("clip_3f9a1c2e.mp4"), 3993912, 1280, 720, 10000, MediaState::Idle);
+            v.entry.link.protocol   = MediaLink::kProtocol;
+            v.picture               = cropToAspect(sunset, 16.0 / 9.0);
+            v.source                = MediaStill::Preview;
+            specs[1]                = v;
+            TileSpec v2             = v;
+            v2.entry                = downloading(v.entry, 0.4);
+            v2.entry.link.durationMs = 73000;
+            v2.picture              = cropToAspect(friendPic, 16.0 / 9.0);
+            specs[2]                = v2;
+            album(QStringLiteral("album_gif_video"), QStringLiteral("album: GIF, video, video downloading"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[0].concealed      = true;
+            specs[3].concealed      = true;
+            album(QStringLiteral("album_spoiler_tiles"), QStringLiteral("album: spoiler tiles (the chat's cover)"), specs);
+            specs[3].hovered = true;
+            specs[3].pressed = true;
+            album(QStringLiteral("album_spoiler_pressed"), QStringLiteral("album: spoiler tile pressed"), specs);
+            specs[3].hovered   = false;
+            specs[3].pressed   = false;
+            specs[3].concealed = false;
+            specs[3].fading    = 0.5;
+            album(QStringLiteral("album_spoiler_fading"), QStringLiteral("album: spoiler tile revealed, 50% crossfade"), specs);
+            QVector<TileSpec> small = readyAlbum(7);
+            for (TileSpec& s : small)
+                s.concealed = true;
+            album(QStringLiteral("album_spoiler_all_narrow"), QStringLiteral("album: all spoilers, narrow (200 px)"), small, 200);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[1].hovered        = true;
+            specs[1].pressed        = true;
+            specs[2]                = withState(specs[2], MediaState::Idle);
+            specs[2].hovered        = true;
+            album(QStringLiteral("album_pressed_hover"), QStringLiteral("album: tile 2 pressed, tile 3 hovered"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(6);
+            specs[0].entry          = failed(specs[0].entry, MediaError::NotFound);
+            specs[4].entry          = failed(specs[4].entry, MediaError::Permission);
+            specs[5]                = withState(specs[5], MediaState::Idle);
+            album(QStringLiteral("album_6_failed_small"), QStringLiteral("album: small failed tiles"), specs);
+        }
+        album(QStringLiteral("album_narrow_3"), QStringLiteral("album, narrow chat (max 200 px), 3"), readyAlbum(3), 200);
+        album(QStringLiteral("album_narrow_5"), QStringLiteral("album, narrow chat (max 200 px), 5 (+2)"), readyAlbum(5), 200);
+        album(QStringLiteral("album_wide_4"), QStringLiteral("album, max width 600, 4"), readyAlbum(4), 600);
+    }
+
     // ---- videos ----------------------------------------------------------------------------
     const QImage     poster      = cropToAspect(sunset, 16.0 / 9.0);
     const QImage     framePic    = cropToAspect(friendPic, 16.0 / 9.0);
@@ -522,6 +682,74 @@ QList<Sample> buildSamples()
         return renderPreview(e, posterStill(e, st), st, ls);
     });
 
+    // ---- 2.2 spoiler: hidden (cover), during the reveal crossfade, revealed --------------------
+    {
+        auto cover = [](PreviewStyle st, qreal opacity = 1.0) {
+            st.concealOpacity = opacity;
+            return st;
+        };
+        const MediaEntry sunsetReady = makeEntry(QStringLiteral("sunset_photo.png"), 34867, 900, 560, 0, MediaState::Ready); // no BlurHash
+        add(QStringLiteral("spoiler_image_hidden"), QStringLiteral("spoiler image hidden (BlurHash cover)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_image_hover"), QStringLiteral("spoiler image hidden, hover"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), cover(hovered(st)), ls);
+        });
+        add(QStringLiteral("spoiler_image_pressed"), QStringLiteral("spoiler image hidden, pressed"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), cover(hovered(st, true)), ls);
+        });
+        add(QStringLiteral("spoiler_image_nohash"), QStringLiteral("spoiler image hidden, no BlurHash (12 px blur)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(sunsetReady, pictureStill(sunset, MediaStill::Full, stillPixels(sunsetReady, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_image_idle_large"), QStringLiteral("spoiler hidden, too large (no download disc)"), [=](const PreviewStyle& st, QSize* ls) {
+            MediaEntry e      = makeEntry(QStringLiteral("huge_panorama.jpg"), 25794560, 4000, 3000, 0, MediaState::Idle);
+            e.tooLargeForAuto = true;
+            return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_image_reveal_50"), QStringLiteral("spoiler image, reveal crossfade 50%"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(sunsetReady, pictureStill(sunset, MediaStill::Full, stillPixels(sunsetReady, st)), cover(st, 0.5), ls);
+        });
+        add(QStringLiteral("spoiler_image_revealed"), QStringLiteral("spoiler image revealed"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(sunsetReady, pictureStill(sunset, MediaStill::Full, stillPixels(sunsetReady, st)), cover(st, 0.0), ls);
+        });
+        add(QStringLiteral("spoiler_gif_hidden"), QStringLiteral("spoiler GIF hidden (no badge, no animation)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(gifReady, pictureStill(gif, MediaStill::Full, stillPixels(gifReady, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_gif_revealed"), QStringLiteral("spoiler GIF revealed (animating)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderAnimatedFrame(gifReady, gifFrame(12, stillPixels(gifReady, st)), cover(st, 0.0), ls);
+        });
+        add(QStringLiteral("spoiler_video_hidden"), QStringLiteral("spoiler video hidden (no play, no duration)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(clip, posterStill(clip, st), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_video_reveal_30"), QStringLiteral("spoiler video, reveal crossfade 30%"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(clip, posterStill(clip, st), cover(st, 0.3), ls);
+        });
+        add(QStringLiteral("spoiler_video_revealed"), QStringLiteral("spoiler video revealed (poster, play)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(clip, posterStill(clip, st), cover(st, 0.0), ls);
+        });
+        add(QStringLiteral("spoiler_no_still"), QStringLiteral("spoiler hidden, nothing loaded yet"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = makeEntry(QStringLiteral("holiday.jpg"), 845221, 1600, 1200, 0, MediaState::Queued);
+            return renderPreview(e, MediaStill(), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_failed_hidden"), QStringLiteral("spoiler hidden, failed: deleted (error under the cover)"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = failed(photoReady, MediaError::NotFound);
+            return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_panorama_eyeoff"), QStringLiteral("spoiler, 40 px high (eye-off mark)"), [=](const PreviewStyle& st, QSize* ls) {
+            const QImage     strip = cropToAspect(sunset, 8.0);
+            const MediaEntry e     = makeEntry(QStringLiteral("strip.png"), 52000, strip.width(), strip.height(), 0, MediaState::Ready);
+            return renderPreview(e, pictureStill(strip, MediaStill::Full, stillPixels(e, st)), cover(st), ls);
+        }, 160);
+        add(QStringLiteral("spoiler_card_image_nodims"), QStringLiteral("spoiler picture shown as a card (no name)"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = makeEntry(QStringLiteral("secret_ending_3f9a1c2e.jpg"), 845221, 0, 0, 0, MediaState::Idle);
+            return renderPreview(e, MediaStill(), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_card_zip_ignored"), QStringLiteral("spoiler flag on a zip: ignored"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Idle);
+            return renderPreview(e, MediaStill(), cover(st), ls);
+        });
+    }
+
     // ---- cards -----------------------------------------------------------------------------
     const MediaEntry zip = makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Idle);
     auto card = [&add](const QString& name, const QString& label, const MediaEntry& e, int maxWidth = 400) {
@@ -593,7 +821,393 @@ QList<Sample> buildSamples()
         e.link.protocol = MediaLink::kProtocol;
         card(QStringLiteral("card_tsmedia_name"), QStringLiteral("TS Media upload holiday_3f9a1c2e.zip"), e);
     }
+
+    // ---- 2.2 audio cards -------------------------------------------------------------------
+    // Every state must keep the file card's box (checked: no layout jump when a card starts playing).
+    const MediaEntry song = [] {
+        MediaEntry e    = makeEntry(QStringLiteral("summer_mix_3f9a1c2e.mp3"), 4404019, 0, 0, 205000, MediaState::Idle);
+        e.link.protocol = MediaLink::kProtocol;
+        return e;
+    }();
+    auto audioOverlay = [](const MediaEntry& e) {
+        PlaybackOverlay o;
+        o.durationMs      = e.link.durationMs;
+        o.controlsVisible = true;
+        return o;
+    };
+    auto audio = [&add](const QString& name, const QString& label, const MediaEntry& e, const PlaybackOverlay& o,
+                        std::function<PreviewStyle(const PreviewStyle&)> change = nullptr, int maxWidth = 400) {
+        add(name, label, [e, o, change](const PreviewStyle& st, QSize* ls) {
+            const PreviewStyle s = change ? change(st) : st;
+            QSize              logical;
+            const QImage       img = renderAudioCard(e, o, s, &logical);
+            if (logical != previewLogicalSize(e, s)) {
+                QTextStream(stderr) << "error: audio card " << e.link.fileName << " is " << logical.width() << "x" << logical.height()
+                                    << ", the chat reserves " << previewLogicalSize(e, s).width() << "x" << previewLogicalSize(e, s).height() << "\n";
+                ++g_layoutFailures;
+            }
+            if (ls)
+                *ls = logical;
+            return img;
+        }, maxWidth);
+    };
+    audio(QStringLiteral("audio_idle"), QStringLiteral("audio idle (not downloaded)"), song, audioOverlay(song));
+    audio(QStringLiteral("audio_idle_hover"), QStringLiteral("audio idle, hover on play"), song, [&] {
+        PlaybackOverlay o = audioOverlay(song);
+        o.hover           = VideoZone::PlayPause;
+        return o;
+    }(), [](const PreviewStyle& st) { return hovered(st); });
+    {
+        MediaEntry e      = song;
+        e.link.durationMs = 0;
+        e.link.protocol   = 0;
+        e.link.fileName   = QStringLiteral("from_teamspeak.mp3");
+        audio(QStringLiteral("audio_idle_no_duration"), QStringLiteral("plain link, no duration"), e, audioOverlay(e));
+    }
+    {
+        MediaEntry e = song;
+        e.state      = MediaState::Queued;
+        PlaybackOverlay o = audioOverlay(e);
+        o.busy            = true;
+        audio(QStringLiteral("audio_queued"), QStringLiteral("audio queued (pressed play)"), e, o);
+    }
+    {
+        const MediaEntry e = downloading(song, 0.45);
+        PlaybackOverlay  o = audioOverlay(e);
+        o.busy             = true;
+        o.busyProgress     = 0.45;
+        audio(QStringLiteral("audio_downloading"), QStringLiteral("audio downloading 45% (pressed play)"), e, o);
+        audio(QStringLiteral("audio_auto_downloading"), QStringLiteral("audio auto-downloading 45%"), e, audioOverlay(e));
+    }
+    MediaEntry songReady = song;
+    songReady.state      = MediaState::Ready;
+    songReady.progress   = 1.0;
+    {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.busy            = true;
+        audio(QStringLiteral("audio_opening"), QStringLiteral("audio opening"), songReady, o);
+        audio(QStringLiteral("audio_opening_static"), QStringLiteral("audio opening, animations off"), songReady, o, [](const PreviewStyle& st) {
+            PreviewStyle s = st;
+            s.animate      = false;
+            return s;
+        });
+    }
+    audio(QStringLiteral("audio_ready"), QStringLiteral("audio downloaded, at rest"), songReady, audioOverlay(songReady));
+    {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.playing         = true;
+        o.positionMs      = 71750;
+        audio(QStringLiteral("audio_playing"), QStringLiteral("audio playing 35%"), songReady, o);
+        o.hover = VideoZone::Seek;
+        audio(QStringLiteral("audio_playing_seek_hover"), QStringLiteral("audio playing, hover on the seek bar"), songReady, o,
+              [](const PreviewStyle& st) { return hovered(st); });
+        o.hover   = VideoZone::PlayPause;
+        o.pressed = VideoZone::PlayPause;
+        audio(QStringLiteral("audio_pause_pressed"), QStringLiteral("audio playing, pause pressed"), songReady, o,
+              [](const PreviewStyle& st) { return hovered(st, true); });
+    }
+    {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.positionMs      = 42000;
+        audio(QStringLiteral("audio_paused"), QStringLiteral("audio paused at 0:42"), songReady, o);
+        PlaybackOverlay e = audioOverlay(songReady);
+        e.ended           = true;
+        e.positionMs      = 205000;
+        audio(QStringLiteral("audio_ended"), QStringLiteral("audio ended (replay)"), songReady, e);
+        PlaybackOverlay x = audioOverlay(songReady);
+        x.externalOnly    = true;
+        audio(QStringLiteral("audio_external"), QStringLiteral("audio can't play here (opens externally)"), songReady, x);
+    }
+    audio(QStringLiteral("audio_failed_permission"), QStringLiteral("audio failed: permission (retry)"), failed(song, MediaError::Permission), audioOverlay(song));
+    audio(QStringLiteral("audio_failed_permission_hover"), QStringLiteral("audio failed: permission, hover"), failed(song, MediaError::Permission), [&] {
+        PlaybackOverlay o = audioOverlay(song);
+        o.hover           = VideoZone::PlayPause;
+        return o;
+    }(), [](const PreviewStyle& st) { return hovered(st); });
+    audio(QStringLiteral("audio_failed_notfound"), QStringLiteral("audio failed: deleted (no retry)"), failed(song, MediaError::NotFound), audioOverlay(song));
+    {
+        MediaEntry e      = songReady;
+        e.link.durationMs = 3723000;
+        e.link.fileName   = QStringLiteral("podcast_episode_42_the_long_one_3f9a1c2e.m4a");
+        PlaybackOverlay o = audioOverlay(e);
+        o.playing         = true;
+        o.positionMs      = 1830000;
+        audio(QStringLiteral("audio_1h_playing"), QStringLiteral("1 h audio playing, long name"), e, o);
+        audio(QStringLiteral("audio_narrow_240"), QStringLiteral("long name, narrow (240 px)"), e, o, nullptr, 240);
+        audio(QStringLiteral("audio_narrow_160"), QStringLiteral("smallest card (160 px)"), e, o, nullptr, 160);
+    }
+    {
+        // Right-to-left name keeps its own direction; the card stays left-to-right.
+        MediaEntry e    = songReady;
+        e.link.fileName = QString::fromUtf8("آهنگ تابستانی_3f9a1c2e.ogg");
+        e.kind          = kindForFileName(e.link.fileName);
+        PlaybackOverlay o = audioOverlay(e);
+        o.positionMs      = 12000;
+        audio(QStringLiteral("audio_rtl_name"), QStringLiteral("right-to-left name, paused"), e, o);
+    }
+    audio(QStringLiteral("audio_large_font"), QStringLiteral("audio playing, 11 pt chat font"), songReady, [&] {
+        PlaybackOverlay o = audioOverlay(songReady);
+        o.playing         = true;
+        o.positionMs      = 100000;
+        return o;
+    }(), [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
+    // ---- 2.2 data saver and drag-out -------------------------------------------------------
+    {
+        MediaEntry held      = makeEntry(QStringLiteral("voice_note.mp3"), 2516582, 0, 0, 0, MediaState::Idle);
+        held.heldByDataSaver = true;
+        card(QStringLiteral("card_data_saver"), QStringLiteral("card held by data saver"), held);
+        styled(QStringLiteral("card_data_saver_hover"), QStringLiteral("card held by data saver, hover"), held, [](const PreviewStyle& st) { return hovered(st); });
+        MediaEntry heldPhoto      = makeEntry(QStringLiteral("holiday.jpg"), 2516582, 4000, 3000, 0, MediaState::Idle);
+        heldPhoto.heldByDataSaver = true; // looks exactly like any picture waiting for a click
+        add(QStringLiteral("image_data_saver"), QStringLiteral("picture held by data saver (preview)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(heldPhoto, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(heldPhoto, st)), st, ls);
+        });
+    }
+    auto dragSample = [&add](const QString& name, const QString& label, std::function<DragImage(const PreviewStyle&)> fn) {
+        add(name, label, [fn](const PreviewStyle& st, QSize* ls) {
+            const DragImage d = fn(st);
+            if (ls)
+                *ls = (QSizeF(d.image.size()) / d.image.devicePixelRatio()).toSize();
+            return d.image;
+        });
+    };
+    // Stills as Core gives them: device pixels fitted into 160 x 160 logical pixels.
+    auto dragStill = [](const QImage& source, const PreviewStyle& st) { return fitScaled(source, QSize(qRound(160 * st.dpr), qRound(160 * st.dpr))); };
+    dragSample(QStringLiteral("drag_photo_landscape"), QStringLiteral("drag: landscape photo"),
+               [=](const PreviewStyle& st) { return renderDragPicture(dragStill(photo, st), st.dpr, QPointF(0.3, 0.6)); });
+    dragSample(QStringLiteral("drag_photo_portrait"), QStringLiteral("drag: portrait photo"),
+               [=](const PreviewStyle& st) { return renderDragPicture(dragStill(cropToAspect(friendPic, 3.0 / 4.0), st), st.dpr, QPointF(0.5, 0.5)); });
+    dragSample(QStringLiteral("drag_video_poster"), QStringLiteral("drag: video poster"),
+               [=](const PreviewStyle& st) { return renderDragPicture(dragStill(poster, st), st.dpr, QPointF(0.9, 0.1)); });
+    dragSample(QStringLiteral("drag_card_zip"), QStringLiteral("drag: file card"),
+               [=](const PreviewStyle& st) { return renderDragCard(makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Ready), false, st.font, st.dpr); });
+    dragSample(QStringLiteral("drag_card_program"), QStringLiteral("drag: program card"),
+               [=](const PreviewStyle& st) { return renderDragCard(makeEntry(QStringLiteral("setup_tool.exe"), 2516582, 0, 0, 0, MediaState::Ready), true, st.font, st.dpr); });
+    dragSample(QStringLiteral("drag_card_persian"), QStringLiteral("drag: long Persian name"), [=](const PreviewStyle& st) {
+        MediaEntry e    = makeEntry(QStringLiteral("گزارش نهایی پروژه تابستان ۱۴۰۳ نسخه دوم_3f9a1c2e.pdf"), 1830000, 0, 0, 0, MediaState::Ready);
+        e.link.protocol = MediaLink::kProtocol;
+        return renderDragCard(e, false, st.font, st.dpr);
+    });
+
+    // ---- 2.2 sha: checking the downloaded file, and a file that doesn't match --------------------
+    // Core shows "Checking file…" only once a check has taken a moment (check.shown); files over
+    // 256 MB show the check's own progress.
+    auto checking = [](MediaEntry e, double progress, bool again = false) {
+        e.state          = MediaState::Downloading;
+        e.progress       = 1.0;
+        e.check.running  = true;
+        e.check.shown    = true;
+        e.check.again    = again;
+        e.check.progress = progress;
+        return e;
+    };
+    add(QStringLiteral("sha_image_checking"), QStringLiteral("image downloaded, checking (small file)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = checking(photoReady, 0.5);
+        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("sha_image_mismatch"), QStringLiteral("image doesn't match what was sent (preview behind)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(photoReady, MediaError::Mismatch);
+        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("sha_image_mismatch_blurhash"), QStringLiteral("image mismatch over its blurhash, hover (inert)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(photoReady, MediaError::Mismatch);
+        return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), hovered(st), ls);
+    });
+    const MediaEntry bigClip = makeEntry(QStringLiteral("concert_full.mp4"), 536870912, 1280, 720, 5400000, MediaState::Idle);
+    add(QStringLiteral("sha_video_checking_512mb"), QStringLiteral("video 512 MB checking 42% (pressed play)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = checking(bigClip, 0.42);
+        PlaybackOverlay  o;
+        o.busy         = true;
+        o.busyProgress = shownDownloadProgress(e);
+        o.durationMs   = e.link.durationMs;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    });
+    add(QStringLiteral("sha_video_checking_auto"), QStringLiteral("video checking, not playing (small file)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = checking(clip, 0.3);
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
+    add(QStringLiteral("sha_video_mismatch"), QStringLiteral("video doesn't match what was sent"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(clip, MediaError::Mismatch);
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
+    card(QStringLiteral("sha_card_checking"), QStringLiteral("card checking (small file)"), checking(zip, 0.5));
+    card(QStringLiteral("sha_card_checking_512mb"), QStringLiteral("card 512 MB checking 42%"),
+         checking(makeEntry(QStringLiteral("backup_2026.zip"), 536870912, 0, 0, 0, MediaState::Idle), 0.42));
+    card(QStringLiteral("sha_card_checking_again"), QStringLiteral("card 512 MB checking again 10%"),
+         checking(makeEntry(QStringLiteral("backup_2026.zip"), 536870912, 0, 0, 0, MediaState::Idle), 0.10, true));
+    card(QStringLiteral("sha_card_mismatch"), QStringLiteral("card doesn't match what was sent"), failed(zip, MediaError::Mismatch));
+    card(QStringLiteral("sha_card_mismatch_narrow"), QStringLiteral("card mismatch, narrow (240 px)"), failed(zip, MediaError::Mismatch), 240);
+    styled(QStringLiteral("sha_card_mismatch_hover"), QStringLiteral("card mismatch, hover (inert)"), failed(zip, MediaError::Mismatch),
+           [](const PreviewStyle& st) { return hovered(st); });
+
+    // ---- 2.2 reactions: the row under media, the add button, hover / pressed -----------------------
+    {
+        // A preview as ChatIntegration draws it: the media first, then rx::composeObject over it.
+        using Picture = std::function<QImage(const PreviewStyle&, QSize*)>;
+        auto view     = [](std::initializer_list<std::pair<int, int>> counts, int mineMask) {
+            ReactionView v;
+            for (const auto& c : counts)
+                v.per[c.first].count = c.second;
+            for (int i = 0; i < proto::kReactionCount; ++i) {
+                v.per[i].mine = (mineMask >> i) & 1;
+                for (int n = 0; n < v.per[i].count - (v.per[i].mine ? 1 : 0) && n < 3; ++n)
+                    v.per[i].others << QStringLiteral("Friend %1").arg(n + 1);
+            }
+            return v;
+        };
+        auto reacted = [&add](const QString& name, const QString& label, Picture picture, ReactionView v, std::function<void(rx::ObjectState&)> change,
+                              int maxWidth = 400) {
+            add(name, label, [picture, v, change](const PreviewStyle& st, QSize* ls) {
+                QSize           size;
+                const QImage    img = picture(st, &size);
+                rx::ObjectState state;
+                state.dark     = st.dark;
+                state.base     = st.dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff); // the sheet: TeamSpeak's chat
+                state.font     = st.font;
+                state.dpr      = st.dpr;
+                state.maxWidth = st.maxWidth;
+                state.canAdd   = true;
+                change(state);
+                return rx::composeObject(img, size, v, state, nullptr, ls);
+            }, maxWidth);
+        };
+        const Picture photoPicture = [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), st, ls);
+        };
+        const auto none  = [](rx::ObjectState&) {};
+        const auto hover = [](rx::ObjectState& s) { s.hovered = true; };
+        using rx::Zone;
+        const int up = proto::ThumbsUp, heart = proto::Heart, lol = proto::Laughing, wow = proto::Surprised, sad = proto::Sad, fire = proto::Fire;
+
+        reacted(QStringLiteral("reactions_none_hover"), QStringLiteral("reactions: none, hover (add button)"), photoPicture, ReactionView(), hover);
+        reacted(QStringLiteral("reactions_button_hover"), QStringLiteral("reactions: add button under the pointer"), photoPicture, ReactionView(),
+                [](rx::ObjectState& s) {
+                    s.hovered   = true;
+                    s.hoverZone = Zone::AddButton;
+                });
+        reacted(QStringLiteral("reactions_one_mine"), QStringLiteral("reactions: one, yours"), photoPicture, view({{up, 1}}, 1 << up), none);
+        reacted(QStringLiteral("reactions_mixed_hover_pill"), QStringLiteral("reactions: mixed, hover on a pill (add pill shows)"), photoPicture,
+                view({{up, 3}, {heart, 12}, {lol, 1}}, 1 << up), [](rx::ObjectState& s) {
+                    s.hovered    = true;
+                    s.hoverZone  = Zone::Pill;
+                    s.hoverIndex = proto::Heart;
+                });
+        reacted(QStringLiteral("reactions_pressed_pill"), QStringLiteral("reactions: pill pressed"), photoPicture, view({{up, 3}, {fire, 2}}, 0),
+                [](rx::ObjectState& s) {
+                    s.hovered    = true;
+                    s.hoverZone  = s.pressZone = Zone::Pill;
+                    s.hoverIndex = s.pressIndex = proto::Fire;
+                });
+        reacted(QStringLiteral("reactions_six_99plus"), QStringLiteral("reactions: all six, 99+, two yours"), photoPicture,
+                view({{up, 120}, {heart, 42}, {lol, 7}, {wow, 1}, {sad, 2}, {fire, 99}}, (1 << heart) | (1 << fire)), hover);
+        reacted(QStringLiteral("reactions_add_pill_hover"), QStringLiteral("reactions: add pill under the pointer"), photoPicture, view({{sad, 1}}, 0),
+                [](rx::ObjectState& s) {
+                    s.hovered   = true;
+                    s.hoverZone = Zone::AddPill;
+                });
+        reacted(QStringLiteral("reactions_row_kept_empty"), QStringLiteral("reactions: last one removed, pointer still on the row"), photoPicture,
+                ReactionView(), [](rx::ObjectState& s) {
+                    s.hovered = true;
+                    s.keep    = true;
+                });
+        reacted(QStringLiteral("reactions_cant_react_hover"), QStringLiteral("reactions: hover where you can't react (no add pill)"), photoPicture,
+                view({{up, 2}, {heart, 1}}, 0), [](rx::ObjectState& s) {
+                    s.hovered = true;
+                    s.canAdd  = false;
+                });
+        reacted(QStringLiteral("reactions_narrow_wrap"), QStringLiteral("reactions: narrow chat (160 px), wraps"),
+                [=](const PreviewStyle& st, QSize* ls) {
+                    const QImage     tall = cropToAspect(friendPic, 3.0 / 4.0);
+                    const MediaEntry e    = makeEntry(QStringLiteral("portrait.jpg"), 120000, tall.width(), tall.height(), 0, MediaState::Ready);
+                    return renderPreview(e, pictureStill(tall, MediaStill::Full, stillPixels(e, st)), st, ls);
+                },
+                view({{up, 4}, {heart, 2}, {lol, 13}, {wow, 1}, {fire, 5}}, 1 << lol), hover, 160);
+        reacted(QStringLiteral("reactions_gif_badge_button"), QStringLiteral("reactions: GIF badge and add button"),
+                [=](const PreviewStyle& st, QSize* ls) { return renderAnimatedFrame(gifReady, gifFrame(12, stillPixels(gifReady, st)), st, ls); },
+                ReactionView(), hover);
+        reacted(QStringLiteral("reactions_video_controls_row"), QStringLiteral("reactions: video controls and a row"),
+                [=](const PreviewStyle& st, QSize* ls) {
+                    MediaEntry e = clip;
+                    e.state      = MediaState::Ready;
+                    PlaybackOverlay o;
+                    o.controlsVisible = true;
+                    o.playing         = true;
+                    o.positionMs      = 3200;
+                    o.durationMs      = 10000;
+                    o.hover           = VideoZone::Body;
+                    return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
+                },
+                view({{fire, 3}, {wow, 1}}, 1 << wow), hover);
+        // 2.2 integration: an album has one row under its grid (its first item's reactions); audio and voice
+        // cards have no add button, only the row's add pill.
+        const Picture albumPicture = [=](const PreviewStyle& st, QSize* ls) {
+            const QImage            pics[] = {photo, sunset, friendPic};
+            const albums::Geometry  g      = albums::layout(3, st.maxWidth, st.maxHeight);
+            QVector<MediaEntry>     entries;
+            for (int i = 0; i < 3; ++i) {
+                MediaEntry e    = makeEntry(QStringLiteral("trip_%1_3f9a1c2e.jpg").arg(i + 1), 845221, pics[i].width(), pics[i].height(), 0, MediaState::Ready);
+                e.link.protocol = MediaLink::kProtocol;
+                entries.append(e);
+            }
+            QVector<AlbumTile> tiles(3);
+            for (int i = 0; i < 3; ++i) {
+                tiles[i].entry = &entries[i];
+                tiles[i].still = pictureStill(pics[i], MediaStill::Full, albumTileStillPixels(entries[i], g.tiles.at(i).size(), st.dpr));
+            }
+            return renderAlbum(tiles, st, ls);
+        };
+        reacted(QStringLiteral("reactions_album_row"), QStringLiteral("reactions: album, one row under the grid, hover"), albumPicture,
+                view({{heart, 4}, {lol, 2}}, 1 << heart), hover);
+        reacted(QStringLiteral("reactions_album_none_hover"), QStringLiteral("reactions: album hovered, none yet (add button)"), albumPicture, ReactionView(), hover);
+        const Picture audioPicture = [=](const PreviewStyle& st, QSize* ls) {
+            PlaybackOverlay o;
+            o.durationMs      = songReady.link.durationMs;
+            o.controlsVisible = true;
+            return renderAudioCard(songReady, o, st, ls);
+        };
+        const auto cardHover = [](rx::ObjectState& s) {
+            s.hovered  = true;
+            s.noButton = true; // ChatReactions sets it for audio and voice cards
+        };
+        reacted(QStringLiteral("reactions_audio_row_hover"), QStringLiteral("reactions: audio card with a row, hover (add pill)"), audioPicture,
+                view({{fire, 2}, {up, 1}}, 1 << up), cardHover);
+        reacted(QStringLiteral("reactions_audio_none_hover"), QStringLiteral("reactions: audio card hovered, none yet (no button)"), audioPicture, ReactionView(),
+                cardHover);
+        // The pictures themselves, large and at pill size, to look at the drawing.
+        add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 72, 36, 24 and 16 px"), [](const PreviewStyle& st, QSize* ls) {
+            const QSize size(6 * 80, 72 + 8 + 36 + 8 + 24 + 8 + 16);
+            QImage      out(size * st.dpr, QImage::Format_ARGB32_Premultiplied);
+            out.setDevicePixelRatio(st.dpr);
+            out.fill(Qt::transparent);
+            QPainter p(&out);
+            for (int i = 0; i < proto::kReactionCount; ++i) {
+                qreal y = 0;
+                for (const int px : {72, 36, 24, 16}) {
+                    rx::drawReaction(p, QRectF(i * 80 + (72 - px) / 2.0, y, px, px), i);
+                    y += px + 8;
+                }
+            }
+            p.end();
+            *ls = size;
+            return out;
+        });
+    }
     return list;
+}
+
+// 2.2 drag-out: the mini card floats over other apps, always dark: both text colours need 4.5:1.
+int checkDragCardContrast()
+{
+    int failures = 0;
+    for (const QColor& text : {dragCardTitleColor(), dragCardDetailColor()}) {
+        const double ratio = ui::contrastRatio(text, dragCardBackground());
+        QTextStream(stdout) << "drag card " << text.name() << " on " << dragCardBackground().name() << "  " << QString::number(ratio, 'f', 2) << ":1\n";
+        if (ratio < 4.5) {
+            QTextStream(stderr) << "error: drag card text below 4.5:1\n";
+            ++failures;
+        }
+    }
+    return failures;
 }
 
 // Every text colour against what it is drawn on; the result is also saved to <outdir>/contrast.txt.
@@ -604,7 +1218,11 @@ int contrastReport(const QString& outDir)
     int         failures = 0;
     for (const bool dark : {false, true}) {
         out << (dark ? "dark theme\n" : "light theme\n");
-        for (const PreviewColorPair& pair : previewColorPairs(dark)) {
+        QVector<PreviewColorPair> pairs = previewColorPairs(dark) + audioCardColorPairs(dark) + albumColorPairs(dark); // 2.2 audio, album
+        // 2.2 reactions: the row's colours on TeamSpeak's chat background
+        for (const rx::ColorPair& pair : rx::colorPairs(dark, dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff)))
+            pairs.append({pair.name, pair.foreground, pair.background, pair.minimum});
+        for (const PreviewColorPair& pair : qAsConst(pairs)) {
             const double ratio = ui::contrastRatio(pair.foreground, pair.background);
             const bool   ok    = ratio + 0.005 >= pair.minimum;
             failures += ok ? 0 : 1;
@@ -645,6 +1263,45 @@ int checkDisplayFileName()
         if (displayFileName(c.in) != c.out) {
             QTextStream(stderr) << "error: displayFileName(" << c.in << ") = " << displayFileName(c.in) << ", expected " << c.out << "\n";
             ++failures;
+        }
+    }
+    return failures;
+}
+
+// 2.2 spoiler: the cover never moves the chat (same box hidden, fading and revealed) and shows nothing
+// of what has loaded (with a BlurHash the cover is the same whatever still is there).
+int checkSpoilerCovers()
+{
+    PreviewStyle st;
+    st.font = QFont(QStringLiteral("Segoe UI"));
+    st.font.setPointSizeF(9.0);
+    int  failures = 0;
+    auto fail     = [&failures](const QString& text) {
+        QTextStream(stderr) << "error: spoiler: " << text << "\n";
+        ++failures;
+    };
+    const QImage photo = loadSource(QStringLiteral("big_photo.jpg"));
+    for (const char* name : {"photo.jpg", "funny.gif", "clip.mp4", "plain.png"}) {
+        MediaEntry e = makeEntry(QString::fromLatin1(name), 500000, 1280, 720, 8000, MediaState::Ready);
+        if (QByteArray(name) == "plain.png")
+            e = makeEntry(QString::fromLatin1(name), 500000, 0, 0, 0, MediaState::Ready); // card or still-sized
+        e.link.blurHash = kReferenceHash;
+        const MediaStill still = pictureStill(photo, MediaStill::Full, stillPixels(e, st));
+        QSize            sizes[3];
+        QImage           images[3];
+        for (int i = 0; i < 3; ++i) {
+            PreviewStyle s   = st;
+            s.concealOpacity = i * 0.5;
+            images[i]        = renderPreview(e, still, s, &sizes[i]);
+        }
+        if (sizes[0] != sizes[1] || sizes[0] != sizes[2] || (e.link.width > 0 && sizes[0] != previewLogicalSize(e, st)))
+            fail(QStringLiteral("%1 changes size when covered").arg(QString::fromLatin1(name)));
+        if (e.link.width > 0) {
+            PreviewStyle s   = st;
+            s.concealOpacity = 1.0;
+            const QImage bare = renderPreview(e, MediaStill(), s, nullptr);
+            if (bare != images[2])
+                fail(QStringLiteral("%1: the cover shows what has loaded").arg(QString::fromLatin1(name)));
         }
     }
     return failures;
@@ -715,6 +1372,8 @@ int main(int argc, char* argv[])
     QDir().mkpath(outDir);
     if (checkDisplayFileName() != 0)
         return 1;
+    if (checkSpoilerCovers() != 0) // 2.2 spoiler
+        return 1;
 
     QFont chatFont(QStringLiteral("Segoe UI"));
     chatFont.setPointSizeF(9.0);
@@ -749,5 +1408,10 @@ int main(int argc, char* argv[])
         }
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
-    return contrastReport(outDir) == 0 ? 0 : 1;
+    const int contrastFailures = contrastReport(outDir);
+    const int dragCard         = checkDragCardContrast(); // 2.2 drag-out
+    if (g_layoutFailures)
+        QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
+    // 2.2 album: and every grid's size (g_layoutErrors)
+    return contrastFailures == 0 && dragCard == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
 }

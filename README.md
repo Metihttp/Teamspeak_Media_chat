@@ -72,8 +72,8 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 
 ## Send files
 
-- **Drag & drop** files onto the chat. While you drag, the chat shows where the files will go (or why they can't be sent there). A drop sends them right away; hold <kbd>Shift</kbd> while dropping to get TeamSpeak's normal behaviour.
-- **Paste** a screenshot or copied files into the chat input with <kbd>Ctrl</kbd>+<kbd>V</kbd>. A dialog shows what will be sent and where, with a thumbnail or the file sizes. Nothing is sent until you click **Send**.
+- **Drag & drop** files onto the chat. While you drag, the chat shows where the files will go (or why they can't be sent there). A drop opens the send window; hold <kbd>Ctrl</kbd> to send right away, or <kbd>Shift</kbd> to get TeamSpeak's normal behaviour.
+- **Paste** a screenshot or copied files into the chat input with <kbd>Ctrl</kbd>+<kbd>V</kbd>. The send window shows what will be sent and where, with a preview or thumbnails, a caption field and *Mark as spoiler*. Nothing is sent until you click **Send**.
 - **Menu:** **Plugins → TS Media chat → Send files to chat…** (available while you are connected).
 - **Hotkeys:** assign *Send files to the current chat* and *Cancel all uploads* in **Tools → Options → Hotkeys**.
 - **Commands:** type `/tsmedia send`, or `/tsmedia cancel` to stop running uploads. `/tsmedia help` lists the commands.
@@ -126,7 +126,7 @@ Grant them in **Permissions → Server Groups → File Transfer**. Uploading to 
 
 - **Your files stay on your TeamSpeak server.** No cloud, no web requests, no telemetry.
 - **Channel members can open what you send.** Anyone with download permission in that channel can; files stay until someone deletes them.
-- **Nothing is sent by accident.** Ctrl+V always asks first; hold Shift while dropping to get TeamSpeak's normal behaviour.
+- **Nothing is sent by accident.** Ctrl+V and drops open the send window first; hold Shift while dropping to get TeamSpeak's normal behaviour.
 - **Received programs are never run.** `.exe` files, scripts and other runnable files are only shown in Explorer.
 - **Chat links are treated as untrusted.** Sizes, previews and names are checked, and huge images are never decoded.
 
@@ -170,7 +170,7 @@ You need Visual Studio 2022 Build Tools, Qt 5.15.2, Git and Python 3; one script
 
 ## Support
 
-Found a bug? Check the [FAQ](docs/FAQ.md), then [open a bug report](https://github.com/Metihttp/Teamspeak_Media_chat/issues/new?template=bug_report.yml) with the plugin version (type `/tsmedia`), your TeamSpeak and Windows versions, and what happened.
+Found a bug? Check the [FAQ](docs/FAQ.md), then [open a bug report](https://github.com/Metihttp/Teamspeak_Media_chat/issues/new?template=bug_report.yml) with what happened. Type `/tsmedia diag` in the chat and press *Copy* to get the versions, settings and recent plugin messages for the report's *Diagnostic info* box (file names are hidden unless you include them).
 
 ## License and credits
 

@@ -2,7 +2,8 @@
 
 // Video support built on Windows Media Foundation (part of Windows, nothing extra to ship).
 // TeamSpeak does not bundle QtMultimedia, so decoding/playback goes through IMFMediaEngine
-// (frame-server mode, D3D11 with WARP fallback) and IMFSourceReader for probing.
+// (frame-server mode, D3D11 with WARP fallback) and IMFSourceReader for probing. Audio files play
+// through the same engine in its audio-only mode, without any graphics device.
 
 #include <QImage>
 #include <QObject>
@@ -18,6 +19,13 @@ namespace mf {
 bool startup();
 void shutdown();
 
+// Media Foundation can be used on this computer (false on Windows N editions without the Media
+// Feature Pack). Cheap after the first call; safe on any thread.
+bool available();
+// 2.2 diagnostics: the Direct3D device the most recent VideoPlayer got (any thread).
+enum class VideoDevice { NotUsedYet = 0, Hardware = 1, Warp = 2, Failed = 3 };
+VideoDevice lastVideoDevice();
+
 struct ProbeResult {
     bool    ok = false;
     QSize   size;            // display size in pixels (pixel aspect ratio applied)
@@ -31,6 +39,12 @@ struct ProbeResult {
 // Synchronous. Safe to call from any thread (initializes COM/MF for that thread as needed).
 ProbeResult probe(const QString& path, int posterMaxSide = 960);
 
+// How VideoPlayer::open() sets up the engine.
+//  Auto:      video and audio (a D3D11 device renders the frames).
+//  AudioOnly: sound only, no graphics device at all and no frames; for audio files. A video stream
+//             in the file is ignored. Error texts talk about audio.
+enum class OpenMode { Auto, AudioOnly };
+
 // Plays one local file. Video frames are delivered as QImages at setFrameSize() (device pixels),
 // audio goes to the default Windows output device. All methods and signals are GUI-thread only.
 class VideoPlayer : public QObject
@@ -41,9 +55,11 @@ class VideoPlayer : public QObject
     explicit VideoPlayer(QObject* parent = nullptr);
     ~VideoPlayer() override; // shuts the engine down synchronously; no callbacks after this returns
 
-    void open(const QString& path); // asynchronous: emits loaded() or failed()
+    void open(const QString& path, OpenMode mode = OpenMode::Auto); // asynchronous: emits loaded() or failed()
     void close();
     bool isLoaded() const;
+    bool isAudioOnly() const;       // the current file was opened with OpenMode::AudioOnly
+    bool hasGraphicsDevice() const; // a D3D11 device exists for the current file (tests, diagnostics)
 
     void play();
     void pause();
@@ -61,6 +77,12 @@ class VideoPlayer : public QObject
     void   setVolume(double volume); // 0..1
     double volume() const;
     void   setLoop(bool loop);
+
+    // Playback speed (1.0 = normal), after loaded(). setPlaybackRate() returns false (and changes
+    // nothing) when the engine does not support the rate for this file. open() resets it to 1.0.
+    bool   isPlaybackRateSupported(double rate) const;
+    bool   setPlaybackRate(double rate);
+    double playbackRate() const;
 
     // Frames are scaled to exactly this size (callers keep the aspect ratio). Default: video size.
     // When the picture changes size later (videoSizeChanged()), frames show the new picture fitted

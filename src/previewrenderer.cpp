@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <cmath>
 
+#include "albums.h" // 2.2 album
 #include "i18n.h"
+#include "previewpaint.h" // 2.2 audio
+#include "spoiler.h" // 2.2 spoiler
 #include "uiutil.h"
 
 namespace {
@@ -518,16 +521,28 @@ QString retryHint()
     return i18n::t("Click to retry");
 }
 
+// 2.2 sha: files above this show the check's percentage (and their ring follows the check).
+constexpr quint64 kCheckPercentFromBytes = 256ull * 1024 * 1024;
+
+bool checkingPercent(const MediaEntry& e)
+{
+    return isCheckingShown(e) && e.link.size > kCheckPercentFromBytes && e.check.progress >= 0;
+}
+
 // A preview's status from most to least complete, without the file size: the card shows the first
 // one that fits (after "size · first"), the tooltip the first.
 QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly)
 {
     switch (e.state) {
     case MediaState::Idle:
+        if (e.heldByDataSaver && !e.tooLargeForAuto) // 2.2 data saver
+            return {i18n::t("Data saver — click to load"), i18n::t("Click to load"), i18n::t("Download")};
         return {i18n::t("Click to download"), i18n::t("Download")};
     case MediaState::Queued:
         return {i18n::t("Waiting to download…"), i18n::t("Waiting…")};
     case MediaState::Downloading: {
+        if (isCheckingShown(e)) // 2.2 sha
+            return {checkingText(e), i18n::t("Checking…")};
         const int     percent = qRound(qBound(0.0, e.progress, 1.0) * 100.0);
         const QString amounts = amountText(e);
         QStringList   texts;
@@ -543,6 +558,11 @@ QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly
             return {i18n::t("Click to show in folder"), i18n::t("Show in folder")};
         return {i18n::t("Click to open"), i18n::t("Open")};
     case MediaState::Failed:
+        if (e.error == MediaError::Mismatch) { // 2.2 sha: the cause and the way out, as much as fits
+            const QString again = i18n::t("Ask the sender again");
+            return {joinDot(errorTitle(e), errorHint(e)), joinDot(errorTitle(e), again), joinDot(i18n::t("Doesn't match"), again), errorTitle(e),
+                    i18n::t("Doesn't match")};
+        }
         return {errorTitle(e)};
     }
     return {};
@@ -750,6 +770,23 @@ void drawBackdrop(QPainter& p, const QImage& pixels, const QRectF& bounds, bool 
     p.fillRect(bounds, QColor(0, 0, 0, dark ? 120 : 80));
 }
 
+// 2.2 spoiler: the cover over a picture, GIF or video while it is a hidden spoiler (or fading out after a
+// reveal). Drawn over everything but the hairline, so no badge, button, pill or progress shows through.
+void drawSpoilerCover(QPainter& p, const QRectF& bounds, const MediaEntry& e, const QImage& pixels, bool pixelsAreBlurHash, const PreviewStyle& style)
+{
+    if (style.concealOpacity <= 0.0 || !spoiler::appliesTo(e.kind))
+        return;
+    bool               blurHash = false;
+    const QImage       source   = spoiler::coverSource(e.link.blurHash, bounds.size(), pixels, pixelsAreBlurHash, &blurHash);
+    spoiler::CoverLook look;
+    look.font        = fontFor(style, -1, true);
+    look.placeholder = paletteFor(style.dark).placeholder;
+    look.opacity     = style.concealOpacity;
+    look.hovered     = style.hovered;
+    look.pressed     = style.hovered && style.pressed;
+    spoiler::drawCover(p, bounds, source, blurHash, look);
+}
+
 // ---- pictures (images, GIF stills and frames) ---------------------------------------------------
 
 QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Source source, bool animatedFrame, const MediaLayout& layout, const PreviewStyle& style, QSize* logicalSize)
@@ -769,6 +806,13 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
     p.setClipPath(clip);
     p.fillRect(bounds, pal.placeholder);
 
+    // 2.2 spoiler: fully covered, nothing of the picture is drawn (not even in the edge pixels).
+    if (style.concealOpacity >= 1.0 && spoiler::appliesTo(e.kind)) {
+        drawSpoilerCover(p, bounds, e, pixels, source == MediaStill::BlurHash, style);
+        drawHairline(p, bounds, pal.hairline);
+        return out;
+    }
+
     if (!pixels.isNull()) {
         const QRectF target = fitRect(QSizeF(pixels.size()), centered(layout.content, bounds));
         if (target.width() < bounds.width() - 0.75 || target.height() < bounds.height() - 0.75)
@@ -779,6 +823,7 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
     const bool animated = e.kind == MediaKind::AnimatedImage || animatedFrame;
     if (animatedFrame) {
         drawGifBadge(p, bounds, style);
+        drawSpoilerCover(p, bounds, e, pixels, false, style); // 2.2 spoiler
         drawHairline(p, bounds, pal.hairline);
         return out;
     }
@@ -803,6 +848,12 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
         drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::None, -1, {i18n::t("Waiting to download…"), i18n::t("Waiting…")}, pillFont);
         break;
     case MediaState::Downloading: {
+        if (isCheckingShown(e)) { // 2.2 sha: downloaded, being checked
+            const double shown = shownDownloadProgress(e);
+            drawProgressDisc(p, disc, shown, false, checkingPercent(e), style, hovered, pressed);
+            drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, shown, {checkingText(e), i18n::t("Checking…")}, pillFont);
+            break;
+        }
         // Same disc as the download button before, now with the percentage; the pill has the amounts.
         drawProgressDisc(p, disc, e.progress, false, true, style, hovered, pressed);
         const QString amounts = amountText(e);
@@ -823,12 +874,13 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
         break;
     }
     case MediaState::Failed:
-        drawCenterMessage(p, bounds, errorTitle(e), isRetryableDownload(e) ? retryHint() : QString(), true, !pixels.isNull(), style, hovered, pressed);
+        drawCenterMessage(p, bounds, errorTitle(e), errorHint(e), true, !pixels.isNull(), style, hovered, pressed);
         break;
     }
     if (animated && e.state != MediaState::Failed)
         drawGifBadge(p, bounds, style);
 
+    drawSpoilerCover(p, bounds, e, pixels, source == MediaStill::BlurHash, style); // 2.2 spoiler
     drawHairline(p, bounds, pal.hairline);
     return out;
 }
@@ -958,9 +1010,13 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     p.setBrush(background);
     p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), kRadius, kRadius);
 
+    // 2.2 spoiler: a hidden spoiler drawn as a card (no picture size known): neither its name nor its
+    // state, and a click reveals it.
+    const bool hiddenSpoiler = style.concealOpacity > 0.0 && spoiler::appliesTo(e.kind);
+
     const QRectF glyph(kCardPadding, (h - 40.0) / 2.0, 32, 40);
     drawFileGlyph(p, glyph, glyphColor(e), extensionLabel(e), style);
-    if (failed) {
+    if (failed && !hiddenSpoiler) {
         const QRectF badge(glyph.right() - 6, glyph.bottom() - 11, 15, 15);
         p.setPen(QPen(background, 2));
         p.setBrush(Qt::NoBrush);
@@ -978,7 +1034,9 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const QRectF        slot(w - kCardPadding - slotWidth, (h - kCardSlot) / 2.0, slotWidth, kCardSlot);
     const QRectF        icon = slot.adjusted(1, 1, -1, -1);
     bool                hasAction = true;
-    switch (e.state) {
+    if (hiddenSpoiler) // 2.2 spoiler
+        spoiler::drawEyeOffIcon(p, icon, actionInk);
+    else switch (e.state) {
     case MediaState::Idle:
         drawDownloadIcon(p, icon, actionInk);
         break;
@@ -986,7 +1044,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
         drawWaitingGlyph(p, slot.center(), 8.5, 2.2, pal.track, hovered ? pal.title : pal.muted);
         break;
     case MediaState::Downloading:
-        drawRing(p, slot.center(), 8.5, 2.2, e.progress, pal.track, pal.progress, style.animate);
+        drawRing(p, slot.center(), 8.5, 2.2, shownDownloadProgress(e), pal.track, pal.progress, style.animate); // 2.2 sha: the check's, when shown
         break;
     case MediaState::Ready:
         // Programs and scripts are only shown in their folder (the status line says so).
@@ -1024,21 +1082,22 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const auto          align       = Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute;
 
     p.setFont(titleFont);
-    p.setPen(e.state == MediaState::Ready ? pal.link : pal.title);
-    drawFileName(p, QRectF(textStart, top, textWidth, titleFm.height()), align, titleFm.elidedText(displayNameFor(e.link), Qt::ElideMiddle, textWidth));
+    p.setPen(e.state == MediaState::Ready && !hiddenSpoiler ? pal.link : pal.title);
+    const QString title = hiddenSpoiler ? spoiler::label(e.kind) : displayNameFor(e.link); // 2.2 spoiler: not its name
+    drawFileName(p, QRectF(textStart, top, textWidth, titleFm.height()), align, titleFm.elidedText(title, Qt::ElideMiddle, textWidth));
 
     // The status drops the size first, then uses a short form; it is only cut off as a last resort.
     p.setFont(subFont);
-    p.setPen(failed ? pal.errorText : pal.muted);
+    p.setPen(failed && !hiddenSpoiler ? pal.errorText : pal.muted);
     p.drawText(QRectF(textStart, top + titleFm.height() + 3, textWidth, subFm.height()), align,
-               fitText(subFm, cardStatusTexts(e, imageDecodeFailed, style.revealOnly), textWidth));
+               fitText(subFm, hiddenSpoiler ? QStringList{i18n::t("Click to reveal")} : cardStatusTexts(e, imageDecodeFailed, style.revealOnly), textWidth));
 
-    if (e.state == MediaState::Downloading) {
+    if (e.state == MediaState::Downloading && !hiddenSpoiler) {
         const QRectF track(textStart, h - 10, textWidth, 3);
         p.setPen(Qt::NoPen);
         p.setBrush(pal.track);
         p.drawRoundedRect(track, 1.5, 1.5);
-        const qreal  filled = qMax(3.0, track.width() * qBound(0.0, e.progress, 1.0));
+        const qreal  filled = qMax(3.0, track.width() * qBound(0.0, shownDownloadProgress(e), 1.0)); // 2.2 sha
         const QRectF done(track.topLeft(), QSizeF(filled, track.height()));
         p.setBrush(pal.progress);
         p.drawRoundedRect(done, 1.5, 1.5);
@@ -1152,6 +1211,37 @@ void drawVideoControls(QPainter& p, const QRectF& bounds, const PlaybackOverlay&
 
 } // namespace
 
+// ---- 2.2 audio: the helpers above for preview modules in other files (previewpaint.h) -----------
+namespace previewpaint {
+
+Palette palette(bool dark)
+{
+    const ::Palette p = paletteFor(dark);
+    return {p.background, p.backgroundHover, p.border, p.title, p.link, p.muted, p.errorText, p.errorFill,
+            p.track, p.progress, p.placeholder, p.placeholderHover, p.hairline};
+}
+QColor  accent() { return kAccent; }
+qreal   cornerRadius() { return kRadius; }
+QFont   font(const PreviewStyle& style, qreal delta, bool bold) { return fontFor(style, delta, bold); }
+qreal   ratio(const PreviewStyle& style) { return ratioOf(style); }
+QImage  canvas(const QSize& logical, qreal dpr) { return makeCanvas(logical, dpr); }
+void    prepare(QPainter& p) { preparePainter(p); }
+QString fitText(const QFontMetricsF& fm, const QStringList& texts, qreal width) { return ::fitText(fm, texts, width); }
+void    drawFileName(QPainter& p, const QRectF& rect, Qt::Alignment align, const QString& shown) { ::drawFileName(p, rect, align, shown); }
+void    drawPlayIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawPlayIcon(p, box, color); }
+void    drawPauseIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawPauseIcon(p, box, color); }
+void    drawCircularArrow(QPainter& p, const QRectF& box, const QColor& color) { ::drawCircularArrow(p, box, color); }
+void    drawOpenIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawOpenIcon(p, box, color); }
+void    drawDownloadIcon(QPainter& p, const QRectF& box, const QColor& color) { ::drawDownloadIcon(p, box, color); }
+void    drawAlertIcon(QPainter& p, const QRectF& box, const QColor& background, const QColor& mark) { ::drawAlertIcon(p, box, background, mark); }
+void    drawRing(QPainter& p, const QPointF& center, qreal radius, qreal width, double progress, const QColor& track, const QColor& arc, bool animate)
+{
+    ::drawRing(p, center, radius, width, progress, track, arc, animate);
+}
+
+} // namespace previewpaint
+// ---- end 2.2 audio --------------------------------------------------------------------------------
+
 QSize previewLogicalSize(const MediaEntry& entry, const PreviewStyle& style)
 {
     const QSizeF natural = linkSize(entry);
@@ -1210,6 +1300,12 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
 
     const QImage& picture  = !frame.isNull() ? frame : poster.image;
     const bool    hasFrame = !frame.isNull();
+    // 2.2 spoiler: fully covered, nothing of the video is drawn (no poster, no controls).
+    if (style.concealOpacity >= 1.0 && spoiler::appliesTo(entry.kind)) {
+        drawSpoilerCover(p, bounds, entry, picture, !hasFrame && poster.source == MediaStill::BlurHash, style);
+        drawHairline(p, bounds, QColor(255, 255, 255, style.dark ? 18 : 0));
+        return out;
+    }
     if (!picture.isNull()) {
         p.drawImage(fitRect(QSizeF(picture.size()), bounds), picture);
     } else {
@@ -1244,10 +1340,13 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
     const bool failed = entry.state == MediaState::Failed && !hasFrame && !overlay.busy;
     if (failed) {
         const bool retry = isRetryableDownload(entry);
-        drawCenterMessage(p, bounds, errorTitle(entry), retry ? retryHint() : QString(), true, true, style, retry && overlay.hover != VideoZone::None,
+        drawCenterMessage(p, bounds, errorTitle(entry), errorHint(entry), true, true, style, retry && overlay.hover != VideoZone::None,
                           retry && overlay.pressed != VideoZone::None);
     } else if (overlay.busy) {
-        drawProgressDisc(p, g.centerDisc, overlay.busyProgress, false, true, style, overlay.hover != VideoZone::None, overlay.pressed != VideoZone::None);
+        // 2.2 sha: while a smaller file is checked the ring stays full, without a "100%" that would
+        // contradict "Checking file…".
+        const bool label = !isCheckingShown(entry) || checkingPercent(entry);
+        drawProgressDisc(p, g.centerDisc, overlay.busyProgress, false, label, style, overlay.hover != VideoZone::None, overlay.pressed != VideoZone::None);
     } else if (!overlay.playing) {
         const QRectF disc = g.centerDisc;
         PressScale   scale(p, disc.center(), pressed);
@@ -1287,6 +1386,9 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
             const qreal leftMax = right.isValid() ? right.left() - 8.0 - bounds.left() - 8.0 : -1.0;
             if (overlay.externalOnly && !overlay.busy) {
                 drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Open, -1, {i18n::t("Opens in default app")}, pillFont, leftMax);
+            } else if (isCheckingShown(entry) && !started) { // 2.2 sha: downloaded, being checked
+                drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, shownDownloadProgress(entry), {checkingText(entry), i18n::t("Checking…")}, pillFont,
+                         leftMax);
             } else if (!overlay.busy && !started) {
                 switch (entry.state) {
                 case MediaState::Idle:
@@ -1312,6 +1414,7 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
         }
     }
 
+    drawSpoilerCover(p, bounds, entry, picture, !hasFrame && poster.source == MediaStill::BlurHash, style); // 2.2 spoiler
     drawHairline(p, bounds, QColor(255, 255, 255, style.dark ? 18 : 0));
     return out;
 }
@@ -1366,7 +1469,40 @@ double seekFractionAt(const QSize& logicalSize, const QPointF& pos)
 
 bool isRetryableDownload(const MediaEntry& entry)
 {
-    return entry.state == MediaState::Failed && entry.error != MediaError::NotFound && entry.error != MediaError::Password;
+    // 2.2 sha: a file that doesn't match its link would come back with the same bytes.
+    return entry.state == MediaState::Failed && entry.error != MediaError::NotFound && entry.error != MediaError::Password && entry.error != MediaError::Mismatch;
+}
+
+// ---- 2.2 sha ------------------------------------------------------------------------------------
+
+bool isCheckingShown(const MediaEntry& entry)
+{
+    return entry.state == MediaState::Downloading && entry.check.running && entry.check.shown;
+}
+
+double shownDownloadProgress(const MediaEntry& entry)
+{
+    if (!isCheckingShown(entry))
+        return entry.progress;
+    return checkingPercent(entry) ? qBound(0.0, entry.check.progress, 1.0) : 1.0;
+}
+
+QString checkingText(const MediaEntry& entry)
+{
+    const bool percent = checkingPercent(entry);
+    const int  value   = qRound(qBound(0.0, entry.check.progress, 1.0) * 100.0);
+    if (entry.check.again)
+        return percent ? i18n::t("Checking file again… %1%").arg(value) : i18n::t("Checking file again…");
+    return percent ? i18n::t("Checking file… %1%").arg(value) : i18n::t("Checking file…");
+}
+
+QString errorHint(const MediaEntry& entry)
+{
+    if (entry.state != MediaState::Failed)
+        return {};
+    if (entry.error == MediaError::Mismatch)
+        return i18n::t("Ask the sender to send it again");
+    return isRetryableDownload(entry) ? retryHint() : QString();
 }
 
 bool isPreviewActionable(const MediaEntry& entry)
@@ -1378,6 +1514,234 @@ QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool reve
 {
     return statusTexts(entry, cannotPreview, revealOnly).value(0);
 }
+
+// ==== 2.2 album grid =============================================================================
+
+namespace {
+
+constexpr qreal kTileRadius        = 3.0;  // inner corners; the grid's own corners keep kRadius
+constexpr int   kOverflowDim       = 140;  // "+N" over the last tile's picture: white text 4.7:1 over white
+constexpr int   kTileFailedDim     = 150;  // failed tile: its title white over white pixels 5.4:1
+constexpr int   kTilePressedAlpha  = 30;
+constexpr qreal kTileDisc          = 32.0; // download / progress disc
+constexpr qreal kTileVideoDisc     = 36.0; // play disc
+constexpr qreal kTileAlertDisc     = 20.0;
+constexpr qreal kTilePlaceholderGlyph = 24.0;
+constexpr int   kTileLabelMinWidth  = 140; // size pill and error title only on tiles this wide ...
+constexpr int   kTileLabelMinHeight = 96;  // ... (the title also this tall)
+constexpr int   kTileGifMinWidth    = 64;
+
+// A rectangle with its own radius per corner (top-left, top-right, bottom-right, bottom-left).
+QPainterPath cornerPath(const QRectF& r, qreal tl, qreal tr, qreal br, qreal bl)
+{
+    QPainterPath path;
+    path.moveTo(r.left() + tl, r.top());
+    path.lineTo(r.right() - tr, r.top());
+    if (tr > 0)
+        path.arcTo(QRectF(r.right() - 2 * tr, r.top(), 2 * tr, 2 * tr), 90, -90);
+    path.lineTo(r.right(), r.bottom() - br);
+    if (br > 0)
+        path.arcTo(QRectF(r.right() - 2 * br, r.bottom() - 2 * br, 2 * br, 2 * br), 0, -90);
+    path.lineTo(r.left() + bl, r.bottom());
+    if (bl > 0)
+        path.arcTo(QRectF(r.left(), r.bottom() - 2 * bl, 2 * bl, 2 * bl), 270, -90);
+    path.lineTo(r.left(), r.top() + tl);
+    if (tl > 0)
+        path.arcTo(QRectF(r.left(), r.top(), 2 * tl, 2 * tl), 180, -90);
+    path.closeSubpath();
+    return path;
+}
+
+// A tile's outline: the grid's rounded corners where it has one, small ones inside. inset: half a pixel
+// for the hairline.
+QPainterPath tileShape(const QRect& tile, const QSize& box, qreal inset = 0.0)
+{
+    const bool   left   = tile.x() == 0;
+    const bool   top    = tile.y() == 0;
+    const bool   right  = tile.x() + tile.width() == box.width();
+    const bool   bottom = tile.y() + tile.height() == box.height();
+    const QRectF r      = QRectF(tile).adjusted(inset, inset, -inset, -inset);
+    auto         radius = [inset](bool outer) { return (outer ? kRadius : kTileRadius) - inset; };
+    return cornerPath(r, radius(top && left), radius(top && right), radius(bottom && right), radius(bottom && left));
+}
+
+// A spoiler tile: the same cover as a single preview (spoiler::drawCover: the link's BlurHash or a
+// heavily blurred still, darkened, with the "SPOILER" pill or the eye-off mark), so nothing of the
+// picture shows. opacity < 1: the reveal crossfade over the revealed tile. withPill false: the "+N"
+// tile, whose count takes the middle.
+void drawTileCover(QPainter& p, const QRectF& r, const AlbumTile& t, const QImage& pixels, qreal opacity, const PreviewStyle& style, bool withPill = true)
+{
+    if (opacity <= 0.0 || !t.entry || !spoiler::appliesTo(t.entry->kind))
+        return;
+    bool               blurHash = false;
+    const QImage       source   = spoiler::coverSource(t.entry->link.blurHash, r.size(), pixels, t.still.source == MediaStill::BlurHash, &blurHash);
+    spoiler::CoverLook look;
+    look.font        = fontFor(style, -1, true);
+    look.placeholder = paletteFor(style.dark).placeholder;
+    look.opacity     = opacity;
+    look.hovered     = t.hovered;
+    look.pressed     = t.hovered && t.pressed;
+    look.withPill    = withPill;
+    spoiler::drawCover(p, r, source, blurHash, look);
+}
+
+// What a failed item says inside its tile: the alert disc, and the short cause when there is room.
+void drawTileFailure(QPainter& p, const QRectF& r, const MediaEntry& e, const PreviewStyle& style)
+{
+    p.fillRect(r, QColor(0, 0, 0, kTileFailedDim));
+    const QFont         font = fontFor(style, -1, true);
+    const QFontMetricsF fm(font);
+    const bool          withTitle = r.width() >= kTileLabelMinWidth && r.height() >= kTileLabelMinHeight;
+    const qreal         blockH    = kTileAlertDisc + (withTitle ? 6.0 + fm.height() : 0.0);
+    const qreal         top       = r.center().y() - blockH / 2.0;
+    drawAlertIcon(p, QRectF(r.center().x() - kTileAlertDisc / 2.0, top, kTileAlertDisc, kTileAlertDisc), kAlertRed, Qt::white);
+    if (!withTitle)
+        return;
+    p.setFont(font);
+    p.setPen(Qt::white);
+    const QRectF line(r.left() + 8.0, top + kTileAlertDisc + 6.0, r.width() - 16.0, fm.height());
+    p.drawText(line, Qt::AlignCenter, fm.elidedText(downloadErrorTitle(e.error), Qt::ElideRight, line.width()));
+}
+
+void drawAlbumTile(QPainter& p, const QRect& tile, const QSize& box, const AlbumTile& t, int overflow, const PreviewStyle& style, const Palette& pal)
+{
+    const QRectF r(tile);
+    p.save();
+    p.setClipPath(tileShape(tile, box));
+    p.fillRect(r, pal.placeholder);
+
+    const MediaEntry* e = t.entry;
+    if (!e) {
+        // Not arrived yet: quiet and static (it may wait a long time; no shimmer).
+        QColor glyph = pal.muted;
+        glyph.setAlphaF(0.35);
+        drawImageGlyph(p, centered(QSizeF(kTilePlaceholderGlyph, kTilePlaceholderGlyph), r), glyph);
+    } else {
+        const QImage& pixels = !t.frame.isNull() && !t.concealed ? t.frame : t.still.image;
+        const bool    actionable = isPreviewActionable(*e);
+        if (t.concealed) {
+            drawTileCover(p, r, t, t.still.image, 1.0, style, overflow == 0); // 2.2 spoiler: never a GIF frame under it
+        } else if (!pixels.isNull()) {
+            p.drawImage(coverRect(QSizeF(pixels.size()), r), pixels);
+        }
+
+        if (overflow > 0) {
+            // "+N": the picture stays recognisable behind the count.
+            p.fillRect(r, QColor(0, 0, 0, kOverflowDim));
+            p.setFont(fontFor(style, 10, true));
+            p.setPen(Qt::white);
+            p.drawText(r, Qt::AlignCenter, i18n::t("+%1").arg(overflow));
+        } else if (!t.concealed && e->state == MediaState::Failed) {
+            drawTileFailure(p, r, *e, style);
+        } else if (!t.concealed) {
+            const bool   video    = e->kind == MediaKind::Video;
+            const bool   hovered  = t.hovered && actionable;
+            const bool   pressed  = t.pressed && actionable;
+            const QFont  pillFont = fontFor(style, -2);
+            const qreal  room     = qMin(r.width(), r.height()) - 12.0;
+            const QRectF disc     = centered(QSizeF(qMin(kTileDisc, room), qMin(kTileDisc, room)), r);
+            const QRectF playDisc = centered(QSizeF(qMin(kTileVideoDisc, room), qMin(kTileVideoDisc, room)), r);
+            switch (e->state) {
+            case MediaState::Queued:
+                drawProgressDisc(p, disc, -1, true, false, style, hovered, pressed);
+                break;
+            case MediaState::Downloading:
+                drawProgressDisc(p, disc, e->progress, false, false, style, hovered, pressed);
+                break;
+            case MediaState::Idle:
+            case MediaState::Ready:
+                if (video) {
+                    PressScale scale(p, playDisc.center(), pressed);
+                    drawButtonDisc(p, playDisc, hovered, pressed);
+                    drawPlayIcon(p, discIcon(playDisc, 0.28).translated(playDisc.width() * 0.02, 0), Qt::white);
+                } else if (e->state == MediaState::Idle && t.still.source != MediaStill::Preview) {
+                    PressScale scale(p, disc.center(), pressed);
+                    drawButtonDisc(p, disc, hovered, pressed);
+                    drawDownloadIcon(p, discIcon(disc, 0.27), Qt::white);
+                } else if (e->state == MediaState::Ready && pixels.isNull()) {
+                    drawImageGlyph(p, centered(QSizeF(kTilePlaceholderGlyph, kTilePlaceholderGlyph), r), pal.muted); // can't preview
+                }
+                break;
+            case MediaState::Failed:
+                break;
+            }
+            if (video && e->link.durationMs > 0)
+                drawPill(p, r, Qt::BottomRightCorner, PillIcon::None, -1, {formatDuration(e->link.durationMs)}, pillFont);
+            else if (!video && e->state == MediaState::Idle && r.width() >= kTileLabelMinWidth)
+                drawPill(p, r, Qt::BottomLeftCorner, PillIcon::Download, -1, {sizeText(*e)}, pillFont);
+            if (e->kind == MediaKind::AnimatedImage && r.width() >= kTileGifMinWidth)
+                drawGifBadge(p, r, style);
+        }
+        if (!t.concealed && overflow == 0)
+            drawTileCover(p, r, t, t.still.image, t.concealOpacity, style); // 2.2 spoiler: the reveal crossfade
+        if (t.pressed && actionable && !t.concealed) // a covered tile's pill shows the press
+            p.fillRect(r, QColor(0, 0, 0, kTilePressedAlpha));
+    }
+    p.restore();
+
+    p.setPen(QPen(pal.hairline, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(tileShape(tile, box, 0.5));
+}
+
+} // namespace
+
+QSize albumLogicalSize(int items, const PreviewStyle& style)
+{
+    return albums::layout(items, style.maxWidth, style.maxHeight).box;
+}
+
+QImage renderAlbum(const QVector<AlbumTile>& tiles, const PreviewStyle& style, QSize* logicalSize)
+{
+    const albums::Geometry g = albums::layout(tiles.size(), style.maxWidth, style.maxHeight);
+    if (logicalSize)
+        *logicalSize = g.box;
+    if (g.box.isEmpty())
+        return {};
+    QImage   out = makeCanvas(g.box, ratioOf(style));
+    QPainter p(&out);
+    preparePainter(p);
+    p.setLayoutDirection(Qt::LeftToRight);
+    const Palette pal = paletteFor(style.dark);
+    for (int i = 0; i < g.tiles.size(); ++i)
+        drawAlbumTile(p, g.tiles.at(i), g.box, tiles.at(i), i == g.tiles.size() - 1 ? g.overflow : 0, style, pal);
+    return out;
+}
+
+QSize albumTileStillPixels(const MediaEntry& entry, const QSize& tile, qreal dpr)
+{
+    const qreal  ratio   = dpr > 0.0 ? qBound(0.5, dpr, 8.0) : 1.0;
+    const QSizeF natural = linkSize(entry);
+    if (tile.isEmpty())
+        return {};
+    if (natural.isEmpty()) {
+        // No dimensions in the link: a square twice the tile's longer side covers it for any picture up to 2:1.
+        const int side = qCeil(qMax(tile.width(), tile.height()) * ratio * 2.0);
+        return QSize(side, side);
+    }
+    const QSizeF cover = natural.scaled(QSizeF(tile) * ratio, Qt::KeepAspectRatioByExpanding);
+    return QSize(qCeil(cover.width()), qCeil(cover.height()));
+}
+
+QVector<PreviewColorPair> albumColorPairs(bool dark)
+{
+    const Palette             pal = paletteFor(dark);
+    const QColor              white(Qt::white);
+    QVector<PreviewColorPair> pairs;
+    auto add = [&pairs](const char* name, const QColor& foreground, const QColor& background, double minimum) {
+        pairs.append({QString::fromLatin1(name), foreground, background, minimum});
+    };
+    const QColor overflow = ui::flatten(QColor(0, 0, 0, kOverflowDim), white);
+    add("album +N over white", white, overflow, 4.5);
+    add("album +N over white (pressed)", white, ui::flatten(QColor(0, 0, 0, kTilePressedAlpha), overflow), 4.5);
+    add("album error title over white", white, ui::flatten(QColor(0, 0, 0, kTileFailedDim), white), 4.5);
+    add("album error title on placeholder", white, ui::flatten(QColor(0, 0, 0, kTileFailedDim), pal.placeholder), 4.5);
+    add("album alert mark on its disc", white, kAlertRed, 3.0); // the disc reads by its white mark
+    // Spoiler tiles use the single previews' cover (its pill is checked in previewColorPairs).
+    return pairs;
+}
+
+// ==== end of 2.2 album grid ======================================================================
 
 QVector<PreviewColorPair> previewColorPairs(bool dark)
 {
@@ -1436,5 +1800,14 @@ QVector<PreviewColorPair> previewColorPairs(bool dark)
     add("video time over white", QColor(255, 255, 255, kTimeAlpha), timeBg, 4.5);
     add("video control icons over white", white, timeBg, 3.0);
     add("video playhead over white", white, ui::flatten(shadeAt(kSeekFromBottom), white), 3.0);
+    // 2.2 spoiler: the pill on a cover made from a white picture (the lighter BlurHash dimming).
+    const QColor covered = ui::flatten(QColor(0, 0, 0, spoiler::kBlurHashDimAlpha), white);
+    add("spoiler pill text over white", white, ui::flatten(QColor(0, 0, 0, spoiler::kPillAlpha), covered), 4.5);
     return pairs;
+}
+
+// 2.2 drag-out
+void drawFileTypeGlyph(QPainter& p, const QRectF& rect, const MediaEntry& entry, const PreviewStyle& style)
+{
+    drawFileGlyph(p, rect, glyphColor(entry), extensionLabel(entry), style);
 }

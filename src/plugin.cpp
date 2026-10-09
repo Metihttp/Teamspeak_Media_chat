@@ -9,19 +9,32 @@
 #include <QRegularExpression>
 #include <QThread>
 #include <QTimer>
+#include <QVector>
 
 #include <cstdlib>
 #include <cstring>
 
+#include "accessgroup.h" // 2.2 servergroup
 #include "chatintegration.h"
+#include "composesettings.h" // 2.2 compose
 #include "core.h"
+#include "datasaver.h" // 2.2 per-server settings
+#include "diagnosticscollect.h" // 2.2 diagnostics
+#include "diagnosticsdialog.h"  // 2.2 diagnostics
+#include "fileverify.h"         // 2.2 sha: its diagnostics section
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "ownedtimer.h"
+#include "peerhub.h"        // 2.2 protocol
+#include "pluginlog.h"
 #include "previewrenderer.h"
+#include "privacysection.h" // 2.2 protocol
 #include "settings.h"
 #include "settingsdialog.h"
+#include "spoilersection.h" // 2.2 spoiler
 #include "ts3api.h"
+#include "update/updateinstaller.h" // 2.2 updater
+#include "update/updater.h"         // 2.2 updater
 #include "version.h"
 #include "video/mfvideo.h"
 
@@ -30,12 +43,26 @@
 
 namespace {
 
-QPointer<Core>            g_core;
-QPointer<ChatIntegration> g_chat;
-QPointer<SettingsDialog>  g_settings;
-bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
+QPointer<Core>              g_core;
+QPointer<ChatIntegration>   g_chat;
+QPointer<SettingsDialog>    g_settings;
+QPointer<upd::Updater>      g_updater;                 // 2.2 updater
+QPointer<AccessGroup>       g_access;                  // 2.2 servergroup
+QPointer<DiagnosticsDialog> g_diagnostics;             // 2.2 diagnostics
+QPointer<PeerHub>           g_peers;                   // 2.2 protocol: presence and reactions
+bool                        g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
-enum MenuId { MenuSend = 1, MenuSettings, MenuCache };
+// Explicit values: each feature owns its ids, and existing ones stay stable.
+enum MenuId {
+    MenuSend            = 1,
+    MenuSettings        = 2,
+    MenuCache           = 3,
+    MenuUpdate          = 4,  // 2.2 updater (official builds only)
+    MenuPauseDownloads  = 5,  // 2.2 data saver
+    MenuResumeDownloads = 6,  // 2.2 data saver
+    MenuGiveAccess      = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
+    MenuRemoveAccess    = 21, // 2.2 servergroup
+};
 
 template <typename Fn>
 void onGuiThread(Fn&& fn)
@@ -63,6 +90,8 @@ void copyText(char* dst, size_t size, const QString& text)
     dst[utf8.size()] = '\0';
 }
 
+void updateMenus();
+
 void showSettings(QWidget* parent)
 {
     if (!g_core)
@@ -75,13 +104,46 @@ void showSettings(QWidget* parent)
     // Heap allocated and non-blocking so plugin shutdown can always close it.
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
+    dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
+    dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
-        if (g_core)
-            g_core->applyCacheLimit(); // a lower limit counts now, not after the next download
+        if (g_peers)
+            g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
+        if (g_core) {
+            g_core->applyCacheLimit();    // a lower limit counts now, not after the next download
+            g_core->onDataSaverChanged(); // 2.2 data saver: may stop or release automatic downloads
+            g_core->spoilerSettingChanged(); // 2.2 spoiler: an open viewer follows "without blurring" too
+        }
         if (g_chat)
             g_chat->refreshAll();
+        updateMenus(); // 2.2 data saver: the Pause / Resume pair
     });
     g_settings = dialog;
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+// 2.2 diagnostics: one "Diagnostic info" window (/tsmedia diag, Settings → Diagnostic info…). Owned
+// by TeamSpeak's main window, so it stays open when the settings close.
+void showDiagnostics(QWidget* parent)
+{
+    if (!g_core)
+        return;
+    if (g_diagnostics) {
+        g_diagnostics->raise();
+        g_diagnostics->activateWindow();
+        return;
+    }
+    diag::Environment env;
+    env.core                   = g_core;
+    env.chat                   = g_chat;
+    env.mediaFoundationStarted = g_mediaFoundation;
+    env.pluginApi              = PLUGIN_API_VERSION;
+    QWidget* owner             = g_chat && g_chat->mainWindow() ? g_chat->mainWindow() : parent;
+    auto*    dialog            = new DiagnosticsDialog(env, owner); // deletes itself on close
+    g_diagnostics              = dialog;
     dialog->show();
     dialog->raise();
     dialog->activateWindow();
@@ -93,14 +155,20 @@ void printHelp(uint64 sch)
 {
     ts3::printInfo(sch, i18n::t(TSMEDIA_VERSION " — commands:"));
     const char* const commands[] = {
-        "[b]/tsmedia send[/b] — choose files to send to this chat",
+        "[b]/tsmedia send[/b] — choose files to send to this chat (opens the send window)",
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",
+        "[b]/tsmedia update[/b] — check for a new version", // 2.2 updater (official builds only)
+        "[b]/tsmedia datasaver[/b] on | off | default — pause or resume automatic downloads on this server", // 2.2 data saver
+        "[b]/tsmedia diag[/b] — copy diagnostic info for a bug report", // 2.2 diagnostics
         "[b]/tsmedia help[/b] — show this list",
     };
-    for (const char* line : commands)
+    for (const char* line : commands) {
+        if (!upd::Updater::builtIn() && strstr(line, "/tsmedia update")) // 2.2 updater
+            continue;
         ts3::print(sch, i18n::t(line));
+    }
     ts3::print(sch, i18n::t("Tip: drop files on the chat to send them (hold Shift to skip), or copy files or a screenshot and press Ctrl+V in the chat input."));
 }
 
@@ -127,6 +195,24 @@ void cancelUploads(uint64 sch)
         ts3::printInfo(where, i18n::t("Canceled %1 uploads.").arg(canceled));
 }
 
+// 2.2 updater: uploads a TeamSpeak restart would cancel. Posting too: the file is on the server, but
+// its chat message may still wait (for earlier files, the album, or the flood governor) and would never
+// be sent.
+int runningUploads()
+{
+    int running = 0;
+    if (g_core) {
+        for (int id : g_core->uploadIds()) {
+            const UploadJob* job = g_core->upload(id);
+            if (job
+                && (job->state == UploadState::Preparing || job->state == UploadState::Compressing || job->state == UploadState::Uploading
+                    || job->state == UploadState::Posting))
+                ++running;
+        }
+    }
+    return running;
+}
+
 // "Send files to chat…" is only offered while the current server tab is connected.
 void updateMenus()
 {
@@ -134,6 +220,17 @@ void updateMenus()
         return;
     const QByteArray id = ts3::pluginId.toUtf8();
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuSend, ts3::isConnected(ts3::currentConnection()) ? 1 : 0);
+    datasaver::updateMenu(MenuPauseDownloads, MenuResumeDownloads); // 2.2 data saver
+}
+
+// 2.2 per-server settings: after the Plugins menu or a command changed a server's data saver.
+void serverSettingsChanged()
+{
+    if (g_core)
+        g_core->onDataSaverChanged();
+    updateMenus();
+    if (g_settings)
+        g_settings->reloadServers(); // rows not edited in an open dialog show the new value
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -247,6 +344,28 @@ TS3_EXPORT int ts3plugin_init()
     if (!qApp)
         return 1;
 
+    plog::start(ts3::dataDir() + QStringLiteral("/logs")); // 2.2 foundation: the plugin log file, before anything logs
+    // 2.2 updater: before anything else, a just-updated version whose previous start never finished
+    // (a crash in init) puts the previous version back; returning 1 makes TeamSpeak unload it.
+    if (upd::bootGuard(upd::Layout::forRunningPlugin(ts3::dataDir()), upd::Version::parse(QString::fromLatin1(TSMEDIA_VERSION))) == upd::BootGuard::RolledBack) {
+        ts3::log(QString::fromLatin1("[update] " TSMEDIA_VERSION " didn't start last time: the previous version was restored"), LogLevel_WARNING);
+        plog::shutdown(); // TeamSpeak unloads the DLL without calling ts3plugin_shutdown
+        return 1;
+    }
+#ifdef TSMEDIA_TESTHOOKS
+    // 2.2 updater rollback tests (test builds only): <data>/selftest_init_fail.txt makes this start fail
+    // (init returns 1), selftest_init_crash.txt makes it crash. Each trigger is used once.
+    if (takeTrigger(QString::fromLatin1("selftest_init_fail.txt"), nullptr)) {
+        ts3::log(QString::fromLatin1("[test] init fails on purpose"), LogLevel_WARNING);
+        plog::shutdown();
+        return 1;
+    }
+    if (takeTrigger(QString::fromLatin1("selftest_init_crash.txt"), nullptr)) {
+        ts3::log(QString::fromLatin1("[test] init crashes on purpose"), LogLevel_WARNING);
+        *static_cast<volatile int*>(nullptr) = 0;
+    }
+#endif
+
     Settings::instance().load();
 
     auto* core = new Core;
@@ -258,14 +377,44 @@ TS3_EXPORT int ts3plugin_init()
     g_core = core;
     g_chat = chat;
 
+    // 2.2 servergroup: Settings > Server access and the Give / Remove TS Media chat access menu items
+    g_access = new AccessGroup(MenuGiveAccess, MenuRemoveAccess);
+    if (QThread::currentThread() != qApp->thread())
+        g_access->moveToThread(qApp->thread());
+
     QMetaObject::invokeMethod(core, [core, chat] {
+        diag::startSessionStats(core);              // 2.2 diagnostics: counts from the start (a child of core)
+        diag::setDialogOpener(&showDiagnostics);    // 2.2 diagnostics: Settings → Diagnostic info…
+        // 2.2 diagnostics: recent lines from the plugin log (names marked, so they can be left out).
+        // Called on the dialog's worker thread; plog is thread-safe.
+        diag::setLogTailProvider([](int maxLines) {
+            const QStringList all = plog::tail(100000); // at most two files of 256 KB
+            return diag::pluginLogTail(all.mid(qMax(0, all.size() - maxLines)), all.size());
+        });
         g_mediaFoundation = mf::startup();
         if (!g_mediaFoundation)
-            ts3::log(QStringLiteral("Media Foundation is not available: videos can't be played inside the chat"), LogLevel_WARNING);
+            ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
         core->start();
+        // 2.2 protocol: after Core (its flood governors), before the chat (reaction rows). start()
+        // registers the send window's presence line (compose::setPresenceLineFactory); prepareShutdown
+        // and ~PeerHub clear it again.
+        auto* peers = new PeerHub(core);
+        g_peers     = peers;
+        peers->start();
+        // 2.2 sha and protocol: their sections of the diagnostic info (counts only; called on the GUI
+        // thread while it is collected, and the dialog is closed before PeerHub goes at shutdown).
+        diag::addSectionProvider([]() -> diag::Section { return {fileverify::diagnosticsTitle(), fileverify::diagnosticLines()}; });
+        diag::addSectionProvider([]() -> diag::Section {
+            PeerHub* hub = PeerHub::instance();
+            return hub ? diag::Section{PeerHub::diagnosticsTitle(), hub->diagnosticLines()} : diag::Section();
+        });
         chat->start();
         updateMenus();
-        ts3::log(QStringLiteral(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded"));
+        // 2.2 updater: this start counts as successful (started marker, applied -> done), then the
+        // consent window / daily check are scheduled. Deleted first in ts3plugin_shutdown.
+        g_updater = new upd::Updater(ts3::dataDir(), upd::Updater::Hooks{[] { return runningUploads(); }});
+        g_updater->start();
+        ts3::log(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded");
     }, Qt::QueuedConnection);
     return 0;
 }
@@ -273,6 +422,16 @@ TS3_EXPORT int ts3plugin_init()
 TS3_EXPORT void ts3plugin_shutdown()
 {
     auto cleanup = [] {
+        // 2.2 protocol: BYE where we said hello (not waiting for an answer), reactions.json written.
+        if (g_peers)
+            g_peers->prepareShutdown();
+
+        diag::setDialogOpener(nullptr); // 2.2 diagnostics (its window is closed below and waits for its worker)
+        diag::setLogTailProvider(nullptr);
+        // 2.2 updater: cancels a running check or download (waits at most 1 s; a job still in a network
+        // read keeps the DLL pinned and ends on its own) and closes its windows.
+        delete g_updater.data();
+
         // Our windows must be gone before the DLL is unloaded. Deleting one window can delete
         // another (owned dialogs), hence the guarded second pass.
         QList<QPointer<QWidget>> windows;
@@ -295,6 +454,9 @@ TS3_EXPORT void ts3plugin_shutdown()
         for (const QPointer<QWidget>& w : leftovers)
             delete w.data();
 
+        delete g_access.data(); // 2.2 servergroup: stops its timers and a running icon upload
+        delete g_peers.data(); // 2.2 protocol: the store, the presence directory, the transport
+
         delete g_core.data(); // waits for probe workers
 
         // Every mf::VideoPlayer is gone now (viewer windows, inline players).
@@ -302,6 +464,9 @@ TS3_EXPORT void ts3plugin_shutdown()
             mf::shutdown();
             g_mediaFoundation = false;
         }
+
+        // 2.2 foundation: last, so the steps above can still log.
+        plog::shutdown();
     };
     if (QThread::currentThread() == qApp->thread())
         cleanup();
@@ -353,6 +518,23 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
         });
     } else if (cmd == QLatin1String("cancel")) {
         onGuiThread([sch] { cancelUploads(sch); });
+    } else if (cmd == QLatin1String("update")) { // 2.2 updater
+        onGuiThread([sch] {
+            if (g_updater && upd::Updater::builtIn())
+                g_updater->checkNow(upd::Updater::Origin::Chat);
+            else
+                ts3::printInfo(sch, i18n::t("Updates are turned off in versions you build yourself. Check "
+                                            "github.com/Metihttp/Teamspeak_Media_chat/releases for new versions."));
+        });
+    } else if (cmd == QLatin1String("datasaver") || cmd.startsWith(QLatin1String("datasaver "))) {
+        // 2.2 data saver: "/tsmedia datasaver [on|off|default]" (the argument is checked there).
+        const QString arguments = cmd.mid(9).trimmed().left(40);
+        onGuiThread([sch, arguments] {
+            if (datasaver::runCommand(sch, arguments))
+                serverSettingsChanged();
+        });
+    } else if (cmd == QLatin1String("diag") || cmd == QLatin1String("diagnostics")) { // 2.2 diagnostics
+        onGuiThread([] { showDiagnostics(nullptr); });
     } else if (cmd == QLatin1String("debug")) {
         onGuiThread([sch] {
             if (!g_chat)
@@ -386,22 +568,34 @@ TS3_EXPORT int ts3plugin_requestAutoload()
 TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** menuIcon)
 {
     struct Item {
-        MenuId  id;
-        QString text;
+        MenuId         id;
+        QString        text;
+        PluginMenuType type = PLUGIN_MENU_TYPE_GLOBAL;
     };
     const Item items[] = {
         {MenuSend, i18n::t("Send files to chat…")},
+        // 2.2 data saver: an enable/disable pair (the SDK can't change a menu item's text or check mark).
+        {MenuPauseDownloads, i18n::t("Pause automatic downloads on this server")},
+        {MenuResumeDownloads, i18n::t("Resume automatic downloads on this server")},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
+        {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
+        {MenuGiveAccess, i18n::t("Give TS Media chat access"), PLUGIN_MENU_TYPE_CLIENT},     // 2.2 servergroup
+        {MenuRemoveAccess, i18n::t("Remove TS Media chat access"), PLUGIN_MENU_TYPE_CLIENT}, // 2.2 servergroup
     };
-    constexpr size_t count = sizeof(items) / sizeof(items[0]);
+    QVector<const Item*> shown;
+    for (const Item& item : items) {
+        if (item.id != MenuUpdate || upd::Updater::builtIn())
+            shown.append(&item);
+    }
+    const int count = shown.size();
 
     *menuItems = static_cast<PluginMenuItem**>(malloc(sizeof(PluginMenuItem*) * (count + 1)));
-    for (size_t i = 0; i < count; ++i) {
+    for (int i = 0; i < count; ++i) {
         auto* item = static_cast<PluginMenuItem*>(malloc(sizeof(PluginMenuItem)));
-        item->type = PLUGIN_MENU_TYPE_GLOBAL;
-        item->id   = items[i].id;
-        copyText(item->text, PLUGIN_MENU_BUFSZ, items[i].text);
+        item->type = shown.at(i)->type;
+        item->id   = shown.at(i)->id;
+        copyText(item->text, PLUGIN_MENU_BUFSZ, shown.at(i)->text);
         copyText(item->icon, PLUGIN_MENU_BUFSZ, QString());
         (*menuItems)[i] = item;
     }
@@ -433,10 +627,21 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
 
 TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID)
 {
-    Q_UNUSED(serverConnectionHandlerID);
     Q_UNUSED(type);
+    if (AccessGroup::handleMenuItem(serverConnectionHandlerID, menuItemID, selectedItemID)) // 2.2 servergroup
+        return;
     Q_UNUSED(selectedItemID);
+    const uint64 sch = serverConnectionHandlerID; // the current server tab
     switch (menuItemID) {
+    case MenuPauseDownloads: // 2.2 data saver
+    case MenuResumeDownloads:
+        onGuiThread([sch, pause = menuItemID == MenuPauseDownloads] {
+            if (datasaver::setFromMenu(sch, pause))
+                serverSettingsChanged();
+            else
+                updateMenus(); // e.g. a stale pair after a reload
+        });
+        break;
     case MenuSend:
         onGuiThread([] {
             if (g_chat)
@@ -450,6 +655,15 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
         onGuiThread([] {
             if (g_core)
                 g_core->openCacheFolder();
+        });
+        break;
+    case MenuUpdate: // 2.2 updater: the result shows in Settings → Updates (or the update dialog)
+        onGuiThread([] {
+            showSettings(nullptr);
+            if (g_settings) // the dialog opens on the tab used last; the result is on this one
+                g_settings->showTab(SettingsDialog::Tab::PrivacyUpdates);
+            if (g_updater)
+                g_updater->checkNow(upd::Updater::Origin::Settings);
         });
         break;
     default:
@@ -495,7 +709,18 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
         });
     }
 #endif
+    PeerHub::onConnectStatus(sch, newStatus); // 2.2 protocol: HELLO once connected, forget on disconnect
     onGuiThread([] { updateMenus(); });
+    AccessGroup::handleConnectStatus(sch, newStatus); // 2.2 servergroup
+    if (newStatus == STATUS_CONNECTION_ESTABLISHED || newStatus == STATUS_DISCONNECTED) {
+        // 2.2 per-server settings: the server's stored name, the data saver notice, Settings → Servers.
+        onGuiThread([sch, newStatus] {
+            if (newStatus == STATUS_CONNECTION_ESTABLISHED)
+                datasaver::onConnectionEstablished(sch);
+            if (g_settings)
+                g_settings->reloadServers();
+        });
+    }
     if (newStatus != STATUS_DISCONNECTED)
         return;
     onGuiThread([sch] {
@@ -506,48 +731,65 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
 
 TS3_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 serverConnectionHandlerID)
 {
-    Q_UNUSED(serverConnectionHandlerID);
     onGuiThread([] { updateMenus(); }); // another server tab: its connection state counts now
+    AccessGroup::handleCurrentConnectionChanged(serverConnectionHandlerID); // 2.2 servergroup
 }
 
 TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, anyID targetMode, anyID toID, anyID fromID, const char* fromName, const char* fromUniqueIdentifier, const char* message, int ffIgnored)
 {
-    Q_UNUSED(targetMode);
-    Q_UNUSED(toID);
-    Q_UNUSED(fromID);
     Q_UNUSED(fromName);
-    Q_UNUSED(fromUniqueIdentifier);
     if (ffIgnored)
         return 0;
     const QString text = str(message);
     if (!text.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
         return 0;
-    const uint64 sch = serverConnectionHandlerID;
-    onGuiThread([sch, text] {
+    const uint64  sch         = serverConnectionHandlerID;
+    const QString sender      = str(fromUniqueIdentifier); // 2.2 album: filled in by the server, so it can be trusted
+    const bool    privateChat = targetMode == TextMessageTarget_CLIENT;
+    onGuiThread([sch, text, sender, privateChat, toID, fromID] {
         if (g_core)
-            g_core->onTextMessage(sch, text);
+            g_core->onTextMessage(sch, text, sender);
+        // 2.2 protocol: media of a private chat, so only that partner's private reactions count (S0: our
+        // own private messages come here too, from our own id to the partner's).
+        if (privateChat && g_peers) {
+            const QString partner = fromID == ts3::ownClientId(sch) ? ts3::clientUid(sch, toID) : sender;
+            QStringList   keys;
+            for (const MediaLink& link : MediaLink::findInMessage(text))
+                keys.append(link.key());
+            g_peers->notePrivateMedia(sch, partner, keys);
+        }
     });
     return 0; // never hide the message: the link is the fallback for clients without the plugin
 }
 
 TS3_EXPORT int ts3plugin_onServerErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, const char* extraMessage)
 {
-    Q_UNUSED(extraMessage);
+    // 2.2 servergroup: answers to Server access requests (TeamSpeak's own print is suppressed only for them)
+    if (AccessGroup::handleServerError(serverConnectionHandlerID, errorMessage, error, returnCode, 0, false))
+        return 1;
+    // 2.2 protocol: answers to plugin commands (the extra message has the flood "retry in N ms").
+    if (PeerHub::onServerError(serverConnectionHandlerID, error, returnCode, extraMessage, false))
+        return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
-    const uint64  sch = serverConnectionHandlerID;
-    const QString msg = str(errorMessage);
-    onGuiThread([sch, error, rc, msg] {
+    const uint64  sch   = serverConnectionHandlerID;
+    const QString msg   = str(errorMessage);
+    const QString extra = str(extraMessage).left(200); // 0x020c: "retry in <n>ms" (FloodGovernor)
+    onGuiThread([sch, error, rc, msg, extra] {
         if (g_core)
-            g_core->onServerError(sch, error, rc, msg, false);
+            g_core->onServerError(sch, error, rc, msg, false, extra);
     });
     return 1; // handled: the plugin shows its own, friendlier message
 }
 
 TS3_EXPORT int ts3plugin_onServerPermissionErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, unsigned int failedPermissionID)
 {
-    Q_UNUSED(failedPermissionID);
+    // 2.2 servergroup: Server access requests; the failed permission marks what needs a higher admin
+    if (AccessGroup::handleServerError(serverConnectionHandlerID, errorMessage, error, returnCode, failedPermissionID, true))
+        return 1;
+    if (PeerHub::onServerError(serverConnectionHandlerID, error, returnCode, nullptr, true)) // 2.2 protocol
+        return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
@@ -563,10 +805,81 @@ TS3_EXPORT int ts3plugin_onServerPermissionErrorEvent(uint64 serverConnectionHan
 TS3_EXPORT void ts3plugin_onFileTransferStatusEvent(anyID transferID, unsigned int status, const char* statusMessage, uint64 remotefileSize, uint64 serverConnectionHandlerID)
 {
     Q_UNUSED(remotefileSize);
+    AccessGroup::handleTransferStatus(transferID, status, statusMessage, serverConnectionHandlerID); // 2.2 servergroup: its icon upload
     const QString msg = str(statusMessage);
     const uint64  sch = serverConnectionHandlerID;
     onGuiThread([transferID, status, msg, sch] {
         if (g_core)
             g_core->onTransferStatus(transferID, status, msg, sch);
     });
+}
+
+// ============================================================================================
+// 2.2 protocol: plugin commands and channel membership (presence, reactions)
+// ============================================================================================
+
+TS3_EXPORT void ts3plugin_onPluginCommandEvent(uint64 serverConnectionHandlerID, const char* pluginName, const char* pluginCommand, anyID invokerClientID,
+                                               const char* invokerName, const char* invokerUniqueIdentity)
+{
+    // Checked (ours, size, magic) before anything is copied; the invoker fields come from the server.
+    PeerHub::onPluginCommand(serverConnectionHandlerID, pluginName, pluginCommand, invokerClientID, invokerName, invokerUniqueIdentity);
+}
+
+TS3_EXPORT void ts3plugin_onClientMoveEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, const char* moveMessage)
+{
+    Q_UNUSED(moveMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientMoveTimeoutEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, const char* timeoutMessage)
+{
+    Q_UNUSED(timeoutMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientMoveMovedEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID moverID,
+                                                 const char* moverName, const char* moverUniqueIdentifier, const char* moveMessage)
+{
+    Q_UNUSED(moverID);
+    Q_UNUSED(moverName);
+    Q_UNUSED(moverUniqueIdentifier);
+    Q_UNUSED(moveMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientKickFromChannelEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
+                                                       const char* kickerName, const char* kickerUniqueIdentifier, const char* kickMessage)
+{
+    Q_UNUSED(kickerID);
+    Q_UNUSED(kickerName);
+    Q_UNUSED(kickerUniqueIdentifier);
+    Q_UNUSED(kickMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientKickFromServerEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
+                                                      const char* kickerName, const char* kickerUniqueIdentifier, const char* kickMessage)
+{
+    Q_UNUSED(kickerID);
+    Q_UNUSED(kickerName);
+    Q_UNUSED(kickerUniqueIdentifier);
+    Q_UNUSED(kickMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientBanFromServerEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
+                                                     const char* kickerName, const char* kickerUniqueIdentifier, uint64 time, const char* kickMessage)
+{
+    Q_UNUSED(kickerID);
+    Q_UNUSED(kickerName);
+    Q_UNUSED(kickerUniqueIdentifier);
+    Q_UNUSED(time);
+    Q_UNUSED(kickMessage);
+    PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+TS3_EXPORT void ts3plugin_onClientDisplayNameChanged(uint64 serverConnectionHandlerID, anyID clientID, const char* displayName, const char* uniqueClientIdentifier)
+{
+    Q_UNUSED(uniqueClientIdentifier);
+    PeerHub::onClientRenamed(serverConnectionHandlerID, clientID, displayName);
 }

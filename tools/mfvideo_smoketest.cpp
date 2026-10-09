@@ -1,8 +1,15 @@
 // mfvideo_smoketest <video> <outdir> [<format-change clip>]
+// mfvideo_smoketest --audio <audio file> <outdir>
+// mfvideo_smoketest --writer <outdir>
 //
 // Exercises src/video/mfvideo.* outside TeamSpeak: probes the file on a worker thread (as the plugin
 // does) and saves the poster, then plays it headless through mf::VideoPlayer, saving frames while it
 // checks pause, seek, resize, resume, end of stream, loop, close and teardown.
+// --audio plays an audio file through the audio-only engine (OpenMode::AudioOnly, the inline audio
+// card's player): no graphics device, no frames, pause / seek / end / replay, and it measures which
+// playback rates the engine accepts (the pitch at other rates can only be judged by listening, which
+// this tool never does). --writer encodes 2 s of a tone to .m4a through mf::detail's MPEG-4 sink
+// writer on a worker thread and probes and plays the result.
 // The optional clip changes resolution mid-stream: 640x360, then 480x360, then 640x360 again, each part
 // a blue fill inside a 24 px red border, for example (ffmpeg, then concatenate the parts with -c copy):
 //   ffmpeg -f lavfi -i color=c=blue:s=640x360:r=30:d=2 -vf drawbox=x=0:y=0:w=iw:h=ih:color=red:t=24
@@ -18,6 +25,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QImage>
 #include <QThreadPool>
@@ -26,13 +34,20 @@
 
 #include <windows.h>
 
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <objbase.h>
+#include <wrl/client.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <iterator>
+#include <vector>
 
+#include "video/mfcommon.h"
 #include "video/mfvideo.h"
 
 namespace {
@@ -524,6 +539,294 @@ void formatChangeTest(const QString& clip, const QString& outDir)
     check(reported.size() == 2, QStringLiteral("exactly one videoSizeChanged() per change (%1)").arg(reported.size()));
 }
 
+// ---- audio-only engine (--audio) ------------------------------------------------------------------
+
+// How fast the position moves at the current rate: ms of media per ms of wall time over about 1.2 s.
+double measuredSpeed(mf::VideoPlayer& player)
+{
+    const qint64  from = player.position();
+    QElapsedTimer clock;
+    clock.start();
+    wait(1200);
+    const qint64 moved = player.position() - from;
+    return clock.elapsed() > 0 ? static_cast<double>(moved) / static_cast<double>(clock.elapsed()) : 0.0;
+}
+
+int runAudioPlayback(const QString& file, const mf::ProbeResult& info)
+{
+    print(QStringLiteral("audio-only playback:"));
+    mf::VideoPlayer player;
+    int             frames          = 0;
+    int             positionSignals = 0;
+    QString         error;
+    QObject::connect(&player, &mf::VideoPlayer::frameReady, [&] { ++frames; });
+    QObject::connect(&player, &mf::VideoPlayer::positionChanged, [&](qint64) { ++positionSignals; });
+    QObject::connect(&player, &mf::VideoPlayer::failed, [&](const QString& message) {
+        error = message;
+        print(QStringLiteral("  failed(): ") + message);
+    });
+
+    QElapsedTimer clock;
+    clock.start();
+    silence(player);
+    player.open(file, mf::OpenMode::AudioOnly);
+    const QString loadError = waitForLoad(player, 15000);
+    if (!loadError.isEmpty()) {
+        print(QStringLiteral("  playback failed: ") + loadError);
+        return 4;
+    }
+    const qint64 total = player.duration();
+    print(QStringLiteral("  loaded in %1 ms: duration %2").arg(clock.elapsed()).arg(seconds(total)));
+    check(player.isLoaded() && player.isAudioOnly(), QStringLiteral("isLoaded() and isAudioOnly()"));
+    check(!player.hasGraphicsDevice(), QStringLiteral("no D3D11 device was created"));
+    check(isSilent(player), QStringLiteral("volume 0 and mute set before open() are kept"));
+    check(total > 0 && qAbs(total - info.durationMs) <= 150, QStringLiteral("duration matches the probe (%1 vs %2)").arg(seconds(total), seconds(info.durationMs)));
+    check(player.videoSize().isEmpty(), QStringLiteral("no video size"));
+
+    player.play();
+    check(player.isPlaying(), QStringLiteral("isPlaying() right after play()"));
+    const qint64 target  = qMin<qint64>(total * 40 / 100, 8000);
+    QElapsedTimer played;
+    played.start();
+    const bool reached = waitUntil([&] { return player.position() >= target; }, static_cast<int>(target) + 5000);
+    check(reached, QStringLiteral("playback reached %1 (position %2)").arg(seconds(target), seconds(player.position())));
+    const qint64 allowed = played.elapsed() / 250 + 4; // at most one every 250 ms
+    check(positionSignals >= 1 && positionSignals <= allowed, QStringLiteral("positionChanged throttled (%1 signals, at most %2)").arg(positionSignals).arg(allowed));
+
+    // Playback rates: a measurement, not a check (the speed pill would need 1.5 and 2 on every format,
+    // with the pitch kept). The speed is how fast the position moves in about 1.2 s after the change.
+    for (const double rate : {0.5, 1.5, 2.0}) {
+        const bool supported = player.isPlaybackRateSupported(rate);
+        QString    line      = QStringLiteral("  IsPlaybackRateSupported(%1) = %2").arg(rate).arg(supported ? QStringLiteral("yes") : QStringLiteral("no"));
+        if (supported && total >= 6000) {
+            player.seek(total / 10);
+            const bool   set = player.setPlaybackRate(rate);
+            const double got = set ? measuredSpeed(player) : 0.0;
+            line += QStringLiteral(", set %1, position moves at %2x").arg(set ? QStringLiteral("yes") : QStringLiteral("no")).arg(got, 0, 'f', 2);
+        }
+        print(line);
+    }
+    if (player.playbackRate() != 1.0)
+        check(player.setPlaybackRate(1.0) && qFuzzyCompare(player.playbackRate(), 1.0), QStringLiteral("back to rate 1"));
+    print(QStringLiteral("  pitch at other rates: not measured (only by listening; this tool keeps everything silent)"));
+
+    player.pause();
+    wait(200);
+    const qint64 pausedAt = player.position();
+    wait(600);
+    check(!player.isPlaying() && qAbs(player.position() - pausedAt) <= 20, QStringLiteral("position stays while paused (%1)").arg(seconds(pausedAt)));
+
+    const qint64 seekTarget = total / 4;
+    player.seek(seekTarget);
+    wait(300);
+    check(qAbs(player.position() - seekTarget) <= 80, QStringLiteral("seek while paused to %1 (position %2)").arg(seconds(seekTarget), seconds(player.position())));
+
+    player.play();
+    player.seek(qMax<qint64>(0, total - 400));
+    const bool ended = waitUntil([&] { return player.isEnded(); }, 5000);
+    check(ended && !player.isPlaying(), QStringLiteral("isEnded() at the end of the file"));
+    player.play();
+    wait(400);
+    check(player.isPlaying() && player.position() < 1500, QStringLiteral("play() after the end restarts (position %1)").arg(seconds(player.position())));
+    player.pause();
+
+    // The card's seek bar after the end: a seek leaves the ended state, and play() continues from there.
+    player.play();
+    player.seek(qMax<qint64>(0, total - 300));
+    check(waitUntil([&] { return player.isEnded(); }, 5000), QStringLiteral("ended again"));
+    const qint64 third = total / 3;
+    player.seek(third);
+    wait(250);
+    check(!player.isEnded() && qAbs(player.position() - third) <= 80, QStringLiteral("seek after the end leaves the ended state (position %1)").arg(seconds(player.position())));
+    player.play();
+    wait(400);
+    check(player.isPlaying() && player.position() >= third, QStringLiteral("play() after that continues from the seek (position %1)").arg(seconds(player.position())));
+    player.pause();
+
+    check(frames == 0 && player.currentFrame().isNull(), QStringLiteral("no frames from the audio-only engine (%1)").arg(frames));
+    check(error.isEmpty(), QStringLiteral("no failed() during playback"));
+
+    player.close();
+    check(!player.isLoaded() && !player.isAudioOnly(), QStringLiteral("close() resets the player"));
+    player.open(file, mf::OpenMode::AudioOnly);
+    check(waitForLoad(player, 15000).isEmpty() && !player.hasGraphicsDevice(), QStringLiteral("the same player opens the file again, still without a device"));
+    player.close();
+
+    // The default mode, for comparison: it does create a device for the same file.
+    mf::VideoPlayer full;
+    silence(full);
+    full.open(file);
+    const QString fullError = waitForLoad(full, 15000);
+    print(QStringLiteral("  Auto mode on the same file: %1, graphics device %2")
+              .arg(fullError.isEmpty() ? QStringLiteral("loaded") : fullError, full.hasGraphicsDevice() ? QStringLiteral("yes") : QStringLiteral("no")));
+    return 0;
+}
+
+void audioErrorTest(const QString& outDir)
+{
+    print(QStringLiteral("audio error path:"));
+    const QString fake = outDir + QStringLiteral("/not_audio.mp3");
+    QFile         f(fake);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write("this is not an mp3 file\n");
+        f.close();
+    }
+    for (const QString& path : {fake, outDir + QStringLiteral("/does-not-exist.m4a")}) {
+        mf::VideoPlayer player;
+        silence(player);
+        player.open(path, mf::OpenMode::AudioOnly);
+        const QString error = waitForLoad(player, 10000);
+        check(!error.isEmpty() && !error.startsWith(QStringLiteral("timed out")) && !error.contains(QLatin1String("video")),
+              QStringLiteral("%1: failed() with audio wording: %2").arg(QFileInfo(path).fileName(), error));
+        check(!player.hasGraphicsDevice(), QStringLiteral("%1: no graphics device").arg(QFileInfo(path).fileName()));
+    }
+}
+
+void audioTeardownTest(const QString& file)
+{
+    print(QStringLiteral("audio teardown:"));
+    QElapsedTimer clock;
+    clock.start();
+    for (int round = 0; round < 4; ++round) {
+        auto* player = new mf::VideoPlayer;
+        silence(*player);
+        player->open(file, mf::OpenMode::AudioOnly);
+        player->play();
+        wait(round * 120);
+        delete player;
+    }
+    wait(500);
+    check(true, QStringLiteral("4 audio players destroyed while loading/playing (%1 ms)").arg(clock.elapsed()));
+}
+
+// ---- MPEG-4 sink writer (--writer) ---------------------------------------------------------------
+
+// 2 s of a 440 Hz tone at -18 dBFS, 48 kHz mono, AAC 96 kbps, written in 100 ms samples. Runs on the
+// calling thread with its own COM and Media Foundation scopes, like an encoder worker would.
+QString writeToneM4a(const QString& path, qint64* writtenMs)
+{
+    using Microsoft::WRL::ComPtr;
+    namespace detail = mf::detail;
+    *writtenMs = 0;
+    if (!detail::mediaFoundationPresent())
+        return QStringLiteral("Media Foundation is not available");
+    detail::ComScope com(COINIT_MULTITHREADED);
+    if (!com.usable())
+        return QStringLiteral("CoInitializeEx failed");
+    detail::PlatformScope platform;
+    if (FAILED(platform.result()))
+        return QStringLiteral("MFStartup failed");
+
+    constexpr UINT32 kRate = 48000;
+    ComPtr<IMFSinkWriter> writer;
+    HRESULT               hr = detail::createMpeg4SinkWriter(path, nullptr, false, &writer);
+    ComPtr<IMFMediaType>  out;
+    if (SUCCEEDED(hr))
+        hr = MFCreateMediaType(&out);
+    if (SUCCEEDED(hr))
+        hr = out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    if (SUCCEEDED(hr))
+        hr = out->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+    if (SUCCEEDED(hr))
+        hr = out->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+    if (SUCCEEDED(hr))
+        hr = out->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, kRate);
+    if (SUCCEEDED(hr))
+        hr = out->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 1);
+    if (SUCCEEDED(hr))
+        hr = out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 12000);
+    if (SUCCEEDED(hr))
+        hr = out->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
+    if (SUCCEEDED(hr))
+        hr = out->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29);
+    DWORD stream = 0;
+    if (SUCCEEDED(hr))
+        hr = writer->AddStream(out.Get(), &stream);
+    ComPtr<IMFMediaType> in;
+    if (SUCCEEDED(hr))
+        hr = MFCreateMediaType(&in);
+    if (SUCCEEDED(hr))
+        hr = in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    if (SUCCEEDED(hr))
+        hr = in->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+    if (SUCCEEDED(hr))
+        hr = in->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+    if (SUCCEEDED(hr))
+        hr = in->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, kRate);
+    if (SUCCEEDED(hr))
+        hr = in->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 1);
+    if (SUCCEEDED(hr))
+        hr = in->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 2);
+    if (SUCCEEDED(hr))
+        hr = in->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, kRate * 2);
+    if (SUCCEEDED(hr))
+        hr = writer->SetInputMediaType(stream, in.Get(), nullptr);
+    if (SUCCEEDED(hr))
+        hr = writer->BeginWriting();
+    if (FAILED(hr))
+        return QStringLiteral("writer setup failed: ") + detail::hexCode(hr);
+
+    constexpr UINT32 kFrames = kRate / 10; // 100 ms
+    const double     amplitude = 32767.0 * std::pow(10.0, -18.0 / 20.0);
+    for (int chunk = 0; chunk < 20 && SUCCEEDED(hr); ++chunk) {
+        ComPtr<IMFMediaBuffer> buffer;
+        hr = MFCreateMemoryBuffer(kFrames * 2, &buffer);
+        BYTE* data = nullptr;
+        if (SUCCEEDED(hr))
+            hr = buffer->Lock(&data, nullptr, nullptr);
+        if (SUCCEEDED(hr)) {
+            auto* pcm = reinterpret_cast<qint16*>(data);
+            for (UINT32 i = 0; i < kFrames; ++i) {
+                const double t = static_cast<double>(chunk * kFrames + i) / kRate;
+                pcm[i]         = static_cast<qint16>(std::lround(amplitude * std::sin(2.0 * 3.14159265358979 * 440.0 * t)));
+            }
+            buffer->Unlock();
+            hr = buffer->SetCurrentLength(kFrames * 2);
+        }
+        ComPtr<IMFSample> sample;
+        if (SUCCEEDED(hr))
+            hr = MFCreateSample(&sample);
+        if (SUCCEEDED(hr))
+            hr = sample->AddBuffer(buffer.Get());
+        if (SUCCEEDED(hr))
+            hr = sample->SetSampleTime(static_cast<LONGLONG>(chunk) * kFrames * 10000000LL / kRate);
+        if (SUCCEEDED(hr))
+            hr = sample->SetSampleDuration(static_cast<LONGLONG>(kFrames) * 10000000LL / kRate);
+        if (SUCCEEDED(hr))
+            hr = writer->WriteSample(stream, sample.Get());
+        if (SUCCEEDED(hr))
+            *writtenMs += 100;
+    }
+    if (SUCCEEDED(hr))
+        hr = writer->Finalize();
+    return SUCCEEDED(hr) ? QString() : QStringLiteral("writing failed: ") + detail::hexCode(hr);
+}
+
+void writerTest(const QString& outDir)
+{
+    print(QStringLiteral("MPEG-4 sink writer (AAC):"));
+    const QString path = outDir + QStringLiteral("/tone_writer.m4a");
+    QFile::remove(path);
+    QString       error;
+    qint64        written = 0;
+    QElapsedTimer clock;
+    clock.start();
+    QThreadPool pool;
+    pool.start([&] { error = writeToneM4a(path, &written); });
+    pool.waitForDone();
+    check(error.isEmpty() && QFileInfo(path).size() > 1000,
+          QStringLiteral("encoded %1 ms to %2 (%3 bytes, %4 ms) %5").arg(written).arg(QFileInfo(path).fileName()).arg(QFileInfo(path).size()).arg(clock.elapsed()).arg(error));
+    if (!error.isEmpty())
+        return;
+    const mf::ProbeResult info = mf::probe(path, 0);
+    check(info.ok && info.hasAudio && !info.hasVideo && qAbs(info.durationMs - 2000) <= 120,
+          QStringLiteral("the result probes as 2 s of audio (ok=%1 audio=%2 duration %3)").arg(info.ok).arg(info.hasAudio).arg(seconds(info.durationMs)));
+    mf::VideoPlayer player;
+    silence(player);
+    player.open(path, mf::OpenMode::AudioOnly);
+    check(waitForLoad(player, 10000).isEmpty() && player.duration() > 1800, QStringLiteral("the result plays in the audio-only engine"));
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -532,8 +835,62 @@ int main(int argc, char** argv)
     SetConsoleOutputCP(CP_UTF8);
 
     const QStringList args = QCoreApplication::arguments();
+    if (args.size() == 3 && args.at(1) == QLatin1String("--writer")) {
+        const QString outDir = QFileInfo(args.at(2)).absoluteFilePath();
+        QDir().mkpath(outDir);
+        if (!mf::startup()) {
+            print(QStringLiteral("FAIL: Media Foundation could not be started"));
+            return 2;
+        }
+        writerTest(outDir);
+        mf::shutdown();
+        print(g_failures == 0 ? QStringLiteral("PASS") : QStringLiteral("FAILED (%1 failed checks)").arg(g_failures));
+        return g_failures == 0 ? 0 : 5;
+    }
+    if (args.size() == 4 && args.at(1) == QLatin1String("--audio")) {
+        const QString file   = QFileInfo(args.at(2)).absoluteFilePath();
+        const QString outDir = QFileInfo(args.at(3)).absoluteFilePath();
+        QDir().mkpath(outDir);
+        print(QStringLiteral("file: ") + QDir::toNativeSeparators(file));
+        if (!mf::startup()) {
+            print(QStringLiteral("FAIL: Media Foundation could not be started"));
+            return 2;
+        }
+        mf::ProbeResult info;
+        QElapsedTimer   clock;
+        clock.start();
+        QThreadPool pool;
+        pool.start([&] { info = mf::probe(file, 0); });
+        pool.waitForDone();
+        print(QStringLiteral("probe (%1 ms): ok=%2 duration=%3 video=%4 audio=%5%6")
+                  .arg(clock.elapsed())
+                  .arg(info.ok ? QStringLiteral("yes") : QStringLiteral("no"), seconds(info.durationMs),
+                       info.hasVideo ? QStringLiteral("yes") : QStringLiteral("no"), info.hasAudio ? QStringLiteral("yes") : QStringLiteral("no"),
+                       info.error.isEmpty() ? QString() : QStringLiteral(" error=\"%1\"").arg(info.error)));
+        int result = 0;
+        if (!info.ok) {
+            mf::VideoPlayer player;
+            silence(player);
+            player.open(file, mf::OpenMode::AudioOnly);
+            print(QStringLiteral("player: ") + waitForLoad(player, 15000));
+            result = 3;
+        } else {
+            result = runAudioPlayback(file, info);
+            if (result == 0) {
+                audioErrorTest(outDir);
+                audioTeardownTest(file);
+            }
+        }
+        mf::shutdown();
+        if (result == 0 && g_failures > 0)
+            result = 5;
+        print(result == 0 ? QStringLiteral("PASS") : QStringLiteral("FAILED (exit code %1, %2 failed checks)").arg(result).arg(g_failures));
+        return result;
+    }
     if (args.size() != 3 && args.size() != 4) {
-        print(QStringLiteral("usage: mfvideo_smoketest <video> <outdir> [<format-change clip>]"));
+        print(QStringLiteral("usage: mfvideo_smoketest <video> <outdir> [<format-change clip>]\n"
+                             "       mfvideo_smoketest --audio <audio file> <outdir>\n"
+                             "       mfvideo_smoketest --writer <outdir>"));
         return 1;
     }
     const QString video  = QFileInfo(args.at(1)).absoluteFilePath();

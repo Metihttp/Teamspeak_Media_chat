@@ -20,16 +20,28 @@
 #include <QSpinBox>
 #include <QStyle>
 #include <QStyleOptionButton>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "accessgroupbox.h" // 2.2 servergroup
 #include "core.h"
+#include "datasaver.h" // 2.2 per-server settings
+#include "diagnosticsdialog.h" // 2.2 diagnostics
 #include "i18n.h"
 #include "medialink.h"
+#include "peerhub.h" // 2.2 protocol: Clear cache removes the saved reactions too
+#include "settingssection.h"
+#include "serverssection.h" // 2.2 per-server settings
 #include "uiutil.h"
+#include "update/updatesettingsgroup.h" // 2.2 updater
 #include "version.h"
 
 namespace {
+
+// The tab shown last; the dialog opens on it again while TeamSpeak runs.
+int g_lastTab = 0;
 
 // Steps land on multiples of the step (100, 256, 512, … for the cache), not on the minimum plus n steps.
 class SnapSpinBox : public QSpinBox
@@ -72,29 +84,20 @@ QString pixels()
 }
 
 // Secondary text: the description at the top and the helpers under options. applyTheme() colours it.
+// (The building blocks are shared with the feature sections: settingssection.h.)
 QLabel* hint(const QString& text, QWidget* parent)
 {
-    auto* label = new QLabel(text, parent);
-    label->setTextFormat(Qt::PlainText);
-    label->setWordWrap(true);
-    label->setAlignment(Qt::AlignLeft | Qt::AlignTop); // right under what it explains, also when the row is taller
-    label->setProperty("role", QString::fromLatin1("hint"));
-    // As wide as its column (a form layout keeps a Preferred field at its size hint, which for wrapped
-    // text is narrow). setWordWrap() has already set height-for-width; keep it.
-    QSizePolicy policy = label->sizePolicy();
-    policy.setHorizontalPolicy(QSizePolicy::Expanding);
-    label->setSizePolicy(policy);
-    return label;
+    return SettingsSection::hint(text, parent);
 }
 
-// The two columns. On a screen too short for them (a small or strongly scaled laptop screen) they
-// scroll, and the header and the buttons stay in view; otherwise this is exactly as wide and as tall
-// as the columns. QScrollArea's own size hint is capped at a few lines of text, so fitToContents()
-// sets the height.
-class ColumnsArea : public QScrollArea
+// A tab's page. On a screen too short for it (a small or strongly scaled laptop screen) it scrolls,
+// and the header, the tabs and the buttons stay in view; otherwise this is exactly as wide and as tall
+// as its groups. QScrollArea's own size hint is capped at a few lines of text, so fitToContents() sets
+// the height (the same for every page, so switching tabs never changes the window's size).
+class PageArea : public QScrollArea
 {
   public:
-    explicit ColumnsArea(QWidget* parent)
+    explicit PageArea(QWidget* parent)
         : QScrollArea(parent)
     {
         setFrameShape(QFrame::NoFrame);
@@ -104,7 +107,7 @@ class ColumnsArea : public QScrollArea
         viewport()->setAutoFillBackground(false); // the dialog's background, also in TeamSpeak's skins
     }
 
-    // The height the columns get, and whether that is less than they need.
+    // The height the page gets, and whether that is less than it needs.
     void setHeight(int height, bool scrolls)
     {
         m_height  = height;
@@ -140,17 +143,13 @@ class ColumnsArea : public QScrollArea
 
 QFormLayout* form(QWidget* parent)
 {
-    auto* layout = new QFormLayout(parent);
-    layout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    layout->setRowWrapPolicy(QFormLayout::DontWrapRows);
-    layout->setLabelAlignment(Qt::AlignLeading | Qt::AlignVCenter);
-    return layout;
+    return SettingsSection::form(parent);
 }
 
 // A row of its own in the field column, under the field it explains.
 void addUnderField(QFormLayout* layout, QWidget* widget)
 {
-    layout->addRow(static_cast<QWidget*>(nullptr), widget);
+    SettingsSection::addUnderField(layout, widget);
 }
 
 // TeamSpeak's dark skins colour everything by style sheet; once polished, the palette shows those
@@ -226,13 +225,39 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setLayoutDirection(Qt::LeftToRight); // also when TeamSpeak itself runs right-to-left
 
-    // Widgets are created in reading order (left column, then right column), which is the Tab order.
-    // Each "&" marks the Alt+letter access key; Enter is OK and Esc is Cancel.
+    // 2.2: the groups live in tabs. The tab bar comes first in the Tab order, then the groups of the tab
+    // shown, in reading order, then the buttons; Ctrl+Tab and Ctrl+Shift+Tab switch tabs. Each "&"
+    // marks the Alt+letter access key (only the tab shown reacts); Enter is OK and Esc is Cancel.
+    m_tabs = new QTabWidget(this);
+    m_tabs->setObjectName(QString::fromLatin1("tsmediaSettingsTabs"));
+    m_tabs->setDocumentMode(false);
+    m_tabs->setUsesScrollButtons(false); // five short titles: never hide one behind arrows
+    // "&&": a literal "&" (a single one would make the next character an access key).
+    const QString tabTitles[] = {i18n::t("General"), i18n::t("Sending"), i18n::t("Receiving && playback"), i18n::t("Servers"), i18n::t("Privacy && updates")};
+    for (const QString& title : tabTitles) {
+        auto* area = new PageArea(m_tabs);
+        auto* page = new QWidget(area);
+        page->setObjectName(QString::fromLatin1("tsmediaSettingsPage")); // matched by the style sheet below
+        auto* pageLayout = new QVBoxLayout(page);
+        pageLayout->setSpacing(10);
+        pageLayout->addStretch(1); // groups go above it
+        area->setWidget(page);
+        page->setAutoFillBackground(false); // setWidget() turned it on
+        m_tabs->addTab(area, title);
+        m_pages.append(page);
+        m_pageAreas.append(area);
+    }
 
     // ---- Receiving --------------------------------------------------------------------------------
-    auto* receive     = new QGroupBox(i18n::t("Receiving"), this);
+    auto* receive     = new QGroupBox(i18n::t("Receiving"), m_pages.at(static_cast<int>(Tab::ReceivingPlayback)));
     m_inlinePreviews  = new QCheckBox(i18n::t("&Show images, videos and file cards in the chat"), receive);
     m_receiveDetails  = new QWidget(receive);
+    // 2.2 data saver, at the top of the tab's first group.
+    m_dataSaver           = new QCheckBox(i18n::t("&Data saver: pause automatic downloads"), m_receiveDetails);
+    auto* dataSaverHint   = hint(i18n::t("Images and videos load when you click them; small previews still load. Your limits below are kept. "
+                                         "You can turn it off for single servers under Servers."),
+                                 m_receiveDetails);
+    m_dataSaver->setAccessibleDescription(dataSaverHint->text());
     m_autoDownload    = new QCheckBox(i18n::t("Download &images and GIFs automatically up to"), m_receiveDetails);
     m_autoDownloadMax = spin(Settings::autoDownloadMaxMBRange, 5, megabytes(), m_receiveDetails);
     m_autoDownloadMax->setAccessibleName(i18n::t("Download images and GIFs automatically up to"));
@@ -262,6 +287,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
 
     auto* receiveDetailsForm = form(m_receiveDetails);
     receiveDetailsForm->setContentsMargins(0, 0, 0, 0);
+    receiveDetailsForm->addRow(m_dataSaver); // 2.2 data saver
+    receiveDetailsForm->addRow(dataSaverHint);
+    m_indented.append(dataSaverHint);
     receiveDetailsForm->addRow(imageRow);
     // In a box of its own: a hidden form row would still take the form's row spacing.
     auto* gifRows = new QVBoxLayout;
@@ -269,7 +297,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     gifRows->addWidget(m_autoplayGifs);
     gifRows->addWidget(m_gifHint);
     receiveDetailsForm->addRow(gifRows);
-    receiveDetailsForm->addRow(i18n::t("Download &videos automatically"), m_videoAutoDownload);
+    receiveDetailsForm->addRow(i18n::t("Download &videos and audio automatically"), m_videoAutoDownload); // 2.2 audio: the same limit
     receiveDetailsForm->addRow(previewSizeLabel, previewSizeRow);
     auto* receiveForm = form(receive);
     receiveForm->addRow(m_inlinePreviews);
@@ -279,7 +307,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     updateGifHint();
 
     // ---- Playback ---------------------------------------------------------------------------------
-    auto* playback    = new QGroupBox(i18n::t("Playback"), this);
+    auto* playback    = new QGroupBox(i18n::t("Playback"), m_pages.at(static_cast<int>(Tab::ReceivingPlayback)));
     auto* volumeLabel = new QLabel(i18n::t("Default vol&ume"), playback);
     m_volume          = new QSlider(Qt::Horizontal, playback);
     m_volume->setRange(Settings::videoVolumeRange.min, Settings::videoVolumeRange.max);
@@ -304,7 +332,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) { m_volumeLabel->setText(i18n::t("%1%").arg(value)); });
 
     // ---- Media cache ------------------------------------------------------------------------------
-    auto* cache     = new QGroupBox(i18n::t("Media cache"), this);
+    auto* cache     = new QGroupBox(i18n::t("Media cache"), m_pages.at(static_cast<int>(Tab::General)));
     m_cacheLimit    = spin(Settings::cacheLimitMBRange, 256, megabytes(), cache);
     auto* cacheHint = hint(i18n::t("Media you haven't opened for the longest time is removed first."), cache);
     m_cacheLimit->setAccessibleDescription(cacheHint->text());
@@ -338,9 +366,21 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
         updateCacheLabel();
     });
 
+    // ---- 2.2 diagnostics: Troubleshooting ---------------------------------------------------------
+    auto* troubleshooting = new QGroupBox(i18n::t("Troubleshooting"), m_pages.at(static_cast<int>(Tab::General)));
+    auto* diagnostics     = new DiagnosticsButton(troubleshooting);
+    diagnostics->setText(i18n::t("&Diagnostic info…"));
+    auto* diagnosticsHint = hint(i18n::t("Versions, settings and recent messages to paste into a bug report. Nothing is sent by the plugin."), troubleshooting);
+    diagnostics->setAccessibleDescription(diagnosticsHint->text());
+    auto* troubleshootingLayout = new QVBoxLayout(troubleshooting);
+    troubleshootingLayout->addWidget(diagnosticsHint);
+    troubleshootingLayout->addWidget(diagnostics, 0, Qt::AlignLeft);
+    troubleshooting->setVisible(diag::hasDialogOpener()); // the window only exists inside TeamSpeak
+
     // ---- Sending ----------------------------------------------------------------------------------
-    auto* send = new QGroupBox(i18n::t("Sending"), this);
+    auto* send = new QGroupBox(i18n::t("Sending"), m_pages.at(static_cast<int>(Tab::Sending)));
     m_dragDrop = new QCheckBox(i18n::t("Send &files dropped on the chat (hold Shift for TeamSpeak's own drop)"), send);
+    m_dragDrop->setObjectName(QString::fromLatin1("dropSendsFiles")); // 2.2 compose: its drop-mode setting follows this
     m_paste    = new QCheckBox(i18n::t("Send screenshots and files pas&ted into the chat input (Ctrl+V)"), send);
     m_jpeg     = new QCheckBox(i18n::t("Convert pasted images over 2 MB to &JPEG"), send);
     m_jpeg->setToolTip(i18n::t("Images with transparency stay PNG."));
@@ -366,7 +406,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     m_indented.append(previewHint);
 
     // ---- Note for people without the plugin -------------------------------------------------------
-    auto* note       = new QGroupBox(i18n::t("Note for people without the plugin"), this);
+    auto* note       = new QGroupBox(i18n::t("Note for people without the plugin"), m_pages.at(static_cast<int>(Tab::Sending)));
     m_notice         = new QCheckBox(i18n::t("Add a &note after files you send"), note);
     auto* noticeHint = hint(i18n::t("People without the plugin see “TS Media chat plugin required to view this in chat” after the link."), note);
     m_notice->setAccessibleDescription(noticeHint->text());
@@ -419,6 +459,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
             checkDownloadUrl(false);
     });
 
+    // ---- 2.2 per-server settings: the Servers section (self-contained, see serverssection.h) ------
+    m_servers = new ServersSection(this);
+
     // ---- header, buttons, layout ------------------------------------------------------------------
     auto* title     = new QLabel(i18n::t(TSMEDIA_NAME), this);
     QFont titleFont = title->font();
@@ -459,31 +502,45 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_applyButton, &QPushButton::clicked, this, [this] { apply(); });
-    // Only fills in the form: nothing is saved until OK or Apply, and Cancel undoes it.
+    // Only fills in the form: nothing is saved until OK or Apply, and Cancel undoes it. Sections keep
+    // what Restore defaults must not touch (SettingsSection::restoreDefaults).
     connect(restore, &QPushButton::clicked, this, [this] {
-        load(Settings());
+        load(Settings(), false);
+        m_loading = true;
+        for (SettingsSection* section : qAsConst(m_sections))
+            section->restoreDefaults(Settings());
+        m_loading = false;
         setDirty(true);
     });
 
-    auto* left = new QVBoxLayout;
-    left->addWidget(receive);
-    left->addWidget(playback);
-    left->addWidget(cache);
-    left->addStretch(1);
-    auto* right = new QVBoxLayout;
-    right->addWidget(send);
-    right->addWidget(note);
-    right->addStretch(1);
-    m_columns = new QWidget(this);
-    m_columns->setObjectName(QString::fromLatin1("tsmediaSettingsColumns")); // matched by the style sheet below
-    auto* columns = new QHBoxLayout(m_columns);
-    columns->setContentsMargins(0, 0, 0, 0);
-    columns->setSpacing(12);
-    columns->addLayout(left, 1);
-    columns->addLayout(right, 1);
-    m_columnsArea = new ColumnsArea(this);
-    m_columnsArea->setWidget(m_columns);
-    m_columns->setAutoFillBackground(false); // setWidget() turned it on
+    // The 2.1 groups, unchanged, in their tabs.
+    tabLayout(Tab::General)->insertWidget(tabLayout(Tab::General)->count() - 1, cache);
+    tabLayout(Tab::General)->insertWidget(tabLayout(Tab::General)->count() - 1, troubleshooting); // 2.2 diagnostics
+    tabLayout(Tab::Sending)->insertWidget(tabLayout(Tab::Sending)->count() - 1, send);
+    tabLayout(Tab::Sending)->insertWidget(tabLayout(Tab::Sending)->count() - 1, note);
+    tabLayout(Tab::ReceivingPlayback)->insertWidget(tabLayout(Tab::ReceivingPlayback)->count() - 1, receive);
+    tabLayout(Tab::ReceivingPlayback)->insertWidget(tabLayout(Tab::ReceivingPlayback)->count() - 1, playback);
+    // Nothing in these yet (per-server settings, privacy and the updater add their sections). Disabled
+    // too: Ctrl+Tab and the arrow keys skip disabled tabs, not hidden ones.
+    for (Tab empty : {Tab::Servers, Tab::PrivacyUpdates}) {
+        m_tabs->setTabVisible(static_cast<int>(empty), false);
+        m_tabs->setTabEnabled(static_cast<int>(empty), false);
+    }
+    // 2.2 updater: a self-contained group with its own keys (apply() below; Restore defaults leaves them
+    // alone). Added before the dirty tracking below, so its checkbox enables Apply.
+    addSection(Tab::PrivacyUpdates, new upd::UpdateSettingsGroup(this));
+    // 2.2 per-server settings: loaded and saved with the form (load() / apply()).
+    addSection(Tab::Servers, m_servers);
+    // 2.2 servergroup: Server access, a self-contained box (its actions act on the server right away).
+    auto* serverAccess = new AccessGroupBox(this);
+    connect(serverAccess, &AccessGroupBox::contentsChanged, this, [this] {
+        if (isVisible())
+            QTimer::singleShot(0, this, [this] { fitToContents(); }); // once the layouts have taken in the new text
+    });
+    addSection(Tab::Servers, serverAccess);
+    if (g_lastTab > 0 && g_lastTab < m_tabs->count() && m_tabs->isTabVisible(g_lastTab))
+        m_tabs->setCurrentIndex(g_lastTab);
+    connect(m_tabs, &QTabWidget::currentChanged, this, [](int index) { g_lastTab = index; });
 
     auto* layout = new QVBoxLayout(this);
     layout->setSpacing(10);
@@ -492,7 +549,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     header->addLayout(titleRow);
     header->addLayout(aboutRow);
     layout->addLayout(header);
-    layout->addWidget(m_columnsArea, 1);
+    layout->addWidget(m_tabs, 1);
     layout->addWidget(buttons);
 
     connect(m_inlinePreviews, &QCheckBox::toggled, this, [this] { updateEnabled(); });
@@ -512,6 +569,17 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     connect(m_downloadUrl, &QLineEdit::textChanged, this, changed);
     connect(m_uploadDir, &QLineEdit::textChanged, this, changed);
 
+    // 2.2 per-server settings: "Same as all servers (…)" follows the form, saved or not.
+    connect(m_servers, &ServersSection::changed, this, changed);
+    connect(m_dataSaver, &QCheckBox::toggled, this, [this] { updateEnabled(); });
+    const auto globalsChanged = [this] {
+        m_servers->setGlobals(m_dataSaver->isChecked(), m_uploadDir->text(), m_uploadMax->value(), m_notice->isChecked());
+    };
+    connect(m_dataSaver, &QCheckBox::toggled, this, globalsChanged);
+    connect(m_notice, &QCheckBox::toggled, this, globalsChanged);
+    connect(m_uploadDir, &QLineEdit::textChanged, this, globalsChanged);
+    connect(m_uploadMax, QOverload<int>::of(&QSpinBox::valueChanged), this, globalsChanged);
+
     m_numberFields = {m_autoDownloadMax, m_previewWidth, m_previewHeight, m_uploadMax};
 
     // TeamSpeak's dark skins switch off every focus indicator. Like Windows, the dialog shows its own
@@ -527,9 +595,54 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     m_cacheUsed = m_core ? m_core->cacheSize() : 0;
     m_loaded    = Settings::instance();
     load(m_loaded);
+    reloadServers(); // 2.2 per-server settings
     setDirty(false);
     m_ready = true;
     applyTheme();
+}
+
+void SettingsDialog::addSection(Tab tab, QWidget* widget, bool atTop)
+{
+    if (!widget)
+        return;
+    QVBoxLayout* layout = tabLayout(tab);
+    layout->insertWidget(atTop ? 0 : layout->count() - 1, widget); // above the stretch, after (or before) what is there
+    m_tabs->setTabEnabled(static_cast<int>(tab), true);
+    m_tabs->setTabVisible(static_cast<int>(tab), true);
+    if (auto* section = qobject_cast<SettingsSection*>(widget)) {
+        m_sections.append(section);
+        m_loading = true;
+        section->load(m_loaded);
+        m_loading = false;
+        connect(section, &SettingsSection::changed, this, [this] {
+            if (!m_loading)
+                setDirty(true);
+        });
+    }
+    if (m_ready)
+        applyTheme(); // its helper texts, indents and focus rings
+    if (isVisible())
+        QTimer::singleShot(0, this, [this] { fitToContents(); });
+}
+
+QVBoxLayout* SettingsDialog::tabLayout(Tab tab) const
+{
+    return static_cast<QVBoxLayout*>(m_pages.at(static_cast<int>(tab))->layout());
+}
+
+void SettingsDialog::showTab(Tab tab)
+{
+    m_tabs->setCurrentIndex(static_cast<int>(tab));
+}
+
+void SettingsDialog::showTabOf(QWidget* widget)
+{
+    for (int i = 0; i < m_pages.size(); ++i) {
+        if (widget && m_pages.at(i)->isAncestorOf(widget)) {
+            showTab(static_cast<Tab>(i));
+            return;
+        }
+    }
 }
 
 void SettingsDialog::showEvent(QShowEvent* event)
@@ -538,6 +651,15 @@ void SettingsDialog::showEvent(QShowEvent* event)
     // scaled laptop screen. Before QDialog::showEvent, which centres the dialog with this size.
     if (!event->spontaneous() && !m_sized) {
         m_sized = true;
+        // Each page once (nothing is painted yet): a page's widgets only get their final size from a
+        // skin when they are shown, and the window must be sized for the largest page, so that
+        // switching tabs never resizes it.
+        const int current = m_tabs->currentIndex();
+        for (int i = 0; i < m_tabs->count(); ++i) {
+            if (m_tabs->isTabVisible(i))
+                m_tabs->setCurrentIndex(i);
+        }
+        m_tabs->setCurrentIndex(current);
         fitToContents();
     }
     QDialog::showEvent(event);
@@ -545,32 +667,44 @@ void SettingsDialog::showEvent(QShowEvent* event)
 
 // Grows the window to what its contents need at the current width, as far as the screen allows. Qt's
 // minimum size leaves out wrapped text, so a message appearing under a field would squeeze the rows.
-// On a screen too short for everything the columns scroll, and the buttons stay on screen.
+// Every page gets the height of the tallest one, so switching tabs never resizes the window. On a
+// screen too short for that (1366 x 768 at 125 %, for example) the pages scroll, and the tabs and the
+// buttons stay on screen.
 void SettingsDialog::fitToContents()
 {
-    constexpr int kMinColumnsHeight = 120;
+    constexpr int kMinPageHeight = 120;
 
     QSize avail;
     if (const QScreen* screen = parentWidget() ? parentWidget()->screen() : this->screen())
         avail = screen->availableGeometry().size() - QSize(16, 48); // the frame and title bar
     QLayout* top = layout();
 
-    // First the height the columns need at the width the window gets, then as much of it as fits.
-    auto* area = static_cast<ColumnsArea*>(m_columnsArea);
-    area->setHeight(0, false);
+    // First the height the pages need at the width the window gets, then as much of it as fits.
+    int areaWidth = 0;
+    for (QScrollArea* area : qAsConst(m_pageAreas)) {
+        static_cast<PageArea*>(area)->setHeight(0, false);
+        areaWidth = qMax(areaWidth, area->sizeHint().width());
+    }
     int width = qMax(sizeHint().width(), this->width());
     if (avail.isValid())
         width = qMin(width, avail.width());
     const QMargins margins = top->contentsMargins();
-    QLayout*       columns = m_columns->layout();
-    const int      inner   = width - margins.left() - margins.right();
-    const int      needed  = columns->hasHeightForWidth() ? columns->totalHeightForWidth(inner) : m_columns->sizeHint().height();
-    area->setHeight(needed, false);
+    const int      frame   = qMax(0, m_tabs->sizeHint().width() - areaWidth); // the tab widget's frame around a page
+    const int      inner   = width - margins.left() - margins.right() - frame;
+    int            needed  = 0;
+    for (QWidget* page : qAsConst(m_pages)) {
+        QLayout* pageLayout = page->layout();
+        needed              = qMax(needed, pageLayout->hasHeightForWidth() ? pageLayout->totalHeightForWidth(inner) : page->sizeHint().height());
+    }
+    for (QScrollArea* area : qAsConst(m_pageAreas))
+        static_cast<PageArea*>(area)->setHeight(needed, false);
     if (avail.isValid()) {
         const int total  = top->hasHeightForWidth() ? top->totalHeightForWidth(width) : sizeHint().height();
         const int excess = total - avail.height();
-        if (excess > 0)
-            area->setHeight(qMax(kMinColumnsHeight, needed - excess), true);
+        if (excess > 0) {
+            for (QScrollArea* area : qAsConst(m_pageAreas))
+                static_cast<PageArea*>(area)->setHeight(qMax(kMinPageHeight, needed - excess), true);
+        }
     }
 
     QSize wanted = sizeHint().expandedTo(QSize(this->width(), 0));
@@ -629,7 +763,7 @@ void SettingsDialog::updateGifHint()
         QTimer::singleShot(0, this, [this] { fitToContents(); }); // once the layouts have taken in the new row
 }
 
-void SettingsDialog::load(const Settings& s)
+void SettingsDialog::load(const Settings& s, bool sections)
 {
     m_loading = true;
     m_inlinePreviews->setChecked(s.inlinePreviews);
@@ -639,6 +773,7 @@ void SettingsDialog::load(const Settings& s)
     m_videoAutoDownload->setValue(s.videoAutoDownloadMB);
     m_previewWidth->setValue(s.previewMaxWidth);
     m_previewHeight->setValue(s.previewMaxHeight);
+    m_dataSaver->setChecked(s.dataSaver); // 2.2 data saver
 
     m_volume->setValue(s.videoVolume);
     m_volumeLabel->setText(i18n::t("%1%").arg(m_volume->value()));
@@ -659,10 +794,23 @@ void SettingsDialog::load(const Settings& s)
     // The default link is the placeholder, so the field is empty as its helper says.
     m_downloadUrl->setText(s.pluginDownloadUrl == QLatin1String(Settings::defaultDownloadUrl) ? QString() : s.pluginDownloadUrl);
     m_downloadUrl->setCursorPosition(0); // the start of a long link matters most
+
+    if (sections) {
+        for (SettingsSection* section : qAsConst(m_sections))
+            section->load(s);
+    }
     m_loading = false;
 
+    // 2.2 per-server settings: only the "Same as all servers" texts; Restore defaults never forgets servers.
+    m_servers->setGlobals(s.dataSaver, s.uploadDirectory, s.uploadMaxMB, s.addRequiredNotice);
     updateEnabled();
     updateCacheLabel();
+}
+
+// 2.2 per-server settings
+void SettingsDialog::reloadServers()
+{
+    m_servers->reload(datasaver::connectedServers());
 }
 
 void SettingsDialog::setDirty(bool dirty)
@@ -674,7 +822,16 @@ void SettingsDialog::updateEnabled()
 {
     // Disabling a container disables the labels and helpers in it too.
     m_receiveDetails->setEnabled(m_inlinePreviews->isChecked());
-    m_autoDownloadMax->setEnabled(m_autoDownload->isChecked());
+    // 2.2 data saver: the automatic-download limits are kept, they just don't apply while it is on.
+    const bool    saving = m_dataSaver->isChecked();
+    const QString paused = saving ? i18n::t("Paused by data saver") : QString();
+    m_autoDownload->setEnabled(!saving);
+    m_autoDownloadMax->setEnabled(!saving && m_autoDownload->isChecked());
+    m_videoAutoDownload->setEnabled(!saving);
+    for (QWidget* field : {static_cast<QWidget*>(m_autoDownload), static_cast<QWidget*>(m_autoDownloadMax), static_cast<QWidget*>(m_videoAutoDownload)}) {
+        if (field->toolTip() != paused)
+            field->setToolTip(paused);
+    }
     m_noteDetails->setEnabled(m_notice->isChecked());
     // The link only matters with the note on: no message about it otherwise.
     if (m_notice->isChecked() && !m_downloadUrl->text().trimmed().isEmpty())
@@ -701,9 +858,17 @@ bool SettingsDialog::apply()
     const Settings::DownloadUrlProblem problem = Settings::checkDownloadUrl(m_downloadUrl->text(), &url);
     if (problem != Settings::DownloadUrlProblem::None && m_notice->isChecked()) {
         showDownloadUrlError(downloadUrlProblemText(problem));
+        showTabOf(m_downloadUrl); // OK may have been pressed on another tab
         m_downloadUrl->setFocus(Qt::OtherFocusReason);
         m_downloadUrl->selectAll();
         return false;
+    }
+    for (SettingsSection* section : qAsConst(m_sections)) {
+        if (QWidget* problemField = section->validate()) {
+            showTabOf(problemField);
+            problemField->setFocus(Qt::OtherFocusReason);
+            return false;
+        }
     }
 
     Settings form            = m_loaded;
@@ -714,6 +879,7 @@ bool SettingsDialog::apply()
     form.videoAutoDownloadMB = m_videoAutoDownload->value();
     form.previewMaxWidth     = m_previewWidth->value();
     form.previewMaxHeight    = m_previewHeight->value();
+    form.dataSaver           = m_dataSaver->isChecked(); // 2.2 data saver
 
     form.videoVolume      = m_volume->value();
     form.videosStartMuted = m_startMuted->isChecked();
@@ -757,8 +923,17 @@ bool SettingsDialog::apply()
     take(s.uploadDirectory, m_loaded.uploadDirectory, form.uploadDirectory);
     take(s.addRequiredNotice, m_loaded.addRequiredNotice, form.addRequiredNotice);
     take(s.pluginDownloadUrl, m_loaded.pluginDownloadUrl, form.pluginDownloadUrl);
+    for (SettingsSection* section : qAsConst(m_sections)) {
+        section->store(s, m_loaded);
+        section->store(form, m_loaded);
+    }
+    take(s.dataSaver, m_loaded.dataSaver, form.dataSaver); // 2.2 data saver
+    m_servers->applyTo(s);                                 // 2.2 per-server settings: the servers edited here
+    form.servers = s.servers;
     s.save();
     m_loaded = form;
+    if (auto* updates = findChild<upd::UpdateSettingsGroup*>()) // 2.2 updater: its own keys; Restore defaults leaves them alone
+        updates->apply();
 
     // After Apply the dialog stays open: show what was saved ("/tsmedia" for an empty folder, the
     // link with its https://).
@@ -831,8 +1006,13 @@ void SettingsDialog::clearCache()
                                 QMessageBox::NoButton, this);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setLayoutDirection(Qt::LeftToRight);
-    box->setInformativeText(i18n::t("Files on the server aren't affected: media downloads again when you view it, unless it was deleted "
-                                    "from the server. Media that's playing or open in the viewer is kept."));
+    QString details = i18n::t("Files on the server aren't affected: media downloads again when you view it, unless it was deleted "
+                              "from the server. Media that's playing or open in the viewer is kept.");
+    // 2.2 protocol: Clear cache also forgets the reactions kept on this computer (Core::cacheCleared).
+    if (PeerHub::instance())
+        details += QLatin1Char(' ') + i18n::t("The reactions saved on this computer are removed too; people with TS Media share theirs again "
+                                              "when you are in a channel with them.");
+    box->setInformativeText(details);
     QPushButton* clear  = box->addButton(i18n::t("Clear cache"), QMessageBox::DestructiveRole);
     QPushButton* cancel = box->addButton(i18n::t("Cancel"), QMessageBox::RejectRole);
     box->setDefaultButton(cancel); // Enter must not delete anything
@@ -891,9 +1071,9 @@ void SettingsDialog::applyTheme()
         sheet = QString::fromLatin1("#tsmediaSettingsDialog QLabel[role=\"hint\"]{color:%1;}"
                                     "#tsmediaSettingsDialog QLabel[role=\"error\"]{color:%2;}")
                     .arg(muted.name(), error.name());
-        // The columns' scroll area stays invisible: no background or frame from a skin's list views.
+        // The pages' scroll areas stay invisible: no background or frame from a skin's list views.
         sheet += QString::fromLatin1("#tsmediaSettingsDialog QScrollArea,#tsmediaSettingsDialog QScrollArea>QWidget#qt_scrollarea_viewport,"
-                                     "#tsmediaSettingsColumns{background:transparent;border:none;}");
+                                     "#tsmediaSettingsPage{background:transparent;border:none;}");
         if (dark) {
             // Dark skins draw disabled text at about 1.2:1. Keep it dimmed, but readable.
             sheet += QString::fromLatin1("#tsmediaSettingsDialog QCheckBox:disabled,#tsmediaSettingsDialog QLabel:disabled,"
@@ -908,6 +1088,17 @@ void SettingsDialog::applyTheme()
             sheet += QString::fromLatin1("#tsmediaSettingsDialog QLineEdit:focus,#tsmediaSettingsDialog QAbstractSpinBox:focus{border-color:%1;}"
                                          "#tsmediaSettingsDialog QSlider{border:1px solid transparent;border-radius:4px;}")
                          .arg(accent.name());
+            // 2.2 tabs: a dark skin may colour the text without styling tabs, which leaves light text
+            // on the native light tabs. Tabs drawn from the skin's own colours: the current one in the
+            // full text colour, joined to the page, the others in the secondary text colour (4.5:1).
+            const QColor tabText   = pal.color(QPalette::Active, QPalette::WindowText);
+            const QColor tabBorder = mutedText(pal, 0.75, 1.0);
+            sheet += QString::fromLatin1("#tsmediaSettingsDialog QTabWidget::pane{border:1px solid %1;border-radius:4px;top:-1px;background:%2;}"
+                                         "#tsmediaSettingsDialog QTabBar::tab{background:transparent;color:%3;border:1px solid transparent;border-bottom:none;"
+                                         "border-top-left-radius:4px;border-top-right-radius:4px;padding:6px 14px;margin-right:2px;}"
+                                         "#tsmediaSettingsDialog QTabBar::tab:selected{background:%2;color:%4;border-color:%1;}"
+                                         "#tsmediaSettingsDialog QTabBar::tab:hover:!selected{color:%4;}")
+                         .arg(tabBorder.name(), background.name(), muted.name(), tabText.name());
             if (m_keyboardFocus) {
                 // Rings for the rest, sized so nothing moves: the button's border takes 2 px of the skin's
                 // 8 × 14 px padding, and the switch keeps its outer size.
@@ -926,6 +1117,10 @@ void SettingsDialog::applyTheme()
                     sheet += QString::fromLatin1("#tsmediaSettingsDialog QCheckBox:focus{outline:1px solid %1;}").arg(text);
             }
         }
+        // 2.2 tabs: skins hide the focus rectangle of the tab bar too. Underline the current tab's title
+        // while the tab bar has the keyboard focus (no size change, no colour needed).
+        if (m_keyboardFocus)
+            sheet += QString::fromLatin1("#tsmediaSettingsDialog QTabBar::tab:selected:focus{text-decoration:underline;}");
     }
     if (sheet != styleSheet())
         setStyleSheet(sheet);
@@ -938,6 +1133,10 @@ void SettingsDialog::applyTheme()
     const int indent = qMax(0, m_inlinePreviews->style()->subElementRect(QStyle::SE_CheckBoxContents, &option, m_inlinePreviews).left());
     for (QWidget* widget : qAsConst(m_indented))
         widget->setContentsMargins(indent, 0, 0, 0);
+    for (SettingsSection* section : qAsConst(m_sections)) {
+        for (QWidget* widget : section->indented())
+            widget->setContentsMargins(indent, 0, 0, 0);
+    }
 
     // The number fields share one width, so they line up.
     int fieldWidth = 0;

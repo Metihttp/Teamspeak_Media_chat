@@ -29,6 +29,10 @@ struct PreviewStyle {
     bool animate = true;
     // A Ready file that only opens its folder when clicked (Core::isUnsafeToOpen: programs, scripts).
     bool revealOnly = false;
+    // 2.2 spoiler: how much of the spoiler cover lies over a picture, GIF or video (spoiler.h): 1 while
+    // it is hidden, falling to 0 during the reveal crossfade, 0 otherwise. The box never changes with it.
+    // Cards of other files ignore it; a picture shown as a card (no size known) is named "Spoiler (image)".
+    qreal concealOpacity = 0.0;
 };
 
 // Controls drawn on top of an inline video.
@@ -81,6 +85,21 @@ bool isPreviewActionable(const MediaEntry& entry);
 // Without the file size. cannotPreview: a Ready picture that can't be decoded.
 QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool revealOnly = false);
 
+// ---- 2.2 sha: a downloaded file being checked against its link's SHA-256 ---------------------------
+// True while a preview says "Checking file…": Core checks the downloaded file and it has taken a moment
+// (MediaEntry::check.shown; quicker checks never show, so small files don't flash it).
+bool isCheckingShown(const MediaEntry& entry);
+// The download progress previews draw: while a large file (over 256 MB) is checked, the check's own,
+// which starts at 0 again (checkingText says so with its percentage); while a smaller one is, 1.0;
+// otherwise entry.progress.
+double shownDownloadProgress(const MediaEntry& entry);
+// "Checking file…", "Checking file… 42%" (files over 256 MB), "Checking file again…" (the second pass
+// after a first one that didn't match).
+QString checkingText(const MediaEntry& entry);
+// What a failed preview says under its title: "Click to retry" where retrying can help, "Ask the sender
+// to send it again" for a file that doesn't match what was sent, else nothing.
+QString errorHint(const MediaEntry& entry);
+
 // Text colours with the background they are drawn on (translucent layers already flattened), and
 // the contrast each needs: tools/render_gallery prints them so a regression shows up.
 struct PreviewColorPair {
@@ -92,3 +111,33 @@ struct PreviewColorPair {
 QVector<PreviewColorPair> previewColorPairs(bool dark);
 
 // displayFileName() and displayNameFor() are in medialink.h.
+
+// 2.2 drag-out: the attachment cards' file-type glyph (coloured page with the extension), drawn into
+// rect (32 x 40 on a card), for the mini card that follows the pointer (dragpixmap.cpp).
+class QPainter;
+void drawFileTypeGlyph(QPainter& p, const QRectF& rect, const MediaEntry& entry, const PreviewStyle& style);
+
+// ---- 2.2 album grid (the geometry is albums::layout(), shared with the hit test) ------------------
+
+// One item of an album as the grid draws it.
+struct AlbumTile {
+    const MediaEntry* entry = nullptr; // nullptr: the item hasn't arrived yet (a placeholder tile)
+    MediaStill        still;           // requested at albumTileStillPixels(): it covers the tile
+    QImage            frame;           // the current GIF frame while it animates (device pixels), else null
+    bool              concealed = false; // a spoiler not revealed yet (Core::isSpoilerHidden): the cover, never the sharp picture
+    qreal             concealOpacity = 0.0; // 2.2 spoiler: the reveal crossfade (1 .. 0) over a revealed tile
+    bool              hovered   = false;
+    bool              pressed   = false;
+};
+
+// The size of an album of `items` in the chat: albums::layout() for the style's limits. Only the number
+// of items decides it, so the grid keeps its size while its pictures load.
+QSize  albumLogicalSize(int items, const PreviewStyle& style);
+// The whole grid. tiles: one per item of the album, in order; the items past the grid's last tile are
+// not drawn, and that tile says "+N".
+QImage renderAlbum(const QVector<AlbumTile>& tiles, const PreviewStyle& style, QSize* logicalSize);
+// Device pixels to ask Core::still() for: the picture scaled to cover a tile of that logical size
+// (from the link's dimensions), so a tile is never blurry and nothing larger is decoded.
+QSize  albumTileStillPixels(const MediaEntry& entry, const QSize& tile, qreal dpr);
+// The album's text colours with what they are drawn on (tools/render_gallery checks them).
+QVector<PreviewColorPair> albumColorPairs(bool dark);
