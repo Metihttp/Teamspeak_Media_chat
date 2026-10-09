@@ -813,6 +813,7 @@ void Core::startDownload(const QString& key)
     anyID          tid = 0;
     const unsigned err = ts3::funcs.requestFile(sch, e.link.channelId, "", e.link.remoteFile().toUtf8().constData(), 1, 0, utf8Native(partial).constData(), &tid,
                                                 rc.toUtf8().constData());
+    floodGovernor(sch).charge(FloodGovernor::Cost::Transfer, floodClockMs()); // the attempt counts either way
     if (err != ERROR_ok) {
         forgetOp(rc);
         failDownload(key, mapError(err), ts3::errorText(err));
@@ -874,6 +875,7 @@ void Core::startPreviewDownload(const QString& key)
     anyID          tid = 0;
     const unsigned err = ts3::funcs.requestFile(sch, e.link.channelId, "", preview.remoteFile().toUtf8().constData(), 1, 0, utf8Native(partial).constData(), &tid,
                                                 rc.toUtf8().constData());
+    floodGovernor(sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         failPreviewDownload(key, ts3::errorText(err), mapError(err) == MediaError::NotConnected);
@@ -2096,6 +2098,7 @@ void Core::createRemoteDirectory(int id, bool previews)
     const QString  dir = previews ? previewDirFor(job) : job.remoteDir;
     const QString  rc  = registerOp(OpType::MakeDirectory, {}, id, previews);
     const unsigned err = ts3::funcs.requestCreateDirectory(job.target.sch, job.channelId, "", dir.toUtf8().constData(), rc.toUtf8().constData());
+    floodGovernor(job.target.sch).charge(FloodGovernor::Cost::Mkdir, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         onDirectoryReady(id, previews, false);
@@ -2173,6 +2176,7 @@ void Core::startPreviewSend(int id)
     anyID          tid = 0;
     const unsigned err = ts3::funcs.sendFile(job.target.sch, job.channelId, "", extra.previewRemote.toUtf8().constData(), 0, 0, utf8Native(source).constData(), &tid,
                                              rc.toUtf8().constData());
+    floodGovernor(job.target.sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         ts3::log(QStringLiteral("Preview upload for %1 not started (%2); sending without it").arg(job.remoteName, ts3::errorText(err)), LogLevel_WARNING, job.target.sch);
@@ -2253,6 +2257,7 @@ void Core::startSend(int id)
     anyID          tid    = 0;
     const unsigned err    = ts3::funcs.sendFile(job.target.sch, job.channelId, "", remote.toUtf8().constData(), 0, 0, utf8Native(job.stagingDir).constData(), &tid,
                                                 rc.toUtf8().constData());
+    floodGovernor(job.target.sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
         if (err == ERROR_file_already_exists && renameUpload(job)) {
@@ -2567,6 +2572,18 @@ void Core::pumpPosts()
 
 bool Core::sendPost(PostItem& post)
 {
+    if (post.target.mode == TextMessageTarget_CLIENT) {
+        // The upload may have taken long (or waited for earlier files) and client ids are reused once
+        // someone leaves: find the partner again by identity, so it never reaches someone else.
+        anyID client = post.target.clientId;
+        if (!post.target.clientUid.isEmpty() && ts3::clientUid(post.sch, client) != post.target.clientUid)
+            client = ts3::clientIdByUid(post.sch, post.target.clientUid);
+        if (!client) {
+            failPost(post, i18n::t("Uploaded, but the person it was meant for has left the server, so nothing was sent to them. The file is in the channel's file browser."));
+            return false;
+        }
+        post.target.clientId = client;
+    }
     const QString rc  = registerOp(OpType::PostMessage, {}, post.jobs.value(0));
     unsigned      err = ERROR_ok;
     switch (post.target.mode) {
@@ -2596,19 +2613,35 @@ bool Core::sendPost(PostItem& post)
         if (job != m_uploads.end() && job->state == UploadState::Posting && job->message != i18n::t("Posting to chat…"))
             setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
     }
-    // The governor lets the next post go after a second without an answer; the message counts as sent
-    // when no answer comes at all.
-    QTimer::singleShot(kPostTimeoutMs, this, [this, rc] {
+    // The governor lets the next post go after a second without an answer. A message that gets no
+    // answer at all is never counted as sent (S0: TeamSpeak drops oversized commands without one): it
+    // fails, and Retry posts it again.
+    singleShotOwned(kPostTimeoutMs, this, [this, rc] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
-        finishPost(rc, ERROR_ok, QString(), false);
+        unansweredPost(rc);
     });
     return true;
 }
 
-// The answer to a chat post (or its timeout, as ERROR_ok).
-void Core::finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError)
+void Core::unansweredPost(const QString& returnCode)
+{
+    auto it = m_postsInFlight.find(returnCode);
+    if (it == m_postsInFlight.end())
+        return;
+    const InFlightPost flight = it.value();
+    m_postsInFlight.erase(it);
+    floodGovernor(flight.item.sch).postAnswered(flight.ticket, floodClockMs(), false, flight.item.attempts);
+    ts3::log(LogLevel_WARNING, flight.item.sch, "TeamSpeak didn't answer a chat message of %1 bytes within %2 s; it counts as not sent",
+             {ts3::pub(escapedMessageSize(QString::fromUtf8(flight.item.text))), ts3::pub(kPostTimeoutMs / 1000)});
+    failPost(flight.item, i18n::t("TeamSpeak didn't confirm the chat message, so it may not have been sent. Click Retry to post it again."),
+             i18n::t("TeamSpeak didn't confirm it, so it may not have been sent"));
+    pumpPosts();
+}
+
+// The answer to a chat post. retryHintMs: FloodGovernor::retryHintMs() of the answer.
+void Core::finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError, int retryHintMs)
 {
     auto it = m_postsInFlight.find(returnCode);
     if (it == m_postsInFlight.end())
@@ -2617,10 +2650,10 @@ void Core::finishPost(const QString& returnCode, unsigned int error, const QStri
     m_postsInFlight.erase(it);
     FloodGovernor& governor = floodGovernor(flight.item.sch);
     const bool     flooded  = error == ERROR_client_is_flooding && !permissionError;
-    const bool     retry    = governor.postAnswered(flight.ticket, floodClockMs(), flooded, flight.item.attempts);
+    const bool     retry    = governor.postAnswered(flight.ticket, floodClockMs(), flooded, flight.item.attempts, retryHintMs);
     if (flooded && retry) {
-        ts3::log(LogLevel_WARNING, flight.item.sch, "TeamSpeak's flood protection held back a chat message (attempt %1); sending it again shortly",
-                 {ts3::pub(flight.item.attempts)});
+        ts3::log(LogLevel_WARNING, flight.item.sch, "TeamSpeak's flood protection held back a chat message (attempt %1); sending it again in %2 ms",
+                 {ts3::pub(flight.item.attempts), ts3::pub(governor.counters().lastPauseMs)});
         for (int id : qAsConst(flight.item.jobs)) {
             auto job = m_uploads.find(id);
             if (job != m_uploads.end() && job->state == UploadState::Posting)
@@ -2639,12 +2672,18 @@ void Core::finishPost(const QString& returnCode, unsigned int error, const QStri
     pumpPosts();
 }
 
-void Core::failPost(const PostItem& post, const QString& text)
+// The files are on the server, only their message didn't go: Retry posts the same message again
+// (retryUpload), with every file it announces. captionText: the reason for a caption of its own.
+void Core::failPost(const PostItem& post, const QString& text, const QString& captionText)
 {
     if (post.jobs.isEmpty()) {
         // A caption of its own: the files are posted anyway.
-        ts3::printWarning(post.sch, i18n::t("Couldn't send the caption: %1").arg(text));
+        ts3::printWarning(post.sch, i18n::t("Couldn't send the caption: %1").arg(captionText.isEmpty() ? text : captionText));
         return;
+    }
+    for (int id : post.jobs) {
+        if (const UploadJob* job = upload(id); job && job->uploaded)
+            m_failedPosts.insert(id, post);
     }
     for (int id : post.jobs)
         failUpload(id, text);
@@ -2786,7 +2825,12 @@ void Core::dismissUpload(int id)
 bool Core::canRetryUpload(int id) const
 {
     const UploadJob* job = upload(id);
-    return job && job->state == UploadState::Failed && !job->uploaded && QFileInfo(job->sourcePath).isFile();
+    if (!job || job->state != UploadState::Failed)
+        return false;
+    // Uploaded, only its message failed: the message is posted again (no second upload).
+    if (job->uploaded)
+        return m_failedPosts.contains(id);
+    return QFileInfo(job->sourcePath).isFile();
 }
 
 int Core::retryUpload(int id)
@@ -2812,6 +2856,8 @@ int Core::retryUpload(int id)
             return 0;
         }
     }
+    if (job.uploaded)
+        return repostFailed(id, target);
     SendItem item    = m_jobItems.value(id);
     item.path        = job.sourcePath;
     item.pasted      = job.pasted;
@@ -2837,11 +2883,33 @@ int Core::retryUpload(int id)
     return unit.jobs.value(0);
 }
 
+// Posts a failed chat message again, for every file it announces (they are on the server already).
+int Core::repostFailed(int id, const ChatTarget& target)
+{
+    const auto failed = m_failedPosts.constFind(id);
+    if (failed == m_failedPosts.constEnd())
+        return 0;
+    PostItem post = failed.value();
+    post.target   = target; // checked by retryUpload: the same server, the partner found again
+    post.attempts = 0;
+    for (int other : qAsConst(post.jobs)) {
+        m_failedPosts.remove(other);
+        auto job = m_uploads.find(other);
+        if (job != m_uploads.end() && job->state == UploadState::Failed)
+            setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
+    }
+    ts3::log(LogLevel_INFO, post.sch, "Posting a chat message again (%1 files)", {ts3::pub(post.jobs.size())});
+    m_postQueue[post.sch].append(post);
+    pumpPosts();
+    return id;
+}
+
 void Core::forgetUpload(int id)
 {
     auto it = m_uploads.find(id);
     if (it == m_uploads.end())
         return;
+    m_failedPosts.remove(id);
     const int batch = it->batch;
     releaseSource(it.value());
     m_uploads.erase(it);
@@ -3081,7 +3149,7 @@ void Core::onTextMessage(uint64 sch, const QString& message)
         ensure(link);
 }
 
-void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError)
+void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError, const QString& extraMessage)
 {
     auto it = m_ops.find(returnCode);
     if (it == m_ops.end())
@@ -3090,6 +3158,16 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
     const bool       ok     = error == ERROR_ok && !permissionError;
     const MediaError mapped = permissionError ? MediaError::Permission : mapError(error);
     forgetOp(returnCode);
+    // TeamSpeak's flood protection says how long to wait ("retry in <n>ms"). Transfers, folders and file
+    // info count on the same counter as chat messages: posts wait too.
+    const bool flooded   = error == ERROR_client_is_flooding && !permissionError;
+    const int  retryHint = flooded ? FloodGovernor::retryHintMs(extraMessage) : -1;
+    if (flooded && op.type != OpType::PostMessage) {
+        floodGovernor(sch).generalFlooded(floodClockMs(), retryHint);
+        ts3::log(LogLevel_WARNING, sch, "TeamSpeak's flood protection held back a file request; chat posts wait %1 ms",
+                 {ts3::pub(floodGovernor(sch).counters().lastPauseMs)});
+        floodStateChanged(sch);
+    }
 
     switch (op.type) {
     case OpType::Download: {
@@ -3138,7 +3216,7 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
         break;
 
     case OpType::PostMessage:
-        finishPost(returnCode, error, message, permissionError);
+        finishPost(returnCode, error, message, permissionError, retryHint);
         break;
     }
 }
@@ -3217,17 +3295,17 @@ void Core::onConnectionLost(uint64 sch)
         else if (job.state == UploadState::Posting && job.waiting)
             held.append(job.id);
     }
-    // Messages that were waiting for their turn won't be sent on this connection any more.
-    for (const PostItem& post : m_postQueue.take(sch)) {
-        for (int id : post.jobs)
-            held.append(id);
-    }
+    // Messages that were waiting for their turn won't be sent on this connection any more (Retry posts
+    // them once connected again).
+    const QList<PostItem> queued = m_postQueue.take(sch);
     std::sort(ids.begin(), ids.end());
     std::sort(held.begin(), held.end());
     for (int id : qAsConst(ids))
         failUpload(id, uploadErrorText(MediaError::NotConnected));
     for (int id : qAsConst(held))
         failUpload(id, postErrorText(MediaError::NotConnected));
+    for (const PostItem& post : queued)
+        failPost(post, postErrorText(MediaError::NotConnected));
     m_flood.remove(sch); // a new connection starts with a fresh budget
 }
 

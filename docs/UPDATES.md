@@ -157,17 +157,24 @@ It refuses DLLs with imports outside an allowlist, and checks every imported Qt 
 
 ### Testing without GitHub
 
-- Unit tests: `tsmedia_update_tests` (signed vectors in `tests/data/update`, made with the test key 99).
+- Unit tests: the `TestUpdater` class in `tsmedia_tests` (signed vectors in `tests/data/update`, made with the test key 99).
 - Test builds (`-DTSMEDIA_TESTHOOKS=ON -DTSMEDIA_UPDATER=ON`) trust key 99 and read
   `<TeamSpeak config>/plugins/tsmedia/update_base.txt` (`http://127.0.0.1:<port>`; loopback only): all
   update requests then go to a local server with GitHub's paths. `-DTSMEDIA_VERSION_OVERRIDE=2.1.9`
   (test builds only) builds a "next version" to offer. `selftest_init_fail.txt` / `selftest_init_crash.txt`
   in the same folder make the next start fail or crash right after the boot guard (rollback tests).
 
+### Measured on TeamSpeak 3.6.2 (the S0 spike)
+
+- Quit: triggering the main window's Quit action (the one with the shortcut Ctrl+Q) through a queued
+  call quits TeamSpeak cleanly (4 of 4 runs). `qApp->quit()` crashes TeamSpeak and leaves it running
+  invisibly, so the updater never uses it: without the Quit action it asks the user to restart TeamSpeak.
+- TeamSpeak loads plugin DLLs only from the top of `plugins/`: nothing in `plugins/tsmedia/update/` (or its
+  `rollback` folder) is loaded, whatever the extension.
+- The rename trick works on NTFS: the loaded DLL can be moved to `plugins/tsmedia/update/rollback/...`
+  and the staged one takes its name; TeamSpeak loads the new one on the next start.
+
 ### Still to measure on a real TeamSpeak (not possible in the automated tests)
 
-- Which quit path exits TeamSpeak 3.6.2 cleanly (its Quit action, found by Ctrl+Q / objectName, or
-  `qApp->quit()`): no crash dump, settings saved.
-- That TeamSpeak doesn't load the `.dll.bak` copies in `plugins/tsmedia/update/` (they don't end in `.dll`).
 - The rename trick on FAT32/exFAT and redirected AppData; the 32-bit client end to end; Windows Defender
   and AppLocker behaviour toward the helper; GitHub's real redirect hosts.

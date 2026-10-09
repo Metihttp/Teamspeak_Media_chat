@@ -258,6 +258,14 @@ void TestDiagnostics::pluginLogLine()
     QCOMPARE(tail.total, 212);
     QCOMPARE(tail.lines.size(), 2);
     QCOMPARE(diag::pluginLogTail({}, 0).source, diag::LogTail::Source::None);
+
+    // A legacy line (one unclassified span) gets the legacy wording rules instead of being hidden whole.
+    const QString legacy = QString::fromLatin1("2026-11-02T17:03:43.000Z INFO  ") + marked('u', "Could not stage the preview of C:/Users/Bob/x.png; sending without it");
+    const diag::LogTail unwrapped = diag::pluginLogTail({legacy}, 1);
+    QCOMPARE(unwrapped.lines.size(), 1);
+    const QString shown = diag::Redactor(false, QString::fromLatin1("C:/Users/Bob")).apply(diag::markSafetyNet(unwrapped.lines.first().text));
+    QVERIFY2(shown.contains(QString::fromLatin1("sending without it")), qPrintable(shown));
+    QVERIFY2(!shown.contains(QString::fromLatin1("Bob")) && !shown.contains(QString::fromLatin1("x.png")), qPrintable(shown));
 }
 
 void TestDiagnostics::teamSpeakLog()
@@ -337,6 +345,7 @@ void TestDiagnostics::reportText()
         "  Volume 80%, start muted off, loop off\n"
         "  Send by drop on, by paste on, PNG to JPEG on, previews on\n"
         "  Note on, link default. Upload limit 100 MB, folder default. Cache limit 1024 MB\n"
+        "  Data saver off, 0 servers with their own settings\n"
         "Activity this session (2 h 14 min)\n"
         "  Downloads: 41 finished, 2 failed (no permission 1, not found 1)\n"
         "  Uploads: 6 finished, 1 failed, 0 canceled\n"

@@ -18,7 +18,9 @@
 namespace ts3 {
 
 extern TS3Functions funcs;
-extern QString      pluginId;
+// From ts3plugin_registerPluginID: a random GUID ("{8-4-4-4-12}") on every load (S0). Use it to send
+// plugin commands and for setPluginMenuEnabled; receivers see the plugin's name "tsmedia" instead.
+extern QString pluginId;
 
 // <TeamSpeak config>/plugins/tsmedia (created on demand).
 QString dataDir();

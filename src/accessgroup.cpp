@@ -12,6 +12,7 @@
 #include <atomic>
 
 #include "i18n.h"
+#include "ownedtimer.h"
 
 // The pure job interprets these codes; they must be the SDK's.
 static_assert(access::err::ok == ERROR_ok, "error code");
@@ -825,7 +826,7 @@ void AccessGroup::onConnectStatus(uint64 sch, int status)
     } else if (status == STATUS_CONNECTION_ESTABLISHED) {
         connection(sch).uid = ts3::serverUid(sch);
 #ifdef TSMEDIA_TESTHOOKS
-        QTimer::singleShot(8000, this, [this, sch] { selfTest(sch); });
+        singleShotOwned(8000, this, [this, sch] { selfTest(sch); });
 #endif
         if (m_watching > 0 && sch == displayConnection())
             refresh(sch, false);
@@ -1344,7 +1345,7 @@ void AccessGroup::startJob(uint64 sch, access::JobKind kind)
             c.serverVarsRequested  = true;
             s.waitingForServerVars = true; // shown as the job's first step
             ts3::funcs.requestServerVariables(sch);
-            QTimer::singleShot(kServerVarsMs, this, [this, sch, uid, kind] {
+            singleShotOwned(kServerVarsMs, this, [this, sch, uid, kind] {
                 auto it = m_servers.find(uid);
                 if (it == m_servers.end() || !it->waitingForServerVars)
                     return;
@@ -1824,7 +1825,7 @@ void AccessGroup::selfTest(uint64 sch)
             startJob(sch, access::JobKind::Create);
         } else if (line == QLatin1String("repair")) {
             refresh(sch, true);
-            QTimer::singleShot(3000, this, [this, sch] { startJob(sch, access::JobKind::Repair); });
+            singleShotOwned(3000, this, [this, sch] { startJob(sch, access::JobKind::Repair); });
         } else if (line.startsWith(QLatin1String("give ")) || line.startsWith(QLatin1String("remove "))) {
             const bool  give   = line.startsWith(QLatin1String("give "));
             const anyID client = ts3::clientIdByNickname(sch, line.section(QLatin1Char(' '), 1).trimmed());

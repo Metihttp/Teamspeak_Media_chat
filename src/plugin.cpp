@@ -369,6 +369,12 @@ TS3_EXPORT int ts3plugin_init()
     QMetaObject::invokeMethod(core, [core, chat] {
         diag::startSessionStats(core);              // 2.2 diagnostics: counts from the start (a child of core)
         diag::setDialogOpener(&showDiagnostics);    // 2.2 diagnostics: Settings → Diagnostic info…
+        // 2.2 diagnostics: recent lines from the plugin log (names marked, so they can be left out).
+        // Called on the dialog's worker thread; plog is thread-safe.
+        diag::setLogTailProvider([](int maxLines) {
+            const QStringList all = plog::tail(100000); // at most two files of 256 KB
+            return diag::pluginLogTail(all.mid(qMax(0, all.size() - maxLines)), all.size());
+        });
         g_mediaFoundation = mf::startup();
         if (!g_mediaFoundation)
             ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
@@ -388,6 +394,7 @@ TS3_EXPORT void ts3plugin_shutdown()
 {
     auto cleanup = [] {
         diag::setDialogOpener(nullptr); // 2.2 diagnostics (its window is closed below and waits for its worker)
+        diag::setLogTailProvider(nullptr);
         // 2.2 updater: cancels a running check or download (waits at most 1 s; a job still in a network
         // read keeps the DLL pinned and ends on its own) and closes its windows.
         delete g_updater.data();
@@ -712,18 +719,18 @@ TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, an
 
 TS3_EXPORT int ts3plugin_onServerErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, const char* extraMessage)
 {
-    Q_UNUSED(extraMessage);
     // 2.2 servergroup: answers to Server access requests (TeamSpeak's own print is suppressed only for them)
     if (AccessGroup::handleServerError(serverConnectionHandlerID, errorMessage, error, returnCode, 0, false))
         return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
-    const uint64  sch = serverConnectionHandlerID;
-    const QString msg = str(errorMessage);
-    onGuiThread([sch, error, rc, msg] {
+    const uint64  sch   = serverConnectionHandlerID;
+    const QString msg   = str(errorMessage);
+    const QString extra = str(extraMessage).left(200); // 0x020c: "retry in <n>ms" (FloodGovernor)
+    onGuiThread([sch, error, rc, msg, extra] {
         if (g_core)
-            g_core->onServerError(sch, error, rc, msg, false);
+            g_core->onServerError(sch, error, rc, msg, false, extra);
     });
     return 1; // handled: the plugin shows its own, friendlier message
 }

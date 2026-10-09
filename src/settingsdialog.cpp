@@ -649,6 +649,15 @@ void SettingsDialog::showEvent(QShowEvent* event)
     // scaled laptop screen. Before QDialog::showEvent, which centres the dialog with this size.
     if (!event->spontaneous() && !m_sized) {
         m_sized = true;
+        // Each page once (nothing is painted yet): a page's widgets only get their final size from a
+        // skin when they are shown, and the window must be sized for the largest page, so that
+        // switching tabs never resizes it.
+        const int current = m_tabs->currentIndex();
+        for (int i = 0; i < m_tabs->count(); ++i) {
+            if (m_tabs->isTabVisible(i))
+                m_tabs->setCurrentIndex(i);
+        }
+        m_tabs->setCurrentIndex(current);
         fitToContents();
     }
     QDialog::showEvent(event);

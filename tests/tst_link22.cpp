@@ -441,18 +441,24 @@ QString paramValue(const QString& url, const QString& name)
     return {};
 }
 
-// A message as TeamSpeak reads it: every [noparse] closed by a [/noparse] after it.
-bool noparseClosed(const QString& message)
+// TeamSpeak reads a bracket as markup only without a backslash right before it (S0).
+bool hasUnescaped(const QString& message, const QString& tag)
 {
-    for (int from = 0;;) {
-        const int open = message.indexOf(QStringLiteral("[noparse]"), from, Qt::CaseInsensitive);
-        if (open < 0)
+    for (int at = message.indexOf(tag, 0, Qt::CaseInsensitive); at >= 0; at = message.indexOf(tag, at + 1, Qt::CaseInsensitive)) {
+        if (at == 0 || message.at(at - 1) != QLatin1Char('\\'))
             return true;
-        const int close = message.indexOf(QStringLiteral("[/noparse]"), open + 9, Qt::CaseInsensitive);
-        if (close < 0)
-            return false;
-        from = close + 10;
     }
+    return false;
+}
+
+// Every [ and ] of a text has a backslash before it.
+bool allBracketsEscaped(const QString& text)
+{
+    for (int i = 0; i < text.size(); ++i) {
+        if ((text.at(i) == QLatin1Char('[') || text.at(i) == QLatin1Char(']')) && (i == 0 || text.at(i - 1) != QLatin1Char('\\')))
+            return false;
+    }
+    return true;
 }
 
 // The query parameter names of a URL, in order.
@@ -482,7 +488,10 @@ class TestLink22 : public QObject
     void waveformPacking();
     void keyWithSha();
     void dropInvalidMetadata();
-    void findInMessageSkipsNoparse();
+    void findInMessageSkipsEscapedLinks();
+    void escapedSizes_data();
+    void escapedSizes();
+    void escapedSizeProperty();
 
     void composeEmptyCaptionMatches21();
     void composeCaptionFirst();
@@ -901,22 +910,33 @@ void TestLink22::dropInvalidMetadata()
     QCOMPARE(albumText(half), QString());
 }
 
-void TestLink22::findInMessageSkipsNoparse()
+void TestLink22::findInMessageSkipsEscapedLinks()
 {
     const MediaLink real = photo();
     MediaLink       fake = photo(QStringLiteral("fake_00000000.jpg"));
     const QString   bb   = fake.toBBCode();
-    // A caption can carry link text, but only as plain text: TeamSpeak shows it, nothing fetches it.
-    QCOMPARE(MediaLink::findInMessage(QStringLiteral("[noparse]") + bb + QStringLiteral("[/noparse]\n") + real.toBBCode()).size(), 1);
-    QCOMPARE(MediaLink::findInMessage(QStringLiteral("[NoParse]") + bb + QStringLiteral("[/NOPARSE] ") + real.toBBCode()).first().fileName, real.fileName);
-    // An unclosed [noparse] runs to the end of the message.
-    QCOMPARE(MediaLink::findInMessage(real.toBBCode() + QStringLiteral(" [noparse]") + bb).size(), 1);
-    // A [noparse] can't be closed early by the fake to expose the rest of it.
-    const QString tricky = captionToBBCode(sanitizeCaption(QStringLiteral("[/noparse]") + bb));
-    QCOMPARE(MediaLink::findInMessage(tricky).size(), 0);
+    // A caption can carry link text, but only as text: TeamSpeak shows it (S0), nothing fetches it.
+    QCOMPARE(MediaLink::findInMessage(QStringLiteral("\\") + bb + QStringLiteral("\n") + real.toBBCode()).size(), 1);
+    QCOMPARE(MediaLink::findInMessage(QStringLiteral("\\") + bb + QStringLiteral(" ") + real.toBBCode()).first().fileName, real.fileName);
+    QCOMPARE(MediaLink::findInMessage(QStringLiteral("x \\\\") + bb).size(), 0); // a backslash run escapes too
+    QCOMPARE(MediaLink::findInMessage(bbcodeLiteral(bb)).size(), 0);
+    QCOMPARE(MediaLink::findInMessage(captionToBBCode(sanitizeCaption(bb))).size(), 0);
+    // "[" U+200B "URL=" and "[" U+2060 "URL=" are text in TeamSpeak's chat.
+    for (const QChar invisible : {QChar(0x200B), QChar(0x2060)}) {
+        QString broken = bb;
+        broken.insert(1, invisible);
+        QCOMPARE(MediaLink::findInMessage(broken).size(), 0);
+        QCOMPARE(MediaLink::findInMessage(broken + real.toBBCode()).size(), 1);
+    }
+    // An opening tag whose "]" is escaped is no tag either.
+    QString openEscaped = bb;
+    openEscaped.insert(openEscaped.indexOf(QLatin1Char(']')), QLatin1Char('\\'));
+    QCOMPARE(MediaLink::findInMessage(openEscaped).size(), 0);
+    // [noparse] doesn't stop TeamSpeak from showing a link, so the plugin doesn't skip it either.
+    QCOMPARE(MediaLink::findInMessage(QStringLiteral("[noparse]") + bb + QStringLiteral("[/noparse]")).size(), 1);
     // A caption made by the composer never yields an extra link.
     ComposeOptions options;
-    options.caption = bb + QStringLiteral(" [url=ts3file://x?serverUID=a&channel=1&filename=b.png]y[/url]");
+    options.caption = bb + QStringLiteral(" [url=ts3file://x?serverUID=a&channel=1&filename=b.png]y[/url] \\") + bb + QStringLiteral(" \\\\[url=ts3file://y]");
     for (const QString& message : composeChatMessages({real}, options)) {
         for (const MediaLink& link : MediaLink::findInMessage(message))
             QCOMPARE(link.fileName, real.fileName);
@@ -953,7 +973,7 @@ void TestLink22::composeCaptionFirst()
     QVERIFY2(text.startsWith(QStringLiteral("Sunset at the lake") + QString::fromLatin1(kMessageSeparator) + QStringLiteral("[URL=ts3file://")), qPrintable(text));
     QVERIFY(text.endsWith(QStringLiteral("plugin required to view this in chat[/I][/COLOR]")));
     QVERIFY(text.contains(QStringLiteral("]sunset.jpg[/URL] [COLOR=#72767d]")));
-    QVERIFY(utf8Bytes(text) < options.maxBytes);
+    QVERIFY(escapedMessageSize(text) <= options.maxBytes);
     QCOMPARE(messages.first().links.size(), 1); // (sizes and items: QVector's operator== warns with MSVC)
     QCOMPARE(messages.first().links.first(), 0);
     QVERIFY(messages.first().dropped.isEmpty());
@@ -968,8 +988,9 @@ void TestLink22::composeCaptionSplit()
     const MediaLink link = photo(QStringLiteral("فایل_خیلی_طولانی_برای_آزمایش_اندازه_پیام_3f9a1c2e.jpg"));
     ComposeOptions  options;
     options.downloadUrl = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat");
-    options.maxBytes    = 1000; // the scenario is about this limit, whatever kMaxMessageBytes becomes
-    options.caption     = QString(kCaptionMaxChars, QChar(0x0633)); // 300 Persian letters = 600 bytes
+    // The media message alone fits with room to spare, but not with the caption next to it.
+    options.maxBytes = escapedMessageSize(composeChatMessages({link}, options).first()) + 100;
+    options.caption  = QString(kCaptionMaxChars, QChar(0x0633)); // 300 Persian letters = 600 bytes
     const QVector<ComposedMessage> messages = composeChatMessagesDetailed({link}, options);
     QCOMPARE(messages.size(), 2);
     QCOMPARE(messages.at(0).text, options.caption);
@@ -979,12 +1000,12 @@ void TestLink22::composeCaptionSplit()
     QVERIFY(messages.at(1).text.contains(QStringLiteral("[URL=https://github.com/Metihttp/Teamspeak_Media_chat]TS Media chat[/URL] plugin required")));
     QVERIFY2(messages.at(1).dropped.isEmpty(), qPrintable(messages.at(1).dropped.join(QLatin1Char(','))));
     for (const ComposedMessage& m : messages)
-        QVERIFY(utf8Bytes(m.text) < options.maxBytes && !m.tooLong);
+        QVERIFY(escapedMessageSize(m.text) <= options.maxBytes && !m.tooLong);
 
     // Before splitting, only steps that keep the note are tried: here dropping the preview hash is enough.
     options.caption = QString(80, QLatin1Char('c'));
     ComposeOptions bigger = options;
-    const int      full   = utf8Bytes(composeChatMessages({link}, bigger).first());
+    const int      full   = escapedMessageSize(composeChatMessages({link}, bigger).first());
     bigger.maxBytes       = full - 25; // "&ph=" + 22 characters = 26 bytes
     const QVector<ComposedMessage> tight = composeChatMessagesDetailed({link}, bigger);
     QCOMPARE(tight.size(), 1);
@@ -1004,13 +1025,15 @@ void TestLink22::composeCaptionNeverCut()
     QVERIFY(messages.first().links.isEmpty());
     QCOMPARE(messages.size(), 3); // caption, then one link per message
     QVERIFY(messages.at(1).tooLong && messages.at(2).tooLong);
-    // Linked addresses cost bytes; a caption that can't go out with them goes as plain text.
+    // Escaped, never shortened: also a caption that is too long on its own.
     options.caption = QStringLiteral("[x] ");
     for (int i = 0; i < 30; ++i)
         options.caption += QStringLiteral("http://a ");
-    options.maxBytes = 300;
-    QVERIFY(utf8Bytes(captionToBBCode(sanitizeCaption(options.caption))) >= 300);
-    QCOMPARE(composeChatMessages({}, options).first(), QStringLiteral("[noparse]") + sanitizeCaption(options.caption) + QStringLiteral("[/noparse]"));
+    options.maxBytes            = 300;
+    const QString         clean = sanitizeCaption(options.caption);
+    const ComposedMessage alone = composeChatMessagesDetailed({}, options).first();
+    QCOMPARE(alone.text, QStringLiteral("\\[x\\]") + clean.mid(3));
+    QVERIFY(escapedMessageSize(alone.text) > 300 && alone.tooLong);
 }
 
 void TestLink22::composeCascadeOrder_data()
@@ -1083,7 +1106,7 @@ void TestLink22::composeCascadeOrder()
         QCOMPARE(sent.remoteFile(), link.remoteFile());
         QCOMPARE(sent.size, link.size);
         if (!media.tooLong)
-            QVERIFY(utf8Bytes(media.text) < max);
+            QVERIFY(escapedMessageSize(media.text) <= max);
     }
     QCOMPARE(last, order.size()); // every step was reached
     QVERIFY(!caption || wasSplit);
@@ -1115,7 +1138,8 @@ void TestLink22::composeAlbumPacking_data()
     QTest::newRow("1000, no caption") << 1000 << QString();
     QTest::newRow("1000, 300-byte caption") << 1000 << QString(300, QLatin1Char('w'));
     QTest::newRow("1000, Persian caption") << 1000 << QString(300, QChar(0x0645));
-    QTest::newRow("8000") << 8000 << QStringLiteral("Trip photos");
+    QTest::newRow("kMaxMessageBytes") << kMaxMessageBytes << QStringLiteral("Trip photos");
+    QTest::newRow("kMaxMessageBytes, long Persian caption") << kMaxMessageBytes << QString(kCaptionMaxChars, QChar(0x0645));
     QTest::newRow("4500") << 4500 << QString();
 }
 
@@ -1142,7 +1166,7 @@ void TestLink22::composeAlbumPacking()
     QList<MediaLink> found;
     for (int m = 0; m < messages.size(); ++m) {
         const ComposedMessage& message = messages.at(m);
-        QVERIFY2(utf8Bytes(message.text) < maxBytes && !message.tooLong, qPrintable(QString::number(utf8Bytes(message.text))));
+        QVERIFY2(escapedMessageSize(message.text) <= maxBytes && !message.tooLong, qPrintable(QString::number(escapedMessageSize(message.text))));
         QVERIFY(message.dropped.isEmpty()); // packing never drops metadata
         withNote += message.text.contains(note) ? 1 : 0;
         withCaption += !caption.isEmpty() && message.text.startsWith(sanitizeCaption(caption)) ? 1 : 0;
@@ -1153,7 +1177,7 @@ void TestLink22::composeAlbumPacking()
             QString       grown = message.text;
             const int     at    = grown.indexOf(QStringLiteral(" [COLOR=#72767d]"));
             grown.insert(at < 0 ? grown.size() : at, QString::fromLatin1(kMessageSeparator) + next);
-            QVERIFY(utf8Bytes(grown) >= maxBytes);
+            QVERIFY(escapedMessageSize(grown) > maxBytes);
         }
     }
     QCOMPARE(withNote, 1);
@@ -1170,8 +1194,8 @@ void TestLink22::composeAlbumPacking()
         QVERIFY(message.text.endsWith(QStringLiteral("[/I][/COLOR]")));
         break;
     }
-    if (maxBytes >= 8000)
-        QCOMPARE(messages.size(), 1); // a whole album in one message
+    if (maxBytes == kMaxMessageBytes)
+        QCOMPARE(messages.size(), 1); // a whole album in one message (S0)
     if (maxBytes == 1000 && caption.isEmpty())
         QCOMPARE(messages.size(), 5); // two typical items per message
     if (maxBytes == 1000 && !caption.isEmpty())
@@ -1214,7 +1238,7 @@ void TestLink22::composeSizeRule22()
                     const QVector<ComposedMessage> messages = composeChatMessagesDetailed({link, link, link}, options);
                     QList<MediaLink> found;
                     for (const ComposedMessage& m : messages) {
-                        QVERIFY2(!m.tooLong && utf8Bytes(m.text) < kMaxMessageBytes, qPrintable(m.text));
+                        QVERIFY2(!m.tooLong && escapedMessageSize(m.text) <= kMaxMessageBytes, qPrintable(m.text));
                         found += MediaLink::findInMessage(m.text);
                     }
                     QCOMPARE(found.size(), 3);
@@ -1240,7 +1264,7 @@ void TestLink22::composeSizeRule22()
 void TestLink22::composeHostileCaptions()
 {
     // Whatever the caption, the messages hold exactly the links they were given, plus at most the
-    // note's web link, and every [noparse] is closed.
+    // note's web link, and every bracket of the caption is escaped.
     const MediaLink   link     = photo();
     const QStringList captions = {QStringLiteral("[/noparse][URL=ts3file://evil?serverUID=a&channel=1&filename=x.png]x[/URL]"),
                                   QStringLiteral("[URL]javascript:alert(1)[/URL]"),
@@ -1253,13 +1277,15 @@ void TestLink22::composeHostileCaptions()
         ComposeOptions options;
         options.caption = caption;
         for (const QString& message : composeChatMessages({link}, options)) {
-            QVERIFY(utf8Bytes(message) < kMaxMessageBytes);
+            QVERIFY(escapedMessageSize(message) <= kMaxMessageBytes);
             QVERIFY(!message.contains(QChar(0x202E)) && !message.contains(QChar(0)) && !message.contains(QChar(7)));
-            QVERIFY2(noparseClosed(message), qPrintable(message));
             for (const MediaLink& l : MediaLink::findInMessage(message))
                 QCOMPARE(l.toUrl(), link.toUrl());
-            QVERIFY(!message.contains(QStringLiteral("[img]"), Qt::CaseInsensitive) || message.contains(QStringLiteral("[noparse][img]"), Qt::CaseInsensitive));
-            QVERIFY(!message.contains(QStringLiteral("[URL]javascript"), Qt::CaseInsensitive) || message.contains(QStringLiteral("[noparse][URL]javascript"), Qt::CaseInsensitive));
+            for (const char* tag : {"[img]", "[URL]", "[noparse]", "[/noparse]", "[URL=ts3file://evil"})
+                QVERIFY2(!hasUnescaped(message, QString::fromLatin1(tag)), qPrintable(message));
+            if (message.startsWith(captionToBBCode(sanitizeCaption(caption))))
+                QVERIFY(allBracketsEscaped(message.section(QString::fromLatin1(kMessageSeparator), 0, 0)));
+            QVERIFY(!message.contains(QStringLiteral("[noparse]"), Qt::CaseInsensitive) || caption.contains(QStringLiteral("[noparse]"), Qt::CaseInsensitive));
         }
     }
 }
@@ -1301,21 +1327,21 @@ void TestLink22::captionToBBCodeTexts_data()
     QTest::addColumn<QString>("caption");
     QTest::addColumn<QString>("bbcode");
     QTest::newRow("plain") << QStringLiteral("hello world") << QStringLiteral("hello world");
-    QTest::newRow("example") << QStringLiteral("see [this] https://x.y/a") << QStringLiteral("[noparse]see [this] [/noparse][URL]https://x.y/a[/URL]");
-    QTest::newRow("tags") << QStringLiteral("[b]x[/b]") << QStringLiteral("[noparse][b]x[/b][/noparse]");
-    QTest::newRow("noparse defused") << QStringLiteral("a [/noparse] b") << QStringLiteral("[noparse]a [ /noparse] b[/noparse]");
-    QTest::newRow("noparse any case") << QStringLiteral("[/NoParse]") << QStringLiteral("[noparse][ /noparse][/noparse]");
-    QTest::newRow("http") << QStringLiteral("http://example.com") << QStringLiteral("[URL]http://example.com[/URL]");
-    QTest::newRow("upper case scheme") << QStringLiteral("HTTPS://Example.com/A") << QStringLiteral("[URL]HTTPS://Example.com/A[/URL]");
-    QTest::newRow("two addresses") << QStringLiteral("https://a.b c https://d.e") << QStringLiteral("[URL]https://a.b[/URL] c [URL]https://d.e[/URL]");
+    // S0: a backslash before [ and ] makes them text (TeamSpeak drops [noparse] but parses its content);
+    // web addresses stay as typed (the chat links them).
+    QTest::newRow("example") << QStringLiteral("see [this] https://x.y/a") << QStringLiteral("see \\[this\\] https://x.y/a");
+    QTest::newRow("tags") << QStringLiteral("[b]x[/b]") << QStringLiteral("\\[b\\]x\\[/b\\]");
+    QTest::newRow("noparse") << QStringLiteral("a [/noparse] b") << QStringLiteral("a \\[/noparse\\] b");
+    QTest::newRow("noparse any case") << QStringLiteral("[NoParse][URL=ts3file://x]y[/URL][/NoParse]")
+                                      << QStringLiteral("\\[NoParse\\]\\[URL=ts3file://x\\]y\\[/URL\\]\\[/NoParse\\]");
+    QTest::newRow("http") << QStringLiteral("http://example.com") << QStringLiteral("http://example.com");
     QTest::newRow("javascript") << QStringLiteral("javascript:alert(1)") << QStringLiteral("javascript:alert(1)");
-    QTest::newRow("ftp") << QStringLiteral("ftp://example.com") << QStringLiteral("ftp://example.com");
-    QTest::newRow("glued") << QStringLiteral("xhttps://example.com") << QStringLiteral("xhttps://example.com");
-    QTest::newRow("bracket ends the address") << QStringLiteral("https://a.b/[c]") << QStringLiteral("[URL]https://a.b/[/URL][noparse][c][/noparse]");
-    QTest::newRow("quote ends the address") << QStringLiteral("https://a.b/\"x") << QStringLiteral("[URL]https://a.b/[/URL]\"x");
-    QTest::newRow("scheme only") << QStringLiteral("https://") << QStringLiteral("https://");
-    QTest::newRow("persian") << QStringLiteral("سلام [دنیا]") << QStringLiteral("[noparse]سلام [دنیا][/noparse]");
-    QTest::newRow("draft") << QStringLiteral("[draft] a[1]") << QStringLiteral("[noparse][draft] a[1][/noparse]");
+    QTest::newRow("bracket in an address") << QStringLiteral("https://a.b/[c]") << QStringLiteral("https://a.b/\\[c\\]");
+    QTest::newRow("quote") << QStringLiteral("https://a.b/\"x") << QStringLiteral("https://a.b/\"x");
+    QTest::newRow("backslash") << QStringLiteral("a\\b \\[x") << QStringLiteral("a\\b \\\\[x");
+    QTest::newRow("invisible") << QString::fromUtf8("[\u200BURL=x]") << QString::fromUtf8("\\[\u200BURL=x\\]");
+    QTest::newRow("persian") << QStringLiteral("سلام [دنیا]") << QStringLiteral("سلام \\[دنیا\\]");
+    QTest::newRow("draft") << QStringLiteral("[draft] a[1]") << QStringLiteral("\\[draft\\] a\\[1\\]");
 }
 
 void TestLink22::captionToBBCodeTexts()
@@ -1323,6 +1349,81 @@ void TestLink22::captionToBBCodeTexts()
     QFETCH(QString, caption);
     QFETCH(QString, bbcode);
     QCOMPARE(::captionToBBCode(caption), bbcode);
+    QCOMPARE(bbcodeLiteral(caption), bbcode);
+}
+
+// ---- S0: the message limit is measured on the escaped command --------------------------------------
+
+void TestLink22::escapedSizes_data()
+{
+    QTest::addColumn<QString>("text");
+    QTest::addColumn<int>("size");
+    QTest::newRow("empty") << QString() << 0;
+    QTest::newRow("latin") << QStringLiteral("abc") << 3;
+    QTest::newRow("escaped characters") << QStringLiteral("a b/c|d\\e") << 9 + 4;
+    QTest::newRow("controls") << QStringLiteral("\a\b\f\n\r\t\v") << 14;
+    QTest::newRow("S0 esc mix") << QStringLiteral("/ / ") << 8; // "/ " is 2 bytes raw, 4 escaped
+    QTest::newRow("cyrillic") << QStringLiteral("жж") << 4;
+    QTest::newRow("cjk") << QStringLiteral("中") << 3;
+    QTest::newRow("emoji") << QString::fromUtf8("😀") << 4;
+    QTest::newRow("brackets") << QStringLiteral("\\[x\\]") << 7;
+}
+
+void TestLink22::escapedSizes()
+{
+    QFETCH(QString, text);
+    QFETCH(int, size);
+    QCOMPARE(escapedMessageSize(text), size);
+}
+
+void TestLink22::escapedSizeProperty()
+{
+    // Every message the composer makes at kMaxMessageBytes keeps both measured limits: at most 8192
+    // UTF-8 bytes for the server, and an escaped size the client sends (S0: 9111 passed, 9115 was
+    // dropped). Names and captions of every script, the worst characters for escaping included.
+    const QStringList names = {QStringLiteral("a"), QString(48, QLatin1Char('a')), QString(32, QChar(0x0641)), QString(21, QChar(0x4E2D)),
+                               QString::fromUtf8("😀😃😄😁😆😅🤣😂🙂🙃😉😊😇🥰😍🤩"), QString(48, QLatin1Char(' ')).replace(0, 1, QLatin1Char('x'))};
+    const QStringList captions = {QString(), QString(kCaptionMaxChars, QLatin1Char('[')), QString(kCaptionMaxChars / 2, QChar(0x4E2D)),
+                                  QStringLiteral("a / b | c \\ d ").repeated(20), QString::fromUtf8("😀 ").repeated(100)};
+    int checked = 0;
+    for (const QString& name : names) {
+        for (const QString& caption : captions) {
+            QList<MediaLink> links;
+            for (int i = 0; i < 40; ++i) {
+                MediaLink link  = photo(boundRemoteBase(name) + QStringLiteral("_%1.jpg").arg(0x10000000u + static_cast<quint32>(i), 8, 16, QLatin1Char('0')));
+                link.albumId    = 0x7c1e09ab;
+                link.albumIndex = i % 10 + 1;
+                link.albumCount = 10;
+                links << link;
+            }
+            ComposeOptions options;
+            options.caption     = caption;
+            options.downloadUrl = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat");
+            int found = 0;
+            for (const ComposedMessage& m : composeChatMessagesDetailed(links, options)) {
+                QVERIFY(!m.tooLong);
+                QVERIFY(escapedMessageSize(m.text) <= kMaxMessageBytes);
+                QVERIFY(m.text.toUtf8().size() <= 8192 - 24);
+                QVERIFY(escapedMessageSize(m.text) < 9111);
+                found += MediaLink::findInMessage(m.text).size();
+                ++checked;
+            }
+            QCOMPARE(found, links.size());
+        }
+    }
+    QVERIFY(checked >= 30);
+    // A 10-item album of long Persian names fits in one message (S0: at most 776 bytes per link).
+    QList<MediaLink> album;
+    for (int i = 0; i < MediaLink::kMaxAlbumItems; ++i) {
+        MediaLink link  = photo(boundRemoteBase(QString(60, QChar(0x0641))) + QStringLiteral("_%1.jpg").arg(0x20000000u + static_cast<quint32>(i), 8, 16, QLatin1Char('0')));
+        link.albumId    = 0x0badf00d;
+        link.albumIndex = i + 1;
+        link.albumCount = MediaLink::kMaxAlbumItems;
+        album << link;
+    }
+    ComposeOptions options;
+    options.caption = QString(kCaptionMaxChars, QChar(0x0645));
+    QCOMPARE(composeChatMessages(album, options).size(), 1);
 }
 
 void TestLink22::linkLabels_data()

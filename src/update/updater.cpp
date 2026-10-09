@@ -9,6 +9,7 @@
 #include <QKeySequence>
 #include <QMainWindow>
 #include <QMetaObject>
+#include <QPointer>
 #include <QRandomGenerator>
 #include <QTimer>
 #include <QUrl>
@@ -19,6 +20,7 @@
 
 #include "i18n.h"
 #include "medialink.h" // formatSize
+#include "ownedtimer.h"
 #include "ts3api.h"
 #include "updatedialog.h"
 #include "updateinstaller.h"
@@ -147,25 +149,22 @@ ErrorCopy manualInstallError(const QString& version)
             OpenPage};
 }
 
-// TeamSpeak's own Quit action (Ctrl+Q in its menu). Unverified on 3.6.2: see docs/UPDATES.md.
-QAction* findQuitAction(QWidget* mainWindow)
+// TeamSpeak's own Quit action: the main window's "&Quit" with the shortcut Ctrl+Q (S0, TeamSpeak 3.6.2:
+// its objectName is empty, and a second "&Quit" without a shortcut belongs to the tray icon). Triggering
+// it (queued) quits cleanly, 4 of 4 times. Only this action: QCoreApplication::quit() crashes TeamSpeak
+// and leaves it running invisibly, so there is no fallback.
+QAction* findQuitAction()
 {
-    if (!mainWindow)
-        return nullptr;
     const QKeySequence quit(Qt::CTRL | Qt::Key_Q);
-    QAction*           byName = nullptr;
-    for (QAction* action : mainWindow->findChildren<QAction*>()) {
-        if (action->isSeparator() || action->menu())
+    for (QWidget* window : QApplication::topLevelWidgets()) {
+        if (!qobject_cast<QMainWindow*>(window)) // also while TeamSpeak is hidden in the tray
             continue;
-        if (action->shortcut().matches(quit) == QKeySequence::ExactMatch)
-            return action;
-        QString text = action->text();
-        text.remove(QLatin1Char('&'));
-        const QString name = action->objectName().toLower();
-        if (!byName && (name.contains(QLatin1String("quit")) || text.compare(QLatin1String("Quit"), Qt::CaseInsensitive) == 0))
-            byName = action;
+        for (QAction* action : window->findChildren<QAction*>()) {
+            if (!action->isSeparator() && !action->menu() && action->shortcut().matches(quit) == QKeySequence::ExactMatch)
+                return action;
+        }
     }
-    return byName;
+    return nullptr;
 }
 
 } // namespace
@@ -287,7 +286,7 @@ void Updater::start()
     }
     copyHelperLog();
     // Leftovers go once a restart helper has surely finished.
-    QTimer::singleShot(2 * 60 * 1000, this, [this] { cleanup(m_layout, m_current, false); });
+    singleShotOwned(2 * 60 * 1000, this, [this] { cleanup(m_layout, m_current, false); });
 
     if (!builtIn()) {
         setPhase(Phase::Disabled);
@@ -944,6 +943,13 @@ void Updater::restartNow()
         cannot();
         return;
     }
+    // Before the helper starts: without TeamSpeak's Quit action there is no safe way to quit.
+    QPointer<QAction> quit = findQuitAction();
+    if (!quit) {
+        log(latin("TeamSpeak's Quit action (Ctrl+Q) wasn't found; not restarting"), LogLevel_WARNING);
+        cannot();
+        return;
+    }
     HelperJob job;
     job.pid    = GetCurrentProcessId();
     job.exe    = processExePath();
@@ -967,14 +973,17 @@ void Updater::restartNow()
         if (w->objectName().startsWith(QLatin1String("tsmedia")))
             w->deleteLater();
     }
-    if (QAction* quit = findQuitAction(parentWindow())) {
-        // Logged for the measurement of TeamSpeak's quit paths (docs/UPDATES.md).
-        log(latin("quitting through TeamSpeak's action \"") + quit->objectName() + latin("\" (") + quit->shortcut().toString(QKeySequence::PortableText)
-            + latin(")"));
-        QMetaObject::invokeMethod(quit, "trigger", Qt::QueuedConnection);
+    if (!quit)
+        quit = findQuitAction(); // gone meanwhile (it never is in practice)
+    if (quit) {
+        log(latin("quitting through TeamSpeak's Quit action (") + quit->shortcut().toString(QKeySequence::PortableText) + latin(")"));
+        QMetaObject::invokeMethod(quit.data(), "trigger", Qt::QueuedConnection);
     } else {
-        log(latin("quitting through QCoreApplication::quit (no Quit action found)"));
-        QTimer::singleShot(0, qApp, SLOT(quit()));
+        // Never qApp->quit(): it crashes TeamSpeak (S0). The helper gives up after its wait; the update
+        // starts with the next TeamSpeak start.
+        log(latin("TeamSpeak's Quit action is gone; close TeamSpeak to finish the update"), LogLevel_WARNING);
+        setPhase(Phase::RestartPending);
+        cannot();
     }
 }
 

@@ -377,12 +377,28 @@ LogLine parsePluginLogLine(const QString& line)
     return result;
 }
 
+// A line the legacy ts3::log(QString) wrote is one unclassified span ('u', logtext.h): the wording rules
+// for TeamSpeak's log apply to it (fail-closed) instead of hiding the whole line.
+QString unwrapUnclassified(const QString& marked)
+{
+    const QString open = QString(beginMark()) + QLatin1Char('u');
+    if (!marked.startsWith(open) || !marked.endsWith(endMark()))
+        return marked;
+    const QString inner = marked.mid(open.size(), marked.size() - open.size() - 1);
+    if (inner.contains(beginMark()) || inner.contains(endMark()))
+        return marked;
+    return markLegacy(inner);
+}
+
 LogTail pluginLogTail(const QStringList& rawLines, int totalLines)
 {
     LogTail tail;
     for (const QString& raw : rawLines) {
-        if (!raw.trimmed().isEmpty())
-            tail.lines.append(parsePluginLogLine(raw));
+        if (raw.trimmed().isEmpty())
+            continue;
+        LogLine line = parsePluginLogLine(raw);
+        line.text    = unwrapUnclassified(line.text);
+        tail.lines.append(line);
     }
     if (tail.lines.isEmpty())
         return tail; // Source::None: fall back to TeamSpeak's log
@@ -678,6 +694,8 @@ QString format(const Facts& f, bool includeNames, const QString& homeDir)
              .arg(s.uploadMaxMB)
              .arg(defaultFolder ? i18n::t("default") : i18n::t("changed"))
              .arg(s.cacheLimitMB));
+    // 2.2: data saver and per-server settings (how many servers, never which)
+    item(i18n::t("Data saver %1, %2 servers with their own settings").arg(onOff(s.dataSaver)).arg(s.servers.size()));
 
     // Activity
     const SessionCounts& c = f.session;

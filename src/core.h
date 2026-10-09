@@ -260,7 +260,9 @@ class Core : public QObject
     // ---- TeamSpeak callbacks (called on the GUI thread) ------------------------------------
     bool isOwnReturnCode(const QString& returnCode) const; // thread-safe
     void onTextMessage(uint64 sch, const QString& message);
-    void onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError);
+    // extraMessage: TeamSpeak's extra text (on 0x020c "retry in <n>ms").
+    void onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError,
+                       const QString& extraMessage = {});
     void onTransferStatus(anyID transferId, unsigned int status, const QString& message, uint64 sch);
     void onConnectionLost(uint64 sch);
 
@@ -378,8 +380,10 @@ class Core : public QObject
     void    composeUnit(int batch, int index);
     void    pumpPosts();                          // sends queued messages as their governors allow
     bool    sendPost(PostItem& item);             // false: refused at once (already reported)
-    void    finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError);
-    void    failPost(const PostItem& item, const QString& text);
+    void    finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError, int retryHintMs = -1);
+    void    unansweredPost(const QString& returnCode); // no answer within kPostTimeoutMs: failed, never "sent"
+    void    failPost(const PostItem& item, const QString& text, const QString& captionText = {});
+    int     repostFailed(int id, const ChatTarget& target);
     void    forgetBatchIfDone(int batch);
     void    seedCache(const UploadJob& job, const MediaLink& link);
     void    failUpload(int id, const QString& text);
@@ -436,6 +440,7 @@ class Core : public QObject
     QHash<int, BatchInfo>           m_batches;       // batch id -> its units and caption
     QHash<uint64, QList<PostItem>>  m_postQueue;     // connection -> messages waiting to be sent, in order
     QHash<QString, InFlightPost>    m_postsInFlight; // return code -> a message waiting for its answer
+    QHash<int, PostItem>            m_failedPosts;   // upload id -> its message that failed or got no answer (Retry posts it)
     QHash<uint64, FloodGovernor>    m_flood;         // connection -> its governor (posts and plugin commands)
     QTimer*                         m_postTimer = nullptr; // wakes pumpPosts() when a governor allows the next post
     QElapsedTimer                   m_clock;

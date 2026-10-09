@@ -25,7 +25,6 @@ constexpr int    kMaxPathChars     = 1024;
 constexpr int kShaBytes         = 32;
 constexpr int kPreviewShaBytes  = 16;
 constexpr int kWaveformBytes    = MediaLink::kWaveformLevels / 2; // two 4-bit levels per byte
-constexpr int kMaxUrlTokenChars = 512;                            // http(s) addresses in captions
 
 QString encode(const QString& value)
 {
@@ -324,6 +323,9 @@ QString MediaLink::toBBCode(const QString& label) const
     QString text = label;
     text.replace(QLatin1Char('['), QLatin1Char('('));
     text.replace(QLatin1Char(']'), QLatin1Char(')'));
+    // A backslash right before "[/URL]" would make TeamSpeak show the closing tag as text.
+    for (int i = text.size() - 1; i >= 0 && text.at(i) == QLatin1Char('\\'); --i)
+        text[i] = QLatin1Char('/');
     return QStringLiteral("[URL=") + toUrl() + QStringLiteral("]") + text + QStringLiteral("[/URL]");
 }
 
@@ -446,29 +448,22 @@ MediaLink MediaLink::parse(const QString& href)
 
 QList<MediaLink> MediaLink::findInMessage(const QString& message)
 {
+    // Only the tag itself: "[" U+200B "URL=" and the like never match (TeamSpeak shows them as text).
     static const QRegularExpression re(QStringLiteral(R"(\[url=([^\]]*ts3file[^\]]*)\])"), QRegularExpression::CaseInsensitiveOption);
 
-    // [noparse] spans are shown as text (an unclosed one runs to the end of the message).
-    QString text;
-    text.reserve(message.size());
-    for (int from = 0; from < message.size();) {
-        const int open = message.indexOf(QLatin1String("[noparse]"), from, Qt::CaseInsensitive);
-        if (open < 0) {
-            text += message.midRef(from);
-            break;
-        }
-        text += message.midRef(from, open - from);
-        text += QLatin1Char(' '); // nothing on either side joins into one tag
-        const int close = message.indexOf(QLatin1String("[/noparse]"), open + 9, Qt::CaseInsensitive);
-        if (close < 0)
-            break;
-        from = close + 10;
-    }
-
     QList<MediaLink> result;
-    auto             it = re.globalMatch(text);
+    auto             it = re.globalMatch(message);
     while (it.hasNext()) {
-        const MediaLink link = parse(it.next().captured(1));
+        const QRegularExpressionMatch match = it.next();
+        // "\[URL=...]" is text in TeamSpeak's chat (any backslash run before a bracket escapes it), and
+        // so is a tag whose "]" is escaped.
+        const int start = match.capturedStart();
+        if (start > 0 && message.at(start - 1) == QLatin1Char('\\'))
+            continue;
+        const QString href = match.captured(1);
+        if (href.endsWith(QLatin1Char('\\')))
+            continue;
+        const MediaLink link = parse(href);
         if (link.isValid())
             result.append(link);
     }
@@ -484,7 +479,8 @@ QString composeChatMessage(const MediaLink& link, bool includeNotice, const QStr
     options.includeNotice  = includeNotice;
     options.downloadUrl    = downloadUrl;
     options.friendlyLabels = false;
-    options.maxBytes       = 1000; // 2.1's limit, whatever kMaxMessageBytes becomes
+    options.maxBytes       = 1000; // 2.1's limit and size rule, whatever kMaxMessageBytes is
+    options.legacySize     = true;
     return composeChatMessages({link}, options).value(0);
 }
 
@@ -557,32 +553,50 @@ int utf8Size(const QString& text)
     return text.toUtf8().size();
 }
 
-// The caption as one message part. Linked addresses cost bytes: a caption that can't be sent on its own
-// that way is sent as plain text instead (never cut).
-QString captionPart(const QString& caption, int maxBytes)
+// The caption as one message part (never cut: kCaptionMaxChars keeps it far below any limit).
+QString captionPart(const QString& caption)
 {
     const QString clean = sanitizeCaption(caption);
-    if (clean.isEmpty())
-        return {};
-    const QString rich = captionToBBCode(clean);
-    if (utf8Size(rich) < maxBytes)
-        return rich;
-    if (!clean.contains(QLatin1Char('[')) && !clean.contains(QLatin1Char(']')))
-        return clean;
-    QString inner = clean;
-    inner.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"), Qt::CaseInsensitive);
-    return QStringLiteral("[noparse]") + inner + QStringLiteral("[/noparse]");
+    return clean.isEmpty() ? QString() : captionToBBCode(clean);
 }
 
 } // namespace
+
+int escapedMessageSize(const QString& text)
+{
+    const QByteArray utf8 = text.toUtf8();
+    int              size = utf8.size();
+    for (const char ch : utf8) {
+        switch (ch) {
+        case '\\':
+        case '/':
+        case ' ':
+        case '|':
+        case '\a':
+        case '\b':
+        case '\f':
+        case '\n':
+        case '\r':
+        case '\t':
+        case '\v':
+            ++size; // ServerQuery escaping: "\\", "\/", "\s", "\p", "\a", ... take two bytes
+            break;
+        default:
+            break;
+        }
+    }
+    return size;
+}
 
 QVector<ComposedMessage> composeChatMessagesDetailed(const QList<MediaLink>& links, const ComposeOptions& options)
 {
     QVector<ComposedMessage> out;
     const QString            sep     = QString::fromLatin1(kMessageSeparator);
     const QString            url     = options.includeNotice ? bbcodeSafeUrl(options.downloadUrl) : QString();
-    const QString            caption = captionPart(options.caption, options.maxBytes);
-    const auto               fits    = [&options](const QString& text) { return utf8Size(text) < options.maxBytes; };
+    const QString            caption = captionPart(options.caption);
+    const auto               fits    = [&options](const QString& text) {
+        return options.legacySize ? utf8Size(text) < options.maxBytes : escapedMessageSize(text) <= options.maxBytes;
+    };
     const auto               noteText = [&url](Note note) {
         switch (note) {
         case Note::Linked:
@@ -757,32 +771,21 @@ QString sanitizeCaption(const QString& typed)
     return out;
 }
 
+QString bbcodeLiteral(const QString& text)
+{
+    QString out;
+    out.reserve(text.size() + 8);
+    for (const QChar ch : text) {
+        if (ch == QLatin1Char('[') || ch == QLatin1Char(']'))
+            out += QLatin1Char('\\');
+        out += ch;
+    }
+    return out;
+}
+
 QString captionToBBCode(const QString& sanitized)
 {
-    static const QRegularExpression address(QStringLiteral("https?://[^\\s\\[\\]\"<>]{1,%1}").arg(kMaxUrlTokenChars), QRegularExpression::CaseInsensitiveOption);
-
-    const auto textRun = [](const QString& run) {
-        if (!run.contains(QLatin1Char('[')) && !run.contains(QLatin1Char(']')))
-            return run;
-        QString inner = run;
-        inner.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"), Qt::CaseInsensitive);
-        return QStringLiteral("[noparse]") + inner + QStringLiteral("[/noparse]");
-    };
-
-    QString out;
-    int     from = 0;
-    auto    it   = address.globalMatch(sanitized);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch match = it.next();
-        // Only at the start of a word: "xhttp://..." is not an address.
-        if (match.capturedStart() > 0 && !sanitized.at(match.capturedStart() - 1).isSpace())
-            continue;
-        out += textRun(sanitized.mid(from, match.capturedStart() - from));
-        out += QStringLiteral("[URL]") + match.captured() + QStringLiteral("[/URL]");
-        from = match.capturedEnd();
-    }
-    out += textRun(sanitized.mid(from));
-    return out;
+    return bbcodeLiteral(sanitized);
 }
 
 QString linkLabel(const MediaLink& link)

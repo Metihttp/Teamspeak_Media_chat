@@ -67,10 +67,13 @@ class TestFoundation : public QObject
 
     // FloodGovernor
     void postsOneAtATime();
-    void postFloodPauseAndRetries();
-    void commandsWaitForPosts();
-    void commandBucket();
-    void commandBackoff();
+    void postBucketKeepsReserve();
+    void chargesShareTheGeneralCounter();
+    void postFloodHintAndRetries();
+    void floodWithoutHint();
+    void retryHintParsing_data();
+    void retryHintParsing();
+    void pluginBucket();
     void floodBurstScenario();
 };
 
@@ -335,20 +338,22 @@ void TestFoundation::digestTexts()
 }
 
 // ---- FloodGovernor -----------------------------------------------------------------------------
+// The numbers are the S0 measurement (server 3.13 defaults, Guest): 150 points, 5 back per second,
+// text 15, file info 8, mkdir 5, transfers 3, plugin commands 5 on their own counter.
 
 void TestFoundation::postsOneAtATime()
 {
     FloodGovernor g;
     QVERIFY(g.postReady(0));
     const quint64 first = g.postSent(0);
-    QVERIFY(!g.postReady(10));                 // waits for its answer
+    QVERIFY(!g.postReady(10));                     // waits for its answer
     QCOMPARE(g.nextPostCheckMs(10), qint64(1000)); // or a second
     QVERIFY(!g.postAnswered(first, 200, false, 1));
     QVERIFY(g.postReady(200)); // answered: the next may go
     const quint64 second = g.postSent(300);
     QVERIFY(second != first);
     QVERIFY(!g.postReady(1299));
-    QVERIFY(g.postReady(1300)); // no answer within a second: counts as delivered
+    QVERIFY(g.postReady(1300)); // no answer within a second: the next one may go (the first isn't "sent")
     // A late answer for an older post doesn't release a newer one.
     const quint64 third = g.postSent(1300);
     QVERIFY(!g.postAnswered(second, 1310, false, 1));
@@ -356,142 +361,197 @@ void TestFoundation::postsOneAtATime()
     QVERIFY(!g.postAnswered(third, 1330, false, 1));
     QVERIFY(g.postReady(1330));
     QCOMPARE(g.counters().postsSent, 3);
-
-    FloodGovernor::Limits spaced;
-    spaced.postMinSpacingMs = 250;
-    FloodGovernor s(spaced);
-    const quint64 t = s.postSent(0);
-    s.postAnswered(t, 10, false, 1);
-    QVERIFY(!s.postReady(100));
-    QCOMPARE(s.nextPostCheckMs(100), qint64(250));
-    QVERIFY(s.postReady(250));
 }
 
-void TestFoundation::postFloodPauseAndRetries()
+void TestFoundation::postBucketKeepsReserve()
+{
+    // From rest: 8 posts back to back (8 x 15 = 120 points, 30 stay for the user's own messages), then
+    // one every 3 s (15 points at 5 a second).
+    FloodGovernor g;
+    int           burst = 0;
+    while (g.postReady(0)) {
+        g.postAnswered(g.postSent(0), 0, false, 1);
+        ++burst;
+    }
+    QCOMPARE(burst, 8);
+    QCOMPARE(g.generalPoints(0), 120.0);
+    QCOMPARE(g.nextPostCheckMs(0), qint64(3000));
+    QVERIFY(!g.postReady(2999));
+    QVERIFY(g.postReady(3000));
+    qint64 now = 3000;
+    for (int i = 0; i < 5; ++i) {
+        QVERIFY(g.postReady(now));
+        g.postAnswered(g.postSent(now), now + 20, false, 1);
+        QCOMPARE(g.nextPostCheckMs(now + 20), now + 3000);
+        now += 3000;
+    }
+    // Rested again after 24 s.
+    QCOMPARE(g.generalPoints(now + 24000), 0.0);
+}
+
+void TestFoundation::chargesShareTheGeneralCounter()
 {
     FloodGovernor g;
-    int           attempts = 0;
-    qint64        now      = 0;
+    // Transfers, folders and file info are never held back, but posts wait for the points they cost.
+    for (int i = 0; i < 20; ++i)
+        g.charge(FloodGovernor::Cost::Transfer, 0); // 60
+    g.charge(FloodGovernor::Cost::Mkdir, 0);        // 65
+    g.charge(FloodGovernor::Cost::FileInfo, 0);     // 73
+    QCOMPARE(g.generalPoints(0), 73.0);
+    int posts = 0;
+    while (g.postReady(0)) {
+        g.postAnswered(g.postSent(0), 0, false, 1);
+        ++posts;
+    }
+    QCOMPARE(posts, 3); // 73 + 45 = 118; a fourth would leave less than the reserve
+    QCOMPARE(g.generalPoints(1000), 113.0);
+    // Plugin commands have their own counter.
+    QVERIFY(g.commandReady(0));
+}
+
+void TestFoundation::postFloodHintAndRetries()
+{
+    FloodGovernor g;
+    QCOMPARE(FloodGovernor::retryHintMs(QStringLiteral("retry in 5687ms")), 5687);
+    int    attempts = 0;
+    qint64 now      = 0;
     for (;;) {
         QVERIFY(g.postReady(now));
         const quint64 ticket = g.postSent(now);
         ++attempts;
-        const bool retry = g.postAnswered(ticket, now + 50, true, attempts);
+        const bool retry = g.postAnswered(ticket, now + 50, true, attempts, 5687);
+        // Paused for the server's hint + 250 ms; plugin commands too.
+        QCOMPARE(g.counters().lastPauseMs, 5937);
+        QVERIFY(!g.postReady(now + 51));
+        QVERIFY(g.commandsPaused(now + 51));
+        QCOMPARE(g.nextPostCheckMs(now + 60), now + 50 + 5937);
         if (!retry)
             break;
-        // Paused for 2 s after a 0x020c.
-        QVERIFY(!g.postReady(now + 51));
-        QVERIFY(!g.postReady(now + 2049));
-        QCOMPARE(g.nextPostCheckMs(now + 60), now + 2050);
-        now += 2050;
+        now += 50 + 5937;
     }
     QCOMPARE(attempts, 4); // the first send and 3 retries
     QCOMPARE(g.counters().postFloods, 4);
-    QVERIFY(g.commandsPaused(now + 100)); // commands pause too
+
+    // After the pause exactly one post fits, then the steady rate.
+    FloodGovernor h;
+    h.postAnswered(h.postSent(0), 10, true, 1, 5000);
+    const qint64 resume = 10 + 5250;
+    QVERIFY(!h.postReady(resume - 1));
+    QVERIFY(h.postReady(resume));
+    h.postAnswered(h.postSent(resume), resume + 10, false, 1);
+    QVERIFY(!h.postReady(resume + 10));
+    QCOMPARE(h.nextPostCheckMs(resume + 10), resume + 3000);
 }
 
-void TestFoundation::commandsWaitForPosts()
+void TestFoundation::floodWithoutHint()
 {
     FloodGovernor g;
-    QVERIFY(g.commandReady(0));
-    g.setPendingPosts(2);
-    QVERIFY(!g.commandReady(0)); // posts first
-    QCOMPARE(g.nextCommandCheckMs(0), qint64(-1));
-    g.setPendingPosts(0);
-    const quint64 ticket = g.postSent(0); // in flight
-    QVERIFY(!g.commandReady(10));
-    QCOMPARE(g.nextCommandCheckMs(10), qint64(1000));
-    g.postAnswered(ticket, 20, false, 1);
-    QVERIFY(g.commandReady(20));
+    QCOMPARE(FloodGovernor::retryHintMs(QString()), -1);
+    g.postAnswered(g.postSent(0), 0, true, 1, -1);
+    QCOMPARE(g.counters().lastPauseMs, g.limits().textFloodPauseMs);
+    QVERIFY(g.postsPaused(5999) && !g.postsPaused(6000));
 
-    // A flooded command pauses posts too.
-    g.commandSent(30);
-    g.commandFlooded(40);
-    QVERIFY(!g.postReady(41));
-    QVERIFY(g.postReady(2040));
-    QVERIFY(!g.commandReady(2040));
-    QCOMPARE(g.counters().commandFloods, 1);
+    FloodGovernor c;
+    c.commandSent(0);
+    c.commandFlooded(0); // no hint: the shorter pause measured for plugin commands
+    QCOMPARE(c.counters().lastPauseMs, c.limits().commandFloodPauseMs);
+    QVERIFY(c.postsPaused(1999) && !c.commandReady(1999));
+    QVERIFY(c.commandReady(2000));
+
+    FloodGovernor f;
+    f.charge(FloodGovernor::Cost::Mkdir, 0);
+    f.generalFlooded(0, 1500); // a folder request hit the limit: posts wait as well
+    QCOMPARE(f.counters().otherFloods, 1);
+    QVERIFY(!f.postReady(1749));
+    QVERIFY(f.postReady(1750));
 }
 
-void TestFoundation::commandBucket()
+void TestFoundation::retryHintParsing_data()
 {
+    QTest::addColumn<QString>("extra");
+    QTest::addColumn<int>("ms");
+    QTest::newRow("measured") << QStringLiteral("retry in 5687ms") << 5687;
+    QTest::newRow("space") << QStringLiteral("please retry in 1233 ms") << 1233;
+    QTest::newRow("case") << QStringLiteral("Retry In 20MS") << 20;
+    QTest::newRow("capped") << QStringLiteral("retry in 999999999ms") << 120000;
+    QTest::newRow("none") << QStringLiteral("client is flooding") << -1;
+    QTest::newRow("seconds") << QStringLiteral("retry in 5 s") << -1;
+    QTest::newRow("negative") << QStringLiteral("retry in -5ms") << -1;
+}
+
+void TestFoundation::retryHintParsing()
+{
+    QFETCH(QString, extra);
+    QFETCH(int, ms);
+    QCOMPARE(FloodGovernor::retryHintMs(extra), ms);
+}
+
+void TestFoundation::pluginBucket()
+{
+    // From rest 24 commands (5 points each, 30 kept), then one a second. Posts don't hold them back:
+    // the server counts plugin commands separately.
     FloodGovernor g;
-    // A burst of 6, then one every 1.5 s.
+    g.setPendingPosts(3);
+    g.postSent(0);
     int sent = 0;
     while (g.commandReady(0)) {
         g.commandSent(0);
         ++sent;
     }
-    QCOMPARE(sent, 6);
-    QCOMPARE(g.nextCommandCheckMs(0), qint64(1500));
-    QVERIFY(!g.commandReady(1499));
-    QVERIFY(g.commandReady(1500));
-    g.commandSent(1500);
-    QVERIFY(!g.commandReady(1500));
-    // Refills up to the burst size, not beyond.
+    QCOMPARE(sent, 24);
+    QCOMPARE(g.nextCommandCheckMs(0), qint64(1000));
+    QVERIFY(!g.commandReady(999));
+    QVERIFY(g.commandReady(1000));
+    g.commandSent(1000);
+    QVERIFY(!g.commandReady(1000));
+    // Back to a full burst after a rest.
     sent = 0;
     while (g.commandReady(100000)) {
         g.commandSent(100000);
         ++sent;
     }
-    QCOMPARE(sent, 6);
-    // Posts spend tokens but never wait for them: an album posted back to back empties the bucket.
-    FloodGovernor h;
-    for (int i = 0; i < 10; ++i) {
-        QVERIFY(h.postReady(i * 20));
-        h.postAnswered(h.postSent(i * 20), i * 20 + 10, false, 1);
-    }
-    QVERIFY(!h.commandReady(190));
-    QVERIFY(h.commandReady(180 + 1500));
-}
+    QCOMPARE(sent, 24);
+    QCOMPARE(g.counters().commandsSent, 49);
 
-void TestFoundation::commandBackoff()
-{
-    FloodGovernor g;
-    g.commandFlooded(0);
-    QCOMPARE(g.counters().currentBackoffMs, 15000);
-    QVERIFY(!g.commandReady(14999));
-    QVERIFY(g.commandsPaused(14999) && !g.commandsPaused(15000));
-    g.commandFlooded(20000); // again soon: doubles
-    QCOMPARE(g.counters().currentBackoffMs, 30000);
-    g.commandFlooded(51000);
-    QCOMPARE(g.counters().currentBackoffMs, 60000);
-    g.commandFlooded(110000);
-    QCOMPARE(g.counters().currentBackoffMs, 60000); // capped
-    QVERIFY(!g.commandReady(169999) && g.commandsPaused(169999));
-    // After a calm minute, it starts small again.
-    g.answeredOk(110000 + 60000);
-    QCOMPARE(g.counters().currentBackoffMs, 0);
-    g.commandFlooded(400000);
-    QCOMPARE(g.counters().currentBackoffMs, 15000);
-    QCOMPARE(g.counters().lastFloodMs, qint64(400000));
+    // A flooded command pauses everything for the hint; then one command fits.
+    FloodGovernor h;
+    h.commandSent(0);
+    h.commandFlooded(10, 1233);
+    QCOMPARE(h.counters().commandFloods, 1);
+    QVERIFY(!h.postReady(1492) && !h.commandReady(1492));
+    QVERIFY(h.postReady(1493) && h.commandReady(1493));
+    h.commandSent(1493);
+    QVERIFY(!h.commandReady(1493));
+    QCOMPARE(h.nextCommandCheckMs(1493), qint64(2493));
 }
 
 void TestFoundation::floodBurstScenario()
 {
-    // A 10-item album (5 messages), 20 reactions and a HELLO storm on one connection, with a server
-    // that answers posts after 80 ms and floods the third post once. Posts keep their order and go
-    // one at a time; no plugin command goes while posts wait; commands never exceed the bucket.
-    FloodGovernor     g;
-    QList<int>        queue = {1, 2, 3, 4, 5};
-    QVector<int>      delivered;
-    QHash<int, int>   attempts;
-    int               commands     = 25;
-    int               commandsSent = 0;
-    bool              floodedOnce  = false;
-    quint64           inFlight     = 0;
-    int               inFlightPost = 0;
-    qint64            answerAt     = -1;
-    QVector<qint64>   commandTimes;
+    // A 10-item album (5 messages) next to a stream of 40 plugin commands on one connection, with a
+    // server that answers posts after 80 ms and floods the third post once ("retry in 5687ms"). Posts
+    // keep their order and go one at a time; neither counter ever goes past its limit.
+    FloodGovernor   g;
+    QList<int>      queue = {1, 2, 3, 4, 5};
+    QVector<int>    delivered;
+    QHash<int, int> attempts;
+    int             commands     = 40;
+    bool            floodedOnce  = false;
+    quint64         inFlight     = 0;
+    int             inFlightPost = 0;
+    qint64          answerAt     = -1;
+    qint64          flood        = -1;
+    QVector<qint64> postTimes;
     for (qint64 now = 0; now < 120000; now += 10) {
         if (inFlight && now >= answerAt) {
-            const bool flood = inFlightPost == 3 && !floodedOnce;
-            floodedOnce      = floodedOnce || flood;
-            if (g.postAnswered(inFlight, now, flood, attempts.value(inFlightPost)))
+            const bool flooded = inFlightPost == 3 && !floodedOnce;
+            floodedOnce        = floodedOnce || flooded;
+            if (flooded)
+                flood = now;
+            if (g.postAnswered(inFlight, now, flooded, attempts.value(inFlightPost), flooded ? 5687 : -1))
                 queue.prepend(inFlightPost);
             else
-                QVERIFY(!flood);
-            if (!flood)
+                QVERIFY(!flooded);
+            if (!flooded)
                 delivered.append(inFlightPost);
             inFlight = 0;
         }
@@ -501,26 +561,24 @@ void TestFoundation::floodBurstScenario()
             ++attempts[inFlightPost];
             inFlight = g.postSent(now);
             answerAt = now + 80;
-            g.setPendingPosts(queue.size());
+            postTimes.append(now);
         }
         if (commands > 0 && g.commandReady(now)) {
-            QVERIFY(queue.isEmpty()); // posts first
             g.commandSent(now);
-            commandTimes.append(now);
             --commands;
-            ++commandsSent;
         }
+        QVERIFY(g.generalPoints(now) <= g.limits().generalCapacity - g.limits().generalReserve + 0.001);
+        QVERIFY(g.pluginPoints(now) <= g.limits().pluginCapacity - g.limits().pluginReserve + 0.001);
     }
     // (Element by element: QVector/QList operator== goes through MSVC's deprecated checked_array_iterator.)
     QCOMPARE(delivered.size(), 5);
     for (int i = 0; i < delivered.size(); ++i)
         QCOMPARE(delivered.at(i), i + 1);
-    QCOMPARE(commandsSent, 25);
-    // Never more than the burst within any window shorter than the refill of one token.
-    for (int i = 6; i < commandTimes.size(); ++i)
-        QVERIFY(commandTimes.at(i) - commandTimes.at(i - 6) >= 1500 - 10);
-    // The flood paused commands for 15 s.
-    QVERIFY(commandTimes.first() >= 15000);
+    QCOMPARE(commands, 0);
+    // Nothing went during the pause the flood asked for.
+    QVERIFY(flood > 0);
+    for (qint64 t : qAsConst(postTimes))
+        QVERIFY(t <= flood || t >= flood + 5687 + 250);
 }
 
 TSMEDIA_REGISTER_TEST(TestFoundation)

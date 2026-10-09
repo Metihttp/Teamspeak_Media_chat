@@ -1,6 +1,38 @@
 #include "floodgovernor.h"
 
+#include <QRegularExpression>
+
 #include <cmath>
+
+namespace {
+
+constexpr int kMaxHintMs = 2 * 60 * 1000;
+
+} // namespace
+
+// ---- buckets ------------------------------------------------------------------------------------
+
+double FloodGovernor::Bucket::points(qint64 nowMs) const
+{
+    const qint64 elapsed = qMax<qint64>(0, nowMs - at);
+    return qMax(0.0, value - static_cast<double>(elapsed) * rate / 1000.0);
+}
+
+void FloodGovernor::Bucket::add(double cost, qint64 nowMs)
+{
+    value = points(nowMs) + cost;
+    at    = qMax(at, nowMs);
+}
+
+qint64 FloodGovernor::Bucket::timeUntil(double level, qint64 nowMs) const
+{
+    if (points(nowMs) <= level)
+        return nowMs;
+    // The value drains from `at` on (a held value only starts draining then).
+    return qMax(nowMs, at + static_cast<qint64>(std::ceil((value - level) * 1000.0 / rate)));
+}
+
+// ---- governor -----------------------------------------------------------------------------------
 
 FloodGovernor::FloodGovernor()
     : FloodGovernor(Limits())
@@ -10,40 +42,39 @@ FloodGovernor::FloodGovernor()
 FloodGovernor::FloodGovernor(const Limits& limits)
     : m_limits(limits)
 {
-    m_limits.postRetries      = qMax(0, m_limits.postRetries);
-    m_limits.commandBurst     = qMax(1, m_limits.commandBurst);
-    m_limits.commandRefillMs  = qMax(1, m_limits.commandRefillMs);
-    m_limits.commandBackoffMs = qMax(0, m_limits.commandBackoffMs);
-    m_limits.commandBackoffMaxMs = qMax(m_limits.commandBackoffMs, m_limits.commandBackoffMaxMs);
+    m_limits.postRetries         = qMax(0, m_limits.postRetries);
+    m_limits.generalRefillPerSec = qMax(0.1, m_limits.generalRefillPerSec);
+    m_limits.pluginRefillPerSec  = qMax(0.1, m_limits.pluginRefillPerSec);
+    m_limits.generalReserve      = qBound(0, m_limits.generalReserve, qMax(0, m_limits.generalCapacity - m_limits.costText));
+    m_limits.pluginReserve       = qBound(0, m_limits.pluginReserve, qMax(0, m_limits.pluginCapacity - m_limits.costPluginCommand));
+    m_general.rate               = m_limits.generalRefillPerSec;
+    m_plugin.rate                = m_limits.pluginRefillPerSec;
 }
 
-void FloodGovernor::setPendingPosts(int count)
+int FloodGovernor::retryHintMs(const QString& extraMessage)
 {
-    m_pendingPosts = qMax(0, count);
+    static const QRegularExpression hint(QStringLiteral("retry in\\s+(\\d{1,9})\\s*ms"), QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = hint.match(extraMessage);
+    if (!match.hasMatch())
+        return -1;
+    return qMin(match.captured(1).toInt(), kMaxHintMs);
 }
 
 bool FloodGovernor::postReady(qint64 nowMs) const
 {
-    if (postsPaused(nowMs))
-        return false;
-    if (m_inFlight != 0 && nowMs - m_inFlightSince < m_limits.postAnswerWaitMs)
-        return false;
-    if (m_limits.postMinSpacingMs > 0 && m_lastPostMs >= 0 && nowMs - m_lastPostMs < m_limits.postMinSpacingMs)
-        return false;
-    return true;
+    return nextPostCheckMs(nowMs) <= nowMs;
 }
 
 quint64 FloodGovernor::postSent(qint64 nowMs)
 {
     m_inFlight      = ++m_nextTicket;
     m_inFlightSince = nowMs;
-    m_lastPostMs    = nowMs;
     ++m_counters.postsSent;
-    spendToken(nowMs); // the same budget on the server; a post never waits for a token
+    m_general.add(m_limits.costText, nowMs);
     return m_inFlight;
 }
 
-bool FloodGovernor::postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int attempts)
+bool FloodGovernor::postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int attempts, int retryHintMs)
 {
     if (ticket != 0 && ticket == m_inFlight)
         m_inFlight = 0;
@@ -52,64 +83,59 @@ bool FloodGovernor::postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int
         return false;
     }
     ++m_counters.postFloods;
-    this->flooded(nowMs);
+    this->flooded(nowMs, retryHintMs, m_limits.textFloodPauseMs, m_general, m_limits.generalCapacity - m_limits.generalReserve - m_limits.costText);
     return attempts <= m_limits.postRetries;
+}
+
+void FloodGovernor::charge(Cost cost, qint64 nowMs)
+{
+    int points = m_limits.costTransfer;
+    if (cost == Cost::FileInfo)
+        points = m_limits.costFileInfo;
+    else if (cost == Cost::Mkdir)
+        points = m_limits.costMkdir;
+    m_general.add(points, nowMs);
+}
+
+void FloodGovernor::generalFlooded(qint64 nowMs, int retryHintMs)
+{
+    ++m_counters.otherFloods;
+    flooded(nowMs, retryHintMs, m_limits.commandFloodPauseMs, m_general, m_limits.generalCapacity - m_limits.generalReserve - m_limits.costText);
 }
 
 bool FloodGovernor::commandReady(qint64 nowMs) const
 {
-    if (m_pendingPosts > 0 || commandsPaused(nowMs))
-        return false;
-    if (m_inFlight != 0 && nowMs - m_inFlightSince < m_limits.postAnswerWaitMs)
-        return false;
-    return tokens(nowMs) >= 1.0;
+    return nextCommandCheckMs(nowMs) <= nowMs;
 }
 
 void FloodGovernor::commandSent(qint64 nowMs)
 {
     ++m_counters.commandsSent;
-    spendToken(nowMs);
+    m_plugin.add(m_limits.costPluginCommand, nowMs);
 }
 
-void FloodGovernor::commandFlooded(qint64 nowMs)
+void FloodGovernor::commandFlooded(qint64 nowMs, int retryHintMs)
 {
     ++m_counters.commandFloods;
-    flooded(nowMs);
+    flooded(nowMs, retryHintMs, m_limits.commandFloodPauseMs, m_plugin, m_limits.pluginCapacity - m_limits.pluginReserve - m_limits.costPluginCommand);
 }
 
 void FloodGovernor::answeredOk(qint64 nowMs)
 {
-    if (m_counters.lastFloodMs >= 0 && nowMs - m_counters.lastFloodMs >= m_limits.commandCalmResetMs)
-        m_counters.currentBackoffMs = 0;
+    Q_UNUSED(nowMs);
 }
 
-void FloodGovernor::flooded(qint64 nowMs)
+void FloodGovernor::flooded(qint64 nowMs, int retryHintMs, int fallbackMs, Bucket& bucket, double oneFits)
 {
-    const bool recent = m_counters.lastFloodMs >= 0 && nowMs - m_counters.lastFloodMs < m_limits.commandCalmResetMs;
-    if (recent && m_counters.currentBackoffMs > 0)
-        m_counters.currentBackoffMs = qMin(m_counters.currentBackoffMs * 2, m_limits.commandBackoffMaxMs);
-    else
-        m_counters.currentBackoffMs = m_limits.commandBackoffMs;
-    m_counters.lastFloodMs = nowMs;
-    m_postsPausedUntil     = qMax(m_postsPausedUntil, nowMs + m_limits.postFloodPauseMs);
-    m_commandsPausedUntil  = qMax(m_commandsPausedUntil, nowMs + m_counters.currentBackoffMs);
-    // The server is counting: start the bucket from empty.
-    m_tokens   = 0.0;
-    m_tokensAt = nowMs;
-}
-
-double FloodGovernor::tokens(qint64 nowMs) const
-{
-    if (m_tokensAt < 0)
-        return m_limits.commandBurst;
-    const double refilled = m_tokens + static_cast<double>(qMax<qint64>(0, nowMs - m_tokensAt)) / m_limits.commandRefillMs;
-    return qMin(static_cast<double>(m_limits.commandBurst), refilled);
-}
-
-void FloodGovernor::spendToken(qint64 nowMs)
-{
-    m_tokens   = qMax(0.0, tokens(nowMs) - 1.0);
-    m_tokensAt = nowMs;
+    const int pause            = retryHintMs >= 0 ? qMin(retryHintMs, kMaxHintMs) + m_limits.floodHintMarginMs : fallbackMs;
+    const qint64 until         = nowMs + pause;
+    m_counters.lastFloodMs     = nowMs;
+    m_counters.lastPauseMs     = pause;
+    m_postsPausedUntil         = qMax(m_postsPausedUntil, until);
+    m_commandsPausedUntil      = qMax(m_commandsPausedUntil, until);
+    // The server is at its limit: when the pause ends, exactly one command fits, then the steady rate.
+    bucket.value = qMax(bucket.points(until), qMax(0.0, oneFits));
+    bucket.at    = qMax(bucket.at, until);
 }
 
 qint64 FloodGovernor::nextPostCheckMs(qint64 nowMs) const
@@ -119,22 +145,15 @@ qint64 FloodGovernor::nextPostCheckMs(qint64 nowMs) const
         at = qMax(at, m_postsPausedUntil);
     if (m_inFlight != 0 && nowMs - m_inFlightSince < m_limits.postAnswerWaitMs)
         at = qMax(at, m_inFlightSince + m_limits.postAnswerWaitMs);
-    if (m_limits.postMinSpacingMs > 0 && m_lastPostMs >= 0 && nowMs - m_lastPostMs < m_limits.postMinSpacingMs)
-        at = qMax(at, m_lastPostMs + m_limits.postMinSpacingMs);
-    return at;
+    const double room = m_limits.generalCapacity - m_limits.generalReserve - m_limits.costText;
+    return qMax(at, m_general.timeUntil(room, nowMs));
 }
 
 qint64 FloodGovernor::nextCommandCheckMs(qint64 nowMs) const
 {
-    if (m_pendingPosts > 0)
-        return -1; // until the posts are out (setPendingPosts)
     qint64 at = nowMs;
     if (commandsPaused(nowMs))
         at = qMax(at, m_commandsPausedUntil);
-    if (m_inFlight != 0 && nowMs - m_inFlightSince < m_limits.postAnswerWaitMs)
-        at = qMax(at, m_inFlightSince + m_limits.postAnswerWaitMs);
-    const double have = tokens(at);
-    if (have < 1.0)
-        at += static_cast<qint64>(std::ceil((1.0 - have) * m_limits.commandRefillMs));
-    return at;
+    const double room = m_limits.pluginCapacity - m_limits.pluginReserve - m_limits.costPluginCommand;
+    return qMax(at, m_plugin.timeUntil(room, nowMs));
 }

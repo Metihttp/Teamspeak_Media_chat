@@ -6,14 +6,20 @@
 #include <QStringList>
 #include <QVector>
 
-// TeamSpeak's limit for one chat message, in UTF-8 bytes: every composed message stays below it.
-// TODO(S0): the SDK says 8192 (public_definitions.h), the plugin has always assumed 1024. The S0 spike
-// measures the real limit on the local server; then this becomes "measured limit - 24". The one place
-// that decides it: the composer, Core and the tests all use this constant.
-constexpr int kMaxMessageBytes = 1000;
+// TeamSpeak's limits for one chat message, measured by the S0 spike (TeamSpeak 3.6.2, server 3.13):
+// the server takes up to 8192 UTF-8 bytes of the text (above: 0x0605), and the client silently drops a
+// command whose escaped form is above about 9.1 KB (no answer, nothing delivered). The escaping is
+// ServerQuery style: \ / space | and the control characters \a \b \f \n \r \t \v take two bytes.
+// Every composed message keeps escapedMessageSize(text) <= kMaxMessageBytes (8192 - 24), which keeps
+// both limits for every script. The one place that decides it: the composer, Core and the tests all
+// use this constant.
+constexpr int kMaxMessageBytes = 8168;
 
-// Between the caption and the first link, and between links packed into one message.
-// TODO(S0): confirm that TeamSpeak shows '\n' as a line break; if it drops it, use " — " here.
+// The size of a message in TeamSpeak's command: its UTF-8 bytes, escaping included.
+int escapedMessageSize(const QString& text);
+
+// Between the caption and the first link, and between links packed into one message. S0: TeamSpeak
+// shows '\n' as a line break inside the same message ("\r\n" would add a space).
 constexpr char kMessageSeparator[] = "\n";
 
 // A file in a channel's file browser, encoded the same way the TeamSpeak client encodes
@@ -91,8 +97,11 @@ struct MediaLink {
     MediaLink previewLink() const;
 
     static MediaLink parse(const QString& href);
-    // Every valid file link in a raw chat message (BBCode). Text inside [noparse]...[/noparse] is skipped:
-    // TeamSpeak shows it as plain text, so a caption can't smuggle in a link that would be prefetched.
+    // Every valid file link in a raw chat message (BBCode) that TeamSpeak shows as a link. An opening tag
+    // escaped with a backslash ("\[URL=", the way captions are escaped) or broken by an invisible
+    // character ("[" U+200B "URL=", U+2060) is plain text in TeamSpeak's chat, so it is never fetched
+    // either: a caption can't smuggle in a link. ([noparse] is no protection: TeamSpeak 3.6 drops the
+    // tags and still parses what is inside.)
     static QList<MediaLink> findInMessage(const QString& message);
 };
 
@@ -120,8 +129,9 @@ struct ComposeOptions {
     QString caption;               // as typed: sanitizeCaption() and captionToBBCode() run here
     bool    includeNotice  = true; // the note for people without the plugin
     QString downloadUrl;           // linked from the note (http(s) only)
-    int     maxBytes       = kMaxMessageBytes;
-    bool    friendlyLabels = true; // linkLabel(); false: the remote file name, like 2.1
+    int     maxBytes       = kMaxMessageBytes; // escapedMessageSize() of each message is at most this
+    bool    friendlyLabels = true;  // linkLabel(); false: the remote file name, like 2.1
+    bool    legacySize     = false; // 2.1's rule instead: UTF-8 bytes, strictly below maxBytes (composeChatMessage)
 };
 
 struct ComposedMessage {
@@ -143,9 +153,13 @@ constexpr int kCaptionMaxChars = 300; // UTF-16 units, as the send window counts
 // surrogate pair).
 QString sanitizeCaption(const QString& typed);
 
-// A sanitized caption as BBCode: http(s) addresses become [URL]address[/URL] (display only: the plugin
-// never opens them), runs of other text that contain [ or ] go inside [noparse]...[/noparse] (a
-// "[/noparse]" inside is defused), so a caption can never open a tag or fake a file link.
+// Text that TeamSpeak shows as written: a backslash before every [ and ] (S0: the chat and printMessage
+// remove the backslash run before a bracket and show the bracket). A backslash of the text right before
+// a bracket is lost that way; nothing else changes, and no invisible characters are added.
+QString bbcodeLiteral(const QString& text);
+
+// A sanitized caption as BBCode: bbcodeLiteral(), so a caption can never open a tag or fake a file
+// link. Web addresses need no [URL]: TeamSpeak links them on display.
 QString captionToBBCode(const QString& sanitized);
 
 // The label of a link in the chat (what people without the plugin click): "Voice message (0:12)" for

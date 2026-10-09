@@ -1,45 +1,67 @@
 #pragma once
 
-// 2.2 foundation: TeamSpeak's anti-flood counts every command of a client together, chat messages and
-// plugin commands alike, so one FloodGovernor per server connection paces both (Core owns them; see
-// Core::floodGovernor). It is pure logic with an injected clock (milliseconds of any monotonic clock),
-// so it can be unit-tested; whoever sends asks it before each command and reports what came back.
+// 2.2: TeamSpeak's anti-flood, as measured by the S0 spike (server 3.13 defaults, Guest; see
+// docs/ARCHITECTURE.md). The server keeps points per client: every command adds its cost, every second
+// takes antiflood_points_tick_reduce (5) away, and at antiflood_points_needed_command_block (150) it
+// answers 0x020c "client is flooding" with "retry in <n>ms". Rejected attempts cost full points too, so
+// probing while blocked never recovers. Text messages, file info, folders and transfers share one
+// counter; plugin commands have their own (server 3.4.0 and later).
 //
-// Rules (all numbers in Limits, to be set from the S0 flood measurement):
+// One FloodGovernor per server connection (Core owns them; see Core::floodGovernor) models both
+// counters as buckets and paces what the plugin sends. It is pure logic with an injected clock
+// (milliseconds of any monotonic clock), so it can be unit-tested; whoever sends asks it before each
+// command and reports what came back.
+//
+// Rules:
 //  * Chat posts go one at a time: each waits for its own return-code answer, or postAnswerWaitMs.
-//  * Posts have priority: plugin commands wait while posts are queued or in flight.
-//  * ERROR_client_is_flooding (0x020c) from either pauses both: posts for postFloodPauseMs (then the
-//    flooded post is retried, at most postRetries times), plugin commands for commandBackoffMs,
-//    doubling on every further flood up to commandBackoffMaxMs (back to the start after a calm period).
-//  * Plugin commands also spend tokens of a small bucket (commandBurst, one more every
-//    commandRefillMs); posts spend one when there is one but never wait for it.
+//    A post goes only while the general bucket keeps generalReserve points for the user's own typing:
+//    from rest about 8 posts back to back, then one every 3 s.
+//  * Transfers, file info and folder requests are charged to the general bucket (never held back).
+//  * Plugin commands spend their own bucket: from rest 24 back to back, then one a second.
+//  * 0x020c from either counter pauses both for the server's hint + floodHintMarginMs (or a fixed
+//    pause without a hint). After the pause exactly one command fits, then the steady rate follows.
+//    A flooded post is sent again at most postRetries times, then it fails.
 
+#include <QString>
 #include <QtGlobal>
 
 class FloodGovernor
 {
   public:
     struct Limits {
-        // TODO(S0): every value here is a starting point until the flood test on the local server.
-        int postAnswerWaitMs     = 1000;  // a post without an answer counts as delivered after this
-        int postMinSpacingMs     = 0;     // between two posts
-        int postFloodPauseMs     = 2000;  // after a 0x020c
-        int postRetries          = 3;     // a flooded post is sent again this often, then it fails
-        int commandBurst         = 6;     // plugin commands that may go back to back
-        int commandRefillMs      = 1500;  // one more token every ...
-        int commandBackoffMs     = 15000; // first back-off of plugin commands after a 0x020c
-        int commandBackoffMaxMs  = 60000;
-        int commandCalmResetMs   = 60000; // without a flood this long, the back-off starts small again
+        // The general counter (S0: text 15, file info ~8, mkdir ~5, upload / download <= 3 points).
+        int    generalCapacity     = 150;
+        double generalRefillPerSec = 5.0;
+        int    generalReserve      = 30; // left for the user's own chat messages (two)
+        int    costText            = 15;
+        int    costFileInfo        = 8;
+        int    costMkdir           = 5;
+        int    costTransfer        = 3; // starting an upload or a download
+        // The plugin-command counter.
+        int    pluginCapacity      = 150;
+        double pluginRefillPerSec  = 5.0;
+        int    pluginReserve       = 30;
+        int    costPluginCommand   = 5;
+        // Posting and floods.
+        int    postAnswerWaitMs    = 1000; // the next post waits this long for the previous one's answer
+        int    postRetries         = 3;    // a flooded post is sent again this often, then it fails
+        int    floodHintMarginMs   = 250;  // added to the server's "retry in <n>ms"
+        int    textFloodPauseMs    = 6000; // a flood without a hint (text hints were 5.3-5.7 s)
+        int    commandFloodPauseMs = 2000; // the same for plugin commands, folders, file info (1.2-2.0 s)
     };
+
+    // What adds to the general counter besides chat posts.
+    enum class Cost { FileInfo, Mkdir, Transfer };
 
     // What happened so far (for the diagnostic info).
     struct Counters {
-        int    postsSent       = 0;
-        int    postFloods      = 0; // 0x020c answers to posts
-        int    commandsSent    = 0;
-        int    commandFloods   = 0; // 0x020c answers to plugin commands
-        qint64 lastFloodMs     = -1;
-        int    currentBackoffMs = 0; // of plugin commands, 0 = none
+        int    postsSent     = 0;
+        int    postFloods    = 0; // 0x020c answers to posts
+        int    commandsSent  = 0;
+        int    commandFloods = 0; // 0x020c answers to plugin commands
+        int    otherFloods   = 0; // 0x020c answers to transfers, folders, file info
+        qint64 lastFloodMs   = -1;
+        int    lastPauseMs   = 0; // the pause the last flood caused
     };
 
     FloodGovernor(); // the default Limits
@@ -48,51 +70,74 @@ class FloodGovernor
     const Limits&   limits() const { return m_limits; }
     const Counters& counters() const { return m_counters; }
 
+    // "retry in 5687ms" (also "retry in 5687 ms") in a 0x020c answer's extra message: the milliseconds,
+    // or -1 when there is no such hint. Capped at 2 minutes.
+    static int retryHintMs(const QString& extraMessage);
+
     // ---- chat posts (Core's post queue) ----------------------------------------------------------
-    // How many posts are waiting to be sent (plugin commands wait while there are any).
-    void setPendingPosts(int count);
+    // How many posts are waiting to be sent (for whoever wants to know when they are all out).
+    void setPendingPosts(int count) { m_pendingPosts = qMax(0, count); }
+    int  pendingPosts() const { return m_pendingPosts; }
     // True when the next post may go now: no post in flight (or its answer took longer than
-    // postAnswerWaitMs), no flood pause, and the minimum spacing has passed.
+    // postAnswerWaitMs), no flood pause, and the general bucket keeps its reserve after this post.
     bool postReady(qint64 nowMs) const;
-    // A post went out; returns a ticket for its answer.
+    // A post went out (charged to the general bucket); returns a ticket for its answer.
     quint64 postSent(qint64 nowMs);
     // The answer to a post (late answers for older tickets only count for the flood state). Returns true
     // if the post should be retried (flooded and retries left; attempts = how often it was sent).
-    bool postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int attempts);
+    // retryHintMs: retryHintMs() of the answer, -1 if none. A post that got no answer at all is reported
+    // with flooded = false (it is not retried: it may have arrived).
+    bool postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int attempts, int retryHintMs = -1);
+
+    // ---- other commands on the general counter (Core's transfers, folders, file info) -------------
+    void charge(Cost cost, qint64 nowMs);
+    void generalFlooded(qint64 nowMs, int retryHintMs = -1); // one of them got 0x020c
 
     // ---- plugin commands (PluginLink) -------------------------------------------------------------
-    // True when a plugin command may go now: no posts pending or in flight, no back-off, a token left.
+    // True when a plugin command may go now: no flood pause and the plugin bucket keeps its reserve.
     bool commandReady(qint64 nowMs) const;
-    // A command went out (spends a token). Call only after commandReady() said yes.
+    // A command went out (spends from the plugin bucket). Call only after commandReady() said yes.
     void commandSent(qint64 nowMs);
     // The server answered a command with 0x020c: everything pauses.
-    void commandFlooded(qint64 nowMs);
+    void commandFlooded(qint64 nowMs, int retryHintMs = -1);
     // A command (or post) was answered without a flood error.
     void answeredOk(qint64 nowMs);
 
     // ---- scheduling -------------------------------------------------------------------------------
     // When postReady() / commandReady() becomes true by itself (a pause ending, an answer wait running
-    // out, a token coming back): nowMs if it already is. nextCommandCheckMs() is -1 while posts are
-    // pending: then only setPendingPosts() can change it.
+    // out, the bucket draining): nowMs if it already is.
     qint64 nextPostCheckMs(qint64 nowMs) const;
     qint64 nextCommandCheckMs(qint64 nowMs) const;
     bool   postsPaused(qint64 nowMs) const { return nowMs < m_postsPausedUntil; }
     bool   commandsPaused(qint64 nowMs) const { return nowMs < m_commandsPausedUntil; }
 
+    // The modelled points of each counter (0 = rested).
+    double generalPoints(qint64 nowMs) const { return m_general.points(nowMs); }
+    double pluginPoints(qint64 nowMs) const { return m_plugin.points(nowMs); }
+
   private:
-    void   flooded(qint64 nowMs);
-    double tokens(qint64 nowMs) const;
-    void   spendToken(qint64 nowMs);
+    struct Bucket {
+        double rate   = 5.0; // points per second
+        double value  = 0.0; // as of at
+        qint64 at     = 0;   // a time in the future holds the value until then (a flood pause)
+
+        double points(qint64 nowMs) const;
+        void   add(double cost, qint64 nowMs);
+        // When points() is at most level, from nowMs on.
+        qint64 timeUntil(double level, qint64 nowMs) const;
+    };
+
+    // After a flood: both counters pause; the flooded one holds exactly one command's room at the end.
+    void flooded(qint64 nowMs, int retryHintMs, int fallbackMs, Bucket& bucket, double oneFits);
 
     Limits   m_limits;
     Counters m_counters;
-    int      m_pendingPosts       = 0;
-    quint64  m_nextTicket         = 0;
-    quint64  m_inFlight           = 0; // ticket of the post waiting for its answer, 0 = none
-    qint64   m_inFlightSince      = 0;
-    qint64   m_lastPostMs         = -1;
+    Bucket   m_general;
+    Bucket   m_plugin;
+    int      m_pendingPosts        = 0;
+    quint64  m_nextTicket          = 0;
+    quint64  m_inFlight            = 0; // ticket of the post waiting for its answer, 0 = none
+    qint64   m_inFlightSince       = 0;
     qint64   m_postsPausedUntil    = 0;
     qint64   m_commandsPausedUntil = 0;
-    double   m_tokens             = 0.0; // as of m_tokensAt
-    qint64   m_tokensAt           = -1;  // -1: the bucket is full
 };
