@@ -101,6 +101,7 @@ class Updater : public QObject
     void saveSettings();
     void setPhase(Phase phase);
     void waitForThreads(int ms);
+    void pruneThreads(); // closes the handles of finished jobs
     UpdateDialog* dialog(bool create);
     QWidget*      parentWindow() const;
     bool          busy() const;

@@ -13,6 +13,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -25,6 +26,7 @@
 #include "update/updatekeys.h"
 #include "update/updatemanifest.h"
 #include "update/updatepolicy.h"
+#include "update/updatesettings.h"
 
 using namespace upd;
 
@@ -794,6 +796,50 @@ class TestUpdater : public QObject
         QVERIFY(!fs::isDir(l.updateDir + QStringLiteral("/rollback/junk")));
         cleanup(l, Version::parse(QStringLiteral("2.2.0")), false);
         QVERIFY(!fs::isDir(l.downloadDir()));
+    }
+
+    void noTraceWithoutUpdater()
+    {
+        // A plugin that never checked for updates (or a self-built one) leaves nothing on disk.
+        QTemporaryDir dir;
+        Layout        l;
+        l.pluginsDir          = dir.path();
+        l.updateDir           = dir.path() + QStringLiteral("/tsmedia/update");
+        const Version current = Version::parse(QStringLiteral("2.1.0"));
+        QCOMPARE(bootGuard(l, current), BootGuard::Continue);
+        QCOMPARE(onStarted(l, current, 1).kind, StartupNotice::None);
+        cleanup(l, current, false);
+        QVERIFY(!fs::exists(l.updateDir));
+        QVERIFY(!restartPending(l, current));
+        QCOMPARE(effectiveInstalled(l, current), current);
+    }
+
+    void updateSettings()
+    {
+        QTemporaryDir dir;
+        const QString file = dir.path() + QStringLiteral("/settings.ini");
+        UpdateSettings s   = UpdateSettings::load(file);
+        QCOMPARE(int(s.check), int(CheckSetting::NotAsked)); // off until the user agrees
+        QCOMPARE(s.timesAsked, 0);
+        QVERIFY(!s.skipped.isValid());
+        s.check      = CheckSetting::On;
+        s.timesAsked = 1;
+        s.skipped    = Version::parse(QStringLiteral("2.2.1"));
+        s.save(file);
+        s = UpdateSettings::load(file);
+        QCOMPARE(int(s.check), int(CheckSetting::On));
+        QCOMPARE(s.timesAsked, 1);
+        QCOMPARE(s.skipped.toString(), QStringLiteral("2.2.1"));
+        {
+            QSettings raw(file, QSettings::IniFormat);
+            raw.setValue(QStringLiteral("updateCheck"), 7);
+            raw.setValue(QStringLiteral("updateConsentAsked"), 99);
+            raw.setValue(QStringLiteral("updateSkipVersion"), QStringLiteral("2.2.1-evil"));
+        }
+        s = UpdateSettings::load(file);
+        QCOMPARE(int(s.check), int(CheckSetting::NotAsked)); // garbage never means "on"
+        QCOMPARE(s.timesAsked, kMaxConsentAsks);
+        QVERIFY(!s.skipped.isValid());
     }
 
     void stateFile()

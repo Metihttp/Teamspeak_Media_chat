@@ -155,7 +155,7 @@ if(TSMEDIA_BUILD_TESTS)
     endif()
 
     # 2.2 updater tests: manifest, signatures, schedule, PE checks, installer (own executable).
-    add_executable(tsmedia_update_tests tests/tst_updater.cpp ${TSMEDIA_UPDATE_SOURCES})
+    add_executable(tsmedia_update_tests tests/tst_updater.cpp ${TSMEDIA_UPDATE_SOURCES} src/update/updatesettings.cpp)
     target_include_directories(tsmedia_update_tests PRIVATE src)
     target_compile_definitions(tsmedia_update_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
         TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update")

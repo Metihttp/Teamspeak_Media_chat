@@ -353,7 +353,10 @@ BootGuard bootGuard(const Layout& layout, const Version& current)
 StartupNotice onStarted(const Layout& layout, const Version& current, unsigned long pid)
 {
     StartupNotice notice;
-    fs::ensureDir(layout.updateDir);
+    // The folder exists once the updater has been used (state.ini) or a helper runs from it; plugins that
+    // never checked for updates leave no trace.
+    if (!fs::isDir(layout.updateDir))
+        return notice;
     fs::writeAll(layout.markerFile(current), QByteArray::number(static_cast<qulonglong>(pid)));
 
     StateFile st(layout.stateFile());

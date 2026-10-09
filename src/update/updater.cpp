@@ -228,6 +228,16 @@ bool Updater::builtIn()
 #endif
 }
 
+void Updater::pruneThreads()
+{
+    for (int i = m_threads.size() - 1; i >= 0; --i) {
+        if (WaitForSingleObject(static_cast<HANDLE>(m_threads.at(i)), 0) == WAIT_OBJECT_0) {
+            CloseHandle(static_cast<HANDLE>(m_threads.at(i)));
+            m_threads.remove(i);
+        }
+    }
+}
+
 void Updater::waitForThreads(int ms)
 {
     const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(ms);
@@ -436,6 +446,7 @@ void Updater::startCheck(Origin origin)
     StateFile(m_layout.stateFile()).setTime(kCheck, "lastAttemptUtc", QDateTime::currentDateTimeUtc());
     log(origin == Origin::Automatic ? latin("checking for updates") : latin("checking for updates (asked by the user)"));
 
+    pruneThreads();
     m_link           = std::make_shared<WorkerLink>();
     m_link->receiver = this;
     const QSet<int> revoked = StateFile(m_layout.stateFile()).revokedKeys();
@@ -740,6 +751,7 @@ void Updater::startDownload()
         d->show();
     }
     log(latin("downloading ") + m_manifest.version.toString());
+    pruneThreads();
     m_link           = std::make_shared<WorkerLink>();
     m_link->receiver = this;
     void* thread     = UpdateWorker::startPrepare(
