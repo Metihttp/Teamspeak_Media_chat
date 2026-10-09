@@ -48,6 +48,8 @@
 #include "i18n.h"
 #include "previewrenderer.h"
 #include "settings.h"
+#include "spoiler.h"      // 2.2 spoiler
+#include "spoilercover.h" // 2.2 spoiler
 #include "uiutil.h"
 #include "version.h"
 #include "video/mfvideo.h"
@@ -1643,6 +1645,13 @@ struct MediaViewer::Private : public QObject {
     void flashVolume(bool muteKey);
     bool handleKey(QKeyEvent* event);
 
+    // 2.2 spoiler: a hidden spoiler shows SpoilerCover and loads, downloads and plays nothing until it
+    // is revealed (here or in the chat: Core's entryChanged brings both in line).
+    void updateSpoilerCover();     // the cover's picture: the BlurHash or a blurred still
+    void revealSpoiler();          // the cover, Space or Enter
+    bool syncSpoiler();            // after entryChanged: covered or revealed elsewhere; true if the item was shown anew
+    bool refuseWhileCovered();     // Copy / Open while covered: says why, true if refused
+
     MediaViewer*   q;
     QPointer<Core> core;
     QStringList    keys;
@@ -1735,6 +1744,9 @@ struct MediaViewer::Private : public QObject {
     QPushButton* saveButton   = nullptr;
     QPushButton* folderButton = nullptr;
     QPushButton* openButton   = nullptr;
+
+    SpoilerCover* spoilerCover = nullptr; // 2.2 spoiler
+    bool          concealed    = false;   // 2.2 spoiler: the shown item is a hidden spoiler
 };
 
 MediaViewer::Private::Private(MediaViewer* viewer, Core* c)
@@ -1979,6 +1991,13 @@ void MediaViewer::Private::buildUi()
     flashBubble = new FlashBubble(stage);
     sheet       = new ShortcutSheet(stage);
 
+    // 2.2 spoiler: over the media, the player bar and the message panel; under the gallery arrows,
+    // the full-screen header, the flash bubble and the shortcut list.
+    spoilerCover = new SpoilerCover(stage);
+    spoilerCover->stackUnder(prevButton);
+    spoilerCover->button()->installEventFilter(this); // the arrows and letter keys keep working when it has the focus
+    connect(spoilerCover, &SpoilerCover::revealRequested, this, [this] { revealSpoiler(); });
+
     // ---- action bar ---------------------------------------------------------------------------
     actionBar = new QWidget(q);
     actionBar->setObjectName(QString::fromLatin1("tsmediaActionBar"));
@@ -2206,6 +2225,7 @@ void MediaViewer::Private::teardown()
     storeApp.clear();
     tooLarge         = false;
     tooLargeSize     = QSize();
+    concealed        = false; // 2.2 spoiler: showItem decides again
     playerFailed     = false;
     hasFrame         = false;
     resumeAfterScrub = false;
@@ -2264,6 +2284,14 @@ void MediaViewer::Private::showItem(int i)
     surface->setVisible(isPlayable());
     if (content == Content::Audio)
         surface->setAudioTitle(displayNameFor(e->link));
+    // 2.2 spoiler: covered until revealed; nothing is loaded, downloaded or played meanwhile.
+    concealed = core->isSpoilerHidden(key);
+    if (concealed) {
+        spoilerCover->cover(QImage(), false); // its picture follows from applyStill
+    } else {
+        spoilerCover->dismiss();
+        core->noteShownOpen(key);
+    }
     applyStill(true);
 
     {
@@ -2272,9 +2300,9 @@ void MediaViewer::Private::showItem(int i)
         seekSlider->setValue(0);
     }
 
-    if (e->state == MediaState::Ready)
+    if (e->state == MediaState::Ready && !concealed) // 2.2 spoiler: once revealed (syncSpoiler)
         startLoading();
-    else if (e->state == MediaState::Idle && fetchesAutomatically())
+    else if (e->state == MediaState::Idle && fetchesAutomatically() && !concealed)
         downloadTimer->start();
 
     updateTopBar();
@@ -2292,6 +2320,10 @@ void MediaViewer::Private::applyStill(bool reset)
         return;
     if (!reset && (loaded || hasFrame))
         return;
+    if (concealed) { // 2.2 spoiler: never a sharp still under the cover
+        updateSpoilerCover();
+        return;
+    }
 
     const MediaStill still = core->still(currentKey(), stillTarget());
     if (!reset && still.source <= stillSource)
@@ -2494,6 +2526,12 @@ void MediaViewer::Private::onEntryChanged(const QString& changedKey)
     const MediaEntry* e = entry();
     if (!e)
         return;
+    if (syncSpoiler()) // 2.2 spoiler: revealed or covered again (here or in the chat)
+        return;
+    if (concealed) {
+        applyStill(false); // a better picture for the cover; nothing starts
+        return;
+    }
     if (e->state == MediaState::Ready && !started)
         startLoading();
     else if (!loaded)
@@ -2586,7 +2624,7 @@ void MediaViewer::Private::updateTopBar()
         return;
     // The name comes from a chat link: shown without control / bidi override characters, and the
     // tooltip (which Qt would read as rich text if it looked like HTML) is escaped.
-    const QString name = displayNameFor(e->link);
+    const QString name = concealed ? spoiler::label(e->kind) : displayNameFor(e->link); // 2.2 spoiler: no name while covered
     displayName        = name;
     q->setWindowTitle(QStringLiteral("%1 — " TSMEDIA_NAME).arg(name));
     const QString tip = QStringLiteral("<p style='white-space:pre'>%1</p>").arg(name.toHtmlEscaped());
@@ -2645,7 +2683,7 @@ void MediaViewer::Private::updateOverlay()
 MediaViewer::Private::PanelButtons MediaViewer::Private::showStatus()
 {
     const MediaEntry* e = entry();
-    if (!e) {
+    if (!e || concealed) { // 2.2 spoiler: the cover says it all
         overlay->clear();
         return {};
     }
@@ -2797,14 +2835,14 @@ void MediaViewer::Private::updateButtons()
     folderButton->setEnabled(ready);
     // Programs and scripts from chat are never run (Core would only show them in their folder).
     setShown(openButton, !unsafe);
-    openButton->setEnabled(ready);
+    openButton->setEnabled(ready && !concealed); // 2.2 spoiler: not around the cover
 
     // Retry is in the message panel, next to the explanation (showStatus).
     if (e && content == Content::File && e->state == MediaState::Idle) {
         actionButton->setText(i18n::t("Download"));
         actionButton->setToolTip(i18n::t("Download the file (Enter)"));
         setShown(actionButton, true);
-    } else if (waitingForPlay()) {
+    } else if (waitingForPlay() && !concealed) {
         actionButton->setText(i18n::t("Download and play"));
         actionButton->setToolTip(i18n::t("Download and play (Enter)"));
         setShown(actionButton, true);
@@ -2823,7 +2861,7 @@ void MediaViewer::Private::updateButtons()
     setIconAction(fsCopy, copyButton->text(), i18n::t("%1 (Ctrl+C)").arg(copyButton->text()));
     fsSave->setEnabled(ready);
     fsOpen->setVisible(!unsafe);
-    fsOpen->setEnabled(ready);
+    fsOpen->setEnabled(ready && !concealed); // 2.2 spoiler
 }
 
 // Fit and 100% show which view is active; both do when the picture fits at 100%.
@@ -2892,6 +2930,7 @@ void MediaViewer::Private::layoutStage()
     surface->setGeometry(r);
     overlay->setGeometry(r);
     sheet->setGeometry(r);
+    spoilerCover->setGeometry(r); // 2.2 spoiler
 
     const int nav    = 44;
     const int margin = 16;
@@ -2938,7 +2977,7 @@ void MediaViewer::Private::showControls()
 {
     stopFade(); // any movement interrupts a fade-out
     const bool fullscreen = q->isFullScreen();
-    controls->setVisible(isPlayable() && !playerFailed);
+    controls->setVisible(isPlayable() && !playerFailed && !concealed); // 2.2 spoiler: no player bar on the cover
     const bool gallery = keys.size() > 1;
     prevButton->setVisible(gallery && index > 0);
     nextButton->setVisible(gallery && index < keys.size() - 1);
@@ -3165,6 +3204,8 @@ void MediaViewer::Private::toggleShortcuts()
 
 void MediaViewer::Private::copyCurrent()
 {
+    if (refuseWhileCovered()) // 2.2 spoiler
+        return;
     if (!isPicture() && content != Content::Video) {
         flash(i18n::t("Nothing to copy"), Glyph::Info, 1500);
         return;
@@ -3203,7 +3244,7 @@ void MediaViewer::Private::saveCurrent()
 void MediaViewer::Private::openCurrent()
 {
     const MediaEntry* e = entry();
-    if (!core || !e)
+    if (!core || !e || refuseWhileCovered()) // 2.2 spoiler
         return;
     if (e->state != MediaState::Ready) {
         flash(notReadyText(), Glyph::Info, 1500);
@@ -3296,6 +3337,12 @@ bool MediaViewer::Private::handleKey(QKeyEvent* event)
         sheet->hide();
         if (key == Qt::Key_Escape || key == Qt::Key_Question || key == Qt::Key_F1)
             return true;
+    }
+
+    // 2.2 spoiler: while covered, Space and Enter reveal it (the arrows still move through the gallery).
+    if (concealed && (key == Qt::Key_Space || key == Qt::Key_K || key == Qt::Key_Return || key == Qt::Key_Enter)) {
+        revealSpoiler();
+        return true;
     }
 
     switch (key) {
@@ -3394,6 +3441,52 @@ bool MediaViewer::Private::handleKey(QKeyEvent* event)
     default:
         return false;
     }
+}
+
+// ---- 2.2 spoiler --------------------------------------------------------------------------------
+
+void MediaViewer::Private::updateSpoilerCover()
+{
+    const MediaEntry* e = entry();
+    if (!core || !e)
+        return;
+    // A small still is enough: the cover keeps no detail (spoiler::blurredStill). A BlurHash is
+    // decoded at the picture's own shape and fills the stage like the picture would.
+    const MediaStill still = core->still(currentKey(), QSize(256, 256));
+    const QSizeF     shape = e->link.width > 0 && e->link.height > 0 ? QSizeF(e->link.width, e->link.height) : QSizeF(stage->size());
+    bool             blurHash = false;
+    const QImage     picture  = spoiler::coverSource(e->link.blurHash, shape, still.image, still.source == MediaStill::BlurHash, &blurHash);
+    spoilerCover->setPicture(picture, blurHash);
+}
+
+void MediaViewer::Private::revealSpoiler()
+{
+    if (!concealed || !core)
+        return;
+    core->setSpoilerRevealed(currentKey(), true); // entryChanged: the chat follows, and so does syncSpoiler
+    syncSpoiler();                                // (also when it was only covered by a setting since changed)
+}
+
+bool MediaViewer::Private::syncSpoiler()
+{
+    const bool hidden = core && core->isSpoilerHidden(currentKey());
+    if (hidden == concealed || index < 0)
+        return false;
+    // Shown anew: covered at once, or loaded now (and played, as when it was first shown).
+    const int shown = index;
+    index           = -1;
+    showItem(shown);
+    if (!hidden)
+        spoilerCover->fadeOut();
+    return true;
+}
+
+bool MediaViewer::Private::refuseWhileCovered()
+{
+    if (!concealed)
+        return false;
+    flash(i18n::t("Reveal the spoiler first"), Glyph::Info, 1500);
+    return true;
 }
 
 // ---- MediaViewer --------------------------------------------------------------------------------

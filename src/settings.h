@@ -26,6 +26,7 @@ struct Settings {
     int  videoAutoDownloadMB = 0;    // videos up to this size download automatically; 0 = when you press play
     int  previewMaxWidth     = 400;
     int  previewMaxHeight    = 300;
+    bool revealSpoilers      = false; // 2.2 spoiler: "Show spoilers without blurring" (no covers at all)
 
     // Playback
     int  videoVolume      = 80; // percent

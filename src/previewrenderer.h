@@ -29,6 +29,10 @@ struct PreviewStyle {
     bool animate = true;
     // A Ready file that only opens its folder when clicked (Core::isUnsafeToOpen: programs, scripts).
     bool revealOnly = false;
+    // 2.2 spoiler: how much of the spoiler cover lies over a picture, GIF or video (spoiler.h): 1 while
+    // it is hidden, falling to 0 during the reveal crossfade, 0 otherwise. The box never changes with it.
+    // Cards of other files ignore it; a picture shown as a card (no size known) is named "Spoiler (image)".
+    qreal concealOpacity = 0.0;
 };
 
 // Controls drawn on top of an inline video.

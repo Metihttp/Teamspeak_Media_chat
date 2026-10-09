@@ -18,6 +18,7 @@
 #include "floodgovernor.h"
 #include "medialink.h"
 #include "mediaprobe.h"
+#include "spoiler.h" // 2.2 spoiler
 #include "ts3api.h"
 
 class QTimer;
@@ -178,6 +179,21 @@ class Core : public QObject
     // Files in use (playing video, open viewer) are never evicted from the cache. Counted: every
     // setInUse(key, true) must be balanced by one setInUse(key, false).
     void setInUse(const QString& key, bool inUse);
+
+    // ---- spoilers (2.2) -------------------------------------------------------------------------
+    // A picture, GIF or video seen with sp=1 (on any of its links this session) that the user hasn't
+    // revealed: previews and the viewer show the blurred cover, it doesn't animate or play, and a click
+    // only reveals it. Reactions, drags and copies must leave it covered (ask this before starting one).
+    // False for everything while Settings::revealSpoilers is on.
+    bool isSpoilerHidden(const QString& key) const;
+    bool isSpoiler(const QString& key) const; // flagged, revealed or not, whatever the setting
+    // Reveals a spoiler, or covers it again, until TeamSpeak restarts. The chat and the viewer follow
+    // through entryChanged(key).
+    void setSpoilerRevealed(const QString& key, bool revealed);
+    // The content of key was drawn uncovered: a later repost with sp=1 can't cover it any more.
+    void noteShownOpen(const QString& key);
+    // Settings::revealSpoilers changed: every spoiler is drawn again (entryChanged).
+    void spoilerSettingChanged();
 
     // ---- uploads -------------------------------------------------------------------------
     // 2.2: every send goes through send(). Each file is probed on a worker thread (size, duration,
@@ -385,6 +401,7 @@ class Core : public QObject
     QHash<QString, Resume>     m_resume;              // key -> what to restart once its server is reachable
     QHash<QString, int>        m_resumeAttempts;      // key -> automatic restarts without a success in between
     QHash<QString, int>        m_inUse;               // key -> number of users (players, viewer, animations)
+    SpoilerState               m_spoilers;            // 2.2 spoiler: flagged and revealed keys (this session)
 
     QHash<int, UploadJob>   m_uploads;
     QHash<int, UploadExtra> m_uploadExtra;

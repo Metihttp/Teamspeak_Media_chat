@@ -522,6 +522,74 @@ QList<Sample> buildSamples()
         return renderPreview(e, posterStill(e, st), st, ls);
     });
 
+    // ---- 2.2 spoiler: hidden (cover), during the reveal crossfade, revealed --------------------
+    {
+        auto cover = [](PreviewStyle st, qreal opacity = 1.0) {
+            st.concealOpacity = opacity;
+            return st;
+        };
+        const MediaEntry sunsetReady = makeEntry(QStringLiteral("sunset_photo.png"), 34867, 900, 560, 0, MediaState::Ready); // no BlurHash
+        add(QStringLiteral("spoiler_image_hidden"), QStringLiteral("spoiler image hidden (BlurHash cover)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_image_hover"), QStringLiteral("spoiler image hidden, hover"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), cover(hovered(st)), ls);
+        });
+        add(QStringLiteral("spoiler_image_pressed"), QStringLiteral("spoiler image hidden, pressed"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, st)), cover(hovered(st, true)), ls);
+        });
+        add(QStringLiteral("spoiler_image_nohash"), QStringLiteral("spoiler image hidden, no BlurHash (12 px blur)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(sunsetReady, pictureStill(sunset, MediaStill::Full, stillPixels(sunsetReady, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_image_idle_large"), QStringLiteral("spoiler hidden, too large (no download disc)"), [=](const PreviewStyle& st, QSize* ls) {
+            MediaEntry e      = makeEntry(QStringLiteral("huge_panorama.jpg"), 25794560, 4000, 3000, 0, MediaState::Idle);
+            e.tooLargeForAuto = true;
+            return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_image_reveal_50"), QStringLiteral("spoiler image, reveal crossfade 50%"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(sunsetReady, pictureStill(sunset, MediaStill::Full, stillPixels(sunsetReady, st)), cover(st, 0.5), ls);
+        });
+        add(QStringLiteral("spoiler_image_revealed"), QStringLiteral("spoiler image revealed"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(sunsetReady, pictureStill(sunset, MediaStill::Full, stillPixels(sunsetReady, st)), cover(st, 0.0), ls);
+        });
+        add(QStringLiteral("spoiler_gif_hidden"), QStringLiteral("spoiler GIF hidden (no badge, no animation)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(gifReady, pictureStill(gif, MediaStill::Full, stillPixels(gifReady, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_gif_revealed"), QStringLiteral("spoiler GIF revealed (animating)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderAnimatedFrame(gifReady, gifFrame(12, stillPixels(gifReady, st)), cover(st, 0.0), ls);
+        });
+        add(QStringLiteral("spoiler_video_hidden"), QStringLiteral("spoiler video hidden (no play, no duration)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(clip, posterStill(clip, st), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_video_reveal_30"), QStringLiteral("spoiler video, reveal crossfade 30%"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(clip, posterStill(clip, st), cover(st, 0.3), ls);
+        });
+        add(QStringLiteral("spoiler_video_revealed"), QStringLiteral("spoiler video revealed (poster, play)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(clip, posterStill(clip, st), cover(st, 0.0), ls);
+        });
+        add(QStringLiteral("spoiler_no_still"), QStringLiteral("spoiler hidden, nothing loaded yet"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = makeEntry(QStringLiteral("holiday.jpg"), 845221, 1600, 1200, 0, MediaState::Queued);
+            return renderPreview(e, MediaStill(), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_failed_hidden"), QStringLiteral("spoiler hidden, failed: deleted (error under the cover)"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = failed(photoReady, MediaError::NotFound);
+            return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_panorama_eyeoff"), QStringLiteral("spoiler, 40 px high (eye-off mark)"), [=](const PreviewStyle& st, QSize* ls) {
+            const QImage     strip = cropToAspect(sunset, 8.0);
+            const MediaEntry e     = makeEntry(QStringLiteral("strip.png"), 52000, strip.width(), strip.height(), 0, MediaState::Ready);
+            return renderPreview(e, pictureStill(strip, MediaStill::Full, stillPixels(e, st)), cover(st), ls);
+        }, 160);
+        add(QStringLiteral("spoiler_card_image_nodims"), QStringLiteral("spoiler picture shown as a card (no name)"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = makeEntry(QStringLiteral("secret_ending_3f9a1c2e.jpg"), 845221, 0, 0, 0, MediaState::Idle);
+            return renderPreview(e, MediaStill(), cover(st), ls);
+        });
+        add(QStringLiteral("spoiler_card_zip_ignored"), QStringLiteral("spoiler flag on a zip: ignored"), [=](const PreviewStyle& st, QSize* ls) {
+            const MediaEntry e = makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Idle);
+            return renderPreview(e, MediaStill(), cover(st), ls);
+        });
+    }
+
     // ---- cards -----------------------------------------------------------------------------
     const MediaEntry zip = makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Idle);
     auto card = [&add](const QString& name, const QString& label, const MediaEntry& e, int maxWidth = 400) {
@@ -650,6 +718,45 @@ int checkDisplayFileName()
     return failures;
 }
 
+// 2.2 spoiler: the cover never moves the chat (same box hidden, fading and revealed) and shows nothing
+// of what has loaded (with a BlurHash the cover is the same whatever still is there).
+int checkSpoilerCovers()
+{
+    PreviewStyle st;
+    st.font = QFont(QStringLiteral("Segoe UI"));
+    st.font.setPointSizeF(9.0);
+    int  failures = 0;
+    auto fail     = [&failures](const QString& text) {
+        QTextStream(stderr) << "error: spoiler: " << text << "\n";
+        ++failures;
+    };
+    const QImage photo = loadSource(QStringLiteral("big_photo.jpg"));
+    for (const char* name : {"photo.jpg", "funny.gif", "clip.mp4", "plain.png"}) {
+        MediaEntry e = makeEntry(QString::fromLatin1(name), 500000, 1280, 720, 8000, MediaState::Ready);
+        if (QByteArray(name) == "plain.png")
+            e = makeEntry(QString::fromLatin1(name), 500000, 0, 0, 0, MediaState::Ready); // card or still-sized
+        e.link.blurHash = kReferenceHash;
+        const MediaStill still = pictureStill(photo, MediaStill::Full, stillPixels(e, st));
+        QSize            sizes[3];
+        QImage           images[3];
+        for (int i = 0; i < 3; ++i) {
+            PreviewStyle s   = st;
+            s.concealOpacity = i * 0.5;
+            images[i]        = renderPreview(e, still, s, &sizes[i]);
+        }
+        if (sizes[0] != sizes[1] || sizes[0] != sizes[2] || (e.link.width > 0 && sizes[0] != previewLogicalSize(e, st)))
+            fail(QStringLiteral("%1 changes size when covered").arg(QString::fromLatin1(name)));
+        if (e.link.width > 0) {
+            PreviewStyle s   = st;
+            s.concealOpacity = 1.0;
+            const QImage bare = renderPreview(e, MediaStill(), s, nullptr);
+            if (bare != images[2])
+                fail(QStringLiteral("%1: the cover shows what has loaded").arg(QString::fromLatin1(name)));
+        }
+    }
+    return failures;
+}
+
 struct Rendered {
     QString label;
     QImage  image;
@@ -714,6 +821,8 @@ int main(int argc, char* argv[])
     g_mediaDir           = argc > 2 ? QDir::fromNativeSeparators(QString::fromLocal8Bit(argv[2])) : QStringLiteral("testmedia");
     QDir().mkpath(outDir);
     if (checkDisplayFileName() != 0)
+        return 1;
+    if (checkSpoilerCovers() != 0) // 2.2 spoiler
         return 1;
 
     QFont chatFont(QStringLiteral("Segoe UI"));

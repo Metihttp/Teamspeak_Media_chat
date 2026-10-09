@@ -12,6 +12,7 @@
 #include <cmath>
 
 #include "i18n.h"
+#include "spoiler.h" // 2.2 spoiler
 #include "uiutil.h"
 
 namespace {
@@ -733,6 +734,23 @@ void drawBackdrop(QPainter& p, const QImage& pixels, const QRectF& bounds, bool 
     p.fillRect(bounds, QColor(0, 0, 0, dark ? 120 : 80));
 }
 
+// 2.2 spoiler: the cover over a picture, GIF or video while it is a hidden spoiler (or fading out after a
+// reveal). Drawn over everything but the hairline, so no badge, button, pill or progress shows through.
+void drawSpoilerCover(QPainter& p, const QRectF& bounds, const MediaEntry& e, const QImage& pixels, bool pixelsAreBlurHash, const PreviewStyle& style)
+{
+    if (style.concealOpacity <= 0.0 || !spoiler::appliesTo(e.kind))
+        return;
+    bool               blurHash = false;
+    const QImage       source   = spoiler::coverSource(e.link.blurHash, bounds.size(), pixels, pixelsAreBlurHash, &blurHash);
+    spoiler::CoverLook look;
+    look.font        = fontFor(style, -1, true);
+    look.placeholder = paletteFor(style.dark).placeholder;
+    look.opacity     = style.concealOpacity;
+    look.hovered     = style.hovered;
+    look.pressed     = style.hovered && style.pressed;
+    spoiler::drawCover(p, bounds, source, blurHash, look);
+}
+
 // ---- pictures (images, GIF stills and frames) ---------------------------------------------------
 
 QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Source source, bool animatedFrame, const MediaLayout& layout, const PreviewStyle& style, QSize* logicalSize)
@@ -752,6 +770,13 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
     p.setClipPath(clip);
     p.fillRect(bounds, pal.placeholder);
 
+    // 2.2 spoiler: fully covered, nothing of the picture is drawn (not even in the edge pixels).
+    if (style.concealOpacity >= 1.0 && spoiler::appliesTo(e.kind)) {
+        drawSpoilerCover(p, bounds, e, pixels, source == MediaStill::BlurHash, style);
+        drawHairline(p, bounds, pal.hairline);
+        return out;
+    }
+
     if (!pixels.isNull()) {
         const QRectF target = fitRect(QSizeF(pixels.size()), centered(layout.content, bounds));
         if (target.width() < bounds.width() - 0.75 || target.height() < bounds.height() - 0.75)
@@ -762,6 +787,7 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
     const bool animated = e.kind == MediaKind::AnimatedImage || animatedFrame;
     if (animatedFrame) {
         drawGifBadge(p, bounds, style);
+        drawSpoilerCover(p, bounds, e, pixels, false, style); // 2.2 spoiler
         drawHairline(p, bounds, pal.hairline);
         return out;
     }
@@ -812,6 +838,7 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
     if (animated && e.state != MediaState::Failed)
         drawGifBadge(p, bounds, style);
 
+    drawSpoilerCover(p, bounds, e, pixels, source == MediaStill::BlurHash, style); // 2.2 spoiler
     drawHairline(p, bounds, pal.hairline);
     return out;
 }
@@ -941,9 +968,13 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     p.setBrush(background);
     p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), kRadius, kRadius);
 
+    // 2.2 spoiler: a hidden spoiler drawn as a card (no picture size known): neither its name nor its
+    // state, and a click reveals it.
+    const bool hiddenSpoiler = style.concealOpacity > 0.0 && spoiler::appliesTo(e.kind);
+
     const QRectF glyph(kCardPadding, (h - 40.0) / 2.0, 32, 40);
     drawFileGlyph(p, glyph, glyphColor(e), extensionLabel(e), style);
-    if (failed) {
+    if (failed && !hiddenSpoiler) {
         const QRectF badge(glyph.right() - 6, glyph.bottom() - 11, 15, 15);
         p.setPen(QPen(background, 2));
         p.setBrush(Qt::NoBrush);
@@ -961,7 +992,9 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const QRectF        slot(w - kCardPadding - slotWidth, (h - kCardSlot) / 2.0, slotWidth, kCardSlot);
     const QRectF        icon = slot.adjusted(1, 1, -1, -1);
     bool                hasAction = true;
-    switch (e.state) {
+    if (hiddenSpoiler) // 2.2 spoiler
+        spoiler::drawEyeOffIcon(p, icon, actionInk);
+    else switch (e.state) {
     case MediaState::Idle:
         drawDownloadIcon(p, icon, actionInk);
         break;
@@ -1003,16 +1036,17 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const auto          align       = Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute;
 
     p.setFont(titleFont);
-    p.setPen(e.state == MediaState::Ready ? pal.link : pal.title);
-    drawFileName(p, QRectF(textStart, top, textWidth, titleFm.height()), align, titleFm.elidedText(displayNameFor(e.link), Qt::ElideMiddle, textWidth));
+    p.setPen(e.state == MediaState::Ready && !hiddenSpoiler ? pal.link : pal.title);
+    const QString title = hiddenSpoiler ? spoiler::label(e.kind) : displayNameFor(e.link); // 2.2 spoiler: not its name
+    drawFileName(p, QRectF(textStart, top, textWidth, titleFm.height()), align, titleFm.elidedText(title, Qt::ElideMiddle, textWidth));
 
     // The status drops the size first, then uses a short form; it is only cut off as a last resort.
     p.setFont(subFont);
-    p.setPen(failed ? pal.errorText : pal.muted);
+    p.setPen(failed && !hiddenSpoiler ? pal.errorText : pal.muted);
     p.drawText(QRectF(textStart, top + titleFm.height() + 3, textWidth, subFm.height()), align,
-               fitText(subFm, cardStatusTexts(e, imageDecodeFailed, style.revealOnly), textWidth));
+               fitText(subFm, hiddenSpoiler ? QStringList{i18n::t("Click to reveal")} : cardStatusTexts(e, imageDecodeFailed, style.revealOnly), textWidth));
 
-    if (e.state == MediaState::Downloading) {
+    if (e.state == MediaState::Downloading && !hiddenSpoiler) {
         const QRectF track(textStart, h - 10, textWidth, 3);
         p.setPen(Qt::NoPen);
         p.setBrush(pal.track);
@@ -1189,6 +1223,12 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
 
     const QImage& picture  = !frame.isNull() ? frame : poster.image;
     const bool    hasFrame = !frame.isNull();
+    // 2.2 spoiler: fully covered, nothing of the video is drawn (no poster, no controls).
+    if (style.concealOpacity >= 1.0 && spoiler::appliesTo(entry.kind)) {
+        drawSpoilerCover(p, bounds, entry, picture, !hasFrame && poster.source == MediaStill::BlurHash, style);
+        drawHairline(p, bounds, QColor(255, 255, 255, style.dark ? 18 : 0));
+        return out;
+    }
     if (!picture.isNull()) {
         p.drawImage(fitRect(QSizeF(picture.size()), bounds), picture);
     } else {
@@ -1291,6 +1331,7 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
         }
     }
 
+    drawSpoilerCover(p, bounds, entry, picture, !hasFrame && poster.source == MediaStill::BlurHash, style); // 2.2 spoiler
     drawHairline(p, bounds, QColor(255, 255, 255, style.dark ? 18 : 0));
     return out;
 }
@@ -1415,5 +1456,8 @@ QVector<PreviewColorPair> previewColorPairs(bool dark)
     add("video time over white", QColor(255, 255, 255, kTimeAlpha), timeBg, 4.5);
     add("video control icons over white", white, timeBg, 3.0);
     add("video playhead over white", white, ui::flatten(shadeAt(kSeekFromBottom), white), 3.0);
+    // 2.2 spoiler: the pill on a cover made from a white picture (the lighter BlurHash dimming).
+    const QColor covered = ui::flatten(QColor(0, 0, 0, spoiler::kBlurHashDimAlpha), white);
+    add("spoiler pill text over white", white, ui::flatten(QColor(0, 0, 0, spoiler::kPillAlpha), covered), 4.5);
     return pairs;
 }

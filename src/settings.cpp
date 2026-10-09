@@ -106,6 +106,7 @@ void Settings::load()
     videoAutoDownloadMB = readInt(s, "videoAutoDownloadMB", d.videoAutoDownloadMB, videoAutoDownloadMBRange);
     previewMaxWidth     = readInt(s, "previewMaxWidth", d.previewMaxWidth, previewMaxWidthRange);
     previewMaxHeight    = readInt(s, "previewMaxHeight", d.previewMaxHeight, previewMaxHeightRange);
+    revealSpoilers      = readBool(s, "revealSpoilers", d.revealSpoilers); // 2.2 spoiler
 
     // Playback
     videoVolume      = readInt(s, "videoVolume", d.videoVolume, videoVolumeRange);
@@ -142,6 +143,7 @@ void Settings::save() const
     s.setValue(key("videoAutoDownloadMB"), videoAutoDownloadMB);
     s.setValue(key("previewMaxWidth"), previewMaxWidth);
     s.setValue(key("previewMaxHeight"), previewMaxHeight);
+    s.setValue(key("revealSpoilers"), revealSpoilers); // 2.2 spoiler
 
     s.setValue(key("videoVolume"), videoVolume);
     s.setValue(key("videosStartMuted"), videosStartMuted);

@@ -21,6 +21,7 @@
 #include "previewrenderer.h"
 #include "settings.h"
 #include "settingsdialog.h"
+#include "spoilersection.h" // 2.2 spoiler
 #include "ts3api.h"
 #include "version.h"
 #include "video/mfvideo.h"
@@ -75,7 +76,10 @@ void showSettings(QWidget* parent)
     // Heap allocated and non-blocking so plugin shutdown can always close it.
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
+        if (g_core)
+            g_core->spoilerSettingChanged(); // 2.2 spoiler: an open viewer follows "without blurring" too
         if (g_core)
             g_core->applyCacheLimit(); // a lower limit counts now, not after the next download
         if (g_chat)

@@ -308,7 +308,7 @@ QSize InlineMediaController::videoFrameSize(const Video* video) const
 void InlineMediaController::click(const QString& key, VideoZone zone, double seekFraction)
 {
     const MediaEntry* e = m_core->entry(key);
-    if (!e || e->kind != MediaKind::Video)
+    if (!e || e->kind != MediaKind::Video || m_core->isSpoilerHidden(key)) // 2.2 spoiler: revealed first (ChatIntegration)
         return;
 
     Video*     v      = m_videos.value(key);
@@ -650,6 +650,16 @@ void InlineMediaController::onEntryChanged(const QString& key)
 {
     const MediaEntry* e = m_core->entry(key);
 
+    // 2.2 spoiler: covered again (Hide spoiler, or the "without blurring" setting turned off): a video
+    // stops where it is and doesn't start by itself once its download is done.
+    if (Video* v = m_videos.value(key); v && m_core->isSpoilerHidden(key)) {
+        v->wantPlay = false;
+        if (v->player && v->player->isPlaying()) {
+            v->player->pause();
+            emit frameChanged(key);
+        }
+    }
+
     if (Video* v = m_videos.value(key)) {
         if (!e || e->state != MediaState::Ready) {
             // The file went away (cache cleared, entry reset) or the download failed. A fresh copy
@@ -821,10 +831,11 @@ void InlineMediaController::updateAnimations()
 {
     const bool autoplay = gifsAutoplay();
 
-    // Animations that scrolled out of view (or whose chat was hidden) are dropped.
+    // Animations that scrolled out of view (or whose chat was hidden) are dropped. 2.2 spoiler: so are
+    // those covered again; a hidden spoiler never animates (not even on hover).
     const QStringList running = m_animations.keys();
     for (const QString& key : running) {
-        if (!m_visible.contains(key)) {
+        if (!m_visible.contains(key) || m_core->isSpoilerHidden(key)) {
             destroyAnimation(key);
             emit frameChanged(key);
         }
@@ -832,7 +843,7 @@ void InlineMediaController::updateAnimations()
 
     for (const QString& key : qAsConst(m_visible)) {
         const MediaEntry* e = m_core->entry(key);
-        if (!e || e->state != MediaState::Ready || !mayBeAnimated(*e))
+        if (!e || e->state != MediaState::Ready || !mayBeAnimated(*e) || m_core->isSpoilerHidden(key))
             continue;
         const bool run = autoplay || key == m_hoverKey;
         Animation* a   = m_animations.value(key);

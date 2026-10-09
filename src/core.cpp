@@ -563,6 +563,8 @@ void Core::ensure(const MediaLink& rawLink)
 
     const MediaLink link = sanitized(rawLink);
     const QString   key  = link.key();
+    // 2.2 spoiler: one link with sp=1 makes the file a spoiler for the session (key() ignores sp).
+    const bool newSpoiler = m_spoilers.noteSighting(key, link.spoiler && spoiler::appliesTo(kindForFileName(link.fileName)));
     if (m_entries.contains(key)) {
         // Seen while inline previews were off, or its files left the cache (cleared / evicted) while
         // it is still in a chat: start what would start for a new link.
@@ -572,6 +574,8 @@ void Core::ensure(const MediaLink& rawLink)
             if (pending || rearm)
                 startAutoDownloads(key);
         }
+        if (newSpoiler)
+            emit entryChanged(key); // 2.2 spoiler: its previews get the cover
         return;
     }
 
@@ -1520,6 +1524,38 @@ void Core::setInUse(const QString& key, bool inUse)
         if (e->state == MediaState::Ready)
             refreshFileTime(e->localPath);
     }
+}
+
+// ---- 2.2 spoiler ---------------------------------------------------------------------------------
+
+bool Core::isSpoilerHidden(const QString& key) const
+{
+    const MediaEntry* e = entry(key);
+    return e && spoiler::appliesTo(e->kind) && m_spoilers.isHidden(key, Settings::instance().revealSpoilers);
+}
+
+bool Core::isSpoiler(const QString& key) const
+{
+    const MediaEntry* e = entry(key);
+    return e && spoiler::appliesTo(e->kind) && m_spoilers.isSpoiler(key);
+}
+
+void Core::setSpoilerRevealed(const QString& key, bool revealed)
+{
+    if (m_spoilers.setRevealed(key, revealed))
+        emit entryChanged(key);
+}
+
+void Core::noteShownOpen(const QString& key)
+{
+    m_spoilers.noteShownOpen(key);
+}
+
+void Core::spoilerSettingChanged()
+{
+    const QStringList keys = m_spoilers.spoilers();
+    for (const QString& key : keys)
+        emit entryChanged(key);
 }
 
 // ============================================================================================

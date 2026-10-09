@@ -50,6 +50,7 @@
 #include "inlinemedia.h"
 #include "mediaviewer.h"
 #include "settings.h"
+#include "spoiler.h" // 2.2 spoiler
 #include "uiutil.h"
 #include "uploadtoast.h"
 
@@ -284,6 +285,9 @@ void ChatIntegration::start()
         if (m_viewer)
             m_viewer->pausePlayback();
     });
+    // 2.2 spoiler: each step of a reveal crossfade is redrawn like a frame.
+    m_reveals = new RevealFades(this);
+    connect(m_reveals, &RevealFades::changed, this, &ChatIntegration::onFrameChanged);
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -681,6 +685,10 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     style.hovered    = key == m_hoverKey;
     style.pressed    = style.hovered && key == m_pressedKey && !m_seeking;
     style.revealOnly = !media && e->state == MediaState::Ready && m_core->isUnsafeToOpen(key);
+    // 2.2 spoiler: covered while hidden, then the crossfade after a reveal.
+    style.concealOpacity = spoilerCoverOpacity(key);
+    if (media && style.concealOpacity <= 0.0 && browser->isVisible())
+        m_core->noteShownOpen(key);
     const QSize stillPixels = stillPixelsFor(*e, style);
     QSize       size;
     QImage      img;
@@ -1137,6 +1145,8 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
     if (!e)
         return {};
     *area = hit.rect.toAlignedRect();
+    if (m_core->isSpoilerHidden(hit.key))
+        return spoilerToolTip(); // 2.2 spoiler: no name, size or state
 
     QString detail;
     if (e->kind == MediaKind::Video && m_media) {
@@ -1209,6 +1219,10 @@ void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool 
     if (!e)
         return;
     const QString key = hit.key;
+    if (m_core->isSpoilerHidden(key)) { // 2.2 spoiler: the first click only reveals (no download, playback or viewer)
+        revealSpoiler(key);
+        return;
+    }
 
     if (e->kind == MediaKind::Video) {
         if (!m_media)
@@ -1367,6 +1381,10 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     const MediaEntry* e = m_core->entry(key);
     if (!e)
         return;
+    if (m_core->isSpoilerHidden(key)) { // 2.2 spoiler: "Reveal spoiler", nothing that shows the content
+        showSpoilerMenu(browser, key, globalPos);
+        return;
+    }
     const bool ready = e->state == MediaState::Ready;
     const bool media = isMediaKind(e->kind);
     // Deleted from the server or in a password-protected channel: nothing here can get the file
@@ -1454,6 +1472,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             showFeedback(viewport(), i18n::t("Link copied"), false);
         }
     });
+    addHideSpoilerAction(menu, key); // 2.2 spoiler
 
     if (primary)
         menu->setDefaultAction(primary);
@@ -1779,11 +1798,12 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             }
             m_seeking = false;
         }
-        const Hit         hit   = previewAt(browser, me->pos());
-        const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
-        VideoZone         zone  = VideoZone::None;
+        const Hit         hit     = previewAt(browser, me->pos());
+        const MediaEntry* entry   = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
+        const bool        covered = !hit.key.isEmpty() && m_core->isSpoilerHidden(hit.key); // 2.2 spoiler: no controls, always a button
+        VideoZone         zone    = VideoZone::None;
         if (!hit.key.isEmpty()) {
-            zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video
+            zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video && !covered
                        ? videoZoneAt(hit.rect.size().toSize(), me->localPos() - hit.rect.topLeft(), !m_media->overlay(hit.key).playing)
                        : VideoZone::Body;
         }
@@ -1794,7 +1814,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             repaintPointerState(browser, hit.key, false);
         }
         m_media->hover(hit.key, zone);
-        updateCursor(browser, !hit.key.isEmpty(), me->pos(), !entry || isPreviewActionable(*entry));
+        updateCursor(browser, !hit.key.isEmpty(), me->pos(), !entry || covered || isPreviewActionable(*entry));
         // The seek bar's tip shows the time under the pointer: keep it current while it is shown.
         if (zone == VideoZone::Seek && QToolTip::isVisible()) {
             QRect         area;
@@ -1834,8 +1854,12 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             return true; // the context menu event follows
         if (me->button() != Qt::LeftButton)
             break;
-        const MediaEntry* e     = m_core->entry(hit.key);
-        const bool        video = e && e->kind == MediaKind::Video;
+        const MediaEntry* e = m_core->entry(hit.key);
+        // 2.2 spoiler: a covered video is pressed like a picture (no controls), and the second click of
+        // a double click that revealed a spoiler doesn't play or open it as well.
+        const bool video = e && e->kind == MediaKind::Video && !m_core->isSpoilerHidden(hit.key);
+        if (event->type() == QEvent::MouseButtonDblClick && m_reveals && m_reveals->revealedWithin(hit.key, QApplication::doubleClickInterval()))
+            return true;
         if (event->type() == QEvent::MouseButtonDblClick && !video)
             return true; // the first click already opened it
         m_pressedKey           = hit.key;

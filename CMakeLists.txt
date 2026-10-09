@@ -63,6 +63,11 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    # 2.2 spoiler
+    src/spoiler.cpp           src/spoiler.h
+    src/spoilercover.cpp      src/spoilercover.h
+    src/spoilersection.cpp    src/spoilersection.h
+    src/chatintegration_spoiler.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -109,6 +114,9 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlog.cpp
         src/hashing.cpp
         src/floodgovernor.cpp
+        # 2.2 spoiler: reveal state, cover picture, crossfade (the drawing is checked by render_gallery)
+        tests/tst_spoiler.cpp
+        src/spoiler.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -153,6 +161,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/blurhash.cpp
         src/i18n.cpp
         src/uiutil.cpp
+        src/spoiler.cpp # 2.2 spoiler
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
