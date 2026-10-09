@@ -2,6 +2,8 @@
 
 #include <QDir>
 
+#include "pluginlog.h"
+
 namespace ts3 {
 
 TS3Functions funcs{};
@@ -198,10 +200,28 @@ QString newReturnCode()
     return QString::fromUtf8(buffer);
 }
 
-void log(const QString& message, LogLevel level, uint64 sch)
+namespace {
+void writeLog(LogLevel level, uint64 sch, const LogText& text)
 {
     if (funcs.logMessage)
-        funcs.logMessage(message.toUtf8().constData(), level, "TSMedia", sch);
+        funcs.logMessage(text.plain.toUtf8().constData(), level, "TSMedia", sch);
+    plog::write(static_cast<int>(level), text.marked);
+}
+} // namespace
+
+void log(LogLevel level, uint64 sch, const char* format, std::initializer_list<LogArg> args)
+{
+    writeLog(level, sch, formatLog(format, args));
+}
+
+void log(const char* fixedText, LogLevel level, uint64 sch)
+{
+    writeLog(level, sch, formatLog(fixedText, {}));
+}
+
+void log(const QString& message, LogLevel level, uint64 sch)
+{
+    writeLog(level, sch, unclassifiedLog(message));
 }
 
 void setChatDark(bool dark)
@@ -230,7 +250,8 @@ void printInfo(uint64 sch, const QString& text)
 
 void printWarning(uint64 sch, const QString& text)
 {
-    log(text, LogLevel_WARNING, sch);
+    // Chat warnings put names in curly quotes; the plugin log marks those (logtext.h).
+    writeLog(LogLevel_WARNING, sch, quotedNamesLog(text));
     const QString color = QString::fromLatin1(chatDark ? "#f0b232" : "#b54708");
     print(sch, QStringLiteral("[color=%1][b]TS Media chat ⚠[/b][/color] ").arg(color) + escapeBBCode(text));
 }

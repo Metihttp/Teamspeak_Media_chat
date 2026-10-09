@@ -18,6 +18,7 @@
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "ownedtimer.h"
+#include "pluginlog.h"
 #include "previewrenderer.h"
 #include "settings.h"
 #include "settingsdialog.h"
@@ -247,6 +248,7 @@ TS3_EXPORT int ts3plugin_init()
     if (!qApp)
         return 1;
 
+    plog::start(ts3::dataDir() + QStringLiteral("/logs")); // 2.2 foundation: the plugin log file, before anything logs
     Settings::instance().load();
 
     auto* core = new Core;
@@ -261,11 +263,11 @@ TS3_EXPORT int ts3plugin_init()
     QMetaObject::invokeMethod(core, [core, chat] {
         g_mediaFoundation = mf::startup();
         if (!g_mediaFoundation)
-            ts3::log(QStringLiteral("Media Foundation is not available: videos can't be played inside the chat"), LogLevel_WARNING);
+            ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
         core->start();
         chat->start();
         updateMenus();
-        ts3::log(QStringLiteral(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded"));
+        ts3::log(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded");
     }, Qt::QueuedConnection);
     return 0;
 }
@@ -302,6 +304,9 @@ TS3_EXPORT void ts3plugin_shutdown()
             mf::shutdown();
             g_mediaFoundation = false;
         }
+
+        // 2.2 foundation: last, so the steps above can still log.
+        plog::shutdown();
     };
     if (QThread::currentThread() == qApp->thread())
         cleanup();

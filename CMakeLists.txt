@@ -58,6 +58,12 @@ add_library(tsmedia SHARED
     src/mediaviewer.cpp       src/mediaviewer.h
     src/settingsdialog.cpp    src/settingsdialog.h
     src/video/mfvideo.cpp     src/video/mfvideo.h
+    # 2.2 foundation
+    src/logtext.cpp           src/logtext.h
+    src/pluginlog.cpp         src/pluginlog.h
+    src/hashing.cpp           src/hashing.h
+    src/floodgovernor.cpp     src/floodgovernor.h
+    src/settingssection.cpp   src/settingssection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -96,6 +102,14 @@ if(TSMEDIA_BUILD_TESTS)
         src/i18n.cpp
         src/uiutil.cpp
         src/settings.cpp # ts3::dataDir() is stubbed in the test
+        # 2.2 foundation: more test classes (tests/testmain.h runs them all) and the pure modules they test
+        tests/testmain.h
+        tests/tst_link22.cpp
+        tests/tst_foundation.cpp
+        src/logtext.cpp
+        src/pluginlog.cpp
+        src/hashing.cpp
+        src/floodgovernor.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
