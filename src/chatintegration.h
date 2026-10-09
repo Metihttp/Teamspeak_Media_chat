@@ -163,6 +163,7 @@ class ChatIntegration : public QObject
     QPointer<QTextBrowser> m_lastBrowser;  // chat the user last interacted with (viewer gallery source)
     QPointer<QTextBrowser> m_pressBrowser;
     QRectF                 m_pressRect;
+    QPoint                 m_pressPos; // 2.2 drag-out: where the left button went down (viewport coordinates)
     bool                   m_pressControlsVisible = false; // video controls were shown when the button went down
     bool                   m_seeking          = false; // dragging on a video's seek bar
     qint64                 m_lastSeekMs       = 0;

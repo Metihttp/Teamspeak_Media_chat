@@ -57,6 +57,13 @@ add_library(tsmedia SHARED
     src/mediaviewer.cpp       src/mediaviewer.h
     src/settingsdialog.cpp    src/settingsdialog.h
     src/video/mfvideo.cpp     src/video/mfvideo.h
+    # 2.2 drag-out and per-server settings
+    src/filenames.cpp         src/filenames.h
+    src/filedrag.cpp          src/filedrag.h
+    src/dragpixmap.cpp        src/dragpixmap.h
+    src/serversettings.cpp    src/serversettings.h
+    src/serverssection.cpp    src/serverssection.h
+    src/datasaver.cpp         src/datasaver.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -95,6 +102,7 @@ if(TSMEDIA_BUILD_TESTS)
         src/i18n.cpp
         src/uiutil.cpp
         src/settings.cpp # ts3::dataDir() is stubbed in the test
+        src/serversettings.cpp # 2.2 per-server settings (settings.cpp reads the server groups through it)
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -111,6 +119,29 @@ if(TSMEDIA_BUILD_TESTS)
     else()
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
+    endif()
+
+    # 2.2 drag-out and per-server settings: export names, server groups in settings.ini, data saver rules.
+    add_executable(tsmedia_dragout_servers_tests
+        tests/tst_dragout_servers.cpp
+        src/filenames.cpp
+        src/serversettings.cpp
+        src/settings.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+    )
+    target_include_directories(tsmedia_dragout_servers_tests PRIVATE src third_party/ts3client-pluginsdk/include)
+    target_compile_definitions(tsmedia_dragout_servers_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(tsmedia_dragout_servers_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(tsmedia_dragout_servers_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test)
+    add_test(NAME tsmedia_dragout_servers_tests COMMAND tsmedia_dragout_servers_tests)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+        set_tests_properties(tsmedia_dragout_servers_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
+    else()
+        set_tests_properties(tsmedia_dragout_servers_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 
@@ -135,6 +166,7 @@ if(TSMEDIA_BUILD_TOOLS)
     add_executable(render_gallery
         tools/render_gallery.cpp
         src/previewrenderer.cpp
+        src/dragpixmap.cpp # 2.2 drag-out
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp

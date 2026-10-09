@@ -13,6 +13,7 @@ class QPushButton;
 class QSlider;
 class QSpinBox;
 class QTimer;
+class ServersSection; // 2.2 per-server settings
 
 // Plugin settings: Receiving, Playback, Media cache, Sending and the note for people without the plugin.
 // The window's objectName starts with "tsmedia" so plugin shutdown can close it.
@@ -22,6 +23,10 @@ class SettingsDialog : public QDialog
 
   public:
     SettingsDialog(Core* core, QWidget* parent = nullptr);
+
+    // 2.2 per-server settings: the connected servers or saved server settings changed (connection,
+    // Plugins menu, command). Values edited in the dialog and not applied yet are kept.
+    void reloadServers();
 
   signals:
     void settingsChanged();
@@ -56,6 +61,7 @@ class SettingsDialog : public QDialog
     QSpinBox*  m_videoAutoDownload;
     QSpinBox*  m_previewWidth;
     QSpinBox*  m_previewHeight;
+    QCheckBox* m_dataSaver; // 2.2 data saver
 
     // Playback
     QSlider*   m_volume;
@@ -85,6 +91,8 @@ class SettingsDialog : public QDialog
     QWidget*   m_downloadUrlError;
     QLabel*    m_downloadUrlErrorText;
     QString    m_downloadUrlHint;
+
+    ServersSection* m_servers; // 2.2 per-server settings
 
     QPushButton*       m_applyButton;
     QVector<QWidget*>  m_indented;              // lined up with the text of the checkbox above

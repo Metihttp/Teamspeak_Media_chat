@@ -507,6 +507,8 @@ QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly
 {
     switch (e.state) {
     case MediaState::Idle:
+        if (e.heldByDataSaver && !e.tooLargeForAuto) // 2.2 data saver
+            return {i18n::t("Data saver — click to load"), i18n::t("Click to load"), i18n::t("Download")};
         return {i18n::t("Click to download"), i18n::t("Download")};
     case MediaState::Queued:
         return {i18n::t("Waiting to download…"), i18n::t("Waiting…")};
@@ -1416,4 +1418,10 @@ QVector<PreviewColorPair> previewColorPairs(bool dark)
     add("video control icons over white", white, timeBg, 3.0);
     add("video playhead over white", white, ui::flatten(shadeAt(kSeekFromBottom), white), 3.0);
     return pairs;
+}
+
+// 2.2 drag-out
+void drawFileTypeGlyph(QPainter& p, const QRectF& rect, const MediaEntry& entry, const PreviewStyle& style)
+{
+    drawFileGlyph(p, rect, glyphColor(entry), extensionLabel(entry), style);
 }

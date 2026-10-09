@@ -26,6 +26,7 @@
 #include <cmath>
 
 #include "blurhash.h"
+#include "filenames.h" // 2.2 drag-out
 #include "i18n.h"
 #include "settings.h"
 
@@ -65,6 +66,8 @@ constexpr qint64  kSyncDecodeBytes      = 8LL * 1024 * 1024;
 constexpr int     kResumeIntervalMs     = 2000;
 constexpr int     kMaxResumeAttempts    = 3; // automatic restarts of a download without a success
 constexpr int     kMaxUploadRenames     = 3; // new names after "file already exists"
+constexpr qint64  kExportMaxAgeMs       = 24LL * 3600 * 1000; // 2.2 drag-out: staged copies are kept this long
+constexpr qint64  kMaxExportCopyBytes   = 64LL * 1024 * 1024; // 2.2 drag-out: copied (when no hard link) only up to this
 
 Core* g_instance = nullptr;
 
@@ -191,9 +194,34 @@ QString fileChangedText()
     return i18n::t("The file on the server was replaced after it was sent.");
 }
 
-QString uploadLimitText(int limitMB)
+QString uploadLimitText(int limitMB, bool serverLimit = false)
 {
+    // 2.2 per-server settings: a server's own limit is changed where it was set.
+    if (serverLimit)
+        return i18n::t("This file is larger than this server's %1 MB upload limit. You can change it in Settings → Servers.").arg(limitMB);
     return i18n::t("This file is larger than your %1 MB upload limit. You can raise the limit in Settings → Sending.").arg(limitMB);
+}
+
+// 2.2 per-server settings: the server has its own upload size limit.
+bool hasOwnUploadLimit(const QString& serverUid)
+{
+    const ServerOverrides* own = Settings::instance().overridesFor(serverUid);
+    return own && own->uploadMaxMB.has_value();
+}
+
+// 2.2 drag-out: the Windows Mark-of-the-Web, as browsers add it to downloads. Written only when the
+// file has no Zone.Identifier stream yet. Not through QFile: alternate data streams need Win32 calls.
+bool markOfTheWeb(const QString& path)
+{
+    const QString stream = QDir::toNativeSeparators(path) + QLatin1String(":Zone.Identifier");
+    const HANDLE  file   = CreateFileW(reinterpret_cast<LPCWSTR>(stream.utf16()), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_FILE_EXISTS; // already marked
+    static const char kZone[] = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    DWORD             written = 0;
+    const BOOL        ok      = WriteFile(file, kZone, static_cast<DWORD>(sizeof(kZone) - 1), &written, nullptr);
+    CloseHandle(file);
+    return ok && written == sizeof(kZone) - 1;
 }
 
 // Transfer failures caused by the connection rather than by the file: restarted automatically.
@@ -504,6 +532,7 @@ void Core::start()
     QDir(cacheDir() + QStringLiteral("/.partial")).removeRecursively();
     QDir(ts3::dataDir() + QStringLiteral("/upload")).removeRecursively();
     QDir(ts3::dataDir() + QStringLiteral("/paste")).removeRecursively();
+    pruneExports(kExportMaxAgeMs); // 2.2 drag-out
 
     // The limit may have been lowered while TeamSpeak was closed.
     QTimer::singleShot(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
@@ -610,7 +639,8 @@ void Core::startAutoDownloads(const QString& key)
     if (it == m_entries.end())
         return;
     MediaEntry&     e          = it.value();
-    const Settings& s          = Settings::instance();
+    // 2.2 per-server settings: the server the download goes to (where the data is spent) decides.
+    const Settings  s          = Settings::instance().forServer(e.link.serverUid);
     const bool      isImage    = isPreviewableImage(e.kind);
     const bool      isVideo    = e.kind == MediaKind::Video;
     const quint64   imageLimit = megabytes(s.autoDownloadMaxMB);
@@ -628,6 +658,15 @@ void Core::startAutoDownloads(const QString& key)
             wantMain = s.autoDownloadImages && !e.tooLargeForAuto;
         else if (isVideo)
             wantMain = videoLimit > 0 && e.link.size <= videoLimit;
+        // 2.2 data saver: the full file waits for a click (previews still load).
+        const bool held = wantMain && s.dataSaver;
+        if (held)
+            wantMain = false;
+        if (held != e.heldByDataSaver) {
+            e.heldByDataSaver = held;
+            if (!wantPreview)
+                touch(e); // the card's status line changes
+        }
     }
 
     // Previews first: they are what the chat shows until the real file is there.
@@ -716,6 +755,7 @@ void Core::startDownload(const QString& key)
         return;
     if (e.state == MediaState::Failed)
         e.state = MediaState::Idle; // so a new failure is reported
+    e.heldByDataSaver = false; // 2.2 data saver: fetched now
 
     // Link sizes are untrusted. When the real size of this file on the server is already known and
     // differs (the file was replaced, or the link has a made-up size, e.g. to fetch one file many
@@ -1459,7 +1499,8 @@ QString Core::saveAs(const QString& key, QWidget* parent) const
     // The dialog runs an event loop: copy what is needed, the entry may change meanwhile.
     const QString   localPath = e->localPath;
     const MediaKind kind      = e->kind;
-    const QString   name      = localFileName(displayNameFor(e->link)); // without the cache prefix and the random part
+    // Without the cache prefix and the random part. 2.2: also safe from device names ("CON.txt").
+    const QString   name      = filenames::safeLocalFileName(displayNameFor(e->link));
 
     static QString lastDir;
     QString        dir = lastDir;
@@ -1513,6 +1554,134 @@ void Core::setInUse(const QString& key, bool inUse)
         if (e->state == MediaState::Ready)
             refreshFileTime(e->localPath);
     }
+}
+
+// ============================================================================================
+// 2.2 drag-out: copies handed to Explorer and other apps
+// ============================================================================================
+
+QString Core::prepareExport(const QString& key, QString* error)
+{
+    const MediaEntry* e = entry(key);
+    if (!e || e->state != MediaState::Ready || !QFileInfo(e->localPath).isFile()) {
+        if (error)
+            *error = QStringLiteral("not downloaded");
+        return {};
+    }
+    const QString localPath = e->localPath;
+    const MediaLink link    = e->link;
+    pruneExports(kExportMaxAgeMs);
+
+    // Outside the cache folder: the cache size and its eviction never count or touch it.
+    const QString root = ts3::dataDir() + QStringLiteral("/export");
+    QString       dir;
+    for (int attempt = 0; attempt < 5 && dir.isEmpty(); ++attempt) {
+        const QString candidate = root + QLatin1Char('/') + uniqueSuffix();
+        if (!QFileInfo::exists(candidate) && QDir().mkpath(candidate))
+            dir = candidate;
+    }
+
+    QString result;
+    if (!dir.isEmpty()) {
+        const QString target = dir + QLatin1Char('/') + filenames::exportFileName(link, QDir::toNativeSeparators(dir).length() + 1);
+        // A hard link is instant and takes no space (Explorer copies it). Copies are for file systems
+        // without hard links, and only for files that copy quickly: this runs on the GUI thread.
+        if (hardLink(localPath, target) || (QFileInfo(localPath).size() <= kMaxExportCopyBytes && QFile::copy(localPath, target)))
+            result = target;
+        else
+            QDir(dir).removeRecursively();
+    }
+    if (result.isEmpty()) {
+        // The cache file itself: the copy then gets the cache name ("3f9a1c2e_holiday_3f9a1c2e.jpg").
+        // No file name: 2.2 log lines name files only through the structured log API (diagnostics).
+        ts3::log(QStringLiteral("Could not stage a file for dragging out; the cached file itself is used"), LogLevel_WARNING);
+        result = localPath;
+    }
+    // With a hard link the stream lands on the file record the cache shares, so the cached file is
+    // marked too: Save as and Explorer copies (CopyFileW copies streams) keep the mark as well.
+    if (!markOfTheWeb(result))
+        ts3::log(QStringLiteral("Could not add the downloaded-from-the-internet mark to a dragged-out file (error %1)").arg(GetLastError()), LogLevel_WARNING);
+    refreshFileTime(localPath);
+    return result;
+}
+
+void Core::pruneExports(qint64 maxAgeMs)
+{
+    const QString root = ts3::dataDir() + QStringLiteral("/export");
+    if (!QFileInfo(root).isDir())
+        return;
+    const QDateTime   oldest  = QDateTime::currentDateTimeUtc().addMSecs(-maxAgeMs);
+    const QFileInfoList folders = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& folder : folders) {
+        if (folder.lastModified().toUTC() < oldest)
+            QDir(folder.absoluteFilePath()).removeRecursively(); // files Explorer still copies stay (locked)
+    }
+}
+
+// ============================================================================================
+// 2.2 data saver
+// ============================================================================================
+
+void Core::onDataSaverChanged()
+{
+    QHash<QString, bool> saving; // server uid -> data saver on (resolved once per server)
+    const Settings&      global = Settings::instance();
+    auto                 saves  = [&saving, &global](const QString& uid) {
+        auto it = saving.constFind(uid);
+        if (it == saving.constEnd())
+            it = saving.insert(uid, global.forServer(uid).dataSaver);
+        return it.value();
+    };
+
+    // Collected first: touch() and the transfer calls below may call back into Core.
+    QStringList pause;
+    QStringList resume;
+    for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
+        const MediaEntry& e = it.value();
+        if (saves(e.link.serverUid)) {
+            if (m_autoDownloads.contains(it.key()) && (e.state == MediaState::Queued || e.state == MediaState::Downloading))
+                pause.append(it.key());
+        } else if (e.heldByDataSaver && e.state == MediaState::Idle) {
+            resume.append(it.key());
+        }
+    }
+
+    for (const QString& key : qAsConst(pause)) {
+        auto it = m_entries.find(key);
+        if (it == m_entries.end())
+            continue;
+        MediaEntry& e = it.value();
+        if (e.state == MediaState::Downloading) {
+            haltDownload(e.sch, e.transferId);
+            if (m_downloadsByTransfer.value(e.transferId) == key)
+                m_downloadsByTransfer.remove(e.transferId);
+            --m_activeDownloads;
+            QDir(partialDir(key, false)).removeRecursively();
+        }
+        m_downloadQueue.removeAll(key);
+        m_autoDownloads.remove(key);
+        e.state           = MediaState::Idle;
+        e.progress        = 0.0;
+        e.transferId      = 0;
+        e.openWhenReady   = false;
+        e.heldByDataSaver = true;
+        touch(e);
+    }
+
+    // Started again like media whose files left the cache: once a chat or the viewer shows them
+    // (rearmIfNeeded), not every held item of a long chat history at once.
+    for (const QString& key : qAsConst(resume)) {
+        auto it = m_entries.find(key);
+        if (it == m_entries.end())
+            continue;
+        it->heldByDataSaver = false;
+        m_rearm.insert(key);
+        touch(it.value());
+    }
+    if (!pause.isEmpty())
+        pumpDownloadQueue();
+    if (!pause.isEmpty() || !resume.isEmpty())
+        ts3::log(QStringLiteral("Data saver changed: %1 automatic downloads paused, %2 held items released").arg(pause.size()).arg(resume.size()), LogLevel_INFO);
 }
 
 // ============================================================================================
@@ -1622,7 +1791,9 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
         return 0;
     }
 
-    const Settings& s = Settings::instance();
+    // 2.2 per-server settings: the upload folder and size limit of the server it goes to.
+    const QString   serverUid = ts3::serverUid(target.sch);
+    const Settings  s         = Settings::instance().forServer(serverUid);
     UploadJob       job;
     job.id           = ++m_nextUploadId;
     job.batch        = batch;
@@ -1644,7 +1815,7 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
     UploadJob&    j     = m_uploads[id];
     const quint64 limit = megabytes(s.uploadMaxMB);
     if (j.size > limit) {
-        failUpload(id, uploadLimitText(s.uploadMaxMB));
+        failUpload(id, uploadLimitText(s.uploadMaxMB, hasOwnUploadLimit(serverUid)));
         return id;
     }
     if (j.size == 0) {
@@ -1741,14 +1912,15 @@ void Core::onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInf
         return;
     }
     // The staged copy is what gets uploaded: its size goes into the link (the original may have
-    // changed since it was checked).
-    const Settings& s = Settings::instance();
+    // changed since it was checked). 2.2 per-server settings: the limit of the server it goes to.
+    const QString  serverUid = ts3::serverUid(it->target.sch);
+    const Settings s         = Settings::instance().forServer(serverUid);
     if (stagedSize == 0) {
         failUpload(id, i18n::t("This file is empty."));
         return;
     }
     if (stagedSize > megabytes(s.uploadMaxMB)) {
-        failUpload(id, uploadLimitText(s.uploadMaxMB));
+        failUpload(id, uploadLimitText(s.uploadMaxMB, hasOwnUploadLimit(serverUid)));
         return;
     }
     UploadJob& job = it.value();
@@ -2063,7 +2235,7 @@ void Core::postUploadMessage(int id)
         return;
     UploadJob&       job     = it.value();
     const MediaLink  link    = m_uploadExtra.value(id).link;
-    const Settings&  s       = Settings::instance();
+    const Settings   s       = Settings::instance().forServer(link.serverUid); // 2.2 per-server settings: the note
     const QByteArray message = composeChatMessage(link, s.addRequiredNotice, s.pluginDownloadUrl).toUtf8();
     const QString    rc      = registerOp(OpType::PostMessage, {}, id);
     unsigned         err     = ERROR_ok;

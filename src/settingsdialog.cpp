@@ -21,8 +21,10 @@
 #include <QVBoxLayout>
 
 #include "core.h"
+#include "datasaver.h" // 2.2 per-server settings
 #include "i18n.h"
 #include "medialink.h"
+#include "serverssection.h" // 2.2 per-server settings
 #include "uiutil.h"
 #include "version.h"
 
@@ -179,6 +181,12 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* receive     = new QGroupBox(i18n::t("Receiving"), this);
     m_inlinePreviews  = new QCheckBox(i18n::t("&Show images, videos and file cards in the chat"), receive);
     m_receiveDetails  = new QWidget(receive);
+    // 2.2 data saver (no access key yet: the fitting letters are taken; assign one at integration).
+    m_dataSaver           = new QCheckBox(i18n::t("Data saver: pause automatic downloads"), m_receiveDetails);
+    auto* dataSaverHint   = hint(i18n::t("Images and videos load when you click them; small previews still load. Your limits below are kept. "
+                                         "You can turn it off for single servers under Servers."),
+                                 m_receiveDetails);
+    m_dataSaver->setAccessibleDescription(dataSaverHint->text());
     m_autoDownload    = new QCheckBox(i18n::t("Download &images and GIFs automatically up to"), m_receiveDetails);
     m_autoDownloadMax = spin(Settings::autoDownloadMaxMBRange, 5, megabytes(), m_receiveDetails);
     m_autoDownloadMax->setAccessibleName(i18n::t("Download images and GIFs automatically up to"));
@@ -208,6 +216,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
 
     auto* receiveDetailsForm = form(m_receiveDetails);
     receiveDetailsForm->setContentsMargins(0, 0, 0, 0);
+    receiveDetailsForm->addRow(m_dataSaver); // 2.2 data saver
+    receiveDetailsForm->addRow(dataSaverHint);
+    m_indented.append(dataSaverHint);
     receiveDetailsForm->addRow(imageRow);
     // In a box of its own: a hidden form row would still take the form's row spacing.
     auto* gifRows = new QVBoxLayout;
@@ -365,6 +376,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
             checkDownloadUrl(false);
     });
 
+    // ---- 2.2 per-server settings: the Servers section (self-contained, see serverssection.h) ------
+    m_servers = new ServersSection(this);
+
     // ---- header, buttons, layout ------------------------------------------------------------------
     auto* title     = new QLabel(i18n::t(TSMEDIA_NAME), this);
     QFont titleFont = title->font();
@@ -419,6 +433,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* right = new QVBoxLayout;
     right->addWidget(send);
     right->addWidget(note);
+    right->addWidget(m_servers); // 2.2 per-server settings
     right->addStretch(1);
     auto* columns = new QHBoxLayout;
     columns->setSpacing(12);
@@ -452,6 +467,17 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     connect(m_downloadUrl, &QLineEdit::textChanged, this, changed);
     connect(m_uploadDir, &QLineEdit::textChanged, this, changed);
 
+    // 2.2 per-server settings: "Same as all servers (…)" follows the form, saved or not.
+    connect(m_servers, &ServersSection::changed, this, changed);
+    connect(m_dataSaver, &QCheckBox::toggled, this, [this] { updateEnabled(); });
+    const auto globalsChanged = [this] {
+        m_servers->setGlobals(m_dataSaver->isChecked(), m_uploadDir->text(), m_uploadMax->value(), m_notice->isChecked());
+    };
+    connect(m_dataSaver, &QCheckBox::toggled, this, globalsChanged);
+    connect(m_notice, &QCheckBox::toggled, this, globalsChanged);
+    connect(m_uploadDir, &QLineEdit::textChanged, this, globalsChanged);
+    connect(m_uploadMax, QOverload<int>::of(&QSpinBox::valueChanged), this, globalsChanged);
+
     m_numberFields = {m_autoDownloadMax, m_previewWidth, m_previewHeight, m_uploadMax};
 
     // TeamSpeak's dark skins switch off every focus indicator. Like Windows, the dialog shows its own
@@ -467,6 +493,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     m_cacheUsed = m_core ? m_core->cacheSize() : 0;
     m_loaded    = Settings::instance();
     load(m_loaded);
+    reloadServers(); // 2.2 per-server settings
     setDirty(false);
     m_ready = true;
     applyTheme();
@@ -531,6 +558,7 @@ void SettingsDialog::load(const Settings& s)
     m_videoAutoDownload->setValue(s.videoAutoDownloadMB);
     m_previewWidth->setValue(s.previewMaxWidth);
     m_previewHeight->setValue(s.previewMaxHeight);
+    m_dataSaver->setChecked(s.dataSaver); // 2.2 data saver
 
     m_volume->setValue(s.videoVolume);
     m_volumeLabel->setText(i18n::t("%1%").arg(m_volume->value()));
@@ -553,8 +581,16 @@ void SettingsDialog::load(const Settings& s)
     m_downloadUrl->setCursorPosition(0); // the start of a long link matters most
     m_loading = false;
 
+    // 2.2 per-server settings: only the "Same as all servers" texts; Restore defaults never forgets servers.
+    m_servers->setGlobals(s.dataSaver, s.uploadDirectory, s.uploadMaxMB, s.addRequiredNotice);
     updateEnabled();
     updateCacheLabel();
+}
+
+// 2.2 per-server settings
+void SettingsDialog::reloadServers()
+{
+    m_servers->reload(datasaver::connectedServers());
 }
 
 void SettingsDialog::setDirty(bool dirty)
@@ -566,7 +602,16 @@ void SettingsDialog::updateEnabled()
 {
     // Disabling a container disables the labels and helpers in it too.
     m_receiveDetails->setEnabled(m_inlinePreviews->isChecked());
-    m_autoDownloadMax->setEnabled(m_autoDownload->isChecked());
+    // 2.2 data saver: the automatic-download limits are kept, they just don't apply while it is on.
+    const bool    saving = m_dataSaver->isChecked();
+    const QString paused = saving ? i18n::t("Paused by data saver") : QString();
+    m_autoDownload->setEnabled(!saving);
+    m_autoDownloadMax->setEnabled(!saving && m_autoDownload->isChecked());
+    m_videoAutoDownload->setEnabled(!saving);
+    for (QWidget* field : {static_cast<QWidget*>(m_autoDownload), static_cast<QWidget*>(m_autoDownloadMax), static_cast<QWidget*>(m_videoAutoDownload)}) {
+        if (field->toolTip() != paused)
+            field->setToolTip(paused);
+    }
     m_noteDetails->setEnabled(m_notice->isChecked());
     // The link only matters with the note on: no message about it otherwise.
     if (m_notice->isChecked() && !m_downloadUrl->text().trimmed().isEmpty())
@@ -606,6 +651,7 @@ bool SettingsDialog::apply()
     form.videoAutoDownloadMB = m_videoAutoDownload->value();
     form.previewMaxWidth     = m_previewWidth->value();
     form.previewMaxHeight    = m_previewHeight->value();
+    form.dataSaver           = m_dataSaver->isChecked(); // 2.2 data saver
 
     form.videoVolume      = m_volume->value();
     form.videosStartMuted = m_startMuted->isChecked();
@@ -649,6 +695,9 @@ bool SettingsDialog::apply()
     take(s.uploadDirectory, m_loaded.uploadDirectory, form.uploadDirectory);
     take(s.addRequiredNotice, m_loaded.addRequiredNotice, form.addRequiredNotice);
     take(s.pluginDownloadUrl, m_loaded.pluginDownloadUrl, form.pluginDownloadUrl);
+    take(s.dataSaver, m_loaded.dataSaver, form.dataSaver); // 2.2 data saver
+    m_servers->applyTo(s);                                 // 2.2 per-server settings: the servers edited here
+    form.servers = s.servers;
     s.save();
     m_loaded = form;
 

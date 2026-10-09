@@ -50,6 +50,8 @@ class ImageCanvas : public QWidget
     void zoomChanged(qreal zoom);
     void clicked();
     void activity(); // the pointer moved over the picture (at most every 50 ms)
+    // 2.2 drag-out: a drag on a picture that can't be panned (it fits): drag the file out instead.
+    void dragOutRequested(const QPoint& pressPos);
 
   protected:
     void paintEvent(QPaintEvent* event) override;
