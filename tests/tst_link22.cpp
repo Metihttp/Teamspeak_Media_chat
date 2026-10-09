@@ -952,7 +952,8 @@ void TestLink22::composeCaptionFirst()
     QVERIFY(text.endsWith(QStringLiteral("plugin required to view this in chat[/I][/COLOR]")));
     QVERIFY(text.contains(QStringLiteral("]sunset.jpg[/URL] [COLOR=#72767d]")));
     QVERIFY(utf8Bytes(text) < kMaxMessageBytes);
-    QCOMPARE(messages.first().links, QVector<int>{0});
+    QCOMPARE(messages.first().links.size(), 1); // (sizes and items: QVector's operator== warns with MSVC)
+    QCOMPARE(messages.first().links.first(), 0);
     QVERIFY(messages.first().dropped.isEmpty());
     QCOMPARE(MediaLink::findInMessage(text).size(), 1);
     QCOMPARE(MediaLink::findInMessage(text).first().toUrl(), link.toUrl());
@@ -970,7 +971,8 @@ void TestLink22::composeCaptionSplit()
     QCOMPARE(messages.size(), 2);
     QCOMPARE(messages.at(0).text, options.caption);
     QVERIFY(messages.at(0).links.isEmpty());
-    QCOMPARE(messages.at(1).links, QVector<int>{0});
+    QCOMPARE(messages.at(1).links.size(), 1);
+    QCOMPARE(messages.at(1).links.first(), 0);
     QVERIFY(messages.at(1).text.contains(QStringLiteral("[URL=https://github.com/Metihttp/Teamspeak_Media_chat]TS Media chat[/URL] plugin required")));
     QVERIFY2(messages.at(1).dropped.isEmpty(), qPrintable(messages.at(1).dropped.join(QLatin1Char(','))));
     for (const ComposedMessage& m : messages)

@@ -24,23 +24,35 @@ struct Registration {
     explicit Registration(Factory factory) { registry().push_back(factory); }
 };
 
-// True if the command line names no test function, or one this object has.
-inline bool selected(const QObject* test, int argc, char** argv)
+inline bool takesValue(const QString& option)
 {
-    bool named = false;
-    for (int i = 1; i < argc; ++i) {
-        const QByteArray arg = argv[i];
-        if (arg.startsWith('-')) {
-            if (arg == "-o" || arg == "-maxwarnings" || arg == "-eventdelay" || arg == "-keydelay" || arg == "-mousedelay")
-                ++i; // its value
+    return option == QLatin1String("-o") || option == QLatin1String("-maxwarnings") || option == QLatin1String("-eventdelay") || option == QLatin1String("-keydelay")
+           || option == QLatin1String("-mousedelay");
+}
+
+// The command line for one test object: the options, and of the named test functions ("name" or
+// "name:row") only those it has. Empty if functions were named and it has none of them.
+inline QStringList argsFor(const QObject* test, const QStringList& args)
+{
+    QStringList out{args.value(0)};
+    bool        named = false;
+    bool        mine  = false;
+    for (int i = 1; i < args.size(); ++i) {
+        const QString& arg = args.at(i);
+        if (arg.startsWith(QLatin1Char('-'))) {
+            out << arg;
+            if (takesValue(arg) && i + 1 < args.size())
+                out << args.at(++i);
             continue;
         }
-        named              = true;
-        const QByteArray f = arg.left(arg.indexOf(':') < 0 ? arg.size() : arg.indexOf(':')); // "name:row"
-        if (test->metaObject()->indexOfMethod(f + "()") >= 0)
-            return true;
+        named                  = true;
+        const QByteArray slot = arg.section(QLatin1Char(':'), 0, 0).toLatin1() + "()";
+        if (test->metaObject()->indexOfMethod(slot.constData()) >= 0) {
+            out << arg;
+            mine = true;
+        }
     }
-    return !named;
+    return named && !mine ? QStringList() : out;
 }
 
 // "-o file,format" would be rewritten by every class: each writes its own part, and the parts are
@@ -71,12 +83,14 @@ inline int run(QObject* first, int argc, char** argv)
     int         failed = 0;
     QStringList parts;
     for (size_t n = 0; n < tests.size(); ++n) {
-        if (!selected(tests[n], argc, argv))
+        QStringList classArgs = argsFor(tests[n], args);
+        if (classArgs.isEmpty())
             continue;
-        QStringList classArgs = args;
         if (outputArg > 0) {
             const QString part = path + QStringLiteral(".part%1").arg(n);
-            classArgs[outputArg] = part + format;
+            const int     at   = classArgs.indexOf(target);
+            if (at > 0)
+                classArgs[at] = part + format;
             parts << part;
         }
         failed += QTest::qExec(tests[n], classArgs);
