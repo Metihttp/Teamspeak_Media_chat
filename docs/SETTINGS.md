@@ -68,6 +68,7 @@ Changing the volume in the gallery viewer updates this setting too.
 - **Upload a small preview**: the [usage guide](USAGE.md#file-names-and-folders) lists which files get a preview and where it is stored.
 - **Upload size limit** is your own limit. The server's transfer quotas still apply. The send window marks files over the limit before you click **Send**.
 - **Upload folder** is per user: each person sends into the folder set in their own settings. Without permission to create folders, files go to the channel root.
+- The picture editor (*Edit…* in the send window) remembers the colour, size and *Hide details* mode you used last. They are kept in `settings.ini` (`editorColor`, `editorStroke`, `editorHideMode`) and have no control in this dialog. **Convert pasted images over 2 MB to JPEG** also applies to edited pictures saved as PNG.
 
 ### Dropping files
 

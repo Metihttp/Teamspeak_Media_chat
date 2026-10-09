@@ -22,7 +22,9 @@
 
 #include "composemodel.h"
 #include "core.h"
+#include "imageeditmodel.h" // 2.2 editor
 
+class ImageEditor; // 2.2 editor
 class QCheckBox;
 class QLabel;
 class QLineEdit;
@@ -47,6 +49,15 @@ struct ComposeHost {
     // 2.4 compress: the compression settings (Core::compressOptions); unset: no Quality combo, videos over
     // the limit can't be sent.
     std::function<videocompress::Options()>                compressOptions;
+
+    // 2.2 editor: pictures can be edited (crop & annotate) while editDirectory is set. Each edited copy
+    // is written into a folder of its own under it; the window deletes them when it closes, and hands
+    // Core separate links (or copies) when it sends. convertLargePngToJpeg: the paste rule for the
+    // edited file. The editor starts with editorPrefs and reports its last choices to rememberEditorPrefs.
+    QString                                                editDirectory;
+    bool                                                   convertLargePngToJpeg = true;
+    imageedit::Prefs                                       editorPrefs;
+    std::function<void(const imageedit::Prefs&)>           rememberEditorPrefs;
 };
 
 class ComposeDialog : public QDialog
@@ -77,6 +88,14 @@ class ComposeDialog : public QDialog
     QVector<videocompress::Choice> qualityChoices(int index) const;
     QLineEdit* captionField() const { return m_caption; }
     void       showDropTarget(bool shown);
+
+    // 2.2 editor: Edit… (the pencil, E on a focused row) opens the editor for a picture; its result
+    // replaces the item ("Edited"), and "Revert to original" brings the original back.
+    void         editItem(int index);
+    ImageEditor* editor() const;
+    QString      editBlocker(int id) const; // why the item can't be edited; empty: it can
+    bool         isEdited(int index) const;
+    const compose::Item& itemAt(int index) const { return m_items.at(index); } // render tools and tests
 
   signals:
     // The request reached Core. caption: what the caption field held (empty: no caption); batch: what
@@ -134,6 +153,24 @@ class ComposeDialog : public QDialog
     QPixmap  iconFor(const compose::Item& item, int size) const;
     void     announce(QWidget* widget); // screen readers: the text of widget changed
 
+    // 2.2 editor
+    struct EditRecord {
+        compose::Item             original;      // the item before its first edit (Revert)
+        QImage                    originalThumb;
+        imageedit::ImageEditModel model;         // the edits, without the picture's pixels
+        QString                   folder;        // the edited file's own folder (files only)
+    };
+    bool    editingOffered() const { return !m_host.editDirectory.isEmpty(); }
+    void    openEditor(int id);
+    void    onEditOpened(int id, int generation, const QImage& picture, int problem);
+    void    saveEdit();
+    void    onEditSaved(int id, int generation, const imageedit::ImageEditModel& model, const QString& folder, const QString& path,
+                        const QImage& picture, const QImage& thumb, const QString& error);
+    void    askRevert(int id);
+    void    revertEdit(int id);
+    void    focusEdit(int id);
+    QString handOver(const compose::Item& item, QStringList* folders) const; // a link (or copy) of the edited file for Core
+
     ComposeHost                       m_host;
     ChatTarget                        m_target;
     QVector<compose::Item>            m_items;
@@ -190,4 +227,14 @@ class ComposeDialog : public QDialog
     QTimer*              m_targetTimer = nullptr;
     DropHint*            m_dropHint   = nullptr;
     QPointer<QMessageBox> m_discard;
+
+    // 2.2 editor
+    QHash<int, EditRecord> m_edits;
+    QPointer<ImageEditor>  m_editor;
+    QPointer<QMessageBox>  m_revertBox;
+    QPushButton*           m_singleEdit     = nullptr;
+    QPushButton*           m_singleRevert   = nullptr;
+    int                    m_editingId      = -1;
+    int                    m_editGeneration = 0;
+    int                    m_editJobs       = 0; // opening or saving on the pool
 };

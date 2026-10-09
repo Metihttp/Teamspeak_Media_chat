@@ -62,6 +62,14 @@ struct Settings {
     int  compressVideoQuality    = 720;  // the short side: 480 | 720 | 1080 (anything else reads as 720)
     bool convertUnplayableVideos = true; // HEVC, AV1, VP9, camcorder .mts ... of any size, when this PC can decode them
     bool compressUseGpu          = true; // the graphics card's encoder when there is one
+    // 2.2 editor: the picture editor's last colour (Red, Yellow, Green, Blue, White, Black), size
+    // (Thin, Medium, Thick) and "Hide details" mode (Pixelate, Black box).
+    static constexpr Range editorColorRange    = {0, 5};
+    static constexpr Range editorStrokeRange   = {0, 2};
+    static constexpr Range editorHideModeRange = {0, 1};
+    int editorColor    = 0;
+    int editorStroke   = 1;
+    int editorHideMode = 0;
 
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this

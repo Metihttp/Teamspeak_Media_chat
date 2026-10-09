@@ -31,6 +31,8 @@ How TS Media chat is put together: the modules, the link format it posts, how up
 | `src/uploadtoast.*` | Upload progress panel |
 | `src/composedialog.*`, `src/composemodel.*` | The send window (paste, drop, picker): caption, spoilers, what can't be sent, one `Core::send` request; its rules without widgets |
 | `src/composehooks.*`, `src/composesettings.*` | Where other features plug into the send window (presence line, albums, own-drag marker), and its Sending setting |
+| `src/imageeditmodel.*` | The picture editor without widgets: rotation, crop, shapes, undo/redo, drawing at any scale, pixelate/black box, the full-resolution export and its PNG/JPEG rule (unit-tested) |
+| `src/imageeditor.*`, `src/imageeditorcanvas.cpp`, `src/imageeditor_p.h` | The crop & annotate window the send window opens (Edit…), its toolbar, options and zoomable canvas |
 | `src/settings.*`, `src/settingsdialog.*` | Settings (INI file) and the tabbed settings dialog |
 | `src/settingssection.*` | Base class and building blocks for settings a feature adds to a tab (`SettingsDialog::addSection`) |
 | `src/floodgovernor.*` | Per-connection pacing of chat posts and plugin commands (TeamSpeak's anti-flood counts both) |

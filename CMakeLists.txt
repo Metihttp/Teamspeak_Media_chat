@@ -139,6 +139,10 @@ add_library(tsmedia SHARED
     src/videocompress.cpp     src/videocompress.h
     src/video/mftranscode.cpp src/video/mftranscode.h
     src/compresssettings.cpp  src/compresssettings.h
+    # 2.2 editor: crop & annotate (opened from the send window)
+    src/imageeditmodel.cpp    src/imageeditmodel.h
+    src/imageeditor.cpp       src/imageeditor.h
+    src/imageeditorcanvas.cpp src/imageeditor_p.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -284,6 +288,9 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_videocompress.cpp
         src/videocompress.cpp
         src/video/mftranscode.cpp
+        # 2.2 editor
+        tests/tst_imageedit.cpp
+        src/imageeditmodel.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h

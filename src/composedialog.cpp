@@ -50,6 +50,11 @@
 #include <QStandardItemModel>
 
 #include "video/mftranscode.h" // 2.4 compress: mf::measuredFrameRate
+// 2.2 editor
+#include <QRandomGenerator>
+#include <windows.h>
+
+#include "imageeditor.h"
 
 using compose::Item;
 using compose::Problem;
@@ -75,6 +80,7 @@ constexpr int kQualityWidth  = 150;  // 2.4 compress: a list row's Quality combo
 constexpr quint32 kVkO = 0x4F;
 constexpr quint32 kVkS = 0x53;
 constexpr quint32 kVkV = 0x56;
+constexpr quint32 kVkE = 0x45; // 2.2 editor
 
 QColor withAlpha(QColor color, qreal alpha)
 {
@@ -149,6 +155,40 @@ void drawCrossGlyph(QPainter& p, const QRectF& box, const QColor& color)
     p.setPen(QPen(color, qMax(1.5, box.width() * 0.1), Qt::SolidLine, Qt::RoundCap));
     p.drawLine(c + QPointF(-h, -h), c + QPointF(h, h));
     p.drawLine(c + QPointF(h, -h), c + QPointF(-h, h));
+}
+
+// 2.2 editor: a pencil (Edit) and an arrow turning back (Revert to original).
+void drawEditGlyph(QPainter& p, const QRectF& box, const QColor& color)
+{
+    const qreal   s   = box.width();
+    const QPointF tip(box.left() + s * 0.12, box.top() + s * 0.88);
+    const QPointF end(box.left() + s * 0.84, box.top() + s * 0.16);
+    const QPointF d = (end - tip) / std::hypot(end.x() - tip.x(), end.y() - tip.y());
+    const QPointF n(-d.y(), d.x());
+    const qreal   w    = s * 0.13;
+    const QPointF neck = tip + d * (s * 0.24);
+    p.setPen(QPen(color, qMax(1.4, s * 0.09), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    QPolygonF body;
+    body << tip << neck + n * w << end + n * w << end - n * w << neck - n * w;
+    p.drawPolygon(body);
+    p.drawLine(neck + n * w, neck - n * w);
+}
+
+void drawRevertGlyph(QPainter& p, const QRectF& box, const QColor& color)
+{
+    const qreal s  = box.width();
+    const auto  at = [&box, s](qreal x, qreal y) { return QPointF(box.left() + x * s, box.top() + y * s); };
+    p.setPen(QPen(color, qMax(1.4, s * 0.09), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    QPainterPath path;
+    path.moveTo(at(0.20, 0.38));
+    path.lineTo(at(0.60, 0.38));
+    path.cubicTo(at(0.92, 0.38), at(0.92, 0.84), at(0.60, 0.84));
+    path.lineTo(at(0.36, 0.84));
+    p.drawPath(path);
+    p.drawLine(at(0.20, 0.38), at(0.38, 0.20));
+    p.drawLine(at(0.20, 0.38), at(0.38, 0.56));
 }
 
 // A filled disc with "!" (never colour alone: the mark says it).
@@ -404,7 +444,7 @@ QString samePathKey(const QString& path)
 class ComposeDialog::GlyphButton : public QAbstractButton
 {
   public:
-    enum class Glyph { Spoiler, Remove };
+    enum class Glyph { Spoiler, Remove, Edit, Revert }; // 2.2 editor: Edit, Revert
 
     GlyphButton(Glyph glyph, QWidget* parent)
         : QAbstractButton(parent)
@@ -451,6 +491,10 @@ class ComposeDialog::GlyphButton : public QAbstractButton
         box.moveCenter(QRectF(rect()).center());
         if (m_glyph == Glyph::Spoiler)
             drawSpoilerGlyph(p, box, glyph);
+        else if (m_glyph == Glyph::Edit) // 2.2 editor
+            drawEditGlyph(p, box, glyph);
+        else if (m_glyph == Glyph::Revert)
+            drawRevertGlyph(p, box, glyph);
         else
             drawCrossGlyph(p, box, glyph);
         if (hasFocus() && m_keyboardFocus) {
@@ -624,6 +668,15 @@ class ComposeDialog::Row : public QFrame
         }
         auto* buttons = new QHBoxLayout;
         buttons->setSpacing(8);
+        // 2.2 editor: Edit (and, once edited, Revert to original) for pictures.
+        if (m_dialog->editingOffered() && (item.isPasted() || isPreviewableImage(item.kind))) {
+            revert = new GlyphButton(GlyphButton::Glyph::Revert, this);
+            edit   = new GlyphButton(GlyphButton::Glyph::Edit, this);
+            buttons->addWidget(revert);
+            buttons->addWidget(edit);
+            QObject::connect(edit, &QAbstractButton::clicked, m_dialog, [d = m_dialog, id = m_id] { d->openEditor(id); });
+            QObject::connect(revert, &QAbstractButton::clicked, m_dialog, [d = m_dialog, id = m_id] { d->askRevert(id); });
+        }
         if (compose::spoilerAllowed(item.kind)) {
             spoiler = new GlyphButton(GlyphButton::Glyph::Spoiler, this);
             buttons->addWidget(spoiler);
@@ -670,6 +723,18 @@ class ComposeDialog::Row : public QFrame
         remove->setAccessibleName(i18n::t("Remove %1").arg(name));
         remove->setToolTip(i18n::t("Remove (Delete)"));
         remove->setColors(colors);
+        if (edit) { // 2.2 editor
+            const QString blocker = m_dialog->editBlocker(m_id);
+            edit->setEnabled(blocker.isEmpty());
+            edit->setAccessibleName(i18n::t("Edit %1").arg(name));
+            edit->setAccessibleDescription(blocker);
+            edit->setToolTip(blocker.isEmpty() ? i18n::t("Crop, draw or hide details (E)") : blocker);
+            edit->setColors(colors);
+            revert->setVisible(item.edited);
+            revert->setAccessibleName(i18n::t("Revert %1 to the original").arg(name));
+            revert->setToolTip(i18n::t("Revert to the original picture"));
+            revert->setColors(colors);
+        }
         setAccessibleName(compose::accessibleName(item));
         setAccessibleDescription(problem);
     }
@@ -680,6 +745,8 @@ class ComposeDialog::Row : public QFrame
     GlyphButton* spoiler = nullptr;
     GlyphButton* remove  = nullptr;
     QComboBox*   quality = nullptr; // 2.4 compress: videos only
+    GlyphButton* edit    = nullptr; // 2.2 editor
+    GlyphButton* revert  = nullptr;
 
   protected:
     void keyPressEvent(QKeyEvent* event) override
@@ -691,6 +758,10 @@ class ComposeDialog::Row : public QFrame
         }
         if (plain && spoiler && spoiler->isEnabled() && (event->key() == Qt::Key_S || event->nativeVirtualKey() == kVkS)) {
             m_dialog->toggleSpoiler(m_id);
+            return;
+        }
+        if (plain && edit && edit->isEnabled() && (event->key() == Qt::Key_E || event->nativeVirtualKey() == kVkE)) { // 2.2 editor
+            m_dialog->openEditor(m_id);
             return;
         }
         QFrame::keyPressEvent(event);
@@ -931,6 +1002,11 @@ ComposeDialog::~ComposeDialog()
     m_closing->store(true);
     m_pool.clear();
     m_pool.waitForDone();
+    // 2.2 editor: the edited copies are ours (what was sent went to Core as separate links or copies).
+    for (const EditRecord& edit : qAsConst(m_edits)) {
+        if (!edit.folder.isEmpty())
+            QDir(edit.folder).removeRecursively();
+    }
 }
 
 // ---- items --------------------------------------------------------------------------------------
@@ -941,6 +1017,10 @@ void ComposeDialog::addFiles(const QStringList& paths)
     for (const Item& item : qAsConst(m_items)) {
         if (!item.isPasted())
             known.insert(samePathKey(item.path));
+    }
+    for (const EditRecord& edit : qAsConst(m_edits)) { // 2.2 editor: an edited file is still that file
+        if (!edit.original.isPasted())
+            known.insert(samePathKey(edit.original.path));
     }
     const qint64 limit = static_cast<qint64>(qMax(0, m_limitMB)) * 1024 * 1024;
     bool         added = false;
@@ -1166,7 +1246,7 @@ int ComposeDialog::indexOf(int id) const
 
 bool ComposeDialog::isBusy() const
 {
-    return m_pending > 0;
+    return m_pending > 0 || m_editJobs > 0; // 2.2 editor: opening or saving a picture
 }
 
 void ComposeDialog::removeItem(int id)
@@ -1176,6 +1256,13 @@ void ComposeDialog::removeItem(int id)
         return;
     m_items.remove(index);
     m_thumbs.remove(id);
+    // 2.2 editor: its edited copy goes too.
+    const auto edit = m_edits.find(id);
+    if (edit != m_edits.end()) {
+        if (!edit->folder.isEmpty())
+            QDir(edit->folder).removeRecursively();
+        m_edits.erase(edit);
+    }
     m_changed  = true;
     m_overflow = false;
     m_sendError.clear();
@@ -1229,6 +1316,8 @@ void ComposeDialog::rebuildItems(int focusIndex)
     m_singleQuality = nullptr; // 2.4 compress
     m_singleId      = -1;
     m_spoilerHint   = nullptr;
+    m_singleEdit    = nullptr; // 2.2 editor
+    m_singleRevert  = nullptr;
 
     QWidget* view = nullptr;
     if (m_items.isEmpty()) {
@@ -1259,11 +1348,15 @@ void ComposeDialog::rebuildItems(int focusIndex)
     for (const Item& item : qAsConst(m_items)) {
         if (Row* row = m_rows.value(item.id)) {
             chain(row->quality); // 2.4 compress
+            chain(row->revert); // 2.2 editor
+            chain(row->edit);
             chain(row->spoiler);
             chain(row->remove);
         }
     }
     chain(m_singleQuality); // 2.4 compress
+    chain(m_singleEdit); // 2.2 editor
+    chain(m_singleRevert);
     chain(m_singleSpoiler);
     chain(m_addFiles);
     chain(m_album);
@@ -1424,6 +1517,31 @@ QWidget* ComposeDialog::buildSingle(const Item& itemIn)
         layout->addLayout(problemRow);
         m_singleThumb->setDimmed(true);
         view->setAccessibleDescription(problem);
+    }
+
+    // 2.2 editor: Edit… and, once edited, Revert to original (pictures).
+    if (editingOffered() && (item.isPasted() || isPreviewableImage(item.kind))) {
+        const QString blocker = editBlocker(item.id);
+        auto*         editRow = new QHBoxLayout;
+        editRow->setSpacing(8);
+        m_singleEdit = new QPushButton(i18n::t("&Edit…"), view);
+        m_singleEdit->setEnabled(blocker.isEmpty());
+        m_singleEdit->setToolTip(blocker.isEmpty() ? i18n::t("Crop, draw or hide details") : blocker);
+        m_singleEdit->setAccessibleDescription(blocker);
+        connect(m_singleEdit, &QPushButton::clicked, this, [this, id = item.id] { openEditor(id); });
+        editRow->addWidget(m_singleEdit);
+        if (item.edited) {
+            m_singleRevert = new QPushButton(i18n::t("Re&vert to original"), view);
+            m_singleRevert->setToolTip(i18n::t("Revert to the original picture"));
+            connect(m_singleRevert, &QPushButton::clicked, this, [this, id = item.id] { askRevert(id); });
+            editRow->addWidget(m_singleRevert);
+        }
+        if (!blocker.isEmpty())
+            editRow->addWidget(roleLabel(blocker, "hint", view), 1);
+        else
+            editRow->addStretch(1);
+        layout->addSpacing(4);
+        layout->addLayout(editRow);
     }
 
     if (compose::spoilerAllowed(item.kind) && item.canSend()) {
@@ -1693,6 +1811,7 @@ void ComposeDialog::send()
     request.caption = m_caption->text();
     request.album   = compose::albumsEnabled() && !m_album->isHidden() && m_album->isChecked();
     QStringList written; // pasted pictures written for this send
+    QStringList editFolders; // 2.2 editor: folders of the edited copies handed to Core
     for (const Item& item : qAsConst(m_items)) {
         if (!item.canSend())
             continue;
@@ -1710,6 +1829,22 @@ void ComposeDialog::send()
             sendItem.path    = path;
             sendItem.pasted  = true;
             sendItem.ownTemp = true; // Core deletes it with the job
+        } else if (item.edited) {
+            // 2.2 editor: Core gets a link (or copy) of its own; the window's copy stays for another try.
+            const QString path = handOver(item, &editFolders);
+            if (path.isEmpty()) {
+                for (const QString& file : qAsConst(written))
+                    QFile::remove(file);
+                for (const QString& folder : qAsConst(editFolders))
+                    QDir(folder).removeRecursively();
+                m_sendError = i18n::t("Couldn't prepare the edited picture. Check free disk space and try again.");
+                updateState();
+                return;
+            }
+            written << path;
+            sendItem.path        = path;
+            sendItem.ownTemp     = true;
+            sendItem.displayName = item.fileName;
         } else {
             sendItem.path = item.path;
         }
@@ -2017,4 +2152,346 @@ void ComposeDialog::announce(QWidget* widget)
         return;
     QAccessibleEvent event(widget, QAccessible::NameChanged); // polite: the focus stays where it is
     QAccessible::updateAccessibility(&event);
+}
+
+// ============================================================================================
+// 2.2 editor: crop & annotate a picture before it is sent
+// ============================================================================================
+
+namespace {
+
+QString randomFolderName()
+{
+    return QStringLiteral("%1").arg(QRandomGenerator::global()->generate(), 8, 16, QLatin1Char('0'));
+}
+
+QString saveFailedText()
+{
+    return i18n::t("Couldn't save the edited image. Check free disk space and try again.");
+}
+
+} // namespace
+
+ImageEditor* ComposeDialog::editor() const
+{
+    return m_editor.data();
+}
+
+void ComposeDialog::editItem(int index)
+{
+    if (index >= 0 && index < m_items.size())
+        openEditor(m_items.at(index).id);
+}
+
+bool ComposeDialog::isEdited(int index) const
+{
+    return index >= 0 && index < m_items.size() && m_items.at(index).edited;
+}
+
+QString ComposeDialog::editBlocker(int id) const
+{
+    const int index = indexOf(id);
+    if (index < 0)
+        return imageedit::openProblemText(imageedit::OpenProblem::Unreadable);
+    const Item& item   = m_items.at(index);
+    const auto  record = m_edits.constFind(id);
+    const Item& source = record != m_edits.constEnd() ? record->original : item; // what the editor opens
+    if (!item.canSend())
+        return compose::problemText(item.problem, m_limitMB);
+    if (!source.isPasted() && source.kind == MediaKind::AnimatedImage)
+        return imageedit::openProblemText(imageedit::OpenProblem::Animated);
+    if (source.pixels.isValid() && static_cast<qint64>(source.pixels.width()) * source.pixels.height() > imageedit::kMaxPixels)
+        return imageedit::openProblemText(imageedit::OpenProblem::TooLarge);
+    return {};
+}
+
+void ComposeDialog::openEditor(int id)
+{
+    if (m_editor) {
+        m_editor->raise();
+        m_editor->activateWindow();
+        return;
+    }
+    const int index = indexOf(id);
+    if (index < 0 || !editingOffered() || !editBlocker(id).isEmpty())
+        return;
+    auto record = m_edits.find(id);
+    if (record == m_edits.end()) {
+        EditRecord fresh;
+        fresh.original      = m_items.at(index);
+        fresh.originalThumb = m_thumbs.value(id);
+        record              = m_edits.insert(id, fresh);
+    }
+    const Item original = record.value().original;
+
+    auto* editor = new ImageEditor(compose::displayName(original), m_host.editorPrefs, this);
+    m_editor     = editor;
+    m_editingId  = id;
+    connect(editor, &ImageEditor::doneRequested, this, [this] { saveEdit(); });
+    connect(editor, &QDialog::finished, this, [this, editor, id] {
+        // The colour, size and hiding mode chosen last are where the next edit starts.
+        m_host.editorPrefs = editor->prefs();
+        if (m_host.rememberEditorPrefs)
+            m_host.rememberEditorPrefs(m_host.editorPrefs);
+        if (m_editor == editor)
+            m_editingId = -1;
+        // A first edit that was cancelled leaves nothing behind.
+        const auto record = m_edits.constFind(id);
+        const int  index  = indexOf(id);
+        if (record != m_edits.constEnd() && (index < 0 || !m_items.at(index).edited) && record->folder.isEmpty())
+            m_edits.remove(id);
+        QMetaObject::invokeMethod(this, [this, id] { focusEdit(id); }, Qt::QueuedConnection);
+    });
+    editor->show();
+
+    // The picture is read on the window's workers (a large photo takes a moment); the editor says
+    // "Opening the picture…" meanwhile.
+    const int      generation = ++m_editGeneration;
+    const QString  path       = original.path;
+    const QImage   pasted     = original.image;
+    const auto     closing    = m_closing;
+    ComposeDialog* self       = this; // waits for this pool in its destructor
+    ++m_editJobs;
+    m_pool.start([self, id, generation, path, pasted, closing] {
+        imageedit::OpenProblem problem = imageedit::OpenProblem::None;
+        QImage                 picture;
+        if (!pasted.isNull()) {
+            if (static_cast<qint64>(pasted.width()) * pasted.height() > imageedit::kMaxPixels)
+                problem = imageedit::OpenProblem::TooLarge;
+            else
+                picture = pasted;
+        } else {
+            picture = imageedit::loadForEditing(path, &problem);
+        }
+        if (closing->load())
+            return;
+        const int why = static_cast<int>(problem);
+        QMetaObject::invokeMethod(self, [self, id, generation, picture, why] { self->onEditOpened(id, generation, picture, why); }, Qt::QueuedConnection);
+    });
+}
+
+void ComposeDialog::onEditOpened(int id, int generation, const QImage& picture, int problem)
+{
+    m_editJobs = qMax(0, m_editJobs - 1);
+    if (!m_editor || id != m_editingId || generation != m_editGeneration || indexOf(id) < 0)
+        return;
+    const auto why = static_cast<imageedit::OpenProblem>(problem);
+    if (why != imageedit::OpenProblem::None || picture.isNull()) {
+        m_editor->setOpenError(imageedit::openProblemText(why == imageedit::OpenProblem::None ? imageedit::OpenProblem::Unreadable : why));
+        return;
+    }
+    imageedit::ImageEditModel model = m_edits.value(id).model; // the earlier edits, if any (with their undo steps)
+    model.setBase(picture);
+    m_editor->setModel(model);
+}
+
+void ComposeDialog::saveEdit()
+{
+    if (!m_editor || m_editingId < 0)
+        return;
+    const int id     = m_editingId;
+    const int index  = indexOf(id);
+    auto      record = m_edits.find(id);
+    if (index < 0 || record == m_edits.end()) {
+        m_editor->accept();
+        return;
+    }
+    const imageedit::ImageEditModel model = m_editor->model();
+    if (!model.isModified()) {
+        // Back to the picture as it was: nothing to write.
+        if (m_items.at(index).edited)
+            revertEdit(id);
+        else
+            m_edits.erase(record);
+        m_editor->accept();
+        return;
+    }
+    if (m_items.at(index).edited && model.doc() == record.value().model.doc()) {
+        m_editor->accept(); // unchanged since the last Done
+        return;
+    }
+
+    m_editor->setSaving(true);
+    const int      generation = ++m_editGeneration;
+    const bool     pasted     = record.value().original.isPasted();
+    const QString  sourceName = record.value().original.fileName;
+    const QString  folder     = m_host.editDirectory + QLatin1Char('/') + randomFolderName();
+    const bool     convert    = m_host.convertLargePngToJpeg;
+    const qreal    dpr        = devicePixelRatioF();
+    const QSize    maxBox     = QSize(kPreviewWidth, kPreviewHeight) * dpr;
+    const int      minSide    = qRound(kThumbSide * dpr);
+    const auto     closing    = m_closing;
+    ComposeDialog* self       = this; // waits for this pool in its destructor
+    ++m_editJobs;
+    m_pool.start([self, id, generation, model, pasted, sourceName, folder, convert, maxBox, minSide, closing] {
+        const QImage out = model.exportImage(); // full resolution, fresh pixels: no EXIF, no location
+        QString      path;
+        QString      error;
+        QImage       thumb;
+        if (out.isNull()) {
+            error = saveFailedText();
+        } else {
+            const QSize size = decodeSize(out.size(), maxBox, minSide);
+            thumb            = size == out.size() ? out : out.scaled(size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            if (!pasted) {
+                const imageedit::Encoded encoded = imageedit::encode(out, sourceName, false, convert);
+                path = encoded.data.isEmpty() ? QString() : imageedit::writeEdited(encoded, folder, sourceName);
+                if (path.isEmpty()) {
+                    QDir(folder).removeRecursively();
+                    error = saveFailedText();
+                }
+            }
+        }
+        if (closing->load()) {
+            QDir(folder).removeRecursively();
+            return;
+        }
+        // A pasted picture stays in memory; it is written (PNG, or JPEG when large) when it is sent.
+        const QImage picture = pasted && error.isEmpty() ? out : QImage();
+        QMetaObject::invokeMethod(self, [self, id, generation, model, folder, path, picture, thumb, error] {
+            self->onEditSaved(id, generation, model, folder, path, picture, thumb, error);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void ComposeDialog::onEditSaved(int id, int generation, const imageedit::ImageEditModel& model, const QString& folder, const QString& path,
+                                const QImage& picture, const QImage& thumb, const QString& error)
+{
+    m_editJobs       = qMax(0, m_editJobs - 1);
+    const int index  = indexOf(id);
+    auto      record = m_edits.find(id);
+    if (index < 0 || record == m_edits.end() || generation != m_editGeneration) {
+        if (!path.isEmpty())
+            QDir(folder).removeRecursively();
+        return;
+    }
+    if (!error.isEmpty()) {
+        if (m_editor)
+            m_editor->setSaveError(error);
+        return;
+    }
+    EditRecord& edit = record.value();
+    if (!edit.folder.isEmpty())
+        QDir(edit.folder).removeRecursively(); // the earlier edit's copy
+    edit.model = model;
+    edit.model.dropBase(); // the pixels are read again for the next edit
+    Item& item  = m_items[index];
+    item.edited = true;
+    item.pixels = model.outputSize();
+    if (item.isPasted()) {
+        edit.folder.clear();
+        item.image = picture;
+    } else {
+        edit.folder = folder;
+        const QFileInfo fi(path);
+        item.path     = fi.absoluteFilePath();
+        item.fileName = fi.fileName();
+        item.kind     = kindForFileName(item.fileName);
+        item.size     = fi.size();
+        item.problem  = compose::checkFile(fi.exists(), fi.isFile(), item.size, static_cast<qint64>(qMax(0, m_limitMB)) * 1024 * 1024);
+    }
+    item.probed = true;
+    if (!thumb.isNull())
+        m_thumbs.insert(id, thumb);
+    m_changed = true;
+    m_sendError.clear();
+    if (m_editor) {
+        m_editor->setSaving(false);
+        m_editor->accept();
+    }
+    rebuildItems();
+}
+
+void ComposeDialog::askRevert(int id)
+{
+    if (m_revertBox) {
+        m_revertBox->raise();
+        m_revertBox->activateWindow();
+        return;
+    }
+    // Not exec(): no nested event loop (plugin shutdown may delete this window at any time).
+    auto* box = new QMessageBox(this);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowModality(Qt::WindowModal);
+    box->setLayoutDirection(Qt::LeftToRight);
+    box->setWindowTitle(i18n::t("Send to chat"));
+    box->setTextFormat(Qt::PlainText);
+    box->setStyleSheet(QString::fromLatin1("QLabel{min-width:260px;}"));
+    box->setText(i18n::t("Revert to the original picture?"));
+    box->setInformativeText(i18n::t("Your edits to this picture will be lost."));
+    QPushButton* revert = box->addButton(i18n::t("Revert"), QMessageBox::DestructiveRole);
+    QPushButton* keep   = box->addButton(i18n::t("Keep edits"), QMessageBox::RejectRole);
+    box->setDefaultButton(keep);
+    box->setEscapeButton(keep);
+    connect(box, &QMessageBox::finished, this, [this, box, revert, id] {
+        if (box->clickedButton() == revert)
+            revertEdit(id);
+        else
+            focusEdit(id);
+    });
+    m_revertBox = box;
+    box->open();
+}
+
+void ComposeDialog::revertEdit(int id)
+{
+    const auto record = m_edits.find(id);
+    const int  index  = indexOf(id);
+    if (record == m_edits.end() || index < 0)
+        return;
+    Item&      item    = m_items[index];
+    const bool spoiler = item.spoiler;
+    item               = record.value().original;
+    item.spoiler       = spoiler;
+    item.edited        = false;
+    if (!record.value().originalThumb.isNull())
+        m_thumbs.insert(id, record.value().originalThumb);
+    else
+        m_thumbs.remove(id);
+    if (!record.value().folder.isEmpty())
+        QDir(record.value().folder).removeRecursively();
+    m_edits.erase(record);
+    m_changed = true;
+    m_sendError.clear();
+    if (!item.isPasted()) {
+        // The original may have changed meanwhile.
+        const QFileInfo fi(item.path);
+        item.size    = fi.size();
+        item.problem = compose::checkFile(fi.exists(), fi.isFile(), item.size, static_cast<qint64>(qMax(0, m_limitMB)) * 1024 * 1024);
+    }
+    if (!m_thumbs.contains(id) && item.problem == Problem::None)
+        startProbe(item);
+    rebuildItems();
+    focusEdit(id);
+}
+
+void ComposeDialog::focusEdit(int id)
+{
+    if (Row* row = m_rows.value(id)) {
+        if (row->edit && row->edit->isEnabled()) {
+            row->edit->setFocus(Qt::OtherFocusReason);
+            if (m_scroll)
+                m_scroll->ensureWidgetVisible(row);
+        }
+    } else if (id == m_singleId && m_singleEdit && m_singleEdit->isEnabled()) {
+        m_singleEdit->setFocus(Qt::OtherFocusReason);
+    }
+}
+
+QString ComposeDialog::handOver(const Item& item, QStringList* folders) const
+{
+    const QString folder = m_host.editDirectory + QLatin1Char('/') + randomFolderName();
+    if (!QDir().mkpath(folder))
+        return {};
+    const QString target = folder + QLatin1Char('/') + QFileInfo(item.path).fileName();
+    // A hard link costs nothing (same volume); a copy is the fallback (FAT drives).
+    const bool linked = CreateHardLinkW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(target).utf16()),
+                                        reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(item.path).utf16()), nullptr)
+                        != 0;
+    if (!linked && !QFile::copy(item.path, target)) {
+        QDir(folder).removeRecursively();
+        return {};
+    }
+    folders->append(folder);
+    return target;
 }

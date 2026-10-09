@@ -601,6 +601,7 @@ void Core::start()
     QDir(ts3::dataDir() + QStringLiteral("/upload")).removeRecursively();
     QDir(ts3::dataDir() + QStringLiteral("/paste")).removeRecursively();
     pruneExports(kExportMaxAgeMs); // 2.2 drag-out
+    QDir(ts3::dataDir() + QStringLiteral("/edit")).removeRecursively(); // 2.2 editor: edited copies
 
     // The limit may have been lowered while TeamSpeak was closed.
     singleShotOwned(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
@@ -3457,8 +3458,9 @@ void Core::cleanupUpload(UploadJob& job)
         removeStaging(job.stagingDir);
     }
     job.stagingDir.clear();
-    // A failed pasted image stays for a retry until its job is dismissed (forgetUpload).
-    if (!(job.pasted && job.state == UploadState::Failed))
+    // A failed file of our own (a pasted image; 2.2 editor: an edited copy) stays for a retry until its
+    // job is dismissed (forgetUpload).
+    if (job.state != UploadState::Failed)
         releaseSource(job);
 }
 
