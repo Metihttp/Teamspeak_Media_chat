@@ -27,6 +27,7 @@
 
 #include "blurhash.h"
 #include "i18n.h"
+#include "ownedtimer.h"
 #include "settings.h"
 
 #include <windows.h>
@@ -506,7 +507,7 @@ void Core::start()
     QDir(ts3::dataDir() + QStringLiteral("/paste")).removeRecursively();
 
     // The limit may have been lowered while TeamSpeak was closed.
-    QTimer::singleShot(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
+    singleShotOwned(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
 }
 
 // ============================================================================================
@@ -942,7 +943,7 @@ void Core::finishWhenWritten(const QString& key, bool preview, int attempt)
     const QString name  = preview ? QFileInfo(e->previewPath).fileName() : e->link.fileName;
     const QString found = findDownloaded(partialDir(key, preview), name);
     if (!found.isEmpty() && isOpenForWriting(found) && attempt < kMaxAttempts) {
-        QTimer::singleShot(kPollMs, this, [this, key, preview, attempt] { finishWhenWritten(key, preview, attempt + 1); });
+        singleShotOwned(kPollMs, this, [this, key, preview, attempt] { finishWhenWritten(key, preview, attempt + 1); });
         return;
     }
     if (attempt >= kMaxAttempts)
@@ -1200,8 +1201,10 @@ void Core::abortOversizedAutoDownload(const QString& key)
 
 void Core::haltDownload(uint64 sch, anyID transferId)
 {
-    if (sch && ts3::funcs.haltTransfer)
+    if (sch && ts3::funcs.haltTransfer) {
         ts3::funcs.haltTransfer(sch, transferId, 1, nullptr);
+        m_haltedTransfers.insert(transferId);
+    }
 }
 
 MediaStill Core::still(const QString& key, const QSize& maxPixels)
@@ -1531,6 +1534,10 @@ QString Core::makeRemoteName(const QString& originalName)
     base = base.left(48);
     if (base.isEmpty())
         base = QStringLiteral("file");
+    // "new_photo_<hex>" is how pasted pictures are named (uploadImage), and receivers show those as
+    // "Pasted image": a file of the user's own called "new photo" keeps its name.
+    if (base == QLatin1String("new_photo"))
+        base += QLatin1Char('_');
 
     // Everyone uploads into the same folder: the random part keeps names apart (and an upload never
     // overwrites, see startSend).
@@ -1621,6 +1628,8 @@ int Core::createUpload(const QString& sourcePath, const QString& remoteName, con
             QFile::remove(sourcePath);
         return 0;
     }
+    if (target.serverUid.isEmpty())
+        target.serverUid = ts3::serverUid(target.sch);
 
     const Settings& s = Settings::instance();
     UploadJob       job;
@@ -1792,7 +1801,7 @@ void Core::createRemoteDirectory(int id, bool previews)
         return;
     }
     // Not every server answers a mkdir for an existing folder; don't wait forever.
-    QTimer::singleShot(kMkdirTimeoutMs, this, [this, rc, id, previews] {
+    singleShotOwned(kMkdirTimeoutMs, this, [this, rc, id, previews] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
@@ -1904,8 +1913,10 @@ void Core::abortPreviewUpload(UploadJob& job)
     auto xt = m_uploadExtra.find(job.id);
     if (xt == m_uploadExtra.end() || !xt->previewActive)
         return;
-    if (ts3::funcs.haltTransfer)
+    if (ts3::funcs.haltTransfer) {
         ts3::funcs.haltTransfer(job.target.sch, xt->previewTransferId, 1, nullptr);
+        m_haltedTransfers.insert(xt->previewTransferId);
+    }
     m_previewUploadsByTransfer.remove(xt->previewTransferId);
     xt->previewActive     = false;
     xt->previewTransferId = 0;
@@ -2071,9 +2082,21 @@ void Core::postUploadMessage(int id)
     case TextMessageTarget_SERVER:
         err = ts3::funcs.requestSendServerTextMsg(job.target.sch, message.constData(), rc.toUtf8().constData());
         break;
-    case TextMessageTarget_CLIENT:
-        err = ts3::funcs.requestSendPrivateTextMsg(job.target.sch, message.constData(), job.target.clientId, rc.toUtf8().constData());
+    case TextMessageTarget_CLIENT: {
+        // The upload may have taken long (or waited for earlier files) and client ids are reused once
+        // someone leaves: find the partner again by identity, so it never reaches someone else.
+        anyID client = job.target.clientId;
+        if (!job.target.clientUid.isEmpty() && ts3::clientUid(job.target.sch, client) != job.target.clientUid)
+            client = ts3::clientIdByUid(job.target.sch, job.target.clientUid);
+        if (!client) {
+            forgetOp(rc);
+            failUpload(id, i18n::t("Uploaded, but the person it was meant for has left the server, so nothing was sent to them. The file is in the channel's file browser."));
+            return;
+        }
+        job.target.clientId = client;
+        err = ts3::funcs.requestSendPrivateTextMsg(job.target.sch, message.constData(), client, rc.toUtf8().constData());
         break;
+    }
     default:
         err = ts3::funcs.requestSendChannelTextMsg(job.target.sch, message.constData(), job.channelId, rc.toUtf8().constData());
         break;
@@ -2085,7 +2108,7 @@ void Core::postUploadMessage(int id)
     }
 
     setUploadState(job, UploadState::Posting, i18n::t("Posting to chat…"));
-    QTimer::singleShot(kPostTimeoutMs, this, [this, rc, id] {
+    singleShotOwned(kPostTimeoutMs, this, [this, rc, id] {
         if (!m_ops.contains(rc))
             return;
         forgetOp(rc);
@@ -2160,17 +2183,34 @@ void Core::failUpload(int id, const QString& text)
     setUploadState(job, UploadState::Failed, text);
 }
 
+bool Core::canCancelUpload(int id) const
+{
+    const UploadJob* job = upload(id);
+    return job
+           && (job->state == UploadState::Preparing || job->state == UploadState::Uploading || (job->state == UploadState::Posting && job->waiting));
+}
+
 void Core::cancelUpload(int id)
 {
-    auto it = m_uploads.find(id);
-    if (it == m_uploads.end())
+    if (!canCancelUpload(id))
         return;
-    UploadJob& job = it.value();
-    if (job.state != UploadState::Preparing && job.state != UploadState::Uploading)
+    UploadJob& job = m_uploads[id];
+    if (job.state == UploadState::Posting) {
+        // Uploaded, but its message still waits for earlier files: nothing was posted, so no message
+        // will ever point at the file or its preview. Don't leave them in the channel's file browser
+        // (without delete permission they stay; deleteRemoteFile logs it). The cached copy is left to
+        // the cache limit.
+        deleteRemoteFile(job.target.sch, job.channelId, joinRemote(job.remoteDir, job.remoteName));
+        if (!job.previewRemotePath.isEmpty())
+            deleteRemoteFile(job.target.sch, job.channelId, job.previewRemotePath);
+        setUploadState(job, UploadState::Canceled, i18n::t("Canceled"));
         return;
+    }
     if (job.transferActive) {
-        if (ts3::funcs.haltTransfer)
+        if (ts3::funcs.haltTransfer) {
             ts3::funcs.haltTransfer(job.target.sch, job.transferId, 1, nullptr);
+            m_haltedTransfers.insert(job.transferId);
+        }
         m_uploadsByTransfer.remove(job.transferId);
         job.transferActive = false;
     }
@@ -2215,11 +2255,24 @@ int Core::retryUpload(int id)
         ts3::printWarning(ts3::currentConnection(), notConnectedText());
         return 0; // stays, to be retried once connected
     }
-    const QString    source = job.sourcePath;
-    const ChatTarget target = job.target;
-    const bool       pasted = job.pasted;
-    const bool       owned  = job.deleteSource;
-    job.deleteSource        = false; // a pasted image now belongs to the new job
+    // The tab may have reconnected meanwhile, to another server or with new client ids: the file must
+    // still reach the chat (and the person) it was meant for.
+    ChatTarget target = job.target;
+    if (ts3::serverUid(target.sch) != target.serverUid) {
+        ts3::printWarning(ts3::currentConnection(), i18n::t("This file was meant for another server. Send it again from the right chat."));
+        return 0;
+    }
+    if (target.mode == TextMessageTarget_CLIENT) {
+        target.clientId = ts3::clientIdByUid(target.sch, target.clientUid);
+        if (!target.clientId) {
+            ts3::printWarning(ts3::currentConnection(), noRecipientText());
+            return 0;
+        }
+    }
+    const QString source = job.sourcePath;
+    const bool    pasted = job.pasted;
+    const bool    owned  = job.deleteSource;
+    job.deleteSource     = false; // a pasted image now belongs to the new job
     forgetUpload(id);
 
     // A pasted image keeps its name; anything else gets a new random part, as a new send would.
@@ -2265,7 +2318,7 @@ void Core::setUploadState(UploadJob& job, UploadState state, const QString& mess
         cleanupUpload(job);
         // Keep finished jobs around so the toast can show the final state; failed ones until they
         // are dismissed or retried.
-        QTimer::singleShot(state == UploadState::Failed ? kFailedJobLingerMs : kJobLingerMs, this, [this, id] { forgetUpload(id); });
+        singleShotOwned(state == UploadState::Failed ? kFailedJobLingerMs : kJobLingerMs, this, [this, id] { forgetUpload(id); });
     }
     emit uploadChanged(id);
     scheduleUploadQueue();
@@ -2551,6 +2604,8 @@ void Core::onTransferStatus(anyID transferId, unsigned int status, const QString
 {
     Q_UNUSED(sch);
     const bool complete = status == ERROR_file_transfer_complete;
+    // The answer to our own haltTransfer. Its id may already belong to a new transfer.
+    const bool ownHalt = m_haltedTransfers.remove(transferId) && status == ERROR_file_transfer_canceled;
     if (auto it = m_downloadsByTransfer.constFind(transferId); it != m_downloadsByTransfer.constEnd()) {
         const QString key = it.value();
         if (complete) {
@@ -2572,13 +2627,17 @@ void Core::onTransferStatus(anyID transferId, unsigned int status, const QString
         }
         return;
     }
+    if (ownHalt)
+        return;
     if (auto it = m_uploadsByTransfer.constFind(transferId); it != m_uploadsByTransfer.constEnd()) {
         const int id = it.value();
         if (complete)
             finishUpload(id);
         else if (status == ERROR_file_already_exists)
             resendWithNewName(id, transferId);
-        else if (status != ERROR_file_transfer_canceled)
+        else if (status == ERROR_file_transfer_canceled) // stopped elsewhere (TeamSpeak's transfer list, another plugin): frees its slot
+            failUpload(id, i18n::t("The upload was stopped. Try again."));
+        else
             failUpload(id, uploadErrorText(mapError(status), message));
         return;
     }
@@ -2848,4 +2907,9 @@ QString displayNameFor(const UploadJob& job)
 QString notConnectedText()
 {
     return i18n::t("You're not connected to a server. Connect to one to send files.");
+}
+
+QString noRecipientText()
+{
+    return i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.");
 }

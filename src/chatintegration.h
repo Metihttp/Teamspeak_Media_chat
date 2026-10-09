@@ -102,6 +102,10 @@ class ChatIntegration : public QObject
     void refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly);
     QImage renderFor(QTextBrowser* browser, const QString& key, QSize* logicalSize);
     Hit    previewAt(QTextBrowser* browser, const QPoint& viewportPos) const;
+    // Hover look, video controls and cursor for what is under viewportPos. moved: the pointer moved
+    // (that keeps video controls shown); otherwise the chat moved under a still pointer and only a
+    // change of preview or control counts. *zone: the video control there.
+    Hit    updateHoverAt(QTextBrowser* browser, const QPointF& viewportPos, bool moved, VideoZone* zone = nullptr);
     void   updateVisibleKeys();
     void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos);
 
@@ -157,6 +161,8 @@ class ChatIntegration : public QObject
     QPointer<UploadToast>      m_toast;
     QString                    m_pressedKey;
     QString                    m_hoverKey;
+    QPointer<QTextBrowser>     m_hoverBrowser; // the chat m_hoverKey is hovered in (the same file can be in several)
+    VideoZone                  m_hoverZone = VideoZone::None; // last passed to InlineMediaController::hover
     QPointer<QWidget>          m_cursorOwner;
     bool                       m_mutating = false;
 

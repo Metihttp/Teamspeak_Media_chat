@@ -49,6 +49,7 @@ add_library(tsmedia SHARED
     src/medialink.cpp         src/medialink.h
     src/mediaprobe.cpp        src/mediaprobe.h
     src/settings.cpp          src/settings.h
+                              src/ownedtimer.h
     src/core.cpp              src/core.h
     src/previewrenderer.cpp   src/previewrenderer.h
     src/inlinemedia.cpp       src/inlinemedia.h

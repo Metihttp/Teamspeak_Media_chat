@@ -64,7 +64,7 @@ Inside the chat, a video that Windows can't play shows *Opens in default app* an
 | AV1 | AV1 Video Extension |
 | MPEG-2 | MPEG-2 Video Extension |
 
-Windows N editions (for example Windows 11 Pro N) need the **Media Feature Pack**. Formats Windows can't decode at all (ProRes, DNxHD, …) can still be opened with right-click → *Open with default app*.
+Windows N editions (for example Windows 11 Pro N) need the **Media Feature Pack**. Formats Windows can't decode at all (ProRes, DNxHD, …) can still be opened with right-click → *Open in default app*.
 
 ### GIFs only play when I point at them
 

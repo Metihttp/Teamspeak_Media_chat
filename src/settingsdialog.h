@@ -10,6 +10,7 @@ class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QScrollArea;
 class QSlider;
 class QSpinBox;
 class QTimer;
@@ -29,6 +30,7 @@ class SettingsDialog : public QDialog
   protected:
     void showEvent(QShowEvent* event) override;
     void changeEvent(QEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
   private:
     void load(const Settings& settings); // fills the form; Apply stays as it is
@@ -87,6 +89,8 @@ class SettingsDialog : public QDialog
     QString    m_downloadUrlHint;
 
     QPushButton*       m_applyButton;
+    QScrollArea*       m_columnsArea; // the two columns; they scroll only on a screen too short for them
+    QWidget*           m_columns;
     QVector<QWidget*>  m_indented;              // lined up with the text of the checkbox above
     QVector<QSpinBox*> m_numberFields;          // share one width
     Settings           m_loaded;                // what the form showed when it was loaded or last applied

@@ -7,11 +7,14 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QSlider>
 #include <QSpinBox>
@@ -83,6 +86,57 @@ QLabel* hint(const QString& text, QWidget* parent)
     label->setSizePolicy(policy);
     return label;
 }
+
+// The two columns. On a screen too short for them (a small or strongly scaled laptop screen) they
+// scroll, and the header and the buttons stay in view; otherwise this is exactly as wide and as tall
+// as the columns. QScrollArea's own size hint is capped at a few lines of text, so fitToContents()
+// sets the height.
+class ColumnsArea : public QScrollArea
+{
+  public:
+    explicit ColumnsArea(QWidget* parent)
+        : QScrollArea(parent)
+    {
+        setFrameShape(QFrame::NoFrame);
+        setWidgetResizable(true);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setFocusPolicy(Qt::NoFocus); // no Tab stop of its own (Tab still scrolls the focused field into view)
+        viewport()->setAutoFillBackground(false); // the dialog's background, also in TeamSpeak's skins
+    }
+
+    // The height the columns get, and whether that is less than they need.
+    void setHeight(int height, bool scrolls)
+    {
+        m_height  = height;
+        m_scrolls = scrolls;
+        setMinimumHeight(height);
+        updateGeometry();
+    }
+
+    QSize sizeHint() const override
+    {
+        const QWidget* content = widget();
+        if (!content)
+            return QScrollArea::sizeHint();
+        const QSize hint = content->sizeHint();
+        return QSize(hint.width() + (m_scrolls ? barWidth() : 0), m_height > 0 ? m_height : hint.height());
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        const QWidget* content = widget();
+        if (!content)
+            return QScrollArea::minimumSizeHint();
+        // Room for the bar too: it appears when the window is made narrower (the text wraps into more lines).
+        return QSize(content->minimumSizeHint().width() + barWidth(), QScrollArea::minimumSizeHint().height());
+    }
+
+  private:
+    int barWidth() const { return verticalScrollBar()->sizeHint().width(); }
+
+    int  m_height  = 0;
+    bool m_scrolls = false;
+};
 
 QFormLayout* form(QWidget* parent)
 {
@@ -420,10 +474,16 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     right->addWidget(send);
     right->addWidget(note);
     right->addStretch(1);
-    auto* columns = new QHBoxLayout;
+    m_columns = new QWidget(this);
+    m_columns->setObjectName(QString::fromLatin1("tsmediaSettingsColumns")); // matched by the style sheet below
+    auto* columns = new QHBoxLayout(m_columns);
+    columns->setContentsMargins(0, 0, 0, 0);
     columns->setSpacing(12);
     columns->addLayout(left, 1);
     columns->addLayout(right, 1);
+    m_columnsArea = new ColumnsArea(this);
+    m_columnsArea->setWidget(m_columns);
+    m_columns->setAutoFillBackground(false); // setWidget() turned it on
 
     auto* layout = new QVBoxLayout(this);
     layout->setSpacing(10);
@@ -432,7 +492,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     header->addLayout(titleRow);
     header->addLayout(aboutRow);
     layout->addLayout(header);
-    layout->addLayout(columns, 1);
+    layout->addWidget(m_columnsArea, 1);
     layout->addWidget(buttons);
 
     connect(m_inlinePreviews, &QCheckBox::toggled, this, [this] { updateEnabled(); });
@@ -485,15 +545,57 @@ void SettingsDialog::showEvent(QShowEvent* event)
 
 // Grows the window to what its contents need at the current width, as far as the screen allows. Qt's
 // minimum size leaves out wrapped text, so a message appearing under a field would squeeze the rows.
+// On a screen too short for everything the columns scroll, and the buttons stay on screen.
 void SettingsDialog::fitToContents()
 {
-    QSize wanted = sizeHint().expandedTo(QSize(width(), 0));
-    if (layout() && layout()->hasHeightForWidth())
-        wanted.setHeight(layout()->totalHeightForWidth(wanted.width()));
+    constexpr int kMinColumnsHeight = 120;
+
+    QSize avail;
     if (const QScreen* screen = parentWidget() ? parentWidget()->screen() : this->screen())
-        wanted = wanted.boundedTo(screen->availableGeometry().size() - QSize(16, 48)); // the frame and title bar
-    if (wanted.width() > width() || wanted.height() > height())
+        avail = screen->availableGeometry().size() - QSize(16, 48); // the frame and title bar
+    QLayout* top = layout();
+
+    // First the height the columns need at the width the window gets, then as much of it as fits.
+    auto* area = static_cast<ColumnsArea*>(m_columnsArea);
+    area->setHeight(0, false);
+    int width = qMax(sizeHint().width(), this->width());
+    if (avail.isValid())
+        width = qMin(width, avail.width());
+    const QMargins margins = top->contentsMargins();
+    QLayout*       columns = m_columns->layout();
+    const int      inner   = width - margins.left() - margins.right();
+    const int      needed  = columns->hasHeightForWidth() ? columns->totalHeightForWidth(inner) : m_columns->sizeHint().height();
+    area->setHeight(needed, false);
+    if (avail.isValid()) {
+        const int total  = top->hasHeightForWidth() ? top->totalHeightForWidth(width) : sizeHint().height();
+        const int excess = total - avail.height();
+        if (excess > 0)
+            area->setHeight(qMax(kMinColumnsHeight, needed - excess), true);
+    }
+
+    QSize wanted = sizeHint().expandedTo(QSize(this->width(), 0));
+    if (top->hasHeightForWidth())
+        wanted.setHeight(top->totalHeightForWidth(wanted.width()));
+    if (avail.isValid())
+        wanted = wanted.boundedTo(avail);
+    if (wanted.width() > this->width() || wanted.height() > height())
         resize(wanted.expandedTo(size()));
+}
+
+// Enter on a focused button that isn't the default one (Apply, Clear cache, Open folder, Restore
+// defaults) presses that button, as in Windows dialogs, instead of OK. In a field Enter is still OK.
+void SettingsDialog::keyPressEvent(QKeyEvent* event)
+{
+    const bool enter = event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter;
+    if (enter && (event->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier) {
+        auto* button = qobject_cast<QPushButton*>(focusWidget());
+        if (button && button->isVisible() && button->isEnabled() && !button->isDefault()) {
+            button->animateClick();
+            event->accept();
+            return;
+        }
+    }
+    QDialog::keyPressEvent(event);
 }
 
 void SettingsDialog::changeEvent(QEvent* event)
@@ -506,6 +608,12 @@ void SettingsDialog::changeEvent(QEvent* event)
     else if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
         syncVolume();
         updateGifHint(); // the Windows setting may have changed meanwhile
+        // Media may have been downloaded since: an empty cache must not stay "empty" with Clear cache
+        // greyed out. (A cache that isn't empty is measured again by Clear cache itself.)
+        if (m_core && m_cacheUsed == 0) {
+            m_cacheUsed = m_core->cacheSize();
+            updateCacheLabel();
+        }
     }
 }
 
@@ -783,6 +891,9 @@ void SettingsDialog::applyTheme()
         sheet = QString::fromLatin1("#tsmediaSettingsDialog QLabel[role=\"hint\"]{color:%1;}"
                                     "#tsmediaSettingsDialog QLabel[role=\"error\"]{color:%2;}")
                     .arg(muted.name(), error.name());
+        // The columns' scroll area stays invisible: no background or frame from a skin's list views.
+        sheet += QString::fromLatin1("#tsmediaSettingsDialog QScrollArea,#tsmediaSettingsDialog QScrollArea>QWidget#qt_scrollarea_viewport,"
+                                     "#tsmediaSettingsColumns{background:transparent;border:none;}");
         if (dark) {
             // Dark skins draw disabled text at about 1.2:1. Keep it dimmed, but readable.
             sheet += QString::fromLatin1("#tsmediaSettingsDialog QCheckBox:disabled,#tsmediaSettingsDialog QLabel:disabled,"

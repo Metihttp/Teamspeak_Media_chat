@@ -27,12 +27,12 @@ Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS
 - The message goes to the chat tab you are looking at: channel, server or a private chat. The file itself is always stored in the file browser of **the channel you are currently in**.
 - If the partner of a private chat can't be identified (for example, they left the server), nothing is sent. Something meant for one person never ends up in the channel instead.
 - When you send several files at once, their messages appear in the chat in the order you chose the files. Up to two files upload at the same time; the others wait their turn.
-- Messages from the plugin itself (an upload failed, a command's answer) appear in the chat tab you are looking at.
+- Messages from the plugin itself (an upload failed, a command's answer) appear in the chat tab you are looking at. If you have switched to another server's tab meanwhile, they go to the channel tab of the server they belong to.
 
 ### The paste confirmation
 
 <p align="center">
-  <img src="images/paste-dialog.png" width="480" alt="The Send to chat dialog after pressing Ctrl+V: a thumbnail of the pasted screenshot, the question whether to send it to the current channel, its size in pixels, and Send and Cancel buttons">
+  <img src="images/paste-dialog.png" width="480" alt="The Send pasted image dialog after pressing Ctrl+V: a thumbnail of the pasted screenshot, the question whether to send it to the current channel, its size in pixels, and Send and Cancel buttons">
 </p>
 
 Pressing Ctrl+V with a screenshot or copied files opens a small dialog that asks whether to send them and names where they go (the channel, the whole server or a private chat). A screenshot or a single copied picture shows a thumbnail; other files show their type icon, their names and sizes, and the total size. Files that are empty or larger than your upload limit are listed first, marked and skipped, and the button says how many files will be sent (*Send 7 files*). Nothing is sent until you click **Send**. The clipboard may hold something old you forgot about, so the plugin always asks.
@@ -40,16 +40,16 @@ Pressing Ctrl+V with a screenshot or copied files opens a small dialog that asks
 ### Upload progress
 
 <p align="center">
-  <img src="images/upload-toast.png" width="360" alt="The upload panel in the corner of the chat: a file name, a progress bar with the percentage and upload speed, and a button to cancel the upload">
+  <img src="images/upload-toast.png" width="360" alt="The upload panel in the corner of the chat while two files are sent: a header with the overall progress, the time left and Cancel all, then each file with its progress bar, percentage, speed, amount sent and a button to cancel it">
 </p>
 
 A panel at the bottom of the chat shows each upload with its progress, in TeamSpeak's light or dark theme:
 
 - An upload shows its percentage, the speed, the amount sent and the time left. Files waiting for their turn say *Waiting to upload…*.
-- With several files, a header shows the overall progress (*2 of 5 sent*), the time left and **Cancel all**. At most four files are listed, failed ones first; the rest are summed up as *+3 more*, which you can click to see them all.
-- The **×** button of a file cancels its upload, or dismisses it once it is finished.
-- A failed upload says why and what to do next. It stays at least 10 seconds (15 with **Retry**), and never goes away while the pointer is on the panel. **Retry** sends the file again when that is possible (not when the file already reached the server). Every failure is also written into the chat, where it stays readable.
-- `/tsmedia cancel` or the *Cancel all uploads* hotkey stop every running upload from the keyboard.
+- With several files, a header shows the overall progress (*2 of 5 sent*), the time left and **Cancel all**. At most four files are listed, failed ones first; the rest are summed up as *+3 more*, which you can click to list as many as fit in the chat (*Show fewer · 2 not shown* counts the rest).
+- The **×** button of a file cancels its upload, or dismisses it once it is finished. A file that is uploaded but still waits for earlier files (*Waiting for earlier files…*) can be canceled too: nothing is posted for it, and it is removed from the channel's file browser again.
+- A failed upload says why and what to do next. It stays at least 10 seconds (15 with **Retry**), and never goes away while the pointer is on the panel. **Retry** sends the file again to the same chat when that is possible: not when the file already reached the server, and not when the tab is now connected to another server or the private chat partner has left. Every failure is also written into the chat, where it stays readable.
+- `/tsmedia cancel` or the *Cancel all uploads* hotkey stop every running upload from the keyboard, files waiting for earlier ones included.
 
 ### File names and folders
 
@@ -65,7 +65,7 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - **Images and GIFs** up to 15 MB load automatically. Larger ones show their preview (or a blurred placeholder) with the file size, and load when you click them. Clicking an image or GIF opens the gallery viewer.
 - **Videos** show their poster, a play button and the duration. Clicking play downloads the video first (a progress ring shows the percentage) and then plays it right in the chat. Hover over a playing video to show its controls: play/pause, time, seek bar, mute and expand (opens the gallery viewer). Pointing at a control shows its name, and the seek bar shows the time under the pointer. The controls stay while the pointer rests on them and fade out 2.5 s after the mouse stops elsewhere. Starting a video pauses any other.
 - **Videos Windows can't play inside the chat** (a missing decoder, for example) show *Opens in default app*: clicking them opens your default video app.
-- **Other files**, audio files included, appear as cards. Click a card to download the file and open it with its default Windows app. Programs and scripts are never run: their card says *Show in folder*, and clicking it shows the file in Explorer.
+- **Other files**, audio files included, appear as cards. Click a card to download the file and open it with its default Windows app. Programs and scripts are never run: clicking the card downloads the file and shows it in Explorer, and once downloaded the card says *Show in folder*.
 - **Ordinary TeamSpeak file links** (for example a file dragged from the file browser into the chat) get the same treatment, just without the dimensions, duration, blurred placeholder and preview that TS Media chat adds to its own links.
 - Previews and cards light up when you point at them and when you press them. Point at a card or a failed preview to see the file's full name, size and status.
 - You have to be connected to the server the file is on. Up to 3 downloads run at once, previews first. A file waiting for its turn says *Waiting to download…*.
@@ -126,7 +126,7 @@ The viewer shows every media item of the chat, so you can step through them with
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | copy the image, or the current video frame |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | save as… |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | open with default app |
-| <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | move between the buttons |
+| <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | move between the buttons of the bottom bar and of a message (the player controls use the keys above) |
 | <kbd>Enter</kbd> | press the highlighted or focused button |
 | <kbd>?</kbd> or <kbd>F1</kbd> | show the shortcut list |
 

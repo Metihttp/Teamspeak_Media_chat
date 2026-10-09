@@ -41,6 +41,7 @@ class ImageCanvas : public QWidget
     void  zoomBy(qreal factor);                      // around the centre
     void  panBy(const QPointF& delta);               // logical pixels
     void  setCursorHidden(bool hidden);              // full screen: no pointer over the picture
+    void  screenScaleChanged();                      // the window moved to a monitor with another scale
     bool  canPan() const;
     bool  isFit() const;
     qreal zoom() const;    // device pixels per image pixel

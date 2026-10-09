@@ -151,6 +151,30 @@ anyID clientIdByNickname(uint64 sch, const QString& nickname)
     return found;
 }
 
+QString clientUid(uint64 sch, anyID client)
+{
+    char* value = nullptr;
+    if (!client || !funcs.getClientVariableAsString || funcs.getClientVariableAsString(sch, client, CLIENT_UNIQUE_IDENTIFIER, &value) != ERROR_ok)
+        return {};
+    return takeString(value);
+}
+
+anyID clientIdByUid(uint64 sch, const QString& uid)
+{
+    anyID* clients = nullptr;
+    if (uid.isEmpty() || !funcs.getClientList || funcs.getClientList(sch, &clients) != ERROR_ok || !clients)
+        return 0;
+    anyID found = 0;
+    for (anyID* it = clients; *it; ++it) {
+        if (clientUid(sch, *it) == uid) {
+            found = *it;
+            break;
+        }
+    }
+    funcs.freeMemory(clients);
+    return found;
+}
+
 bool getServerAddress(uint64 sch, QString* host, quint16* port)
 {
     char           hostBuf[512] = {};

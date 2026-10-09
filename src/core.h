@@ -48,6 +48,11 @@ struct ChatTarget {
     uint64 sch      = 0;
     int    mode     = TextMessageTarget_CHANNEL;
     anyID  clientId = 0; // for TextMessageTarget_CLIENT
+    // Who it was meant for when it was chosen. Client ids are reassigned on a reconnect and reused
+    // after someone leaves, and a server tab can be connected to another server: a retry, or a message
+    // posted long after the send started, checks the server and finds the partner again by identity.
+    QString serverUid; // empty: filled in by Core when the upload is created
+    QString clientUid; // for TextMessageTarget_CLIENT
 };
 
 // Preparing: copied to the staging folder, probed, its preview uploaded. Uploading: the file itself.
@@ -89,6 +94,9 @@ QString displayNameFor(const UploadJob& job);
 // "You're not connected to a server. Connect to one to send files." Core's chat warning and the
 // checks before a send (picker, paste, drop) say the same.
 QString notConnectedText();
+// A private chat whose partner can't be found (they left the server, were renamed, ...): nothing is
+// sent. Said before a send and by a retry.
+QString noRecipientText();
 
 // Best still picture currently available for an entry.
 struct MediaStill {
@@ -152,7 +160,10 @@ class Core : public QObject
     // in the order of paths (a file that finishes early waits, see UploadJob::waiting).
     void             uploadFiles(const QStringList& paths, const ChatTarget& target);
     void             uploadImage(const QImage& image, const ChatTarget& target);
-    void             cancelUpload(int id); // while Preparing or Uploading
+    // While Preparing or Uploading, or while uploaded but its chat message still waits for earlier
+    // files (nothing was posted yet: the file and its preview are removed from the server again).
+    void             cancelUpload(int id);
+    bool             canCancelUpload(int id) const;
     const UploadJob* upload(int id) const; // nullptr once the job is gone
     QList<int>       uploadIds() const;    // every job Core still has, oldest first
 
@@ -303,6 +314,7 @@ class Core : public QObject
     QHash<int, UploadJob>   m_uploads;
     QHash<int, UploadExtra> m_uploadExtra;
     QHash<anyID, int>       m_uploadsByTransfer;
+    QSet<anyID>             m_haltedTransfers; // halted by us (any kind): their late "canceled" status is no news
     QHash<anyID, int>       m_previewUploadsByTransfer;
     QHash<int, QString>     m_probing; // upload id -> staging dir, while its staging copy / probe runs
     QHash<int, std::shared_ptr<std::atomic<bool>>> m_stagingCancel; // upload id -> stops its staging copy

@@ -14,7 +14,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - While files are dragged onto the chat, it shows where they will go (with the Shift hint), or why nothing can be sent there.
 - Tooltips on cards, failed previews and inline video controls; the seek bar shows the time under the pointer.
 - Failed cards have a **Retry** button.
-- Gallery viewer: keyboard access to every button (<kbd>Tab</kbd>, <kbd>Enter</kbd>), new keys (<kbd>L</kbd> loop, <kbd>+</kbd> / <kbd>−</kbd> zoom, arrows move a zoomed picture, <kbd>Ctrl</kbd>+<kbd>O</kbd> open with default app) and a shortcut list (**?** button, <kbd>?</kbd> or <kbd>F1</kbd>).
+- Gallery viewer: <kbd>Tab</kbd> / <kbd>Enter</kbd> reach the bottom-bar and message buttons, and every player control has its own key; new keys (<kbd>L</kbd> loop, <kbd>+</kbd> / <kbd>−</kbd> zoom, arrows move a zoomed picture, <kbd>Ctrl</kbd>+<kbd>O</kbd> open with default app) and a shortcut list (**?** button, <kbd>?</kbd> or <kbd>F1</kbd>).
 - Gallery viewer: **Get it from Microsoft Store** when a video needs a decoder from the Store, and **Retry** / **Open with default app** right under an error.
 - Settings: an **Apply** button.
 - Confirmations for *Copy link*, *Copy image* and *Save as…* (*Saved to Pictures*), and *Diagnostics saved to …* for `/tsmedia debug`.
@@ -25,17 +25,17 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Previews and cards react to hover and clicks. Previews a click can't help (deleted files, password-protected channels) keep the normal pointer and do nothing when clicked.
 - Previews and cards show whether a file is waiting to download or downloading.
 - Inline video: the controls stay while the pointer rests on them and then fade out; small players get a smaller play button. A video Windows can't play inside the chat says *Opens in default app*, and its right-click menu offers *Open in default app*.
-- Programs and scripts from the chat show *Show in folder* instead of offering to open them.
+- Programs and scripts from the chat are shown in their folder instead of opened (the card says *Show in folder* once downloaded).
 - Animations follow the Windows "Show animations" setting: with it off, GIFs play only while hovered and loading indicators stand still.
 - Previews are drawn again, sharp and in the right colours, after the window moves to a monitor with another scale or the theme changes.
 - Gallery viewer: 100% now shows one image pixel per screen pixel, so on scaled displays pictures look smaller at 100% than before. Double-click zooms into the clicked point; Fit and 100% show which view is active; large downscales look smoother.
 - Gallery viewer: full screen keeps a header with the name, position, Copy, Save and Open, and the controls and the pointer hide there for pictures too. Errors say the cause first; playback errors no longer call audio files videos.
 - Upload panel: follows TeamSpeak's light or dark theme, shows the speed, the amounts and the time left, marks waiting uploads, lists at most four files (failed first, the rest as *+N more*), and keeps failures on screen long enough to read (and never removes one while the pointer is on the panel).
-- Files sent together are posted in the order they were chosen, with at most two uploads at a time.
+- Files sent together are posted in the order they were chosen, with at most two uploads at a time. A file waiting for earlier ones can still be canceled, and *Cancel all* stops it too.
 - Paste dialog: a thumbnail or the file's type icon, the size of each file and the total; empty files and files over the upload limit are marked and skipped (*Send 7 files*).
 - Being disconnected, a password-protected channel or an unknown private chat partner is reported before the file picker, the paste dialog or a drop, not after.
 - The menu item and the hotkey are called *Send files to chat…* / *Send files to the current chat*; the menu item is greyed out while the current server tab is not connected.
-- Plugin messages in the chat appear in the tab you are looking at, with colours readable in light and dark themes.
+- Plugin messages in the chat appear in the tab you are looking at on that server, with colours readable in light and dark themes.
 - Settings dialog: regrouped into Receiving, Playback, Media cache, Sending and Note for people without the plugin, with clearer labels and helper texts, a link check right under the field, focus rings in TeamSpeak's dark skins and a *Clear cache* that says how much it deletes.
 - An empty *Upload folder* now means `/tsmedia`; type `/` for the top level of the channel's file browser.
 - A lower cache size limit applies as soon as the settings are saved.

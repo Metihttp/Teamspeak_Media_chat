@@ -37,6 +37,8 @@ QString serverName(uint64 sch);
 QString channelName(uint64 sch, uint64 channelId);
 bool    channelHasPassword(uint64 sch, uint64 channelId);
 anyID   clientIdByNickname(uint64 sch, const QString& nickname);
+QString clientUid(uint64 sch, anyID client);           // CLIENT_UNIQUE_IDENTIFIER, empty if unknown
+anyID   clientIdByUid(uint64 sch, const QString& uid); // 0 if no such client is on the server (now)
 
 bool getServerAddress(uint64 sch, QString* host, quint16* port);
 

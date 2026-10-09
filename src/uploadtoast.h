@@ -72,6 +72,7 @@ class UploadToast : public QFrame
         quint64     size  = 0;
         quint64     sent  = 0;
         UploadState state = UploadState::Preparing;
+        bool        held  = false; // uploaded, its message waiting for earlier files: can still be canceled
     };
 
     Row& rowFor(int id);

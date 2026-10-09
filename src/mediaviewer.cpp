@@ -1383,6 +1383,20 @@ bool ImageCanvas::canPan() const
     return scaled.width() > width() + 0.5 || scaled.height() > height() + 0.5;
 }
 
+// The logical size of the picture changed with the device pixel ratio (the zoom counts device
+// pixels), but the widget kept its size, so no resize event clamps the view.
+void ImageCanvas::screenScaleChanged()
+{
+    if (m_fit) {
+        setFit();
+        return;
+    }
+    m_display = QImage(); // resampled for the old device pixel ratio
+    clampOffset();        // also refreshes the cursor (canPan may have changed)
+    update();
+    scheduleRescale();
+}
+
 void ImageCanvas::setCursorHidden(bool hidden)
 {
     if (hidden == m_cursorHidden)
@@ -1420,7 +1434,7 @@ void ImageCanvas::updateCursor()
 // copy resampled with area averaging is made at exactly the drawn size and used instead.
 void ImageCanvas::scheduleRescale()
 {
-    if (!m_display.isNull() && m_displayZoom == m_zoom)
+    if (!m_display.isNull() && m_displayZoom == m_zoom && qFuzzyCompare(m_displayDpr, devicePixelRatioF()))
         return; // still matches
     m_display = QImage();
     ++m_displayJob;
@@ -2057,7 +2071,8 @@ void MediaViewer::Private::buildUi()
             player->setLoop(on);
         loopButton->setToolTip(on ? i18n::t("Loop: on (L)") : i18n::t("Loop: off (L)"));
     });
-    connect(volumeSlider, &QSlider::valueChanged, this, [this](int value) { setVolume(value, false); });
+    // Wheel steps and clicks on the track are remembered right away; a drag once it is released.
+    connect(volumeSlider, &QSlider::valueChanged, this, [this](int value) { setVolume(value, !volumeSlider->isSliderDown()); });
     connect(volumeSlider, &QSlider::sliderReleased, this, [this] { setVolume(volumeSlider->value(), true); });
 
     // Seeking: playback pauses while the handle is held so position updates never fight the drag.
@@ -2120,9 +2135,11 @@ QString MediaViewer::Private::currentKey() const
 // so swapping in the real image never changes what is shown.
 QSize MediaViewer::Private::stillTarget() const
 {
+    // In device pixels, like ImageCanvas's fit zoom: on a scaled display a placeholder bounded by the
+    // logical screen size would be fitted smaller than the full picture.
     QSize bound(1600, 1600);
     if (const QScreen* screen = q->screen())
-        bound = screen->availableGeometry().size();
+        bound = (QSizeF(screen->availableGeometry().size()) * screen->devicePixelRatio()).toSize();
     const MediaEntry* e     = entry();
     const QSize       media = e && e->link.width > 0 && e->link.height > 0 ? QSize(e->link.width, e->link.height) : bound;
     if (media.width() <= bound.width() && media.height() <= bound.height())
@@ -3520,8 +3537,7 @@ MediaViewer::MediaViewer(Core* core, const QStringList& keys, int index, std::op
     if (QWindow* window = windowHandle()) {
         connect(window, &QWindow::screenChanged, this, [this] {
             QTimer::singleShot(0, this, [this] {
-                if (d->canvas->isFit())
-                    d->canvas->setFit();
+                d->canvas->screenScaleChanged();
                 d->layoutStage();
                 d->canvas->update();
             });

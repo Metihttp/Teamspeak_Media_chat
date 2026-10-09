@@ -602,8 +602,7 @@ UploadToast::Row& UploadToast::rowFor(int id)
     keep.setRetainSizeWhenHidden(true); // the title never changes width when the button goes
     row.close->setSizePolicy(keep);
     connect(row.close, &QToolButton::clicked, this, [this, id] {
-        const UploadJob* job = m_core ? m_core->upload(id) : nullptr;
-        if (job && isRunning(job->state))
+        if (m_core && m_core->canCancelUpload(id))
             m_core->cancelUpload(id);
         else
             removeRow(id, true);
@@ -674,9 +673,10 @@ void UploadToast::cancelAll()
         return;
     QList<int> ids = m_tally.keys();
     std::sort(ids.begin(), ids.end());
+    // Held messages too (uploaded, waiting for earlier files): they must not be posted once the
+    // earlier files are canceled.
     for (int id : qAsConst(ids)) {
-        const UploadJob* job = m_core->upload(id);
-        if (job && isRunning(job->state))
+        if (m_core->canCancelUpload(id))
             m_core->cancelUpload(id);
     }
 }
@@ -711,6 +711,7 @@ void UploadToast::updateJob(int id)
     Tally& tally = m_tally[id];
     tally.size   = job->size;
     tally.state  = job->state;
+    tally.held   = job->state == UploadState::Posting && job->waiting;
     if (job->state == UploadState::Uploading)
         tally.sent = static_cast<quint64>(qBound(0.0, job->progress, 1.0) * static_cast<double>(job->size));
     else if (job->uploaded || job->state == UploadState::Posting || job->state == UploadState::Done)
@@ -816,10 +817,10 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
     row.bar->setColors(c.track, job.state == UploadState::Done ? c.done : c.accent);
     row.bar->setVisible(!failed && job.state != UploadState::Canceled);
 
-    const bool running  = isRunning(job.state);
+    const bool running  = m_core && m_core->canCancelUpload(id); // also a held message, not yet posted
     const bool canRetry = failed && m_core && m_core->canRetryUpload(id);
     row.retry->setVisible(canRetry);
-    row.close->setVisible(job.state != UploadState::Posting); // a chat message can't be called back
+    row.close->setVisible(job.state != UploadState::Posting || job.waiting); // a posted chat message can't be called back
     row.close->setToolTip(running ? i18n::t("Cancel upload") : i18n::t("Dismiss"));
 
     if (!changed)
@@ -856,7 +857,7 @@ void UploadToast::updateHeader()
             continue;
         ++count;
         done += t.state == UploadState::Done ? 1 : 0;
-        running += isRunning(t.state) ? 1 : 0;
+        running += (isRunning(t.state) || t.held) ? 1 : 0;
         active = active || isActive(t.state);
         if (t.state == UploadState::Failed)
             continue;
@@ -937,7 +938,8 @@ void UploadToast::relayout()
         }
     }
     if (m_expanded && order.size() > rowLimit(false)) {
-        m_more->setText(i18n::t("Show fewer"));
+        // Expanded, the rows still stop at the chat's height: say how many don't fit.
+        m_more->setText(hidden > 0 ? i18n::t("Show fewer · %1 not shown").arg(hidden) : i18n::t("Show fewer"));
         m_more->show();
     } else if (hidden > 0) {
         m_more->setText(onlyWaiting ? i18n::t("+%1 more waiting").arg(hidden) : i18n::t("+%1 more").arg(hidden));

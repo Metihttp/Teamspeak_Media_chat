@@ -17,6 +17,7 @@
 #include "core.h"
 #include "i18n.h"
 #include "inlinemedia.h"
+#include "ownedtimer.h"
 #include "previewrenderer.h"
 #include "settings.h"
 #include "settingsdialog.h"
@@ -108,10 +109,11 @@ void cancelUploads(uint64 sch)
 {
     if (!g_core)
         return;
+    // Also files that are uploaded but whose message still waits for earlier ones: once those are
+    // canceled, nothing may be posted after all.
     int canceled = 0;
     for (int id : g_core->uploadIds()) {
-        const UploadJob* job = g_core->upload(id);
-        if (job && (job->state == UploadState::Preparing || job->state == UploadState::Uploading)) {
+        if (g_core->canCancelUpload(id)) {
             g_core->cancelUpload(id);
             ++canceled;
         }
@@ -200,7 +202,7 @@ void selfTestPlay(uint64 sch, int attempt)
         return;
     }
     ts3::log(QStringLiteral("[test] self-test play: waiting for a video (attempt %1)").arg(attempt + 1));
-    QTimer::singleShot(2000, g_core.data(), [sch, attempt] { selfTestPlay(sch, attempt + 1); });
+    singleShotOwned(2000, g_core.data(), [sch, attempt] { selfTestPlay(sch, attempt + 1); });
 }
 #endif
 
@@ -480,8 +482,8 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
     // Test builds only, and only against localhost servers (checked when the hooks fire).
     if (newStatus == STATUS_CONNECTION_ESTABLISHED) {
         onGuiThread([sch] {
-            QTimer::singleShot(3000, g_core.data(), [sch] { selfTestUpload(sch); });
-            QTimer::singleShot(6000, g_core.data(), [sch] {
+            singleShotOwned(3000, g_core.data(), [sch] { selfTestUpload(sch); });
+            singleShotOwned(6000, g_core.data(), [sch] {
                 if (!takeTrigger(QStringLiteral("selftest_play.txt"), nullptr))
                     return;
                 if (!isLocalServer(sch)) {

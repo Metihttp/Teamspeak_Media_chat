@@ -85,5 +85,5 @@ Anyone can post a `ts3file://` link with any parameters, so every value from the
 
 - TeamSpeak calls the plugin on its own threads; every callback is moved onto the GUI thread before it touches Qt objects.
 - Probing and expensive image decodes run on worker threads, so the GUI thread is never blocked for long.
-- TeamSpeak can unload the DLL while it keeps running. Nothing may outlive plugin shutdown: objects own their timers, worker threads are joined, Media Foundation players are shut down synchronously and the plugin's windows are closed.
+- TeamSpeak can unload the DLL while it keeps running. Nothing may outlive plugin shutdown: objects own their timers (delayed callbacks use `singleShotOwned()` from `src/ownedtimer.h`: a delayed `QTimer::singleShot` belongs to Qt's event dispatcher, not to its context object), worker threads are joined, Media Foundation players are shut down synchronously and the plugin's windows are closed.
 - Strings that end up in Qt or TeamSpeak state outliving the DLL (settings, style sheets, the clipboard, chat documents) are always heap-allocated through Qt, never `QStringLiteral` data stored in the DLL image. Otherwise TeamSpeak would crash on exit after the plugin was unloaded.

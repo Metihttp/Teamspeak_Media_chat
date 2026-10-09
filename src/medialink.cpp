@@ -373,7 +373,10 @@ QString displayNameFor(const MediaLink& link)
     const int     dot  = link.fileName.lastIndexOf(QLatin1Char('.'));
     QString       base = dot > 0 ? link.fileName.left(dot) : link.fileName;
     const QString ext  = dot > 0 ? link.fileName.mid(dot) : QString();
-    if (pasted.match(base).hasMatch()) {
+    // Only the formats Core::uploadImage writes: a video or an archive is never a pasted picture.
+    // (Core::makeRemoteName gives a user's own "new photo" another name.)
+    const bool pictureExt = ext == QLatin1String(".png") || ext == QLatin1String(".jpg");
+    if (pictureExt && pasted.match(base).hasMatch()) {
         base = i18n::t("Pasted image");
     } else {
         const QString stripped = QString(base).remove(randomPart);

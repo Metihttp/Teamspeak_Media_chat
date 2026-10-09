@@ -1,6 +1,6 @@
 // Unit tests for the pure-logic parts of TS Media chat: the chat link format, the message composer,
 // BlurHash, the formatting helpers, display names, error texts, the shared UI helpers (uiutil) and
-// the settings checks (link for the note, upload folder).
+// the settings checks (link for the note, upload folder) and timers that must not outlive the plugin.
 // Built as target tsmedia_tests (see CMakeLists.txt).
 
 #include <QDir>
@@ -9,8 +9,11 @@
 #include <QUrl>
 #include <QtTest>
 
+#include <memory>
+
 #include "blurhash.h"
 #include "medialink.h"
+#include "ownedtimer.h"
 #include "settings.h"
 #include "uiutil.h"
 
@@ -183,6 +186,10 @@ class TestTsMedia : public QObject
     void checkDownloadUrl();
     void normalizeUploadDirectory_data();
     void normalizeUploadDirectory();
+
+    // Lifetime
+    void singleShotOwnedFires();
+    void singleShotOwnedDiesWithOwner();
 };
 
 // ---- MediaLink ---------------------------------------------------------------------------------
@@ -1064,6 +1071,11 @@ void TestTsMedia::displayNameFor_data()
     QTest::newRow("pasted png") << 2 << QStringLiteral("new_photo_1a2b3c4d.png") << QStringLiteral("Pasted image.png");
     QTest::newRow("pasted jpg") << 2 << QStringLiteral("new_photo_1a2b3c4d.jpg") << QStringLiteral("Pasted image.jpg");
     QTest::newRow("own new_photo name") << 2 << QStringLiteral("new_photo_1a2b3c4d_3f9a1c2e.png") << QStringLiteral("new_photo_1a2b3c4d.png");
+    // A user's own "new photo.jpg" / "new_photo.jpg" is uploaded as new_photo__<hex>.jpg (makeRemoteName).
+    QTest::newRow("own new photo picture") << 2 << QStringLiteral("new_photo__3f9a1c2e.jpg") << QStringLiteral("new_photo_.jpg");
+    // Only pictures are pasted: a "new photo.mp4" from an older client keeps its name.
+    QTest::newRow("own new photo video") << 2 << QStringLiteral("new_photo_3f9a1c2e.mp4") << QStringLiteral("new_photo.mp4");
+    QTest::newRow("own new photo archive") << 2 << QStringLiteral("new_photo_3f9a1c2e.zip") << QStringLiteral("new_photo.zip");
     QTest::newRow("not 8 digits") << 2 << QStringLiteral("clip_41234.mp4") << QStringLiteral("clip_41234.mp4");
     QTest::newRow("upper-case hex is not ours") << 2 << QStringLiteral("x_3F9A1C2E.png") << QStringLiteral("x_3F9A1C2E.png");
     QTest::newRow("only the last part") << 2 << QStringLiteral("report_deadbeef_3f9a1c2e.pdf") << QStringLiteral("report_deadbeef.pdf");
@@ -1192,6 +1204,37 @@ void TestTsMedia::normalizeUploadDirectory()
     QFETCH(QString, folder);
 
     QCOMPARE(Settings::normalizeUploadDirectory(input), folder);
+}
+
+// ---- Lifetime ----------------------------------------------------------------------------------
+
+void TestTsMedia::singleShotOwnedFires()
+{
+    QObject owner;
+    int     calls = 0;
+    singleShotOwned(10, &owner, [&calls] { ++calls; });
+    QTRY_COMPARE(calls, 1);
+    // The timer goes once it has fired.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QVERIFY(owner.findChildren<QTimer*>().isEmpty());
+    QTest::qWait(30);
+    QCOMPARE(calls, 1);
+}
+
+// The functor (code of the plugin DLL) must be freed with its owner, which plugin shutdown deletes, not
+// when the delay ends or when the application quits (by then the DLL may be unloaded).
+void TestTsMedia::singleShotOwnedDiesWithOwner()
+{
+    auto               token = std::make_shared<int>(0);
+    std::weak_ptr<int> captured(token);
+    bool               ran   = false;
+    auto*              owner = new QObject;
+    singleShotOwned(60 * 60 * 1000, owner, [token, &ran] { ran = true; });
+    token.reset();
+    QVERIFY(!captured.expired()); // held by the pending timer's functor
+    delete owner;
+    QVERIFY(captured.expired());
+    QVERIFY(!ran);
 }
 
 QTEST_GUILESS_MAIN(TestTsMedia)

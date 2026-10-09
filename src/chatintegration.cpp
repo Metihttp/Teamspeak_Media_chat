@@ -49,6 +49,7 @@
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
+#include "ownedtimer.h"
 #include "settings.h"
 #include "uiutil.h"
 #include "uploadtoast.h"
@@ -368,7 +369,15 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
         scheduleVisibilityUpdate(); // players whose preview went with it are stopped
     });
     watchDocument(browser, v.document);
-    connect(browser->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { scheduleVisibilityUpdate(); });
+    connect(browser->verticalScrollBar(), &QScrollBar::valueChanged, this, [this, b = QPointer<QTextBrowser>(browser)] {
+        scheduleVisibilityUpdate();
+        // The chat moved under a still pointer (wheel, a new message): Qt sends no mouse move for that.
+        // Deferred: refreshPreview / insertPreview scroll the chat themselves.
+        QTimer::singleShot(0, this, [this, b] {
+            if (b && m_media && !m_seeking && b->viewport()->underMouse())
+                updateHoverAt(b, QPointF(b->viewport()->mapFromGlobal(QCursor::pos())), false);
+        });
+    });
 
     browser->viewport()->installEventFilter(this);
     browser->viewport()->setAcceptDrops(true);
@@ -426,7 +435,7 @@ void ChatIntegration::scheduleScan(QTextBrowser* browser)
         return;
     it->scanQueued = true;
     QPointer<QTextBrowser> guard(browser);
-    QTimer::singleShot(60, this, [this, guard] {
+    singleShotOwned(60, this, [this, guard] {
         if (!guard)
             return;
         auto vt = m_views.find(guard.data());
@@ -678,8 +687,9 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     const bool   media   = isMediaKind(e->kind);
     // Pointer feedback: hovered while the mouse is over it, pressed while the left button that went
     // down on it is held there (a seek drag is not a press of the picture).
-    style.hovered    = key == m_hoverKey;
-    style.pressed    = style.hovered && key == m_pressedKey && !m_seeking;
+    // Only in the chat it is hovered in: the same file in another chat (or tab) looks normal.
+    style.hovered    = !m_hoverKey.isEmpty() && key == m_hoverKey && browser == m_hoverBrowser;
+    style.pressed    = style.hovered && key == m_pressedKey && browser == m_pressBrowser && !m_seeking;
     style.revealOnly = !media && e->state == MediaState::Ready && m_core->isUnsafeToOpen(key);
     const QSize stillPixels = stillPixelsFor(*e, style);
     QSize       size;
@@ -691,6 +701,8 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
         const QImage     frame  = m_media->frame(key);
         const MediaStill poster = frame.isNull() ? m_core->still(key, stillPixels) : MediaStill();
         PlaybackOverlay  o      = m_media->overlay(key);
+        if (browser != m_hoverBrowser)
+            o.hover = VideoZone::None; // the pointer is over this video in another chat
         if (style.pressed) // hidden controls can't be aimed at: the press is on the picture
             o.pressed = m_pressControlsVisible ? o.hover : VideoZone::Body;
         img = renderVideo(*e, frame, poster, o, style, &size);
@@ -908,7 +920,7 @@ void ChatIntegration::scheduleRelayout(QTextBrowser* browser)
         return;
     view->relayoutQueued = true;
     QPointer<QTextBrowser> guard(browser);
-    QTimer::singleShot(200, this, [this, guard] {
+    singleShotOwned(200, this, [this, guard] {
         View* v = guard ? viewFor(guard.data()) : nullptr;
         if (!v)
             return;
@@ -1020,7 +1032,7 @@ void ChatIntegration::scheduleVisibilityUpdate()
     if (m_visibilityQueued)
         return;
     m_visibilityQueued = true;
-    QTimer::singleShot(30, this, [this] { updateVisibleKeys(); });
+    singleShotOwned(30, this, [this] { updateVisibleKeys(); });
 }
 
 bool ChatIntegration::onScreen(QTextBrowser* browser, View& view, const QString& key)
@@ -1753,6 +1765,40 @@ void ChatIntegration::sendMime(const QMimeData* mime, const ChatTarget& target)
     }
 }
 
+ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const QPointF& viewportPos, bool moved, VideoZone* zoneOut)
+{
+    const QPoint      pos   = viewportPos.toPoint();
+    const Hit         hit   = previewAt(browser, pos);
+    const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
+    VideoZone         zone  = VideoZone::None;
+    if (!hit.key.isEmpty()) {
+        zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video
+                   ? videoZoneAt(hit.rect.size().toSize(), viewportPos - hit.rect.topLeft(), !m_media->overlay(hit.key).playing)
+                   : VideoZone::Body;
+    }
+    const bool otherPreview = hit.key != m_hoverKey || (!hit.key.isEmpty() && browser != m_hoverBrowser);
+    const bool changed      = otherPreview || zone != m_hoverZone;
+    if (otherPreview) {
+        // The look belongs to one chat: the same file shown in another one keeps its normal look.
+        const QString                left   = m_hoverKey;
+        const QPointer<QTextBrowser> leftIn = m_hoverBrowser;
+        m_hoverKey                          = hit.key;
+        m_hoverBrowser                      = hit.key.isEmpty() ? nullptr : browser;
+        if (leftIn)
+            repaintPointerState(leftIn, left, false);
+        repaintPointerState(browser, hit.key, false);
+    }
+    m_hoverZone = zone;
+    // A move keeps the video controls shown for a while; a scroll under a still pointer must not, or
+    // they would stay over a video that moved away.
+    if (moved || changed)
+        m_media->hover(hit.key, zone);
+    updateCursor(browser, !hit.key.isEmpty(), pos, !entry || isPreviewActionable(*entry));
+    if (zoneOut)
+        *zoneOut = zone;
+    return hit;
+}
+
 bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
 {
     const Settings& s = Settings::instance();
@@ -1779,22 +1825,8 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             }
             m_seeking = false;
         }
-        const Hit         hit   = previewAt(browser, me->pos());
-        const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
-        VideoZone         zone  = VideoZone::None;
-        if (!hit.key.isEmpty()) {
-            zone = m_media->mode(hit.key) == InlineMediaController::Mode::Video
-                       ? videoZoneAt(hit.rect.size().toSize(), me->localPos() - hit.rect.topLeft(), !m_media->overlay(hit.key).playing)
-                       : VideoZone::Body;
-        }
-        if (hit.key != m_hoverKey) {
-            const QString left = m_hoverKey;
-            m_hoverKey         = hit.key;
-            repaintPointerState(browser, left, false);
-            repaintPointerState(browser, hit.key, false);
-        }
-        m_media->hover(hit.key, zone);
-        updateCursor(browser, !hit.key.isEmpty(), me->pos(), !entry || isPreviewActionable(*entry));
+        VideoZone zone = VideoZone::None;
+        const Hit hit  = updateHoverAt(browser, me->localPos(), true, &zone);
         // The seek bar's tip shows the time under the pointer: keep it current while it is shown.
         if (zone == VideoZone::Seek && QToolTip::isVisible()) {
             QRect         area;
@@ -1812,10 +1844,14 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (!browser)
             break;
         if (!m_hoverKey.isEmpty() && m_media) {
-            const QString left = m_hoverKey;
+            const QString                left   = m_hoverKey;
+            const QPointer<QTextBrowser> leftIn = m_hoverBrowser;
             m_hoverKey.clear();
+            m_hoverBrowser = nullptr;
+            m_hoverZone    = VideoZone::None;
             m_media->hover(QString(), VideoZone::None);
-            repaintPointerState(browser, left, false);
+            if (leftIn)
+                repaintPointerState(leftIn, left, false);
         }
         updateCursor(browser, false, QPoint(-1, -1));
         break;
@@ -2040,6 +2076,7 @@ bool ChatIntegration::resolveTarget(QWidget* widget, ChatTarget* target) const
     const int index = bar ? bar->currentIndex() : -1;
     if (index < 0 || !ts3::isConnected(t.sch))
         return true; // no chat tabs to tell apart (Core reports a missing connection itself)
+    target->serverUid = ts3::serverUid(t.sch); // a retry checks it is still the same server
 
     if (index == 0) {
         target->mode = TextMessageTarget_SERVER;
@@ -2049,8 +2086,9 @@ bool ChatIntegration::resolveTarget(QWidget* widget, ChatTarget* target) const
     if (index == 1 && tabShows(tab, ts3::channelName(t.sch, ts3::ownChannel(t.sch))))
         return true;
     if (const anyID client = clientForTab(t.sch, tab)) {
-        target->mode     = TextMessageTarget_CLIENT;
-        target->clientId = client;
+        target->mode      = TextMessageTarget_CLIENT;
+        target->clientId  = client;
+        target->clientUid = ts3::clientUid(t.sch, client); // client ids are reused: the message follows the person
         return true;
     }
     return index == 1; // the channel tab (its text may lag behind a channel rename)
@@ -2090,7 +2128,7 @@ QString ChatIntegration::blockText(SendBlock block) const
 {
     switch (block) {
     case SendBlock::NoRecipient:
-        return i18n::t("Can't tell who this private chat is with (they may have left the server). Nothing was sent.");
+        return noRecipientText(); // Core's wording (a retry says the same)
     case SendBlock::NotConnected:
         return notConnectedText(); // Core's wording
     case SendBlock::Password:
@@ -2482,7 +2520,7 @@ void ChatIntegration::requestSnapshot(QTextBrowser* browser, const QString& reas
     const qint64 now      = QDateTime::currentMSecsSinceEpoch();
     const qint64 wait     = qMax<qint64>(400, view->lastSnapshotMs + 1500 - now);
     QPointer<QTextBrowser> guard(browser);
-    QTimer::singleShot(static_cast<int>(wait), this, [this, guard] {
+    singleShotOwned(static_cast<int>(wait), this, [this, guard] {
         View* v = guard ? viewFor(guard.data()) : nullptr;
         if (!v)
             return;

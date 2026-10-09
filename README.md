@@ -76,7 +76,7 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 - **Paste** a screenshot or copied files into the chat input with <kbd>Ctrl</kbd>+<kbd>V</kbd>. A dialog shows what will be sent and where, with a thumbnail or the file sizes. Nothing is sent until you click **Send**.
 - **Menu:** **Plugins → TS Media chat → Send files to chat…** (available while you are connected).
 - **Hotkeys:** assign *Send files to the current chat* and *Cancel all uploads* in **Tools → Options → Hotkeys**.
-- **Commands:** type `/tsmedia send`, or `/tsmedia cancel` to stop running uploads. `/tsmedia help` lists all commands.
+- **Commands:** type `/tsmedia send`, or `/tsmedia cancel` to stop running uploads. `/tsmedia help` lists the commands.
 
 The message goes to the chat tab you are looking at; the file is stored in the channel you are in. A panel at the bottom of the chat shows the progress, and a failed upload can be retried from there. More in the [usage guide](docs/USAGE.md#sending-files).
 

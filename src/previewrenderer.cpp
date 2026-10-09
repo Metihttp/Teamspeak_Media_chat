@@ -349,6 +349,23 @@ void drawOpenIcon(QPainter& p, const QRectF& box, const QColor& color)
     p.drawPath(head);
 }
 
+// A folder with its tab: "show in folder", for files that are never opened from the chat.
+void drawFolderIcon(QPainter& p, const QRectF& box, const QColor& color)
+{
+    p.setPen(iconPen(color, strokeFor(box)));
+    p.setBrush(Qt::NoBrush);
+    QPainterPath folder;
+    folder.moveTo(at(box, 0.14, 0.78));
+    folder.lineTo(at(box, 0.14, 0.24));
+    folder.lineTo(at(box, 0.40, 0.24));
+    folder.lineTo(at(box, 0.50, 0.34));
+    folder.lineTo(at(box, 0.86, 0.34));
+    folder.lineTo(at(box, 0.86, 0.78));
+    folder.closeSubpath();
+    p.drawPath(folder);
+    p.drawLine(at(box, 0.14, 0.46), at(box, 0.86, 0.46));
+}
+
 void drawAlertIcon(QPainter& p, const QRectF& box, const QColor& background, const QColor& mark)
 {
     p.setPen(Qt::NoPen);
@@ -972,7 +989,11 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
         drawRing(p, slot.center(), 8.5, 2.2, e.progress, pal.track, pal.progress, style.animate);
         break;
     case MediaState::Ready:
-        drawOpenIcon(p, icon, actionInk);
+        // Programs and scripts are only shown in their folder (the status line says so).
+        if (style.revealOnly)
+            drawFolderIcon(p, icon, actionInk);
+        else
+            drawOpenIcon(p, icon, actionInk);
         break;
     case MediaState::Failed:
         hasAction = retry;
