@@ -20,14 +20,14 @@ class QTimer;
 class QWidget;
 
 enum class MediaState { Idle, Queued, Downloading, Ready, Failed };
-enum class MediaError { None, Permission, Password, NotFound, NotConnected, Quota, Other };
+// MediaError and its texts (downloadErrorTitle / downloadErrorText) are in medialink.h.
 
 struct MediaEntry {
     MediaLink  link;
     MediaKind  kind  = MediaKind::Other;
     MediaState state = MediaState::Idle; // main file
     MediaError error = MediaError::None;
-    QString    errorText;
+    QString    errorText; // when Failed: the full explanation (downloadErrorText or a more specific one)
     QString    localPath; // cache path of the main file (exists when state == Ready)
     uint64     sch             = 0;
     anyID      transferId      = 0;
@@ -50,14 +50,18 @@ struct ChatTarget {
     anyID  clientId = 0; // for TextMessageTarget_CLIENT
 };
 
+// Preparing: copied to the staging folder, probed, its preview uploaded. Uploading: the file itself.
+// Posting: the chat message announcing it is being sent. Done, Failed and Canceled are final.
 enum class UploadState { Preparing, Uploading, Posting, Done, Failed, Canceled };
 
 struct UploadJob {
-    int         id = 0;
+    int         id    = 0;
+    int         batch = 0; // jobs from one uploadFiles() call share it: their chat messages keep that order
     ChatTarget  target;
     uint64      channelId = 0;
     QString     sourcePath;
     bool        deleteSource = false;
+    bool        pasted       = false; // uploadImage(): sourcePath is a temporary file with a made-up name
     QString     stagingDir;
     QString     remoteDir;
     QString     remoteName;
@@ -65,13 +69,22 @@ struct UploadJob {
     anyID       transferId     = 0;
     bool        transferActive = false;
     UploadState state          = UploadState::Preparing;
-    double      progress       = 0.0; // main file upload progress 0..1
-    QString     message;
+    // Waiting for its turn rather than working. In Preparing: for a free worker or upload slot
+    // ("Waiting to upload…"). In Posting: uploaded, the chat message waits until the earlier files of
+    // its batch are posted ("Waiting for earlier files…"). Show it without a moving progress bar.
+    bool        waiting  = false;
+    bool        uploaded = false; // the file reached the server (it stays there even if posting fails)
+    double      progress = 0.0;   // main file upload progress 0..1
+    QString     message;          // status of the current step; the full error text when Failed
 
     // Filled by the probe step (worker thread) before uploading.
     LocalMediaInfo info;
     QString        previewRemotePath; // set once the preview/poster upload succeeded
 };
+
+// The title of an upload in the toast and in chat warnings: "Pasted image" for pasted pictures,
+// otherwise the source file's name (displayFileName).
+QString displayNameFor(const UploadJob& job);
 
 // Best still picture currently available for an entry.
 struct MediaStill {
@@ -116,7 +129,13 @@ class Core : public QObject
     // File actions for context menus / viewer (no-ops if the main file is not Ready).
     void openExternally(const QString& key) const; // default app; executables are only revealed
     void revealInFolder(const QString& key) const;
-    void saveAs(const QString& key, QWidget* parent) const;
+    // True if openExternally(key) only shows the file in its folder: programs and scripts from chat
+    // (.exe, .js, .lnk, ...) are never run. Lets a UI say so instead of offering "Open".
+    bool isUnsafeToOpen(const QString& key) const;
+    // Asks where to save a copy (synchronous: the dialog, then the copy). Returns the saved file's
+    // path, or an empty string if the user canceled or saving failed (a message box already said
+    // why). Confirm a success with ui::savedToText(path).
+    QString saveAs(const QString& key, QWidget* parent) const;
 
     // Files in use (playing video, open viewer) are never evicted from the cache. Counted: every
     // setInUse(key, true) must be balanced by one setInUse(key, false).
@@ -125,10 +144,24 @@ class Core : public QObject
     // ---- uploads -------------------------------------------------------------------------
     // Each file is probed on a worker thread (size, duration, blurhash, preview), the preview is
     // uploaded to <uploadDirectory>/previews, then the file, then composeChatMessage() is posted.
+    // At most two files are transferred at once; the chat messages of one uploadFiles() call appear
+    // in the order of paths (a file that finishes early waits, see UploadJob::waiting).
     void             uploadFiles(const QStringList& paths, const ChatTarget& target);
     void             uploadImage(const QImage& image, const ChatTarget& target);
-    void             cancelUpload(int id);
-    const UploadJob* upload(int id) const;
+    void             cancelUpload(int id); // while Preparing or Uploading
+    const UploadJob* upload(int id) const; // nullptr once the job is gone
+    QList<int>       uploadIds() const;    // every job Core still has, oldest first
+
+    // Done and Canceled jobs are dropped after 30 s, Failed ones are kept until dismissed (or after
+    // 30 min) so the user can retry them. Removing a job emits uploadChanged(id) once more.
+    void dismissUpload(int id); // forgets a finished job; no-op while it runs
+    // A failed job can be sent again while its source still exists, unless the file already reached
+    // the server (only the chat message failed: a retry would upload a duplicate). Pasted images are
+    // kept until their failed job is dismissed.
+    bool canRetryUpload(int id) const;
+    // Sends the file of a failed job again as a new job and removes the failed one. Returns the new
+    // job's id, or 0 if it cannot be retried (also when not connected: the job then stays).
+    int  retryUpload(int id);
 
     // ---- cache ---------------------------------------------------------------------------
     QString cacheDir() const;
@@ -145,7 +178,7 @@ class Core : public QObject
 
   signals:
     void entryChanged(const QString& key);
-    void uploadChanged(int id);
+    void uploadChanged(int id); // state, progress or waiting changed, or the job was removed
     void openRequested(const QString& key); // a download started with openWhenReady finished
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
@@ -168,6 +201,7 @@ class Core : public QObject
         bool       previewActive     = false;
         int        renames           = 0;     // new names after "file already exists"
         bool       mainUploaded      = false; // the main file is complete on the server
+        MediaLink  link;                      // the link to post, once uploaded
     };
 
     // Downloads interrupted by a lost connection, restarted once the server is reachable again.
@@ -210,7 +244,8 @@ class Core : public QObject
     void    scheduleCacheLimit(const QString& justFinishedKey);
     void    enforceCacheLimit();
 
-    int     createUpload(const QString& sourcePath, const QString& remoteName, const ChatTarget& target, bool deleteSource);
+    int     createUpload(const QString& sourcePath, const QString& remoteName, const ChatTarget& target, bool deleteSource, bool pasted, int batch);
+    void    markProbeStarted(int id);
     void    onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInfo& info, const QByteArray& previewJpeg);
     void    createRemoteDirectory(int id, bool previews);
     void    onDirectoryReady(int id, bool previews, bool ok);
@@ -221,9 +256,15 @@ class Core : public QObject
     void    resendWithNewName(int id, anyID failedTransfer);
     bool    renameUpload(UploadJob& job);
     void    finishUpload(int id);
+    void    postUploadMessage(int id);
+    bool    waitsForEarlierPosts(const UploadJob& job) const;
     void    seedCache(const UploadJob& job, const MediaLink& link);
     void    failUpload(int id, const QString& text);
-    void    setUploadState(UploadJob& job, UploadState state, const QString& message = {});
+    void    setUploadState(UploadJob& job, UploadState state, const QString& message = {}, bool waiting = false);
+    void    scheduleUploadQueue();
+    void    runUploadQueue();
+    void    forgetUpload(int id);
+    void    releaseSource(UploadJob& job);
     void    cleanupUpload(UploadJob& job);
     void    deleteRemoteFile(uint64 sch, uint64 channelId, const QString& path);
     QString previewDirFor(const UploadJob& job) const;
@@ -233,7 +274,6 @@ class Core : public QObject
     void ensureProgressTimer();
 
     static MediaError mapError(unsigned int error);
-    static QString    describe(MediaError error, const QString& fallback);
     static QString    makeRemoteName(const QString& originalName);
     static QString    renamedRemoteName(const QString& remoteName);
     static QString    remoteId(const MediaLink& link);
@@ -262,7 +302,10 @@ class Core : public QObject
     QHash<int, QString>     m_probing; // upload id -> staging dir, while its staging copy / probe runs
     QHash<int, std::shared_ptr<std::atomic<bool>>> m_stagingCancel; // upload id -> stops its staging copy
     QHash<int, QString>     m_deleteAfterProbe; // upload id -> pasted file to delete once its worker is done
+    QList<int>              m_sendQueue; // probed jobs waiting for an upload slot, by id (= selection order)
     int                     m_nextUploadId = 0;
+    int                     m_nextBatch    = 0;
+    bool                    m_uploadQueueScheduled = false;
 
     QHash<QString, PendingOp> m_ops;
     mutable QMutex            m_returnCodesMutex;

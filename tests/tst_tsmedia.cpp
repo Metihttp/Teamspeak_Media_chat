@@ -1,5 +1,6 @@
 // Unit tests for the pure-logic parts of TS Media chat: the chat link format, the message composer,
-// BlurHash and the formatting helpers. Built as target tsmedia_tests (see CMakeLists.txt).
+// BlurHash, the formatting helpers, display names, error texts and the shared UI helpers (uiutil).
+// Built as target tsmedia_tests (see CMakeLists.txt).
 
 #include <QFileInfo>
 #include <QImage>
@@ -8,6 +9,7 @@
 
 #include "blurhash.h"
 #include "medialink.h"
+#include "uiutil.h"
 
 namespace {
 
@@ -17,7 +19,7 @@ const QString kRefHash = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj"); // the 
 const QString kBaseHref = QStringLiteral("ts3file://voice.example.org?port=9987&serverUID=uid&channel=3&path=%2Ftsmedia"
                                          "&filename=clip.mp4&isDir=0&size=100&fileDateTime=1700000000");
 
-const QString kNote = QStringLiteral(" [COLOR=#8e9297][I]— TS Media chat plugin required to view this in chat[/I][/COLOR]");
+const QString kNote = QStringLiteral(" [COLOR=#72767d][I]— TS Media chat plugin required to view this in chat[/I][/COLOR]");
 
 MediaLink sampleLink()
 {
@@ -130,6 +132,7 @@ class TestTsMedia : public QObject
     void composeSizeRule();
     void composeSizeRuleWithUrl();
     void composeSizeRuleCountsBytes();
+    void noticeColourContrast();
 
     // BlurHash
     void blurhashDecodeReference();
@@ -147,8 +150,22 @@ class TestTsMedia : public QObject
     void formatDuration();
     void formatSize_data();
     void formatSize();
+    void formatProgressTexts();
+    void formatTimeLeft_data();
+    void formatTimeLeft();
     void kindForFileName_data();
     void kindForFileName();
+
+    // Names and texts
+    void displayFileName_data();
+    void displayFileName();
+    void displayNameFor_data();
+    void displayNameFor();
+    void errorTexts();
+
+    // UI helpers
+    void contrastRatio();
+    void savedToText();
 };
 
 // ---- MediaLink ---------------------------------------------------------------------------------
@@ -555,7 +572,7 @@ void TestTsMedia::composeNotice()
 
     const MediaLink link    = sampleLink();
     const QString   message = composeChatMessage(link, true, url);
-    QCOMPARE(message, link.toBBCode() + QStringLiteral(" [COLOR=#8e9297][I]— ") + note + QStringLiteral("[/I][/COLOR]"));
+    QCOMPARE(message, link.toBBCode() + QStringLiteral(" [COLOR=#72767d][I]— ") + note + QStringLiteral("[/I][/COLOR]"));
     QVERIFY(utf8Bytes(message) < 1000);
 }
 
@@ -595,7 +612,7 @@ void TestTsMedia::composeDownloadUrlSanitising()
     if (linked.isEmpty()) {
         QCOMPARE(note, kNote);
     } else {
-        QCOMPARE(note, QStringLiteral(" [COLOR=#8e9297][I]— [URL=") + linked + QStringLiteral("]TS Media chat[/URL] plugin required to view this in chat[/I][/COLOR]"));
+        QCOMPARE(note, QStringLiteral(" [COLOR=#72767d][I]— [URL=") + linked + QStringLiteral("]TS Media chat[/URL] plugin required to view this in chat[/I][/COLOR]"));
     }
     // Whatever the user typed, the message has exactly the expected BBCode tags.
     QCOMPARE(message.count(QStringLiteral("[URL="), Qt::CaseInsensitive), linked.isEmpty() ? 1 : 2);
@@ -645,7 +662,7 @@ void TestTsMedia::composeSizeRule()
 void TestTsMedia::composeSizeRuleWithUrl()
 {
     const QString url     = QStringLiteral("https://example.com/download/tsmedia");
-    const QString noteUrl = QStringLiteral(" [COLOR=#8e9297][I]— [URL=") + url + QStringLiteral("]TS Media chat[/URL] plugin required to view this in chat[/I][/COLOR]");
+    const QString noteUrl = QStringLiteral(" [COLOR=#72767d][I]— [URL=") + url + QStringLiteral("]TS Media chat[/URL] plugin required to view this in chat[/I][/COLOR]");
     bool          sawUrl = false, sawNoHash = false, sawPlainNote = false, sawNoNote = false;
     for (int n = 1; n <= 1000; ++n) {
         MediaLink link = sampleLink();
@@ -699,6 +716,19 @@ void TestTsMedia::composeSizeRuleCountsBytes()
         }
     }
     QVERIFY(sawCharsFitButBytesDont);
+}
+
+void TestTsMedia::noticeColourContrast()
+{
+    // The note's colour is fixed by the sender: it must pass on TeamSpeak's default white chat and
+    // stay readable on a dark one.
+    const QString message = composeChatMessage(sampleLink(), true, QString());
+    const int     at      = message.indexOf(QStringLiteral("[COLOR="));
+    QVERIFY(at > 0);
+    const QColor note(message.mid(at + 7, 7));
+    QVERIFY(note.isValid());
+    QVERIFY2(ui::contrastRatio(note, Qt::white) >= 4.5, qPrintable(QString::number(ui::contrastRatio(note, Qt::white))));
+    QVERIFY2(ui::contrastRatio(note, QColor(0x2b, 0x2d, 0x31)) >= 3.0, qPrintable(QString::number(ui::contrastRatio(note, QColor(0x2b, 0x2d, 0x31)))));
 }
 
 // ---- BlurHash ----------------------------------------------------------------------------------
@@ -904,8 +934,18 @@ void TestTsMedia::formatSize_data()
     QTest::newRow("1023") << quint64(1023) << QStringLiteral("1023 B");
     QTest::newRow("1 KB") << quint64(1024) << QStringLiteral("1.0 KB");
     QTest::newRow("1.5 KB") << quint64(1536) << QStringLiteral("1.5 KB");
+    QTest::newRow("24.1 KB") << quint64(24678) << QStringLiteral("24.1 KB");
+    QTest::newRow("99.9 KB") << quint64(102348) << QStringLiteral("99.9 KB");
+    QTest::newRow("100 KB rounded") << quint64(102349) << QStringLiteral("100 KB");
+    QTest::newRow("999 KB") << quint64(999 * 1024) << QStringLiteral("999 KB");
+    QTest::newRow("1023.99 KB") << quint64(1048575) << QStringLiteral("1.0 MB");
     QTest::newRow("5 MB") << quint64(5 * 1024 * 1024) << QStringLiteral("5.0 MB");
-    QTest::newRow("1.5 GB") << quint64(1536ull * 1024 * 1024) << QStringLiteral("1.50 GB");
+    QTest::newRow("700 MB") << quint64(734003200) << QStringLiteral("700 MB");
+    QTest::newRow("just under 1 GB") << quint64(1073741823) << QStringLiteral("1.0 GB");
+    QTest::newRow("1.5 GB") << quint64(1536ull * 1024 * 1024) << QStringLiteral("1.5 GB");
+    QTest::newRow("250 GB") << quint64(250ull * 1024 * 1024 * 1024) << QStringLiteral("250 GB");
+    QTest::newRow("2 TB") << quint64(2ull * 1024 * 1024 * 1024 * 1024) << QStringLiteral("2.0 TB");
+    QTest::newRow("5000 TB") << quint64(5000ull * 1024 * 1024 * 1024 * 1024) << QStringLiteral("5000 TB");
 }
 
 void TestTsMedia::formatSize()
@@ -913,6 +953,38 @@ void TestTsMedia::formatSize()
     QFETCH(quint64, bytes);
     QFETCH(QString, text);
     QCOMPARE(::formatSize(bytes), text);
+}
+
+void TestTsMedia::formatProgressTexts()
+{
+    QCOMPARE(formatProgress(4718592, 10485760), QStringLiteral("4.5 MB of 10.0 MB"));
+    QCOMPARE(formatProgress(0, 734003200), QStringLiteral("0 B of 700 MB"));
+    QCOMPARE(formatProgress(2000, 1000), QStringLiteral("1000 B of 1000 B")); // done never exceeds total
+    QCOMPARE(formatSpeed(1258291.0), QStringLiteral("1.2 MB/s"));
+    QCOMPARE(formatSpeed(-5.0), QStringLiteral("0 B/s"));
+}
+
+void TestTsMedia::formatTimeLeft_data()
+{
+    QTest::addColumn<qint64>("ms");
+    QTest::addColumn<QString>("text");
+
+    QTest::newRow("nothing") << qint64(0) << QStringLiteral("1 s left");
+    QTest::newRow("0.2 s") << qint64(200) << QStringLiteral("1 s left");
+    QTest::newRow("8 s") << qint64(8000) << QStringLiteral("8 s left");
+    QTest::newRow("59.5 s") << qint64(59500) << QStringLiteral("1 min left");
+    QTest::newRow("89 s") << qint64(89000) << QStringLiteral("1 min left");
+    QTest::newRow("90 s") << qint64(90000) << QStringLiteral("2 min left");
+    QTest::newRow("59 min") << qint64(59 * 60000) << QStringLiteral("59 min left");
+    QTest::newRow("1 h") << qint64(3600000) << QStringLiteral("1 h left");
+    QTest::newRow("1 h 5 min") << qint64(65 * 60000) << QStringLiteral("1 h 5 min left");
+}
+
+void TestTsMedia::formatTimeLeft()
+{
+    QFETCH(qint64, ms);
+    QFETCH(QString, text);
+    QCOMPARE(::formatTimeLeft(ms), text);
 }
 
 void TestTsMedia::kindForFileName_data()
@@ -940,6 +1012,112 @@ void TestTsMedia::kindForFileName()
     QFETCH(int, kind);
     QCOMPARE(int(::kindForFileName(name)), kind);
     QCOMPARE(isPreviewableImage(::kindForFileName(name)), kind == int(MediaKind::Image) || kind == int(MediaKind::AnimatedImage));
+}
+
+// ---- names and texts ---------------------------------------------------------------------------
+
+void TestTsMedia::displayFileName_data()
+{
+    QTest::addColumn<QString>("name");
+    QTest::addColumn<QString>("shown");
+
+    QTest::newRow("plain") << QStringLiteral("holiday.jpg") << QStringLiteral("holiday.jpg");
+    QTest::newRow("RLO faked extension") << QStringLiteral("photo") + QChar(0x202E) + QStringLiteral("gpj.exe") << QStringLiteral("photogpj.exe");
+    QTest::newRow("isolates and marks") << QChar(0x2067) + QStringLiteral("a") + QChar(0x2069) + QChar(0x200F) + QStringLiteral("b.png") << QStringLiteral("ab.png");
+    QTest::newRow("control and line separator") << QStringLiteral("a\tb") + QChar(0x2028) + QStringLiteral("c.txt") << QStringLiteral("abc.txt");
+    QTest::newRow("ZWJ kept") << QStringLiteral("a") + QChar(0x200D) + QStringLiteral("b.png") << QStringLiteral("a") + QChar(0x200D) + QStringLiteral("b.png");
+    QTest::newRow("right-to-left script kept") << QString(QChar(0x05D0)) + QStringLiteral(".png") << QString(QChar(0x05D0)) + QStringLiteral(".png");
+}
+
+void TestTsMedia::displayFileName()
+{
+    QFETCH(QString, name);
+    QFETCH(QString, shown);
+    QCOMPARE(::displayFileName(name), shown);
+}
+
+void TestTsMedia::displayNameFor_data()
+{
+    QTest::addColumn<int>("protocol");
+    QTest::addColumn<QString>("fileName");
+    QTest::addColumn<QString>("shown");
+
+    QTest::newRow("upload") << 2 << QStringLiteral("holiday_3f9a1c2e.jpg") << QStringLiteral("holiday.jpg");
+    QTest::newRow("plain TeamSpeak link") << 0 << QStringLiteral("holiday_3f9a1c2e.jpg") << QStringLiteral("holiday_3f9a1c2e.jpg");
+    QTest::newRow("pasted png") << 2 << QStringLiteral("new_photo_1a2b3c4d.png") << QStringLiteral("Pasted image.png");
+    QTest::newRow("pasted jpg") << 2 << QStringLiteral("new_photo_1a2b3c4d.jpg") << QStringLiteral("Pasted image.jpg");
+    QTest::newRow("own new_photo name") << 2 << QStringLiteral("new_photo_1a2b3c4d_3f9a1c2e.png") << QStringLiteral("new_photo_1a2b3c4d.png");
+    QTest::newRow("not 8 digits") << 2 << QStringLiteral("clip_41234.mp4") << QStringLiteral("clip_41234.mp4");
+    QTest::newRow("upper-case hex is not ours") << 2 << QStringLiteral("x_3F9A1C2E.png") << QStringLiteral("x_3F9A1C2E.png");
+    QTest::newRow("only the last part") << 2 << QStringLiteral("report_deadbeef_3f9a1c2e.pdf") << QStringLiteral("report_deadbeef.pdf");
+    QTest::newRow("double extension") << 2 << QStringLiteral("backup.tar_3f9a1c2e.gz") << QStringLiteral("backup.tar.gz");
+    QTest::newRow("no extension") << 2 << QStringLiteral("notes_3f9a1c2e") << QStringLiteral("notes");
+    QTest::newRow("nothing else left") << 2 << QStringLiteral("_3f9a1c2e.png") << QStringLiteral("_3f9a1c2e.png");
+    QTest::newRow("leading dot") << 2 << QStringLiteral(".env_3f9a1c2e") << QStringLiteral(".env");
+    QTest::newRow("bidi stripped too") << 2 << QStringLiteral("a") + QChar(0x202E) + QStringLiteral("b_3f9a1c2e.png") << QStringLiteral("ab.png");
+}
+
+void TestTsMedia::displayNameFor()
+{
+    QFETCH(int, protocol);
+    QFETCH(QString, fileName);
+    QFETCH(QString, shown);
+
+    MediaLink link = sampleLink();
+    link.protocol  = protocol;
+    link.fileName  = fileName;
+    QCOMPARE(::displayNameFor(link), shown);
+    QCOMPARE(link.fileName, fileName); // the link itself is untouched
+}
+
+void TestTsMedia::errorTexts()
+{
+    const MediaError all[] = {MediaError::None, MediaError::Permission, MediaError::Password, MediaError::NotFound,
+                              MediaError::NotConnected, MediaError::Quota, MediaError::Other};
+    for (const MediaError error : all) {
+        const QString title = downloadErrorTitle(error);
+        QVERIFY(!title.isEmpty());
+        QVERIFY2(!title.endsWith(QLatin1Char('.')), qPrintable(title)); // titles are fragments
+        // Explanations are full sentences.
+        for (const QString& text : {downloadErrorText(error), uploadErrorText(error), postErrorText(error)}) {
+            QVERIFY2(text.endsWith(QLatin1Char('.')), qPrintable(text));
+            QVERIFY2(text.at(0).isUpper(), qPrintable(text));
+        }
+    }
+    // The server's own message is quoted only where nothing more specific is known, and never as a title.
+    const QString raw = QStringLiteral("file transfer interrupted.");
+    QCOMPARE(downloadErrorTitle(MediaError::Other), QStringLiteral("Download failed"));
+    QCOMPARE(downloadErrorText(MediaError::Other, raw), QStringLiteral("Something went wrong while downloading this file (file transfer interrupted). Try again."));
+    QCOMPARE(uploadErrorText(MediaError::Other, raw), QStringLiteral("Upload failed (file transfer interrupted). Try again."));
+    QVERIFY(!downloadErrorText(MediaError::Permission, raw).contains(QStringLiteral("interrupted")));
+    // Upload and download wording differ for the same cause.
+    QVERIFY(uploadErrorText(MediaError::Permission).contains(QStringLiteral("upload")));
+    QVERIFY(downloadErrorText(MediaError::Permission).contains(QStringLiteral("download")));
+    QVERIFY(postErrorText(MediaError::Permission).startsWith(QStringLiteral("Uploaded, but")));
+}
+
+// ---- UI helpers --------------------------------------------------------------------------------
+
+void TestTsMedia::contrastRatio()
+{
+    QVERIFY(qAbs(ui::contrastRatio(Qt::black, Qt::white) - 21.0) < 1e-9);
+    QVERIFY(qAbs(ui::contrastRatio(Qt::white, Qt::black) - 21.0) < 1e-9);
+    QVERIFY(qAbs(ui::contrastRatio(QColor(0x80, 0x80, 0x80), QColor(0x80, 0x80, 0x80)) - 1.0) < 1e-9);
+    // Well-known values: #767676 on white is the lightest grey that passes 4.5:1, #777777 fails.
+    QVERIFY(ui::contrastRatio(QColor(0x76, 0x76, 0x76), Qt::white) >= 4.5);
+    QVERIFY(ui::contrastRatio(QColor(0x77, 0x77, 0x77), Qt::white) < 4.5);
+    // The old note colour, for the record: 3.13:1.
+    QVERIFY(qAbs(ui::contrastRatio(QColor(0x8e, 0x92, 0x97), Qt::white) - 3.13) < 0.01);
+
+    const QColor half = ui::flatten(QColor(0, 0, 0, 128), Qt::white);
+    QVERIFY(qAbs(half.red() - 127) <= 1 && half.red() == half.green() && half.green() == half.blue());
+    QCOMPARE(ui::flatten(QColor(10, 20, 30), Qt::white), QColor(10, 20, 30));
+}
+
+void TestTsMedia::savedToText()
+{
+    QCOMPARE(ui::savedToText(QStringLiteral("C:/Users/me/Pictures/holiday.jpg")), QStringLiteral("Saved to Pictures"));
+    QCOMPARE(ui::savedToText(QStringLiteral("D:/clip.mp4")), QStringLiteral("Saved to D:\\"));
 }
 
 QTEST_GUILESS_MAIN(TestTsMedia)

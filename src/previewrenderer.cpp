@@ -396,24 +396,10 @@ bool isRetryable(const MediaEntry& e)
     return e.error != MediaError::NotFound && e.error != MediaError::Password;
 }
 
+// The short form; e.errorText holds the full explanation (downloadErrorText) for tooltips.
 QString errorTitle(const MediaEntry& e)
 {
-    switch (e.error) {
-    case MediaError::NotFound:
-        return i18n::t("File was deleted from the server");
-    case MediaError::Permission:
-        return i18n::t("No permission to download");
-    case MediaError::Password:
-        return i18n::t("Channel is password protected");
-    case MediaError::NotConnected:
-        return i18n::t("Not connected to this server");
-    case MediaError::Quota:
-        return i18n::t("Server transfer quota reached");
-    case MediaError::None:
-    case MediaError::Other:
-        break;
-    }
-    return e.errorText.isEmpty() ? i18n::t("Download failed") : e.errorText;
+    return downloadErrorTitle(e.error);
 }
 
 QString retryHint()
@@ -1134,20 +1120,4 @@ double seekFractionAt(const QSize& logicalSize, const QPointF& pos)
     if (g.seekTrack.width() <= 0)
         return 0.0;
     return qBound(0.0, (pos.x() - g.seekTrack.left()) / g.seekTrack.width(), 1.0);
-}
-
-QString displayFileName(const QString& name)
-{
-    QString out;
-    out.reserve(name.size());
-    for (const QChar ch : name) {
-        const ushort u = ch.unicode();
-        // LRM, RLM, ALM; LRE, RLE, PDF, LRO, RLO; LRI, RLI, FSI, PDI. (ZWNJ/ZWJ stay: some scripts need them.)
-        const bool bidiControl = u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
-        const QChar::Category category = ch.category();
-        if (bidiControl || category == QChar::Other_Control || category == QChar::Separator_Line || category == QChar::Separator_Paragraph)
-            continue;
-        out += ch;
-    }
-    return out;
 }

@@ -114,7 +114,18 @@ QString requiredNotice(const QString& url)
                              ? i18n::t("TS Media chat plugin required to view this in chat")
                              : i18n::t("[URL=%1]TS Media chat[/URL] plugin required to view this in chat")
                                    .arg(url);
-    return QStringLiteral(" [COLOR=#8e9297][I]— ") + note + QStringLiteral("[/I][/COLOR]");
+    // The receiver's theme is unknown: #72767d keeps 4.5:1 on TeamSpeak's default white chat and
+    // stays readable (3:1) on dark ones. Receivers with the plugin remove the note by its position.
+    return QStringLiteral(" [COLOR=#72767d][I]— ") + note + QStringLiteral("[/I][/COLOR]");
+}
+
+// TeamSpeak's own error message inside one of ours: trimmed, without a final period.
+QString quoted(const QString& serverText)
+{
+    QString text = serverText.trimmed();
+    while (text.endsWith(QLatin1Char('.')))
+        text.chop(1);
+    return text;
 }
 
 } // namespace
@@ -335,15 +346,165 @@ bool isPreviewableImage(MediaKind kind)
     return kind == MediaKind::Image || kind == MediaKind::AnimatedImage;
 }
 
+QString displayFileName(const QString& name)
+{
+    QString out;
+    out.reserve(name.size());
+    for (const QChar ch : name) {
+        const ushort u = ch.unicode();
+        // LRM, RLM, ALM; LRE, RLE, PDF, LRO, RLO; LRI, RLI, FSI, PDI. (ZWNJ/ZWJ stay: some scripts need them.)
+        const bool bidiControl = u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
+        const QChar::Category category = ch.category();
+        if (bidiControl || category == QChar::Other_Control || category == QChar::Separator_Line || category == QChar::Separator_Paragraph)
+            continue;
+        out += ch;
+    }
+    return out;
+}
+
+QString displayNameFor(const MediaLink& link)
+{
+    if (link.protocol <= 0)
+        return displayFileName(link.fileName);
+
+    // Core::makeRemoteName: <base>_<8 lower-case hex digits>[.<ext>]. A leading dot starts a name.
+    static const QRegularExpression randomPart(QStringLiteral("_[0-9a-f]{8}$"));
+    static const QRegularExpression pasted(QStringLiteral("^new_photo_[0-9a-f]{8}$"));
+    const int     dot  = link.fileName.lastIndexOf(QLatin1Char('.'));
+    QString       base = dot > 0 ? link.fileName.left(dot) : link.fileName;
+    const QString ext  = dot > 0 ? link.fileName.mid(dot) : QString();
+    if (pasted.match(base).hasMatch()) {
+        base = i18n::t("Pasted image");
+    } else {
+        const QString stripped = QString(base).remove(randomPart);
+        if (!stripped.isEmpty())
+            base = stripped;
+    }
+    return displayFileName(base + ext);
+}
+
 QString formatSize(quint64 bytes)
 {
     if (bytes < 1024)
         return QStringLiteral("%1 B").arg(bytes);
-    if (bytes < 1024ull * 1024)
-        return QStringLiteral("%1 KB").arg(bytes / 1024.0, 0, 'f', 1);
-    if (bytes < 1024ull * 1024 * 1024)
-        return QStringLiteral("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
-    return QStringLiteral("%1 GB").arg(bytes / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
+    static const char* const units[] = {"KB", "MB", "GB", "TB"};
+    constexpr int            kLastUnit = 3;
+    double                   value     = static_cast<double>(bytes) / 1024.0;
+    int                      unit      = 0;
+    // Promote while the value would round to four digits: 1023.9 KB is shown as 1.0 MB.
+    while (value >= 999.5 && unit < kLastUnit) {
+        value /= 1024.0;
+        ++unit;
+    }
+    const int decimals = value < 99.95 ? 1 : 0;
+    return QStringLiteral("%1 %2").arg(value, 0, 'f', decimals).arg(QLatin1String(units[unit]));
+}
+
+QString formatProgress(quint64 done, quint64 total)
+{
+    return i18n::t("%1 of %2").arg(formatSize(total > 0 ? qMin(done, total) : done), formatSize(total));
+}
+
+QString formatSpeed(double bytesPerSecond)
+{
+    const double rate = bytesPerSecond > 0.0 ? bytesPerSecond : 0.0;
+    return i18n::t("%1/s").arg(formatSize(static_cast<quint64>(rate + 0.5)));
+}
+
+QString formatTimeLeft(qint64 ms)
+{
+    // Seconds round up (never "0 s left" while something remains), minutes to the nearest one.
+    const qint64 seconds = qMax<qint64>(1, (qMax<qint64>(0, ms) + 999) / 1000);
+    if (seconds < 60)
+        return i18n::t("%1 s left").arg(seconds);
+    const qint64 minutes = (seconds + 30) / 60;
+    if (minutes < 60)
+        return i18n::t("%1 min left").arg(minutes);
+    const qint64 hours = minutes / 60;
+    const qint64 rest  = minutes % 60;
+    return rest == 0 ? i18n::t("%1 h left").arg(hours) : i18n::t("%1 h %2 min left").arg(hours).arg(rest);
+}
+
+QString downloadErrorTitle(MediaError error)
+{
+    switch (error) {
+    case MediaError::NotFound:
+        return i18n::t("File is no longer on the server");
+    case MediaError::Permission:
+        return i18n::t("No permission to download");
+    case MediaError::Password:
+        return i18n::t("Channel is password protected");
+    case MediaError::NotConnected:
+        return i18n::t("Not connected to this server");
+    case MediaError::Quota:
+        return i18n::t("Server transfer limit reached");
+    case MediaError::None:
+    case MediaError::Other:
+        break;
+    }
+    return i18n::t("Download failed");
+}
+
+QString downloadErrorText(MediaError error, const QString& serverText)
+{
+    switch (error) {
+    case MediaError::NotFound:
+        return i18n::t("The file was deleted from the server or replaced after it was sent.");
+    case MediaError::Permission:
+        return i18n::t("You don't have permission to download files in this channel. Ask a server admin.");
+    case MediaError::Password:
+        return i18n::t("Downloading from password-protected channels isn't supported. Use TeamSpeak's file browser instead.");
+    case MediaError::NotConnected:
+        return i18n::t("Reconnect to this server to download the file. Interrupted downloads resume by themselves.");
+    case MediaError::Quota:
+        return i18n::t("This server's file transfer quota is used up. Ask a server admin.");
+    case MediaError::None:
+    case MediaError::Other:
+        break;
+    }
+    const QString server = quoted(serverText);
+    return server.isEmpty() ? i18n::t("Something went wrong while downloading this file. Try again.")
+                            : i18n::t("Something went wrong while downloading this file (%1). Try again.").arg(server);
+}
+
+QString uploadErrorText(MediaError error, const QString& serverText)
+{
+    switch (error) {
+    case MediaError::Permission:
+        return i18n::t("You don't have permission to upload files in this channel. Ask a server admin for upload permission.");
+    case MediaError::Quota:
+        return i18n::t("The server's upload quota or storage is full. Ask a server admin.");
+    case MediaError::NotConnected:
+        return i18n::t("Disconnected from the server. Reconnect and try again.");
+    case MediaError::Password:
+        return i18n::t("Sending files to password-protected channels isn't supported. Use another channel.");
+    case MediaError::NotFound:
+        return i18n::t("The upload folder no longer exists on the server. Try again.");
+    case MediaError::None:
+    case MediaError::Other:
+        break;
+    }
+    const QString server = quoted(serverText);
+    return server.isEmpty() ? i18n::t("Upload failed. Try again.") : i18n::t("Upload failed (%1). Try again.").arg(server);
+}
+
+QString postErrorText(MediaError error, const QString& serverText)
+{
+    switch (error) {
+    case MediaError::Permission:
+        return i18n::t("Uploaded, but you don't have permission to write in this chat. The file is in the channel's file browser.");
+    case MediaError::NotConnected:
+        return i18n::t("Uploaded, but the connection was lost before the chat message was sent. The file is in the channel's file browser.");
+    case MediaError::None:
+    case MediaError::Password:
+    case MediaError::NotFound:
+    case MediaError::Quota:
+    case MediaError::Other:
+        break;
+    }
+    const QString server = quoted(serverText);
+    return server.isEmpty() ? i18n::t("Uploaded, but the chat message couldn't be sent. The file is in the channel's file browser.")
+                            : i18n::t("Uploaded, but the chat message couldn't be sent (%1). The file is in the channel's file browser.").arg(server);
 }
 
 QString formatDuration(qint64 ms)

@@ -52,7 +52,4 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
 VideoZone videoZoneAt(const QSize& logicalSize, const QPointF& pos);
 double    seekFractionAt(const QSize& logicalSize, const QPointF& pos); // 0..1 along the seek bar
 
-// A file name from a chat link (anyone can post one) prepared for display as plain text: control
-// characters and bidi embedding/override/isolate marks are removed, so a name cannot reorder or
-// hide parts of what is shown (e.g. fake its extension). Not for paths or keys.
-QString displayFileName(const QString& name);
+// displayFileName() and displayNameFor() are in medialink.h.

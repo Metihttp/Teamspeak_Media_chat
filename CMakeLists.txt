@@ -43,6 +43,7 @@ add_library(tsmedia SHARED
     src/plugin.cpp
     src/ts3api.cpp            src/ts3api.h
     src/i18n.cpp              src/i18n.h
+    src/uiutil.cpp            src/uiutil.h
     src/blurhash.cpp          src/blurhash.h
     src/medialink.cpp         src/medialink.h
     src/mediaprobe.cpp        src/mediaprobe.h
@@ -81,7 +82,7 @@ set_target_properties(tsmedia PROPERTIES
     PREFIX ""
 )
 
-# ---- unit tests (pure logic: link format, chat message, blurhash) -----------------------------
+# ---- unit tests (pure logic: link format, chat message, blurhash, texts and UI helpers) -----------------------------
 option(TSMEDIA_BUILD_TESTS "Build unit tests" ON)
 if(TSMEDIA_BUILD_TESTS)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
@@ -91,6 +92,7 @@ if(TSMEDIA_BUILD_TESTS)
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp
+        src/uiutil.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -134,6 +136,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp
+        src/uiutil.cpp
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
