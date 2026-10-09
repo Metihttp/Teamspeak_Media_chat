@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "composehooks.h"
+#include "floodgovernor.h"
 #include "i18n.h"
 #include "pluginlink.h"
 #include "presenceline.h"
@@ -620,14 +621,14 @@ QString PeerHub::diagnosticsLine(quint64 sch) const
     QStringList                parts;
     int                        people  = 0;
     for (auto it = version.constBegin(); it != version.constEnd(); ++it) {
-        parts << QStringLiteral("%1 x%2").arg(it.key()).arg(it.value());
+        parts << i18n::t("%1 x%2").arg(it.key()).arg(it.value());
         people += it.value();
     }
     parts.sort();
-    return QStringLiteral("Peers: %1 with TS Media (%2); plugin commands sent %3, ok %4, failed %5 (timeouts %6), received %7, rejected %8, rate-limited %9, "
-                          "flood backoffs %10; commands blocked: %11")
+    return i18n::t("Peers: %1 with TS Media (%2); plugin commands sent %3, ok %4, failed %5 (timeouts %6), received %7, rejected %8, rate-limited %9, "
+                   "flood backoffs %10; commands blocked: %11")
         .arg(people)
-        .arg(parts.join(QStringLiteral(", ")))
+        .arg(parts.isEmpty() ? i18n::t("none") : parts.join(i18n::t(", ")))
         .arg(c.sent)
         .arg(c.answeredOk)
         .arg(c.failed)
@@ -636,7 +637,51 @@ QString PeerHub::diagnosticsLine(quint64 sch) const
         .arg(c.rejected)
         .arg(c.rateLimited)
         .arg(c.floodBackoffs)
-        .arg(c.blocked ? QStringLiteral("yes") : QStringLiteral("no"));
+        .arg(c.blocked ? i18n::t("yes") : i18n::t("no"));
+}
+
+QString PeerHub::diagnosticsTitle()
+{
+    return i18n::t("Presence and reactions");
+}
+
+QStringList PeerHub::diagnosticLines() const
+{
+    const Settings& s = Settings::instance();
+    QStringList     lines;
+    lines << i18n::t("Presence shared: %1; reactions shown: %2; reactions stored: %3 media, %4 waiting for their media")
+                 .arg(s.sharePresence ? i18n::t("yes") : i18n::t("no"))
+                 .arg(s.showReactions ? i18n::t("yes") : i18n::t("no"))
+                 .arg(m_store ? m_store->keys().size() : 0)
+                 .arg(m_store ? m_store->orphanCount() : 0);
+    int number = 0;
+    for (const uint64 sch : ts3::connections()) {
+        if (!ts3::isConnected(sch))
+            continue;
+        ++number;
+        lines << i18n::t("Connection %1: %2").arg(number).arg(diagnosticsLine(sch));
+        if (m_core) {
+            const qint64                   now = m_core->floodClockMs();
+            const FloodGovernor&           g   = m_core->floodGovernor(sch);
+            const FloodGovernor::Counters& f   = g.counters();
+            lines << i18n::t("Connection %1 anti-flood: chat posts %2 (flooded %3), plugin commands %4 (flooded %5), other floods %6, "
+                             "last pause %7 ms; points now %8 of %9 (chat), %10 of %11 (plugin commands)")
+                         .arg(number)
+                         .arg(f.postsSent)
+                         .arg(f.postFloods)
+                         .arg(f.commandsSent)
+                         .arg(f.commandFloods)
+                         .arg(f.otherFloods)
+                         .arg(f.lastPauseMs)
+                         .arg(qRound(g.generalPoints(now)))
+                         .arg(g.limits().generalCapacity)
+                         .arg(qRound(g.pluginPoints(now)))
+                         .arg(g.limits().pluginCapacity);
+        }
+    }
+    if (number == 0)
+        lines << i18n::t("Not connected to a server");
+    return lines;
 }
 
 // ---- TeamSpeak callbacks (any thread) -------------------------------------------------------------

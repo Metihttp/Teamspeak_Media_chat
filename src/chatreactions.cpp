@@ -16,6 +16,7 @@
 #include <QTimer>
 #include <QToolTip>
 
+#include "albums.h" // 2.2 album: the album's row
 #include "chatintegration.h"
 #include "i18n.h"
 #include "inlinemedia.h"
@@ -36,8 +37,18 @@ constexpr int kKindRecheckMs = 2000;
 
 bool isReactable(const MediaEntry* e)
 {
-    // Pictures, GIFs and videos (audio and voice cards follow when they exist); not file cards.
-    return e && (e->kind == MediaKind::Video || isPreviewableImage(e->kind));
+    // Pictures, GIFs, videos, audio and voice cards; not file cards.
+    return e && (e->kind == MediaKind::Video || e->kind == MediaKind::Audio || isPreviewableImage(e->kind));
+}
+
+// The media key a preview object's reactions belong to: the object's own key, or for an album grid
+// the key of its first item (ai=1; empty while that one hasn't arrived).
+QString reactionKey(const QString& objectKey)
+{
+    QStringList keys;
+    if (albums::isObjectId(objectKey))
+        return albums::parseObjectId(objectKey, nullptr, &keys) ? keys.value(0) : QString();
+    return objectKey;
 }
 
 bool reactive(rx::Zone zone)
@@ -105,7 +116,7 @@ ChatReactions::ChatReactions(ChatIntegration* chat, Core* core)
             if (!view)
                 return;
             m_chat->ensurePositions(*view);
-            if (view->positionsByKey.contains(key))
+            if (view->positionsByKey.contains(key) || view->albumsByKey.contains(key)) // 2.2 album: a grid's first item
                 m_chat->showFeedback(chat->viewport(), text, true);
         });
         hub->setPresentKeys(this, [this](const QString& serverUid) { return presentKeys(serverUid); });
@@ -175,7 +186,7 @@ void ChatReactions::track(QTextBrowser* browser)
 bool ChatReactions::eligible(QTextBrowser* browser, const QString& key, Kind* kind)
 {
     const Settings& s = Settings::instance();
-    if (!s.showReactions || !s.inlinePreviews || !PeerHub::instance() || !isReactable(m_core->entry(key)))
+    if (!s.showReactions || !s.inlinePreviews || !PeerHub::instance() || !isReactable(m_core->entry(reactionKey(key))))
         return false;
     *kind = kindOf(browser);
     return *kind != Kind::Server;
@@ -220,7 +231,9 @@ QImage ChatReactions::compose(QTextBrowser* browser, const QString& key, const Q
     if (picture.isNull() || !eligible(browser, key, &kind))
         return picture;
 
-    rx::ObjectState state;
+    const QString     reacted = reactionKey(key);
+    const MediaEntry* entry   = m_core->entry(reacted);
+    rx::ObjectState   state;
     state.dark     = style.dark;
     state.base     = baseOf(browser);
     state.font     = style.font;
@@ -228,6 +241,7 @@ QImage ChatReactions::compose(QTextBrowser* browser, const QString& key, const Q
     state.maxWidth = style.maxWidth;
     state.hovered  = style.hovered;
     state.canAdd   = style.hovered && canAdd(kind); // only shown while hovered (spares video frames the lookups)
+    state.noButton = entry && entry->kind == MediaKind::Audio; // decisions: cards have no hover overlay
     state.keep     = m_keep.contains(key);
     if (m_hover.browser == browser && m_hover.key == key) {
         state.hoverZone  = m_hover.zone;
@@ -239,7 +253,7 @@ QImage ChatReactions::compose(QTextBrowser* browser, const QString& key, const Q
     }
     rx::ObjectLayout layout;
     const QSize      pictureSize = *size;
-    const QImage     object      = rx::composeObject(picture, pictureSize, PeerHub::instance()->view(key), state, &layout, size);
+    const QImage     object      = rx::composeObject(picture, pictureSize, PeerHub::instance()->view(reacted), state, &layout, size);
     geometry.row                 = layout.row;
     geometry.button              = layout.button;
     return object;
@@ -414,6 +428,13 @@ bool ChatReactions::filterEvent(QObject* watched, QEvent* event)
         setSpot(spot);
         if (!reactive(hit.zone.zone))
             return false; // the picture, the chat text: ChatIntegration's
+        // 2.2 album: over an album's row no tile is hovered, the grid as a whole is.
+        if (albums::isObjectId(hit.key) && (m_chat->m_hoverObject != hit.key || m_chat->m_hoverTile != -1 || m_chat->m_hoverObjectIn != browser)) {
+            m_chat->m_hoverObject   = hit.key;
+            m_chat->m_hoverTile     = -1;
+            m_chat->m_hoverObjectIn = browser;
+            refresh(browser, hit.key);
+        }
         // Over the row the preview stays "hovered" (its add pill shows), outside the picture's own logic.
         if (m_chat->m_hoverKey != hit.key) {
             const QString left = m_chat->m_hoverKey;
@@ -469,7 +490,11 @@ bool ChatReactions::filterEvent(QObject* watched, QEvent* event)
         if (!reactive(hit.zone.zone))
             return false;
         m_chat->m_lastBrowser = browser;
-        m_chat->showContextMenu(browser, hit.key, static_cast<QContextMenuEvent*>(event)->globalPos());
+        const QPoint at = static_cast<QContextMenuEvent*>(event)->globalPos();
+        if (albums::isObjectId(hit.key)) // 2.2 album: the first item's menu, with the album's reactions
+            m_chat->showContextMenu(browser, reactionKey(hit.key), at, hit.key);
+        else
+            m_chat->showContextMenu(browser, hit.key, at);
         return true;
     }
 
@@ -480,7 +505,7 @@ bool ChatReactions::filterEvent(QObject* watched, QEvent* event)
         const QRect   area = hit.zone.rect.translated(hit.object.topLeft()).toAlignedRect();
         QString       text;
         if (hit.zone.zone == rx::Zone::Pill)
-            text = pillToolTip(hit.key, hit.zone.index);
+            text = pillToolTip(reactionKey(hit.key), hit.zone.index);
         else if (hit.zone.zone == rx::Zone::AddButton || hit.zone.zone == rx::Zone::AddPill)
             text = addToolTip();
         if (text.isEmpty())
@@ -508,13 +533,16 @@ void ChatReactions::toggle(QTextBrowser* browser, const QString& key, int reacti
         m_chat->showFeedback(browser->viewport(), i18n::t("Can't tell who this private chat is with, so your reaction can't be delivered."), true);
         return;
     }
-    const PeerHub::ReactError error = hub->toggle(key, reaction, target);
+    const QString reacted = reactionKey(key); // key: the preview object (an album: its grid)
+    if (reacted.isEmpty())
+        return;
+    const PeerHub::ReactError error = hub->toggle(reacted, reaction, target);
     if (error != PeerHub::ReactError::None) {
         m_chat->showFeedback(browser->viewport(), PeerHub::errorText(error), true);
         return;
     }
     // Removing the last reaction while the pointer is on the row keeps the row until it leaves.
-    if (hub->view(key).isEmpty() && (m_objectKey == key || m_chat->m_hoverKey == key))
+    if (hub->view(reacted).isEmpty() && (m_objectKey == key || m_chat->m_hoverKey == key))
         m_keep.insert(key);
     refresh(browser, key); // at once; the other chats follow with the store's change
 }
@@ -527,7 +555,7 @@ void ChatReactions::openPicker(QTextBrowser* browser, const QString& key, const 
     if (m_picker)
         m_picker->close();
     const PreviewStyle style  = m_chat->styleFor(browser);
-    auto*              picker = new ReactionPicker(style.dark, baseOf(browser), hub->view(key).ownMask());
+    auto*              picker = new ReactionPicker(style.dark, baseOf(browser), hub->view(reactionKey(key)).ownMask());
     m_picker                  = picker;
     QPointer<QTextBrowser> guard(browser);
     connect(picker, &ReactionPicker::picked, this, [this, guard, key](int reaction) {
@@ -544,7 +572,8 @@ void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& k
     if (!hub || !menu || !eligible(browser, key, &kind))
         return;
     kindOf(browser, true);
-    const ReactionView view    = hub->view(key);
+    const QString      reacted = reactionKey(key); // key: an album's grid gives its first item's reactions
+    const ReactionView view    = hub->view(reacted);
     const QString      blocked = blockedText(browser);
     menu->addSeparator();
     QMenu* sub = menu->addMenu(i18n::t("Add &reaction"));
@@ -568,7 +597,7 @@ void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& k
         action->setCheckable(true);
         action->setChecked(view.per[i].mine);
         if (count > 0)
-            action->setToolTip(pillToolTip(key, i));
+            action->setToolTip(pillToolTip(reacted, i));
         connect(action, &QAction::triggered, this, [this, guard, key, i] {
             if (guard)
                 toggle(guard.data(), key, i);
@@ -611,8 +640,8 @@ QStringList ChatReactions::presentKeys(const QString& serverUid) const
         m_chat->ensurePositions(it.value());
         const QVector<ChatIntegration::PreviewPos>& previews = it->previews;
         for (int i = previews.size() - 1; i >= 0 && keys.size() < proto::kMaxItems; --i) {
-            const QString&    key = previews.at(i).key;
-            const MediaEntry* e   = m_core->entry(key);
+            const QString     key = reactionKey(previews.at(i).key); // 2.2 album: a grid's first item
+            const MediaEntry* e   = key.isEmpty() ? nullptr : m_core->entry(key);
             if (!keys.contains(key) && isReactable(e) && e->link.serverUid == serverUid)
                 keys.append(key);
         }

@@ -18,8 +18,11 @@
 
 #include "albums.h"
 #include "i18n.h"
+#include "chatreactions.h" // 2.2 reactions: the album's row
 #include "inlinemedia.h"
+#include "ownedtimer.h"
 #include "settings.h"
+#include "spoiler.h" // 2.2 spoiler: tiles under the shared cover
 
 namespace {
 
@@ -570,7 +573,12 @@ QImage ChatIntegration::renderAlbumFor(QTextBrowser* browser, const QString& id,
             continue;
         const QSize pixels = albumTileStillPixels(*t.entry, geo.tiles.at(i).size(), style.dpr);
         t.still            = m_core->still(key, pixels);
-        const bool covered = geo.overflow > 0 && i == geo.tiles.size() - 1; // under "+N": doesn't move
+        // 2.2 spoiler: Core's predicate, as for single previews (and the reveal crossfade after a click).
+        t.concealed      = m_core->isSpoilerHidden(key);
+        t.concealOpacity = t.concealed ? 1.0 : spoilerCoverOpacity(key);
+        const bool covered = (geo.overflow > 0 && i == geo.tiles.size() - 1) || t.concealed; // under "+N" or a cover: doesn't move
+        if (!t.concealed && t.concealOpacity <= 0.0 && browser->isVisible() && spoiler::appliesTo(t.entry->kind))
+            m_core->noteShownOpen(key);
         if (m_media && t.entry->kind == MediaKind::AnimatedImage && !covered) {
             // Frames are made at the tile's cover size; a single preview of the same GIF wins.
             if (!shownAlone(key))
@@ -580,9 +588,18 @@ QImage ChatIntegration::renderAlbumFor(QTextBrowser* browser, const QString& id,
         }
         t.hovered = m_hoverObject == id && m_hoverTile == i && browser == m_hoverObjectIn;
         t.pressed = t.hovered && m_pressedObject == id && m_pressedTile == i && browser == m_pressBrowser && !m_seeking;
-        // 2.2 spoiler hook: t.concealed = Core::isConcealed(key) once the spoiler area lands.
     }
-    return renderAlbum(tiles, style, logicalSize);
+    QSize  size;
+    QImage img = renderAlbum(tiles, style, &size);
+    // 2.2 reactions: one row for the album, keyed by its first item (ai=1), below the grid.
+    if (m_reactions && !img.isNull()) {
+        PreviewStyle rowStyle = style;
+        rowStyle.hovered      = (m_hoverObject == id && browser == m_hoverObjectIn) || m_hoverKey == id;
+        img                   = m_reactions->compose(browser, id, img, rowStyle, &size);
+    }
+    if (logicalSize)
+        *logicalSize = size;
+    return img;
 }
 
 // ============================================================================================
@@ -633,6 +650,8 @@ QString ChatIntegration::albumToolTip(const Hit& hit, QRect* area) const
         return i18n::t("This file hasn't arrived yet");
     if (hit.overflow > 0)
         return i18n::t("%1 more · Click to see all").arg(hit.overflow);
+    if (m_core->isSpoilerHidden(hit.key))
+        return spoilerToolTip(); // 2.2 spoiler: no name, size or state
     const MediaEntry* e = m_core->entry(hit.key);
     if (!e)
         return {};
@@ -663,6 +682,12 @@ void ChatIntegration::activateAlbumTile(const Hit& hit)
     const MediaEntry* e = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
     if (!e)
         return; // not arrived yet
+    // 2.2 spoiler: the first click only reveals a covered tile ("+N" still opens the viewer, which
+    // has its own cover).
+    if (hit.overflow == 0 && m_core->isSpoilerHidden(hit.key)) {
+        revealSpoiler(hit.key);
+        return;
+    }
     if (e->state == MediaState::Failed) {
         // Fixable failures get another try in place; files gone from the server stay as they are.
         if (isRetryableDownload(*e))
@@ -670,13 +695,7 @@ void ChatIntegration::activateAlbumTile(const Hit& hit)
         return;
     }
     // The viewer, at this item ("+N" too), with the rest of the album next to it. Opened outside the
-    // event filter by a timer of ours. TODO use ui helper (uiutil.h) for owned single shots.
-    const QString key   = hit.key;
-    auto*         timer = new QTimer(this);
-    timer->setSingleShot(true);
-    connect(timer, &QTimer::timeout, this, [this, timer, key] {
-        timer->deleteLater();
-        openViewer(key);
-    });
-    timer->start(0);
+    // event filter by a timer of ours (owned: nothing of it outlives the plugin).
+    const QString key = hit.key;
+    singleShotOwned(0, this, [this, key] { openViewer(key); });
 }

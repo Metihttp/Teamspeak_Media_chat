@@ -320,6 +320,7 @@ QList<Sample> buildSamples()
             QImage             frame;                      // a GIF frame while it animates
             bool               arrived   = true;
             bool               concealed = false;
+            qreal              fading    = 0.0; // 2.2 spoiler: the reveal crossfade over a revealed tile
             bool               hovered   = false;
             bool               pressed   = false;
         };
@@ -364,8 +365,9 @@ QList<Sample> buildSamples()
                         t.still = pictureStill(s.picture, s.source, px);
                     if (!s.frame.isNull())
                         t.frame = fitScaled(s.frame, px);
-                    t.concealed = s.concealed;
-                    t.hovered   = s.hovered;
+                    t.concealed      = s.concealed;
+                    t.concealOpacity = s.concealed ? 1.0 : s.fading;
+                    t.hovered        = s.hovered;
                     t.pressed   = s.pressed;
                 }
                 const QImage image = renderAlbum(tiles, st, ls);
@@ -428,7 +430,19 @@ QList<Sample> buildSamples()
             QVector<TileSpec> specs = readyAlbum(4);
             specs[0].concealed      = true;
             specs[3].concealed      = true;
-            album(QStringLiteral("album_spoiler_tiles"), QStringLiteral("album: spoiler tiles (cover hook)"), specs);
+            album(QStringLiteral("album_spoiler_tiles"), QStringLiteral("album: spoiler tiles (the chat's cover)"), specs);
+            specs[3].hovered = true;
+            specs[3].pressed = true;
+            album(QStringLiteral("album_spoiler_pressed"), QStringLiteral("album: spoiler tile pressed"), specs);
+            specs[3].hovered   = false;
+            specs[3].pressed   = false;
+            specs[3].concealed = false;
+            specs[3].fading    = 0.5;
+            album(QStringLiteral("album_spoiler_fading"), QStringLiteral("album: spoiler tile revealed, 50% crossfade"), specs);
+            QVector<TileSpec> small = readyAlbum(7);
+            for (TileSpec& s : small)
+                s.concealed = true;
+            album(QStringLiteral("album_spoiler_all_narrow"), QStringLiteral("album: all spoilers, narrow (200 px)"), small, 200);
         }
         {
             QVector<TileSpec> specs = readyAlbum(4);
@@ -1124,6 +1138,41 @@ QList<Sample> buildSamples()
                     return renderVideo(e, frameAt(e, st), MediaStill(), o, st, ls);
                 },
                 view({{fire, 3}, {wow, 1}}, 1 << wow), hover);
+        // 2.2 integration: an album has one row under its grid (its first item's reactions); audio and voice
+        // cards have no add button, only the row's add pill.
+        const Picture albumPicture = [=](const PreviewStyle& st, QSize* ls) {
+            const QImage            pics[] = {photo, sunset, friendPic};
+            const albums::Geometry  g      = albums::layout(3, st.maxWidth, st.maxHeight);
+            QVector<MediaEntry>     entries;
+            for (int i = 0; i < 3; ++i) {
+                MediaEntry e    = makeEntry(QStringLiteral("trip_%1_3f9a1c2e.jpg").arg(i + 1), 845221, pics[i].width(), pics[i].height(), 0, MediaState::Ready);
+                e.link.protocol = MediaLink::kProtocol;
+                entries.append(e);
+            }
+            QVector<AlbumTile> tiles(3);
+            for (int i = 0; i < 3; ++i) {
+                tiles[i].entry = &entries[i];
+                tiles[i].still = pictureStill(pics[i], MediaStill::Full, albumTileStillPixels(entries[i], g.tiles.at(i).size(), st.dpr));
+            }
+            return renderAlbum(tiles, st, ls);
+        };
+        reacted(QStringLiteral("reactions_album_row"), QStringLiteral("reactions: album, one row under the grid, hover"), albumPicture,
+                view({{heart, 4}, {lol, 2}}, 1 << heart), hover);
+        reacted(QStringLiteral("reactions_album_none_hover"), QStringLiteral("reactions: album hovered, none yet (add button)"), albumPicture, ReactionView(), hover);
+        const Picture audioPicture = [=](const PreviewStyle& st, QSize* ls) {
+            PlaybackOverlay o;
+            o.durationMs      = songReady.link.durationMs;
+            o.controlsVisible = true;
+            return renderAudioCard(songReady, o, st, ls);
+        };
+        const auto cardHover = [](rx::ObjectState& s) {
+            s.hovered  = true;
+            s.noButton = true; // ChatReactions sets it for audio and voice cards
+        };
+        reacted(QStringLiteral("reactions_audio_row_hover"), QStringLiteral("reactions: audio card with a row, hover (add pill)"), audioPicture,
+                view({{fire, 2}, {up, 1}}, 1 << up), cardHover);
+        reacted(QStringLiteral("reactions_audio_none_hover"), QStringLiteral("reactions: audio card hovered, none yet (no button)"), audioPicture, ReactionView(),
+                cardHover);
         // The pictures themselves, large and at pill size, to look at the drawing.
         add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 72, 36, 24 and 16 px"), [](const PreviewStyle& st, QSize* ls) {
             const QSize size(6 * 80, 72 + 8 + 36 + 8 + 24 + 8 + 16);

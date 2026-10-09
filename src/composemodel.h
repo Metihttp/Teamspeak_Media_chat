@@ -97,11 +97,9 @@ bool captionGoesAlone(const QString& caption, const QVector<Item>& items, bool a
 
 // ---- pictures -------------------------------------------------------------------------------------
 
-// image cut to fill size (device pixels), centred.
+// image cut to fill size (device pixels), centred. (Spoiler thumbnails get the receivers' cover,
+// spoiler::drawCover, in the send window.)
 QImage coverThumbnail(const QImage& image, const QSize& size);
-// The spoiler look of a thumbnail: reduced to 16 px, enlarged smoothly and darkened by 30%.
-// TODO(2.2 spoiler): use the receivers' spoiler blur once it lands, so both look the same.
-QImage spoilerCover(const QImage& image);
 
 // Writes a pasted picture into dir as new_photo_<8 hex>.png, or .jpg (quality 90) when the PNG is over
 // 2 MB, has no transparency and convertLargePngToJpeg is on: the same rule as Core::uploadImage.

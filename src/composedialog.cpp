@@ -40,6 +40,7 @@
 #include "composehooks.h"
 #include "filedrag.h" // 2.2 drag-out: the own-drag marker
 #include "i18n.h"
+#include "spoiler.h" // 2.2 spoiler: the receivers' cover on spoiler thumbnails
 #include "uiutil.h"
 #include "video/mfvideo.h"
 
@@ -395,9 +396,10 @@ class ComposeDialog::GlyphButton : public QAbstractButton
     bool   m_keyboardFocus = false;
 };
 
-// A thumbnail: the picture (rounded, framed), or the file's type icon until there is one; blurred with a
-// SPOILER pill for spoilers; faded for items that can't be sent. Cover: the picture fills the box
-// (list rows); otherwise it is fitted and centred (the large preview).
+// A thumbnail: the picture (rounded, framed), or the file's type icon until there is one; for spoilers
+// the receivers' cover (spoiler::drawCover: the same blur and SPOILER pill, or the eye-off mark where
+// the pill doesn't fit); faded for items that can't be sent. Cover: the picture fills the box (list
+// rows); otherwise it is fitted and centred (the large preview).
 class ComposeDialog::Thumb : public QWidget
 {
   public:
@@ -411,8 +413,7 @@ class ComposeDialog::Thumb : public QWidget
 
     void setImage(const QImage& image)
     {
-        m_image   = image;
-        m_spoiled = QImage();
+        m_image = image;
         update();
     }
     void setIcon(const QPixmap& icon)
@@ -452,37 +453,27 @@ class ComposeDialog::Thumb : public QWidget
         p.setClipPath(clip);
         p.fillRect(rect(), m_colors.placeholder);
 
-        if (!m_image.isNull()) {
-            if (m_spoiler && m_spoiled.isNull())
-                m_spoiled = compose::spoilerCover(m_image);
-            const QImage& shown = m_spoiler ? m_spoiled : m_image;
-            const QSizeF  size  = QSizeF(shown.size()) / shown.devicePixelRatio();
-            QRectF        target(QPointF(0, 0), size);
+        if (m_spoiler) {
+            // 2.2 spoiler: what receivers see (decisions: the same blur as the chat). Nothing sharp of
+            // the picture is drawn; without a picture yet, the placeholder and the pill.
+            bool               blurHash = false;
+            const QImage       source   = spoiler::coverSource(QString(), QSizeF(size()), m_image, false, &blurHash);
+            spoiler::CoverLook look;
+            look.font = this->font();
+            look.font.setPixelSize(m_cover ? 10 : 12);
+            look.font.setBold(true);
+            look.placeholder = m_colors.placeholder;
+            spoiler::drawCover(p, QRectF(rect()), source, blurHash, look);
+        } else if (!m_image.isNull()) {
+            const QSizeF size = QSizeF(m_image.size()) / m_image.devicePixelRatio();
+            QRectF       target(QPointF(0, 0), size);
             target.moveCenter(QRectF(rect()).center());
-            p.drawImage(target, shown);
+            p.drawImage(target, m_image);
         } else if (!m_icon.isNull()) {
             const QSizeF size = QSizeF(m_icon.size()) / m_icon.devicePixelRatio();
             QRectF       target(QPointF(0, 0), size);
             target.moveCenter(QRectF(rect()).center());
             p.drawPixmap(target, m_icon, QRectF(m_icon.rect()));
-        }
-        if (m_spoiler) {
-            // The chat's pill: black at 165 alpha behind white text (6.9:1 over any picture).
-            QFont font = this->font();
-            font.setPixelSize(m_cover ? 9 : 12);
-            font.setBold(true);
-            p.setFont(font);
-            const QString      text = i18n::t("SPOILER");
-            const QFontMetrics fm(font);
-            const qreal        w = fm.horizontalAdvance(text) + (m_cover ? 8 : 14);
-            const qreal        h = fm.height() + (m_cover ? 2 : 6);
-            QRectF             pill(0, 0, qMin(w, width() - 4.0), h);
-            pill.moveCenter(QRectF(rect()).center());
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor(0, 0, 0, 165));
-            p.drawRoundedRect(pill, h / 2, h / 2);
-            p.setPen(Qt::white);
-            p.drawText(pill, Qt::AlignCenter, fm.elidedText(text, Qt::ElideRight, qRound(pill.width())));
         }
         if (m_dimmed)
             p.fillRect(rect(), withAlpha(m_colors.window, 0.45)); // about 60% strength
@@ -496,8 +487,7 @@ class ComposeDialog::Thumb : public QWidget
     bool    m_cover   = true;
     bool    m_spoiler = false;
     bool    m_dimmed  = false;
-    QImage  m_image;   // device pixels, sized for the box
-    QImage  m_spoiled; // m_image's spoiler look, made when first needed
+    QImage  m_image; // device pixels, sized for the box
     QPixmap m_icon;
     Colors  m_colors;
 };

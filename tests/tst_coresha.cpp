@@ -21,6 +21,7 @@
 #include "hashing.h"
 #include "settings.h"
 #include "testmain.h"
+#include "ts3api.h"
 
 namespace {
 
@@ -82,6 +83,8 @@ class TestCoreSha : public QObject
     Q_OBJECT
 
   private slots:
+    void initTestCase();
+    void cleanupTestCase();
     void init();
     void cleanup();
 
@@ -115,7 +118,26 @@ class TestCoreSha : public QObject
 
     std::unique_ptr<QTemporaryDir> m_dir;
     std::unique_ptr<Core>          m_core;
+    // The other test classes run in the same executable: what this one changes is put back.
+    TS3Functions m_savedFuncs{};
+    QString      m_savedPluginId;
+    Settings     m_savedSettings;
 };
+
+void TestCoreSha::initTestCase()
+{
+    m_savedFuncs    = ts3::funcs;
+    m_savedPluginId = ts3::pluginId;
+    m_savedSettings = Settings::instance();
+}
+
+void TestCoreSha::cleanupTestCase()
+{
+    ts3::funcs            = m_savedFuncs;
+    ts3::pluginId         = m_savedPluginId;
+    Settings::instance()  = m_savedSettings;
+    fileverify::resetCounters();
+}
 
 void TestCoreSha::init()
 {
@@ -561,6 +583,6 @@ void TestCoreSha::sentLinkCarriesShaOfStagedBytes()
     QCOMPARE(fakets3::downloads().size(), 0);
 }
 
-TSMEDIA_TEST_MAIN(TestCoreSha)
+TSMEDIA_REGISTER_TEST(TestCoreSha)
 
 #include "tst_coresha.moc"

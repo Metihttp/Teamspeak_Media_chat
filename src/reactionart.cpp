@@ -626,7 +626,7 @@ QImage composeObject(const QImage& picture, const QSize& pictureSize, const Reac
 
     const bool add = state.hovered && state.canAdd;
     out.row        = layoutRow(view, pictureSize.width(), state.maxWidth, measure, state.keep);
-    out.button     = add && out.row.isEmpty() && addButtonFits(QSizeF(pictureSize));
+    out.button     = add && !state.noButton && out.row.isEmpty() && addButtonFits(QSizeF(pictureSize));
     if (layout)
         *layout = out;
     if (out.row.isEmpty() && !out.button)

@@ -124,7 +124,8 @@ struct AlbumTile {
     const MediaEntry* entry = nullptr; // nullptr: the item hasn't arrived yet (a placeholder tile)
     MediaStill        still;           // requested at albumTileStillPixels(): it covers the tile
     QImage            frame;           // the current GIF frame while it animates (device pixels), else null
-    bool              concealed = false; // a spoiler not revealed yet: a cover, never the sharp picture
+    bool              concealed = false; // a spoiler not revealed yet (Core::isSpoilerHidden): the cover, never the sharp picture
+    qreal             concealOpacity = 0.0; // 2.2 spoiler: the reveal crossfade (1 .. 0) over a revealed tile
     bool              hovered   = false;
     bool              pressed   = false;
 };

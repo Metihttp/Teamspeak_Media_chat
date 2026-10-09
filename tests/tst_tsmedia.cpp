@@ -15,16 +15,34 @@
 #include "medialink.h"
 #include "ownedtimer.h"
 #include "settings.h"
+#include "ts3api.h"
 #include "uiutil.h"
 #include "testmain.h" // 2.2 foundation
 
-// settings.cpp keeps its ini file in the plugin's data folder; these tests never load or save it.
-namespace ts3 {
-QString dataDir()
+#include <cstring>
+
+// settings.cpp keeps its ini file in the plugin's data folder, ts3::dataDir() (<TeamSpeak config>/
+// plugins/tsmedia, ts3api.cpp). For every test file TeamSpeak's config folder is one in the temporary
+// folder; the tests never load or save the ini there. TestCoreSha (tst_coresha.cpp) puts a fake
+// TeamSpeak in place for its own tests and restores this afterwards.
+namespace {
+
+void testConfigPath(char* path, size_t maxLen)
 {
-    return QDir::tempPath();
+    const QByteArray dir = QDir::toNativeSeparators(QDir::tempPath() + QStringLiteral("/tsmedia_tests")).toUtf8();
+    if (!path || maxLen == 0)
+        return;
+    const size_t n = qMin(maxLen - 1, static_cast<size_t>(dir.size()));
+    memcpy(path, dir.constData(), n);
+    path[n] = '\0';
 }
-} // namespace ts3
+
+const bool kConfigPathSet = [] {
+    ts3::funcs.getConfigPath = &testConfigPath;
+    return true;
+}();
+
+} // namespace
 
 namespace {
 

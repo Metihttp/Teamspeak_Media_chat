@@ -37,6 +37,11 @@ QMimeData* makeMime(const QString& path, const QString& key, bool own)
     return mime;
 }
 
+QString spoilerRefusedText()
+{
+    return i18n::t("Reveal the spoiler first");
+}
+
 QString notReadyText(Core* core, const QString& key, bool startDownload)
 {
     const MediaEntry* e = core ? core->entry(key) : nullptr;
@@ -77,6 +82,11 @@ Result start(Core* core, const QString& key, QObject* source, const QPointF& pre
     Result result;
     if (!core || !source || !core->entry(key))
         return result;
+    // 2.2 spoiler: covered media is never dragged out (nor downloaded for it).
+    if (core->isSpoilerHidden(key)) {
+        result.message = spoilerRefusedText();
+        return result;
+    }
     result.message = notReadyText(core, key, true);
     if (!result.message.isEmpty()) {
         const MediaEntry* e = core->entry(key);
@@ -120,6 +130,10 @@ Result start(Core* core, const QString& key, QObject* source, const QPointF& pre
 
 bool copyToClipboard(Core* core, const QString& key, QString* feedback)
 {
+    if (core && core->isSpoilerHidden(key)) { // 2.2 spoiler: covered media is never copied
+        *feedback = spoilerRefusedText();
+        return false;
+    }
     const QString notReady = notReadyText(core, key, false);
     if (!notReady.isEmpty()) {
         *feedback = notReady;

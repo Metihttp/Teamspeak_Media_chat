@@ -34,7 +34,8 @@ class SettingsDialog : public QDialog
     // 2.2: a feature's settings, added below the tab's groups in the order of the calls (the dialog
     // takes ownership and shows the tab). A SettingsSection is loaded, checked and stored with the rest
     // of the form; any other widget is only shown.
-    void addSection(Tab tab, QWidget* section);
+    // atTop: above what the tab has so far (the Privacy group heads "Privacy & updates").
+    void addSection(Tab tab, QWidget* section, bool atTop = false);
     // 2.2 per-server settings: the connected servers or saved server settings changed (connection,
     // Plugins menu, command). Values edited in the dialog and not applied yet are kept.
     void reloadServers();

@@ -346,22 +346,6 @@ QImage coverThumbnail(const QImage& image, const QSize& size)
     return scaled.copy(crop);
 }
 
-QImage spoilerCover(const QImage& image)
-{
-    if (image.isNull())
-        return {};
-    const QSize  tiny  = image.size().scaled(16, 16, Qt::KeepAspectRatio).expandedTo(QSize(1, 1));
-    const QImage small = image.scaled(tiny, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    // Two smooth steps up: one big step would show the 16 px grid.
-    const QImage middle = small.scaled(small.size() * 4, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    QImage       out    = middle.scaled(image.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QPainter     p(&out);
-    p.fillRect(out.rect(), QColor(0, 0, 0, 77)); // 30% darker
-    p.end();
-    out.setDevicePixelRatio(image.devicePixelRatio());
-    return out;
-}
-
 QString savePastedImage(const QImage& image, const QString& dir, bool convertLargePngToJpeg)
 {
     if (image.isNull())

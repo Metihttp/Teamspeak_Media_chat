@@ -31,6 +31,7 @@
 #include "diagnosticsdialog.h" // 2.2 diagnostics
 #include "i18n.h"
 #include "medialink.h"
+#include "peerhub.h" // 2.2 protocol: Clear cache removes the saved reactions too
 #include "settingssection.h"
 #include "serverssection.h" // 2.2 per-server settings
 #include "uiutil.h"
@@ -600,12 +601,12 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     applyTheme();
 }
 
-void SettingsDialog::addSection(Tab tab, QWidget* widget)
+void SettingsDialog::addSection(Tab tab, QWidget* widget, bool atTop)
 {
     if (!widget)
         return;
     QVBoxLayout* layout = tabLayout(tab);
-    layout->insertWidget(layout->count() - 1, widget); // above the stretch, after what is there
+    layout->insertWidget(atTop ? 0 : layout->count() - 1, widget); // above the stretch, after (or before) what is there
     m_tabs->setTabEnabled(static_cast<int>(tab), true);
     m_tabs->setTabVisible(static_cast<int>(tab), true);
     if (auto* section = qobject_cast<SettingsSection*>(widget)) {
@@ -1005,8 +1006,13 @@ void SettingsDialog::clearCache()
                                 QMessageBox::NoButton, this);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setLayoutDirection(Qt::LeftToRight);
-    box->setInformativeText(i18n::t("Files on the server aren't affected: media downloads again when you view it, unless it was deleted "
-                                    "from the server. Media that's playing or open in the viewer is kept."));
+    QString details = i18n::t("Files on the server aren't affected: media downloads again when you view it, unless it was deleted "
+                              "from the server. Media that's playing or open in the viewer is kept.");
+    // 2.2 protocol: Clear cache also forgets the reactions kept on this computer (Core::cacheCleared).
+    if (PeerHub::instance())
+        details += QLatin1Char(' ') + i18n::t("The reactions saved on this computer are removed too; people with TS Media share theirs again "
+                                              "when you are in a channel with them.");
+    box->setInformativeText(details);
     QPushButton* clear  = box->addButton(i18n::t("Clear cache"), QMessageBox::DestructiveRole);
     QPushButton* cancel = box->addButton(i18n::t("Cancel"), QMessageBox::RejectRole);
     box->setDefaultButton(cancel); // Enter must not delete anything

@@ -14,7 +14,7 @@
 #include "settings.h"
 #include "testmain.h"
 
-// settings.cpp keeps its ini file in the plugin's data folder (ts3::dataDir() is stubbed in
+// settings.cpp keeps its ini file in the plugin's data folder (a temporary one in the tests, see
 // tst_tsmedia.cpp); these tests use load(file) / save(file).
 
 namespace {

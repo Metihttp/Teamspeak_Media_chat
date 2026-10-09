@@ -106,6 +106,7 @@ struct ObjectState {
     int    maxWidth = 400;  // PreviewStyle::maxWidth
     bool   hovered  = false; // the pointer is on the preview (picture or row)
     bool   canAdd   = false; // reacting is possible here: add button / add pill while hovered
+    bool   noButton = false; // no add button on the picture (audio and voice cards: the add pill and the menu only)
     bool   keep     = false; // keep an empty row (the last reaction was just removed under the pointer)
     Zone   hoverZone  = Zone::None;
     int    hoverIndex = -1;

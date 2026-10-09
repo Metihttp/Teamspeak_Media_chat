@@ -1,8 +1,9 @@
 #pragma once
 
 // 2.2 foundation: SHA-256 of files (the "sha" link parameter) and of small buffers (the preview's "ph").
-// QCryptographicHash only, so it works the same in every build; QtCore only (unit-tested). Safe on any
-// thread: nothing is shared, nothing outlives a call.
+// Windows CNG through crypto::Sha256 (src/crypto, the updater's module; about ten times faster), or
+// QCryptographicHash when CNG can't be set up. Unit-tested. Safe on any thread: nothing is shared,
+// nothing outlives a call.
 
 #include <QByteArray>
 #include <QString>
@@ -23,6 +24,9 @@ using Progress = std::function<void(qint64 done, qint64 total)>;
 QByteArray sha256File(const QString& path, const std::atomic<bool>* cancel = nullptr, const Progress& progress = {}, QString* error = nullptr);
 
 QByteArray sha256(const QByteArray& data);
+
+// Which implementation hashes here: "Windows CNG (BCrypt)" or "Qt (QCryptographicHash)" (diagnostics).
+QString backendName();
 
 // Upper case, like Windows' Get-FileHash (logs, "Copy details"). Links take the raw bytes
 // (MediaLink::sha256 / previewSha) and encode them themselves.

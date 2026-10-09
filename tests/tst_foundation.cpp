@@ -266,6 +266,8 @@ void TestFoundation::sha256FileMatches()
     QCOMPARE(hash.size(), 32);
     QVERIFY(error.isEmpty());
     QCOMPARE(hashing::sha256(data), hash);
+    // 2.2 integration: Windows CNG does the hashing (Qt's code only when CNG can't be set up).
+    QCOMPARE(hashing::backendName(), QStringLiteral("Windows CNG (BCrypt)"));
 }
 
 void TestFoundation::sha256FileProgress()

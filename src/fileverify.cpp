@@ -343,9 +343,7 @@ void resetCounters()
 
 QString hashBackend()
 {
-    // TODO(2.2 integration): Windows CNG through src/crypto (the updater's module) once it is merged;
-    // about 10x faster. hashing::sha256File is the one place to switch.
-    return QString::fromLatin1("Qt (QCryptographicHash)");
+    return hashing::backendName(); // Windows CNG through src/crypto, or Qt's own code without it
 }
 
 QString diagnosticsTitle()

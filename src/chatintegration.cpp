@@ -1144,8 +1144,8 @@ void ChatIntegration::updateVisibleKeys()
             const QRectF r = previewRect(b, pp.position, QSizeF(view.formatSizes.value(pp.key)));
             if (!r.intersects(viewport))
                 continue;
-            if (albums::isObjectId(pp.key))
-                albumVisibleKeys(b, pp.key, r, viewport, &keys); // 2.2 album: its tiles on screen
+            if (albums::isObjectId(pp.key)) // 2.2 album: its tiles on screen (the grid, not its reaction row)
+                albumVisibleKeys(b, pp.key, m_reactions ? m_reactions->pictureRect(b, pp.key, r) : r, viewport, &keys);
             else
                 keys.insert(pp.key);
         }
@@ -1491,15 +1491,16 @@ void ChatIntegration::showFeedback(QWidget* widget, const QString& text, bool er
     QToolTip::showText(QCursor::pos(), text, widget, QRect(), error ? qMax(4000, ui::notificationDurationMs()) : 1800);
 }
 
-void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, bool albumTile)
+void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, const QString& album)
 {
     const MediaEntry* e = m_core->entry(key);
     if (!e)
         return;
     if (m_core->isSpoilerHidden(key)) { // 2.2 spoiler: "Reveal spoiler", nothing that shows the content
-        showSpoilerMenu(browser, key, globalPos);
+        showSpoilerMenu(browser, key, globalPos, album);
         return;
     }
+    const bool albumTile = !album.isEmpty(); // 2.2 album
     const bool ready = e->state == MediaState::Ready;
     const bool media = isMediaKind(e->kind);
     // Deleted from the server or in a password-protected channel: nothing here can get the file
@@ -1584,7 +1585,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         // 2.2 drag-out: the keyboard / single-pointer way to put the file into a folder or an app.
         menu->addAction(i18n::t("Copy fil&e"), this, [this, key, viewport] {
             QString    feedback;
-            const bool ok = filedrag::copyToClipboard(m_core, key, &feedback);
+            const bool ok = filedrag::copyToClipboard(m_core, key, &feedback); // refuses a covered spoiler
             showFeedback(viewport(), feedback, !ok);
         });
     }
@@ -1611,8 +1612,8 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         });
     }
     addHideSpoilerAction(menu, key); // 2.2 spoiler
-    if (m_reactions) // 2.2 reactions: "Add reaction", the way without hover
-        m_reactions->addMenu(menu, browser, key);
+    if (m_reactions) // 2.2 reactions: "Add reaction", the way without hover (an album's tile: the album's)
+        m_reactions->addMenu(menu, browser, albumTile ? album : key);
 
     if (primary)
         menu->setDefaultAction(primary);
@@ -2091,7 +2092,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (hit.key.isEmpty())
             break;
         m_lastBrowser = browser;
-        showContextMenu(browser, hit.key, ce->globalPos(), hit.tile >= 0); // 2.2 album
+        showContextMenu(browser, hit.key, ce->globalPos(), hit.tile >= 0 ? hit.object : QString()); // 2.2 album
         return true;
     }
 

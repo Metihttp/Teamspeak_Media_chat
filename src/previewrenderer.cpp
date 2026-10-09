@@ -1523,7 +1523,6 @@ constexpr qreal kTileRadius        = 3.0;  // inner corners; the grid's own corn
 constexpr int   kOverflowDim       = 140;  // "+N" over the last tile's picture: white text 4.7:1 over white
 constexpr int   kTileFailedDim     = 150;  // failed tile: its title white over white pixels 5.4:1
 constexpr int   kTilePressedAlpha  = 30;
-constexpr int   kTileCoverDim      = 110;  // spoiler cover
 constexpr qreal kTileDisc          = 32.0; // download / progress disc
 constexpr qreal kTileVideoDisc     = 36.0; // play disc
 constexpr qreal kTileAlertDisc     = 20.0;
@@ -1566,29 +1565,24 @@ QPainterPath tileShape(const QRect& tile, const QSize& box, qreal inset = 0.0)
     return cornerPath(r, radius(top && left), radius(top && right), radius(bottom && right), radius(bottom && left));
 }
 
-// A spoiler that isn't revealed: only a heavy blur of the picture and a "Spoiler" pill.
-// TODO(spoiler): the spoiler area's cover replaces this, so a tile and a single preview look the same.
-void drawTileCover(QPainter& p, const QRectF& r, const QImage& pixels, const PreviewStyle& style)
+// A spoiler tile: the same cover as a single preview (spoiler::drawCover: the link's BlurHash or a
+// heavily blurred still, darkened, with the "SPOILER" pill or the eye-off mark), so nothing of the
+// picture shows. opacity < 1: the reveal crossfade over the revealed tile. withPill false: the "+N"
+// tile, whose count takes the middle.
+void drawTileCover(QPainter& p, const QRectF& r, const AlbumTile& t, const QImage& pixels, qreal opacity, const PreviewStyle& style, bool withPill = true)
 {
-    if (!pixels.isNull()) {
-        const QImage tiny = pixels.scaled(12, 12, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        const QImage soft = tiny.scaled(tiny.size() * 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        p.drawImage(coverRect(QSizeF(soft.size()), r.adjusted(-8, -8, 8, 8)), soft);
-    }
-    p.fillRect(r, QColor(0, 0, 0, kTileCoverDim));
-    const QFont         font = fontFor(style, -2, true);
-    const QFontMetricsF fm(font);
-    const QString       text = i18n::t("Spoiler");
-    const QSizeF        size(fm.horizontalAdvance(text) + 20.0, qCeil(fm.height()) + 8.0);
-    if (size.width() > r.width() - 16.0 || size.height() > r.height() - 8.0)
+    if (opacity <= 0.0 || !t.entry || !spoiler::appliesTo(t.entry->kind))
         return;
-    const QRectF pill = centered(size, r);
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0, 0, 0, kPillAlpha));
-    p.drawRoundedRect(pill, size.height() / 2.0, size.height() / 2.0);
-    p.setFont(font);
-    p.setPen(Qt::white);
-    p.drawText(pill, Qt::AlignCenter, text);
+    bool               blurHash = false;
+    const QImage       source   = spoiler::coverSource(t.entry->link.blurHash, r.size(), pixels, t.still.source == MediaStill::BlurHash, &blurHash);
+    spoiler::CoverLook look;
+    look.font        = fontFor(style, -1, true);
+    look.placeholder = paletteFor(style.dark).placeholder;
+    look.opacity     = opacity;
+    look.hovered     = t.hovered;
+    look.pressed     = t.hovered && t.pressed;
+    look.withPill    = withPill;
+    spoiler::drawCover(p, r, source, blurHash, look);
 }
 
 // What a failed item says inside its tile: the alert disc, and the short cause when there is room.
@@ -1626,7 +1620,7 @@ void drawAlbumTile(QPainter& p, const QRect& tile, const QSize& box, const Album
         const QImage& pixels = !t.frame.isNull() && !t.concealed ? t.frame : t.still.image;
         const bool    actionable = isPreviewActionable(*e);
         if (t.concealed) {
-            drawTileCover(p, r, pixels, style);
+            drawTileCover(p, r, t, t.still.image, 1.0, style, overflow == 0); // 2.2 spoiler: never a GIF frame under it
         } else if (!pixels.isNull()) {
             p.drawImage(coverRect(QSizeF(pixels.size()), r), pixels);
         }
@@ -1678,7 +1672,9 @@ void drawAlbumTile(QPainter& p, const QRect& tile, const QSize& box, const Album
             if (e->kind == MediaKind::AnimatedImage && r.width() >= kTileGifMinWidth)
                 drawGifBadge(p, r, style);
         }
-        if (t.pressed && actionable)
+        if (!t.concealed && overflow == 0)
+            drawTileCover(p, r, t, t.still.image, t.concealOpacity, style); // 2.2 spoiler: the reveal crossfade
+        if (t.pressed && actionable && !t.concealed) // a covered tile's pill shows the press
             p.fillRect(r, QColor(0, 0, 0, kTilePressedAlpha));
     }
     p.restore();
@@ -1741,8 +1737,7 @@ QVector<PreviewColorPair> albumColorPairs(bool dark)
     add("album error title over white", white, ui::flatten(QColor(0, 0, 0, kTileFailedDim), white), 4.5);
     add("album error title on placeholder", white, ui::flatten(QColor(0, 0, 0, kTileFailedDim), pal.placeholder), 4.5);
     add("album alert mark on its disc", white, kAlertRed, 3.0); // the disc reads by its white mark
-    const QColor cover = ui::flatten(QColor(0, 0, 0, kTileCoverDim), white);
-    add("album spoiler pill text over white", white, ui::flatten(QColor(0, 0, 0, kPillAlpha), cover), 4.5);
+    // Spoiler tiles use the single previews' cover (its pill is checked in previewColorPairs).
     return pairs;
 }
 

@@ -63,6 +63,11 @@ class PeerHub : public QObject
 
     // Counters for the diagnostics feature: "plugin commands sent 14, dropped 0, ..." and versions.
     QString diagnosticsLine(quint64 sch) const;
+    // The diagnostic info's "Presence and reactions" section (plugin.cpp registers it): the settings,
+    // and per connection (numbered, never named) the peers' versions, the plugin-command counters and
+    // the connection's anti-flood state. Counts only.
+    static QString     diagnosticsTitle();
+    QStringList        diagnosticLines() const;
 
     // ---- TeamSpeak callbacks: any thread ----------------------------------------------------------
     static void onPluginCommand(quint64 sch, const char* pluginName, const char* command, quint16 invoker, const char* invokerName, const char* invokerUid);

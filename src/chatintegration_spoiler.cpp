@@ -11,6 +11,7 @@
 #include <QPointer>
 #include <QTextBrowser>
 
+#include "chatreactions.h" // 2.2 reactions
 #include "i18n.h"
 #include "settings.h"
 #include "spoiler.h"
@@ -41,7 +42,7 @@ void ChatIntegration::revealSpoiler(const QString& key)
 
 // The menu of a covered preview: what a click does first (in bold), then only what doesn't show the
 // content here (Open shows the viewer's cover; nothing plays, no Copy image, no default app).
-void ChatIntegration::showSpoilerMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos)
+void ChatIntegration::showSpoilerMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, const QString& album)
 {
     const MediaEntry* e = m_core->entry(key);
     if (!e)
@@ -76,6 +77,9 @@ void ChatIntegration::showSpoilerMenu(QTextBrowser* browser, const QString& key,
             showFeedback(viewport(), i18n::t("Link copied"), false);
         }
     });
+    // 2.2 reactions are allowed on spoilers and never reveal them (decisions).
+    if (m_reactions)
+        m_reactions->addMenu(menu, browser, album.isEmpty() ? key : album);
     menu->setDefaultAction(reveal);
     menu->popup(globalPos);
 }

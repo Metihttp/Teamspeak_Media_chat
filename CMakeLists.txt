@@ -211,7 +211,7 @@ if(TSMEDIA_BUILD_TESTS)
     # other files register with TSMEDIA_REGISTER_TEST). "-o file,format" writes all of them to one file.
     add_executable(tsmedia_tests
         tests/testmain.h
-        tests/tst_tsmedia.cpp     # ts3::dataDir() is stubbed here for every test file
+        tests/tst_tsmedia.cpp     # TeamSpeak's config folder is a temporary one for every test file
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp
@@ -265,15 +265,25 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlink.cpp
         src/reactions.cpp
         src/reactionart.cpp
+        # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
+        # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
+        tests/tst_coresha.cpp
+        tests/fakets3.cpp         tests/fakets3.h
+        src/core.cpp
+        src/ts3api.cpp
+        src/mediaprobe.cpp
+        src/video/mfvideo.cpp
+        src/video/mfcommon.cpp
     )
-    target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
+    target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
         TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update") # 2.2 updater: signed test vectors
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
-    target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test bcrypt)
+    target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test bcrypt ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(tsmedia_tests) # Core probes media like the plugin does
     get_target_property(_qmake Qt5::qmake IMPORTED_LOCATION)
     get_filename_component(_qtbin "${_qmake}" DIRECTORY)
     add_test(NAME tsmedia_tests COMMAND tsmedia_tests)
@@ -283,47 +293,6 @@ if(TSMEDIA_BUILD_TESTS)
     else()
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
-    endif()
-
-    # 2.2 sha: Core itself against a fake TeamSpeak (tests/fakets3.*): downloads are checked against their
-    # sha, mismatches blocked, made-up hashes refused, sent links hashed. Its own executable: it links the
-    # real ts3api.cpp, which tsmedia_tests stubs.
-    add_executable(tsmedia_core_tests
-        tests/tst_coresha.cpp
-        tests/fakets3.cpp         tests/fakets3.h
-        tests/testmain.h
-        src/core.cpp              src/core.h
-        src/fileverify.cpp        src/fileverify.h
-        src/ts3api.cpp
-        src/settings.cpp
-        src/i18n.cpp
-        src/medialink.cpp
-        src/blurhash.cpp
-        src/mediaprobe.cpp
-        src/video/mfvideo.cpp
-        src/video/mfcommon.cpp    # 2.2 audio
-        src/audioplayback.cpp     # 2.2 audio: the audio auto-download rule
-        src/filenames.cpp         # 2.2 drag-out
-        src/serversettings.cpp    # 2.2 per-server settings
-        src/spoiler.cpp           # 2.2 spoiler
-        src/albums.cpp            # 2.2 album
-        src/logtext.cpp
-        src/pluginlog.cpp
-        src/hashing.cpp
-        src/floodgovernor.cpp
-    )
-    target_include_directories(tsmedia_core_tests PRIVATE src tests third_party/ts3client-pluginsdk/include)
-    target_compile_definitions(tsmedia_core_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
-    if(MSVC)
-        target_compile_options(tsmedia_core_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
-    endif()
-    target_link_libraries(tsmedia_core_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test ${TSMEDIA_MF_LIBS})
-    tsmedia_delay_load_media_foundation(tsmedia_core_tests)
-    add_test(NAME tsmedia_core_tests COMMAND tsmedia_core_tests)
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
-        set_tests_properties(tsmedia_core_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
-    else()
-        set_tests_properties(tsmedia_core_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 

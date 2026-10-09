@@ -21,6 +21,7 @@
 #include "datasaver.h" // 2.2 per-server settings
 #include "diagnosticscollect.h" // 2.2 diagnostics
 #include "diagnosticsdialog.h"  // 2.2 diagnostics
+#include "fileverify.h"         // 2.2 sha: its diagnostics section
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "ownedtimer.h"
@@ -105,7 +106,7 @@ void showSettings(QWidget* parent)
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
     dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
-    dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection); // 2.2 protocol
+    dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_peers)
             g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
@@ -394,10 +395,19 @@ TS3_EXPORT int ts3plugin_init()
         if (!g_mediaFoundation)
             ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
         core->start();
-        // 2.2 protocol: after Core (its flood governors), before the chat (reaction rows).
+        // 2.2 protocol: after Core (its flood governors), before the chat (reaction rows). start()
+        // registers the send window's presence line (compose::setPresenceLineFactory); prepareShutdown
+        // and ~PeerHub clear it again.
         auto* peers = new PeerHub(core);
         g_peers     = peers;
         peers->start();
+        // 2.2 sha and protocol: their sections of the diagnostic info (counts only; called on the GUI
+        // thread while it is collected, and the dialog is closed before PeerHub goes at shutdown).
+        diag::addSectionProvider([]() -> diag::Section { return {fileverify::diagnosticsTitle(), fileverify::diagnosticLines()}; });
+        diag::addSectionProvider([]() -> diag::Section {
+            PeerHub* hub = PeerHub::instance();
+            return hub ? diag::Section{PeerHub::diagnosticsTitle(), hub->diagnosticLines()} : diag::Section();
+        });
         chat->start();
         updateMenus();
         // 2.2 updater: this start counts as successful (started marker, applied -> done), then the

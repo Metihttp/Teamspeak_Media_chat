@@ -7,6 +7,7 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QMimeData>
+#include <QPainter>
 #include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -15,6 +16,7 @@
 #include "composehooks.h"
 #include "composemodel.h"
 #include "filedrag.h"
+#include "spoiler.h"
 #include "medialink.h"
 #include "testmain.h"
 
@@ -336,19 +338,27 @@ void TestCompose::estimatedLinkIsAnUpperBound()
 
 void TestCompose::spoilerCoverKeepsSize()
 {
+    // 2.2 integration: the send window draws the receivers' cover (spoiler::drawCover) on a spoiler's
+    // thumbnail, as the chat does: darkened, and fine detail is gone.
     QImage picture(120, 80, QImage::Format_RGB32);
     picture.fill(Qt::white);
     for (int x = 0; x < 120; x += 2)
         picture.setPixelColor(x, 40, Qt::black); // fine detail that must not survive
-    picture.setDevicePixelRatio(2.0);
-    const QImage cover = compose::spoilerCover(picture);
+    bool         blurHash = true;
+    const QImage source   = spoiler::coverSource(QString(), QSizeF(picture.size()), picture, false, &blurHash);
+    QVERIFY(!blurHash);
+    QImage cover(picture.size(), QImage::Format_ARGB32_Premultiplied);
+    cover.fill(Qt::transparent);
+    QPainter           p(&cover);
+    spoiler::CoverLook look;
+    look.withPill    = false;
+    look.placeholder = Qt::gray;
+    spoiler::drawCover(p, QRectF(QPointF(0, 0), QSizeF(picture.size())), source, blurHash, look);
+    p.end();
     QCOMPARE(cover.size(), picture.size());
-    QCOMPARE(cover.devicePixelRatio(), 2.0);
-    // Darkened by about 30%, and the stripes are gone.
     const QColor middle = cover.pixelColor(60, 20);
-    QVERIFY2(middle.red() < 200 && middle.red() > 150, qPrintable(QString::number(middle.red())));
+    QVERIFY2(middle.red() < 230 && middle.alpha() == 255, qPrintable(QString::number(middle.red())));
     QVERIFY(qAbs(cover.pixelColor(60, 40).red() - cover.pixelColor(61, 40).red()) < 20);
-    QVERIFY(compose::spoilerCover(QImage()).isNull());
 }
 
 void TestCompose::coverThumbnailFills()

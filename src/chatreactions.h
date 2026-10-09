@@ -10,8 +10,9 @@
 //  * adds "Add reaction" to the preview's context menu (the way without hover);
 //  * opens the picker, shows why a reaction couldn't be sent, and tells the hub which media keys
 //    are in the chat (SYNC).
-// No reactions in the server chat. Audio and voice cards (later versions) use the row's add pill
-// and the menu only; an album has one row, keyed by its first item.
+// No reactions in the server chat. Audio and voice cards have no add button on the card: they use
+// the row's add pill and the menu. An album has one row, under its grid, keyed by its first item
+// (ai=1): its preview object is the grid, the reactions are that item's.
 
 #include <QDateTime>
 #include <QHash>

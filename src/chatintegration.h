@@ -133,7 +133,8 @@ class ChatIntegration : public QObject
     // change of preview or control counts. *zone: the video control there.
     Hit    updateHoverAt(QTextBrowser* browser, const QPointF& viewportPos, bool moved, VideoZone* zone = nullptr);
     void   updateVisibleKeys();
-    void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, bool albumTile = false); // 2.2 album: albumTile
+    // 2.2 album: album is the grid's object id when key is one of its tiles (its reactions are the album's).
+    void   showContextMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, const QString& album = QString());
 
     void onEntryChanged(const QString& key);
     void onFrameChanged(const QString& key);
@@ -161,7 +162,7 @@ class ChatIntegration : public QObject
     // 2.2 spoiler (chatintegration_spoiler.cpp): a click on a covered preview only reveals it (with a
     // short crossfade); its menu offers "Reveal spoiler" and leaves out what would show the content.
     void    revealSpoiler(const QString& key);
-    void    showSpoilerMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos);
+    void    showSpoilerMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos, const QString& album = QString());
     void    addHideSpoilerAction(QMenu* menu, const QString& key); // revealed spoilers: cover it again
     qreal   spoilerCoverOpacity(const QString& key) const;          // PreviewStyle::concealOpacity
     QString spoilerToolTip() const;

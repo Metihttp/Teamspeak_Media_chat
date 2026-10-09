@@ -3316,6 +3316,8 @@ void MediaViewer::Private::startDragOut(const QPointF& pressFraction)
     const MediaEntry* e = entry();
     if (!core || !e)
         return;
+    if (refuseWhileCovered()) // 2.2 spoiler: not from the cover, nor by its title
+        return;
     const QString key = currentKey();
     if (e->state == MediaState::Idle)
         requested.insert(key); // the drag downloads it (as Download would): show its progress, not "press play"
@@ -3330,6 +3332,8 @@ void MediaViewer::Private::copyFileCurrent()
 {
     const MediaEntry* e = entry();
     if (!core || !e)
+        return;
+    if (refuseWhileCovered()) // 2.2 spoiler
         return;
     if (e->state != MediaState::Ready) {
         flash(notReadyText(), Glyph::Info, 1500);

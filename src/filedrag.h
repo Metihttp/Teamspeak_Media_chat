@@ -41,6 +41,10 @@ struct Result {
     bool           error = false;
 };
 
+// 2.2 spoiler: what a drag or "Copy file" of a covered spoiler says instead (start() and
+// copyToClipboard() refuse those: Core::isSpoilerHidden).
+QString spoilerRefusedText();
+
 // Why the file of key can't be dragged or copied yet. A file that is not downloaded (Idle: held by
 // the data saver, too large for automatic downloads, not fetched yet) starts downloading, exactly as
 // a click on Download would. Empty when it is Ready.
