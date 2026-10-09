@@ -1,0 +1,101 @@
+name: Bug report
+description: Something in TS Media chat doesn't work as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please check the [FAQ](https://github.com/Metihttp/Teamspeak_Media_chat/blob/main/docs/FAQ.md) first: many problems (antivirus, video codecs, server permissions) are answered there.
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Type `/tsmedia` in the TeamSpeak chat and copy the first line it prints.
+      placeholder: "TS Media chat 2.0.7"
+    validations:
+      required: true
+
+  - type: input
+    id: teamspeak-version
+    attributes:
+      label: TeamSpeak version
+      description: In TeamSpeak, open Help → About.
+      placeholder: "3.6.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client-arch
+    attributes:
+      label: TeamSpeak client
+      description: Which TeamSpeak client do you run?
+      options:
+        - 64-bit
+        - 32-bit
+        - I don't know
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version and edition
+      description: Press Win+R, type `winver` and copy the version. Please mention it if you use an N edition (for example Windows 11 Pro N).
+      placeholder: "Windows 11 Pro 24H2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what did you see? Screenshots help.
+      placeholder: "I dropped a .mp4 file on the channel chat. The upload finished, but the video shows ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If you can make it happen again, list the steps.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: false
+
+  - type: input
+    id: log-line
+    attributes:
+      label: Plugin load line from the TeamSpeak log
+      description: Open the newest file in `%APPDATA%\TS3Client\logs` and copy the line that contains `TS Media chat` and `loaded`. If there is no such line, write "missing".
+      placeholder: "TS Media chat 2.0.7 loaded"
+    validations:
+      required: true
+
+  - type: textarea
+    id: widget-dump
+    attributes:
+      label: Chat widget list (optional)
+      description: For problems with previews in the chat, type `/tsmedia debug` in the chat and attach the `widget_dump.txt` it writes (in `%APPDATA%\TS3Client\plugins\tsmedia`). Drag the file into this box.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Server setup, other plugins, antivirus, file types involved.
+    validations:
+      required: false
