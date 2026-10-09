@@ -139,6 +139,7 @@ class ChatIntegration : public QObject
     void onEntryChanged(const QString& key);
     void onFrameChanged(const QString& key);
     void onUploadChanged(int id);
+    void onCaptionSettled(int batch, bool posted); // 2.2 compose
     void onOpenRequested(const QString& key);
 
     View*        viewFor(QTextBrowser* browser);
@@ -212,6 +213,7 @@ class ChatIntegration : public QObject
         };
         bool                active = false; // album items in the chat, or marks of ours to undo
         QSet<int>           members;        // start positions of album item links: no preview of their own
+        QHash<int, QSet<QString>> memberKeys; // block number -> its album items' keys: no link to them there gets a preview (albums::memberKeys)
         QVector<Object>     objects;
         QSet<int>           hide;           // block numbers of messages to hide
         QVector<int>        restore;        // collapsed links to give back
@@ -269,6 +271,13 @@ class ChatIntegration : public QObject
     bool                   m_testRawChat      = false; // TSMEDIA_TESTHOOKS "nohide"
     mutable int            m_scrollBarExtent  = 0;     // width a shown vertical scroll bar takes (measured)
     QPointer<ComposeDialog> m_compose;                 // 2.2 compose: the open send window
+    // 2.2 compose: chat input text that went out as a send's caption, cleared once Core posted it
+    // (Core::captionSettled; batch id -> the input and its text then).
+    struct CaptionClear {
+        QPointer<QObject> input; // the chat input (a QTextEdit)
+        QString           text;
+    };
+    QHash<int, CaptionClear> m_captionClears;
     QPointer<MediaViewer>  m_viewer;                   // viewer opened from the chat (paused when an inline video starts)
     QPointer<QWidget>      m_dropOverlay;              // "Drop to send" over the chat during a drag
     SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget

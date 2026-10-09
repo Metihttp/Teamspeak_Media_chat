@@ -69,6 +69,7 @@ class TestFoundation : public QObject
     void postsOneAtATime();
     void postBucketKeepsReserve();
     void chargesShareTheGeneralCounter();
+    void fileRequestsLeaveRoomForPosts();
     void postFloodHintAndRetries();
     void floodWithoutHint();
     void retryHintParsing_data();
@@ -409,6 +410,44 @@ void TestFoundation::chargesShareTheGeneralCounter()
     QCOMPARE(g.generalPoints(1000), 113.0);
     // Plugin commands have their own counter.
     QVERIFY(g.commandReady(0));
+}
+
+void TestFoundation::fileRequestsLeaveRoomForPosts()
+{
+    // The sender's folder requests and upload starts wait for generalReady(): they keep the reserve plus
+    // one post's room (150 - 30 - 15 = 105 points), so a 20-photo album (2 folders + 40 transfers)
+    // never reaches the server's limit, and its post can always go.
+    FloodGovernor g;
+    int           mkdirs = 0;
+    while (mkdirs < 2 && g.generalReady(FloodGovernor::Cost::Mkdir, 0)) {
+        g.charge(FloodGovernor::Cost::Mkdir, 0);
+        ++mkdirs;
+    }
+    QCOMPARE(mkdirs, 2);
+    int    transfers = 0;
+    qint64 now       = 0;
+    for (; transfers < 40; now += 10) {
+        while (transfers < 40 && g.generalReady(FloodGovernor::Cost::Transfer, now)) {
+            g.charge(FloodGovernor::Cost::Transfer, now);
+            ++transfers;
+        }
+        QVERIFY(g.generalPoints(now) <= 105.0 + 0.001);
+        QVERIFY(g.postReady(now) || g.nextPostCheckMs(now) <= now); // a post fits whenever it comes
+    }
+    QCOMPARE(transfers, 40);
+    QVERIFY(now > 0);            // they didn't all go at once: 10 + 120 points is more than 105
+    QVERIFY(now < 10000);        // ... but at the steady rate soon after
+    const qint64 next = g.nextGeneralCheckMs(FloodGovernor::Cost::Transfer, now); // 3 points at 5 a second
+    QVERIFY(next > now - 10 && next <= now - 10 + 600);
+    QVERIFY(g.postReady(now));
+
+    // A flood pause holds them too; afterwards the post goes first.
+    FloodGovernor f;
+    f.generalFlooded(0, 1500);
+    QVERIFY(!f.generalReady(FloodGovernor::Cost::Mkdir, 1749));
+    QVERIFY(f.postReady(1750));
+    QVERIFY(!f.generalReady(FloodGovernor::Cost::Mkdir, 1750)); // one post's room is all there is
+    QCOMPARE(f.nextGeneralCheckMs(FloodGovernor::Cost::Mkdir, 1750), qint64(1750 + 1000));
 }
 
 void TestFoundation::postFloodHintAndRetries()

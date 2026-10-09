@@ -6,8 +6,10 @@
 #include <QRandomGenerator>
 #include <QTimer>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "composehooks.h"
@@ -23,6 +25,17 @@ namespace {
 
 std::atomic<PeerHub*> g_hub{nullptr};
 std::atomic<int>      g_queuedCommands{0};
+
+// TeamSpeak's callbacks run on its own thread: one holds this from reading g_hub until its event is
+// posted, and ~PeerHub takes it to clear g_hub, so no callback can post to a hub that is being freed.
+std::mutex& hubMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+constexpr int kMaxPrivateKeys     = 256; // media keys remembered per private chat partner
+constexpr int kMaxPrivatePartners = 128; // private chat partners remembered per connection
 
 constexpr int kMaxQueuedCommands  = 256;   // plugin commands waiting for the GUI thread; more are dropped
 constexpr int kDebounceMs         = 400;   // a reaction goes out this long after the last click on it
@@ -206,7 +219,13 @@ PeerHub::PeerHub(Core* core, QObject* parent)
 
 PeerHub::~PeerHub()
 {
-    g_hub = nullptr;
+    {
+        // Waits for a callback that has read g_hub and is posting to us right now (see hubMutex).
+        std::lock_guard<std::mutex> lock(hubMutex());
+        g_hub = nullptr;
+    }
+    // Events still queued for us are dropped with this object, uncounted.
+    g_queuedCommands = 0;
     compose::setPresenceLineFactory(nullptr);
     // Before m_env goes: they hold references to it.
     delete m_directory;
@@ -289,6 +308,8 @@ void PeerHub::received(quint64 sch, quint16 from, const QString& uid, const QStr
     }
     if (!Settings::instance().showReactions)
         return; // off: nothing is shown, stored or answered
+    if (m_env->isQueryClient(sch, from))
+        return; // ServerQuery logins aren't people in a chat: no reactions or questions from them
     if (message.type == "R") {
         if (const std::optional<proto::React> react = proto::readReact(message))
             receiveReact(sch, from, uid, name, *react);
@@ -301,11 +322,18 @@ void PeerHub::received(quint64 sch, quint16 from, const QString& uid, const QStr
 
 void PeerHub::receiveReact(quint64 sch, quint16 from, const QString& uid, const QString& name, const proto::React& react)
 {
-    // A channel reaction only from someone in our channel right now. Private ones were addressed to
-    // us by the server (CLIENT target), so they come from our partner.
+    // A channel reaction only from someone in our channel right now. A private one only from someone we
+    // have a private chat with, and only on media of that chat: anyone on the server can address a
+    // plugin command to us (and the target mode isn't reported), so s=p alone proves nothing.
+    QVector<proto::ReactItem> items = react.items;
     if (react.scope == proto::Scope::Channel) {
         const quint64 theirs = m_env->channelOf(sch, from);
         if (theirs == 0 || theirs != ts3::ownChannel(sch))
+            return;
+    } else {
+        const QStringList shared = m_privateMedia.value(sch).value(uid);
+        items.erase(std::remove_if(items.begin(), items.end(), [&shared](const proto::ReactItem& item) { return !shared.contains(item.key); }), items.end());
+        if (items.isEmpty())
             return;
     }
     // Answers to a SYNC only shortly after we asked.
@@ -317,7 +345,7 @@ void PeerHub::receiveReact(quint64 sch, quint16 from, const QString& uid, const 
     const QString server = ts3::serverUid(sch);
     const qint64  now    = wallMs();
     bool          orphan = false;
-    for (const proto::ReactItem& item : react.items)
+    for (const proto::ReactItem& item : qAsConst(items))
         orphan = m_store->applyRemote(server, item.key, uid, name, item.mask, now) == ReactionStore::Apply::Orphaned || orphan;
     if (orphan && !m_orphanTimer->isActive())
         m_orphanTimer->start();
@@ -353,10 +381,13 @@ void PeerHub::sendSync(quint64 sch)
     const QStringList keys = m_presentKeys(ts3::serverUid(sch));
     if (keys.isEmpty())
         return;
+    // The answer window opens when the SYNC is handed over (its answers can come before our own Ok
+    // does, or after an Ok that came too late to count) and again once it is confirmed.
+    m_syncSentMs.insert(sch, nowMs());
     QPointer<PeerHub> guard(this);
     m_link->sendWith(sch, proto::makeSync(proto::Scope::Channel, keys), peers::Target::toChannel(), PluginLink::Priority::Background,
                      [guard, sch](peers::SendResult result) {
-                         if (guard && result == peers::SendResult::Ok)
+                         if (guard && (result == peers::SendResult::Ok || result == peers::SendResult::LateOk))
                              guard->m_syncSentMs.insert(sch, guard->nowMs());
                      });
 }
@@ -365,6 +396,24 @@ void PeerHub::setPresentKeys(QObject* owner, PresentKeys keys)
 {
     m_presentKeysOwner = owner;
     m_presentKeys      = std::move(keys);
+}
+
+void PeerHub::notePrivateMedia(quint64 sch, const QString& partnerUid, const QStringList& keys)
+{
+    if (m_shuttingDown || !ReactionStore::isClientUid(partnerUid) || keys.isEmpty())
+        return;
+    QHash<QString, QStringList>& partners = m_privateMedia[sch];
+    if (!partners.contains(partnerUid) && partners.size() >= kMaxPrivatePartners)
+        partners.erase(partners.begin()); // bounded: someone else's chat is forgotten
+    QStringList& known = partners[partnerUid];
+    for (const QString& key : keys) {
+        if (!proto::isMediaKey(key))
+            continue;
+        known.removeAll(key);
+        known.append(key); // most recent last
+    }
+    while (known.size() > kMaxPrivateKeys)
+        known.removeFirst();
 }
 
 // ---- your reactions -------------------------------------------------------------------------------
@@ -442,9 +491,9 @@ void PeerHub::flushPending()
         const QString     coalesce = QStringLiteral("R/%1/%2/%3").arg(sch).arg(privateChat ? p.target.clientId : 0).arg(key);
         QPointer<PeerHub> guard(this);
         m_link->sendWith(sch, messages.first(), target, PluginLink::Priority::Reaction,
-                         [guard, key, gen, mask](peers::SendResult result) {
+                         [guard, sch, key, gen, mask](peers::SendResult result) {
                              if (guard)
-                                 guard->reactionSent(key, gen, mask, result);
+                                 guard->reactionSent(sch, key, gen, mask, result);
                          },
                          coalesce);
     }
@@ -465,10 +514,25 @@ void PeerHub::flushPending()
     }
 }
 
-void PeerHub::reactionSent(const QString& key, quint64 generation, quint8 mask, peers::SendResult result)
+void PeerHub::reactionSent(quint64 sch, const QString& key, quint64 generation, quint8 mask, peers::SendResult result)
 {
     if (result == peers::SendResult::Superseded)
         return; // a newer state of the same reaction replaced it before it went out
+    if (result == peers::SendResult::LateOk) {
+        // It counted as not sent (no answer in time), but it did reach the others: they have mask.
+        auto pending = m_pending.find(key);
+        if (pending != m_pending.end()) {
+            pending->committed = mask; // a newer click is on its way and says the latest anyway
+            return;
+        }
+        // It was undone here when it seemed lost: show what everyone else sees again.
+        const QString uid = ownUid(sch);
+        if (m_shuttingDown || !ReactionStore::isClientUid(uid) || m_store->maskOf(key, uid) == mask)
+            return;
+        m_store->setOwn(key, uid, ownName(sch), mask, wallMs());
+        ts3::log(LogLevel_INFO, sch, "A reaction that seemed lost arrived after all; it is shown again", {});
+        return;
+    }
     auto it = m_pending.find(key);
     if (it == m_pending.end())
         return;
@@ -488,13 +552,13 @@ void PeerHub::reactionSent(const QString& key, quint64 generation, quint8 mask, 
     if (p.dueMs >= 0)
         return; // a newer click is about to be sent anyway
     // Back to what the others have, and say why where it happened.
-    const quint64 sch       = p.sch;
+    const quint64 on        = p.sch;
     const quint8  committed = p.committed;
     m_pending.erase(it);
-    const QString uid = ownUid(sch);
+    const QString uid = ownUid(on);
     if (ReactionStore::isClientUid(uid))
-        m_store->setOwn(key, uid, ownName(sch), committed, wallMs());
-    ts3::log(LogLevel_INFO, sch, "A reaction couldn't be sent (%1) and was undone", {ts3::pub(static_cast<int>(result))});
+        m_store->setOwn(key, uid, ownName(on), committed, wallMs());
+    ts3::log(LogLevel_INFO, on, "A reaction couldn't be sent (%1) and was undone", {ts3::pub(static_cast<int>(result))});
     emit reactionFailed(key, sendErrorText(result));
 }
 
@@ -609,6 +673,7 @@ QString PeerHub::sendErrorText(peers::SendResult result)
         return i18n::t("Your reaction wasn't sent. Check your connection and try again.");
     case peers::SendResult::Ok:
     case peers::SendResult::Superseded:
+    case peers::SendResult::LateOk:
         break;
     }
     return {};
@@ -685,6 +750,7 @@ QStringList PeerHub::diagnosticLines() const
 }
 
 // ---- TeamSpeak callbacks (any thread) -------------------------------------------------------------
+// Each holds hubMutex() from reading g_hub until its event is posted (see there).
 
 void PeerHub::onPluginCommand(quint64 sch, const char* pluginName, const char* command, quint16 invoker, const char* invokerName, const char* invokerUid)
 {
@@ -692,16 +758,21 @@ void PeerHub::onPluginCommand(quint64 sch, const char* pluginName, const char* c
     // of an untrusted buffer is copied.
     if (!pluginName || std::strcmp(pluginName, proto::kPluginName) != 0 || !proto::looksLikeOurs(command))
         return;
-    PeerHub* hub = g_hub.load();
-    if (!hub)
+    if (!g_hub.load())
         return;
     if (g_queuedCommands.fetch_add(1) >= kMaxQueuedCommands) {
         g_queuedCommands.fetch_sub(1);
         return; // the GUI thread is behind: a flood of commands is dropped here
     }
-    const QByteArray payload(command);
-    const QString    name = str(invokerName);
-    const QString    uid  = str(invokerUid);
+    const QByteArray            payload(command);
+    const QString               name = str(invokerName);
+    const QString               uid  = str(invokerUid);
+    std::lock_guard<std::mutex> lock(hubMutex());
+    PeerHub*                    hub = g_hub.load();
+    if (!hub) {
+        g_queuedCommands.fetch_sub(1);
+        return;
+    }
     QMetaObject::invokeMethod(
         hub,
         [sch, payload, invoker, name, uid] {
@@ -717,8 +788,9 @@ bool PeerHub::onServerError(quint64 sch, unsigned int error, const char* returnC
     const QString code = str(returnCode);
     if (code.isEmpty() || !PluginLink::isOwnReturnCode(code))
         return false;
+    const QString               extra = str(extraMessage);
+    std::lock_guard<std::mutex> lock(hubMutex());
     if (PeerHub* hub = g_hub.load()) {
-        const QString extra = str(extraMessage);
         QMetaObject::invokeMethod(
             hub,
             [sch, error, code, extra, permissionError] {
@@ -732,8 +804,11 @@ bool PeerHub::onServerError(quint64 sch, unsigned int error, const char* returnC
 
 void PeerHub::onConnectStatus(quint64 sch, int status)
 {
-    PeerHub* hub = g_hub.load();
-    if (!hub || (status != STATUS_CONNECTION_ESTABLISHED && status != STATUS_DISCONNECTED))
+    if (status != STATUS_CONNECTION_ESTABLISHED && status != STATUS_DISCONNECTED)
+        return;
+    std::lock_guard<std::mutex> lock(hubMutex());
+    PeerHub*                    hub = g_hub.load();
+    if (!hub)
         return;
     QMetaObject::invokeMethod(
         hub,
@@ -749,6 +824,7 @@ void PeerHub::onConnectStatus(quint64 sch, int status)
                 h->m_directory->disconnected(sch);
                 h->m_link->connectionLost(sch);
                 h->m_syncSentMs.remove(sch);
+                h->m_privateMedia.remove(sch);
             }
         },
         Qt::QueuedConnection);
@@ -757,7 +833,8 @@ void PeerHub::onConnectStatus(quint64 sch, int status)
 void PeerHub::onClientMove(quint64 sch, quint16 client, quint64 oldChannel, quint64 newChannel, int visibility)
 {
     Q_UNUSED(visibility); // leaving the view comes with newChannel 0
-    PeerHub* hub = g_hub.load();
+    std::lock_guard<std::mutex> lock(hubMutex());
+    PeerHub*                    hub = g_hub.load();
     if (!hub)
         return;
     QMetaObject::invokeMethod(
@@ -772,10 +849,11 @@ void PeerHub::onClientMove(quint64 sch, quint16 client, quint64 oldChannel, quin
 
 void PeerHub::onClientRenamed(quint64 sch, quint16 client, const char* displayName)
 {
-    PeerHub* hub = g_hub.load();
+    const QString               name = str(displayName);
+    std::lock_guard<std::mutex> lock(hubMutex());
+    PeerHub*                    hub = g_hub.load();
     if (!hub)
         return;
-    const QString name = str(displayName);
     QMetaObject::invokeMethod(
         hub,
         [sch, client, name] {

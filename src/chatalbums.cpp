@@ -287,6 +287,11 @@ ChatIntegration::AlbumPlan ChatIntegration::planAlbums(QTextBrowser* browser) co
 
     const QVector<albums::Album> found = on ? albums::group(messages) : QVector<albums::Album>();
     QSet<int>                    wantedMarkers;
+    // scan() gives no link to these files in their message a preview; their single previews there are
+    // stale (below), so the two agree and nothing is put in and taken out again on every scan.
+    const QHash<int, QSet<QString>> memberKeys = albums::memberKeys(found, messages);
+    for (auto it = memberKeys.constBegin(); it != memberKeys.constEnd(); ++it)
+        plan.memberKeys.insert(blocks.at(it.key()).number, it.value());
     for (const albums::Album& album : found) {
         const BlockAt&    anchor = blocks.at(album.anchorMessage);
         AlbumPlan::Object object;
@@ -364,22 +369,24 @@ void ChatIntegration::applyAlbums(QTextBrowser* browser, const AlbumPlan& plan)
             edits.append({Kind::Remove, position, 0, 0, QString()});
         again = true;
     } else {
-        QHash<int, QString> wanted; // block -> its grid
-        for (const AlbumPlan::Object& object : plan.objects)
-            wanted.insert(object.block, object.id);
-        QSet<int> kept;
+        // Per grid, not per message: a message can hold two (albums::gridEdits).
+        QVector<albums::GridPlace> existing;
+        QVector<int>               existingAt; // their positions
         for (auto it = plan.existing.constBegin(); it != plan.existing.constEnd(); ++it) {
-            const int block = doc->findBlock(it.key()).blockNumber();
-            if (wanted.value(block) == it.value() && !kept.contains(block)) {
-                kept.insert(block);
-                continue;
-            }
-            edits.append({Kind::Remove, it.key(), 0, 0, QString()});
-            freed.append(it.value());
+            existing.append({doc->findBlock(it.key()).blockNumber(), it.value()});
+            existingAt.append(it.key());
         }
+        QVector<albums::GridPlace> wanted;
+        for (const AlbumPlan::Object& object : plan.objects)
+            wanted.append({object.block, object.id});
+        const albums::GridEdits grids = albums::gridEdits(existing, wanted);
+        for (const int i : grids.remove) {
+            edits.append({Kind::Remove, existingAt.at(i), 0, 0, QString()});
+            freed.append(existing.at(i).id);
+        }
+        for (const int i : grids.insert)
+            edits.append({Kind::Insert, plan.objects.at(i).after, 0, 0, plan.objects.at(i).id});
         for (const AlbumPlan::Object& object : plan.objects) {
-            if (!kept.contains(object.block))
-                edits.append({Kind::Insert, object.after, 0, 0, object.id});
             for (const AlbumPlan::Collapse& c : object.collapse)
                 edits.append({Kind::Collapse, c.from, c.start, c.end, QString()});
         }

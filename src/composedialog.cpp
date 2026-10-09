@@ -1481,7 +1481,7 @@ void ComposeDialog::send()
     if (!m_album->isHidden() && m_host.rememberAlbum)
         m_host.rememberAlbum(m_album->isChecked());
     const QString caption = sanitizeCaption(m_caption->text()).isEmpty() ? QString() : m_caption->text();
-    emit sent(caption);
+    emit sent(caption, batch);
     accept(); // closes and deletes the window (WA_DeleteOnClose)
 }
 

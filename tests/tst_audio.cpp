@@ -330,6 +330,15 @@ void TestAudio::toolTips()
     PlaybackOverlay busy   = rest(downloading);
     busy.busy              = true;
     QCOMPARE(audioZoneToolTip(downloading, busy, VideoZone::Body, 0), QString::fromUtf8("Downloading… Click to cancel autoplay."));
+    // 2.2 sha: downloaded and being checked: the card says so (not "Downloading… 100%"), like pictures.
+    MediaEntry checking    = audioEntry(MediaState::Downloading);
+    checking.progress      = 1.0;
+    checking.check.running = true;
+    checking.check.shown   = true;
+    QCOMPARE(audioZoneToolTip(checking, busy, VideoZone::Body, 0), QString::fromUtf8("Checking file… Click to cancel autoplay."));
+    checking.check.again = true;
+    QCOMPARE(audioZoneToolTip(checking, busy, VideoZone::Body, 0), QString::fromUtf8("Checking file again… Click to cancel autoplay."));
+    QVERIFY(!audioToolTipDetail(checking, busy).contains(QStringLiteral("Downloading")));
 
     MediaEntry gone = audioEntry(MediaState::Failed);
     gone.error      = MediaError::NotFound;

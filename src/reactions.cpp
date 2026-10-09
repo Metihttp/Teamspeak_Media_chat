@@ -295,12 +295,23 @@ void ReactionStore::trim(qint64 nowSec)
 
 QByteArray ReactionStore::toJson(qint64 nowSec) const
 {
-    QJsonObject media;
+    // Newest first, and only as many as fit maxFileBytes: load() refuses a larger file (and starts
+    // empty), and a full store (maxMedia x maxReactors) can be larger. The oldest media are left out.
+    QVector<QPair<qint64, QString>> order;
     for (auto it = m_media.constBegin(); it != m_media.constEnd(); ++it) {
-        if (nowSec - it->seenSec > m_limits.maxAgeSec)
-            continue;
-        QJsonObject by;
-        for (auto r = it->by.constBegin(); r != it->by.constEnd(); ++r) {
+        if (nowSec - it->seenSec <= m_limits.maxAgeSec)
+            order.append({it->seenSec, it.key()});
+    }
+    std::sort(order.begin(), order.end(), [](const QPair<qint64, QString>& a, const QPair<qint64, QString>& b) {
+        return a.first != b.first ? a.first > b.first : a.second < b.second;
+    });
+    constexpr qint64 kFrame = 64; // {"media":{...},"v":1} around the entries, with room to spare
+    qint64           used   = kFrame;
+    QJsonObject      media;
+    for (const auto& item : qAsConst(order)) {
+        const Media& m = m_media.constFind(item.second).value();
+        QJsonObject  by;
+        for (auto r = m.by.constBegin(); r != m.by.constEnd(); ++r) {
             QJsonObject reactor;
             reactor.insert(QStringLiteral("n"), r->name);
             reactor.insert(QStringLiteral("e"), QString::fromLatin1(proto::maskToCodes(r->mask)));
@@ -308,9 +319,15 @@ QByteArray ReactionStore::toJson(qint64 nowSec) const
             by.insert(r.key(), reactor);
         }
         QJsonObject entry;
-        entry.insert(QStringLiteral("seen"), static_cast<double>(it->seenSec));
+        entry.insert(QStringLiteral("seen"), static_cast<double>(m.seenSec));
         entry.insert(QStringLiteral("by"), by);
-        media.insert(it.key(), entry);
+        // Its size in the file: {"<key>":{...}} is the entry with its key plus two braces, and the
+        // comma before it takes one of them back.
+        const qint64 size = QJsonDocument(QJsonObject{{item.second, entry}}).toJson(QJsonDocument::Compact).size();
+        if (used + size > m_limits.maxFileBytes)
+            break;
+        used += size;
+        media.insert(item.second, entry);
     }
     QJsonObject root;
     root.insert(QStringLiteral("v"), 1);

@@ -105,6 +105,10 @@ class TestAlbums : public QObject
     void groupBrokenRuns();
     void groupIgnoresInvalidItems();
 
+    // keeping the chat document in step
+    void duplicateLinkToAnItemGetsNoPreview();
+    void twoGridsInOneMessageStay();
+
     // header
     void headerFromFragments_data();
     void headerFromFragments();
@@ -479,6 +483,115 @@ void TestAlbums::groupIgnoresInvalidItems()
                 {item(QStringLiteral("k1"), 9, 0, 2), item(QStringLiteral("k2"), 9, 3, 2), item(QStringLiteral("k3"), 9, 1, 11), item(QString(), 9, 1, 2), item(QStringLiteral("k5"), 9, 1, 1)}),
     });
     QVERIFY(result.isEmpty());
+}
+
+// ============================================================================================
+// Keeping the chat document in step
+// ============================================================================================
+
+namespace {
+
+// The chat's two passes over a document's single previews, as (message, key) pairs, the way
+// ChatIntegration does them: scan() adds a preview for each link that is neither an album item nor
+// another link to one in its message; the album plan takes out every preview of an album item's key in
+// that message (stale). Returns how many previews changed.
+int scanAndPlan(const QVector<albums::Message>& chat, QSet<QPair<int, QString>>* singles)
+{
+    const QVector<albums::Album>    found      = albums::group(chat);
+    const QHash<int, QSet<QString>> memberKeys = albums::memberKeys(found, chat);
+    QSet<QPair<int, int>>           members;
+    for (const albums::Album& album : found) {
+        for (const auto& member : album.members)
+            members.insert(member);
+    }
+    int changes = 0;
+    for (int m = 0; m < chat.size(); ++m) {
+        for (int l = 0; l < chat.at(m).links.size(); ++l) {
+            const QString key = chat.at(m).links.at(l).key;
+            if (!members.contains(qMakePair(m, l)) && !memberKeys.value(m).contains(key) && !singles->contains(qMakePair(m, key))) {
+                singles->insert(qMakePair(m, key));
+                ++changes;
+            }
+        }
+    }
+    for (auto it = singles->begin(); it != singles->end();) {
+        if (memberKeys.value(it->first).contains(it->second)) {
+            it = singles->erase(it);
+            ++changes;
+        } else {
+            ++it;
+        }
+    }
+    return changes;
+}
+
+} // namespace
+
+void TestAlbums::duplicateLinkToAnItemGetsNoPreview()
+{
+    // [A ai=1][B ai=2] and then A again (with or without the album fields) in one message: the third
+    // link is no album item (A's position repeats), but its file is in the grid. Before 2.2.0's fix the
+    // scan gave it a preview and the plan took that out again as stale, every 60 ms, forever.
+    const quint32 a = 0x5e;
+    for (const bool withFields : {true, false}) {
+        const QVector<albums::Message> chat = {
+            message(QStringLiteral("u:a"), false,
+                    {item(QStringLiteral("kA"), a, 1, 2), item(QStringLiteral("kB"), a, 2, 2), withFields ? item(QStringLiteral("kA"), a, 1, 2) : single(QStringLiteral("kA"))}),
+            message(QStringLiteral("u:b"), false, {single(QStringLiteral("kA")), single(QStringLiteral("kC"))}),
+        };
+        const QVector<albums::Album> found = albums::group(chat);
+        QCOMPARE(found.size(), 1);
+        QCOMPARE(found.at(0).members.size(), 2);
+        const QHash<int, QSet<QString>> keys = albums::memberKeys(found, chat);
+        QCOMPARE(keys.size(), 1);
+        QVERIFY(keys.value(0).contains(QStringLiteral("kA")) && keys.value(0).contains(QStringLiteral("kB")));
+
+        // A preview of A from before the grouping (a plugin reload) goes once; then nothing changes.
+        QSet<QPair<int, QString>> singles{qMakePair(0, QStringLiteral("kA"))};
+        QVERIFY(scanAndPlan(chat, &singles) > 0);
+        for (int pass = 0; pass < 3; ++pass)
+            QCOMPARE(scanAndPlan(chat, &singles), 0);
+        // The other message keeps its own previews, the same file too.
+        QCOMPARE(singles.size(), 2);
+        QVERIFY(singles.contains(qMakePair(1, QStringLiteral("kA"))) && singles.contains(qMakePair(1, QStringLiteral("kC"))));
+    }
+}
+
+void TestAlbums::twoGridsInOneMessageStay()
+{
+    // Two albums in one message (or one album split in two runs): both grids go in and stay.
+    const quint32                  x    = 0x31;
+    const quint32                  y    = 0x32;
+    const QVector<albums::Message> chat = {
+        message(QStringLiteral("u:a"), false, {item(QStringLiteral("k1"), x, 1, 2), item(QStringLiteral("k2"), x, 2, 2), item(QStringLiteral("k3"), y, 1, 2), item(QStringLiteral("k4"), y, 2, 2)}),
+        message(QStringLiteral("u:b"), false, {}),
+    };
+    const QVector<albums::Album> found = albums::group(chat);
+    QCOMPARE(found.size(), 2);
+    QCOMPARE(found.at(0).anchorMessage, 0);
+    QCOMPARE(found.at(1).anchorMessage, 0);
+    QVector<albums::GridPlace> wanted;
+    for (const albums::Album& album : found)
+        wanted.append({album.anchorMessage, albums::objectId(album.albumId, album.keys)});
+
+    albums::GridEdits edits = albums::gridEdits({}, wanted);
+    QCOMPARE(numbers(edits.insert), QStringLiteral("0,1"));
+    QVERIFY(edits.remove.isEmpty());
+    // The next scan finds both (in any order): nothing to do.
+    edits = albums::gridEdits({wanted.at(1), wanted.at(0)}, wanted);
+    QVERIFY(edits.insert.isEmpty() && edits.remove.isEmpty());
+    // A copy too many, or a grid no longer wanted, goes; a grid that changed is put in anew.
+    const albums::GridPlace stale{0, albums::objectId(x, {QStringLiteral("k1"), QString()})};
+    edits = albums::gridEdits({wanted.at(0), stale, wanted.at(0), wanted.at(1)}, wanted);
+    QCOMPARE(numbers(edits.remove), QStringLiteral("1,2"));
+    QVERIFY(edits.insert.isEmpty());
+    edits = albums::gridEdits({stale, wanted.at(1)}, wanted);
+    QCOMPARE(numbers(edits.remove), QStringLiteral("0"));
+    QCOMPARE(numbers(edits.insert), QStringLiteral("0"));
+    // The same grid in two messages is two grids.
+    edits = albums::gridEdits({{1, wanted.at(0).id}}, wanted);
+    QCOMPARE(numbers(edits.remove), QStringLiteral("0"));
+    QCOMPARE(numbers(edits.insert), QStringLiteral("0,1"));
 }
 
 // ============================================================================================

@@ -737,20 +737,27 @@ TS3_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 serverConnection
 
 TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, anyID targetMode, anyID toID, anyID fromID, const char* fromName, const char* fromUniqueIdentifier, const char* message, int ffIgnored)
 {
-    Q_UNUSED(targetMode);
-    Q_UNUSED(toID);
-    Q_UNUSED(fromID);
     Q_UNUSED(fromName);
     if (ffIgnored)
         return 0;
     const QString text = str(message);
     if (!text.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
         return 0;
-    const uint64  sch    = serverConnectionHandlerID;
-    const QString sender = str(fromUniqueIdentifier); // 2.2 album: filled in by the server, so it can be trusted
-    onGuiThread([sch, text, sender] {
+    const uint64  sch         = serverConnectionHandlerID;
+    const QString sender      = str(fromUniqueIdentifier); // 2.2 album: filled in by the server, so it can be trusted
+    const bool    privateChat = targetMode == TextMessageTarget_CLIENT;
+    onGuiThread([sch, text, sender, privateChat, toID, fromID] {
         if (g_core)
             g_core->onTextMessage(sch, text, sender);
+        // 2.2 protocol: media of a private chat, so only that partner's private reactions count (S0: our
+        // own private messages come here too, from our own id to the partner's).
+        if (privateChat && g_peers) {
+            const QString partner = fromID == ts3::ownClientId(sch) ? ts3::clientUid(sch, toID) : sender;
+            QStringList   keys;
+            for (const MediaLink& link : MediaLink::findInMessage(text))
+                keys.append(link.key());
+            g_peers->notePrivateMedia(sch, partner, keys);
+        }
     });
     return 0; // never hide the message: the link is the fallback for clients without the plugin
 }

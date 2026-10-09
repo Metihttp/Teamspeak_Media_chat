@@ -313,6 +313,11 @@ class Core : public QObject
     // The posts of sch are all out (or a flood pause ended): plugin commands may go again.
     void floodGovernorChanged(uint64 sch);
     void cacheCleared(); // 2.2 protocol: clearCache() ran (the reactions cache is cleared with it)
+    // The caption of the send() that returned batch: posted (the server confirmed its message), or not
+    // and it won't be any more (its message of its own failed, or every file of the send was dismissed).
+    // At most once per batch with a caption; a retry that carries the caption on reports it under the
+    // batch it came from.
+    void captionSettled(int batch, bool posted);
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
   private:
@@ -337,6 +342,17 @@ class Core : public QObject
         MediaLink  link;                      // the link to post, once uploaded
         fileverify::StagedDigest digest;      // 2.2 sha: of the final staged bytes (finalizeStaged)
         bool       hashed = false;            // 2.2 sha: digest is set (empty sha = couldn't be read)
+        int        floodRetries = 0;          // folder / upload requests sent again after 0x020c
+    };
+
+    // ---- 2.2 pacing of the sender's file requests -----------------------------------------------
+    // S0: folder requests and upload starts count on the chat messages' anti-flood counter. Every one
+    // goes through takeFileSlot(): at once while the connection's FloodGovernor allows it, else it waits
+    // in m_fileQueue (in order) until runFileQueue runs it.
+    enum class FileStep { MainFolder, PreviewFolder, Preview, Main };
+    struct FileWait {
+        int      id   = 0;
+        FileStep step = FileStep::Main;
     };
 
     // ---- 2.2 posting ----------------------------------------------------------------------
@@ -350,6 +366,7 @@ class Core : public QObject
     struct BatchInfo {
         QString           caption;             // as typed
         bool              captionDone = false; // queued with a unit (or handed on to a retry)
+        int               captionOrigin = 0;   // the batch captionSettled() reports it under (a retry carries it on)
         QVector<PostUnit> units;
     };
     // One chat message waiting in its connection's queue.
@@ -360,6 +377,9 @@ class Core : public QObject
         QByteArray   text;          // UTF-8
         QVector<int> jobs;          // the uploads it announces; empty for a caption of its own
         int          attempts = 0;  // times sent
+        int          batch    = 0;  // the send it belongs to: its posts go one after another
+        quint64      seq      = 0;  // queue order (a flooded post goes back to its place)
+        int          captionOf = 0; // it carries the caption of that batch (BatchInfo::captionOrigin)
     };
     struct InFlightPost {
         PostItem item;
@@ -411,6 +431,11 @@ class Core : public QObject
     void    onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInfo& info, const QByteArray& previewJpeg);
     void    createRemoteDirectory(int id, bool previews);
     void    onDirectoryReady(int id, bool previews, bool ok);
+    bool    takeFileSlot(uint64 sch, int id, FileStep step); // false: it waits in m_fileQueue
+    void    runFileQueue();
+    void    scheduleFileQueue();
+    bool    retryFlooded(int id); // a flooded folder / upload request may go again (bounded)
+    static QString remoteDirKey(uint64 sch, uint64 channelId, const QString& dir);
     void    startPreviewSend(int id);
     void    finishPreviewUpload(int id, bool ok, const QString& reason, unsigned int error);
     void    abortPreviewUpload(UploadJob& job);
@@ -428,8 +453,14 @@ class Core : public QObject
     void    failPost(const PostItem& item, const QString& text, const QString& captionText = {});
     int     repostFailed(int id, const ChatTarget& target);
     void    forgetBatchIfDone(int batch);
+    bool    batchCanStillPost(int batch, int exceptId) const; // a file of it is still on its way to the chat
+    bool    batchPostInFlight(uint64 sch, int batch) const;
+    void    enqueuePost(PostItem post, bool keepSeq);
+    void    settleCaption(int origin, bool posted);
     void    seedCache(const UploadJob& job, const MediaLink& link);
-    void    failUpload(int id, const QString& text);
+    // quiet: no chat warning (the caller prints one line for several files).
+    void    failUpload(int id, const QString& text, bool quiet = false);
+    void    warnFailed(uint64 sch, const QVector<int>& ids, const QString& text); // one chat line for them
     void    setUploadState(UploadJob& job, UploadState state, const QString& message = {}, bool waiting = false);
     void    scheduleUploadQueue();
     void    runUploadQueue();
@@ -500,6 +531,12 @@ class Core : public QObject
     QHash<int, PostItem>            m_failedPosts;   // upload id -> its message that failed or got no answer (Retry posts it)
     QHash<uint64, FloodGovernor>    m_flood;         // connection -> its governor (posts and plugin commands)
     QTimer*                         m_postTimer = nullptr; // wakes pumpPosts() when a governor allows the next post
+    quint64                         m_nextPostSeq = 0;
+    QSet<int>                       m_captionsPending; // caption origins not yet settled (captionSettled)
+    QHash<uint64, QList<FileWait>>  m_fileQueue;       // connection -> upload steps waiting for its governor
+    QTimer*                         m_fileTimer    = nullptr; // wakes runFileQueue()
+    bool                            m_fileStepHead = false;   // runFileQueue is running the head of a queue
+    QHash<QString, bool>            m_remoteDirs;      // remoteDirKey -> created (true) or refused (false) on this connection
     QElapsedTimer                   m_clock;
     albums::Registry                m_albums;        // 2.2 album: who posted which album
 

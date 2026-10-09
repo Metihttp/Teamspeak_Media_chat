@@ -4,10 +4,12 @@
 // TeamSpeak and Core sit behind Backend (a fake in the unit tests).
 //
 // Sending: one queue per connection, presence before reactions before background work. Every command
-// carries its own return code and waits for its answer: a missing answer (about 3 s, S0) means it
-// was NOT sent. The connection's FloodGovernor (Core) decides when a command may go: plugin commands
-// spend its plugin bucket (S0: their own server counter, 5 points each), and a 0x020c ("retry in N ms")
-// pauses both buckets for the hint plus its margin (FloodGovernor::commandFlooded).
+// carries its own return code and waits for its answer: a missing answer (about 3 s, S0) counts as
+// NOT sent (Failed); should the server's Ok still come later (a lossy link), the same callback gets
+// LateOk, so its owner can follow what the others received. The connection's FloodGovernor (Core)
+// decides when a command may go: plugin commands spend its plugin bucket (S0: their own server
+// counter, 5 points each), and a 0x020c ("retry in N ms") pauses both buckets for the hint plus its
+// margin (FloodGovernor::commandFlooded).
 // CLIENT targets are filtered to clients that are visible right before sending (one stale id fails
 // the whole command). A permission error, or any error on a channel HELLO, blocks plugin commands
 // on that connection for the session: presence and reactions are then unavailable there.
@@ -79,6 +81,7 @@ class PluginLink : public QObject, public peers::Sender
     // peers::Sender: presence priority.
     void send(quint64 sch, const proto::Message& message, const peers::Target& target, Done done) override;
     bool blocked(quint64 sch) const override;
+    void dropQueued(const QByteArray& type) override;
 
     // coalesceKey: a queued command with the same key is replaced (its callback gets Superseded).
     void sendWith(quint64 sch, const proto::Message& message, const peers::Target& target, Priority priority, Done done, const QString& coalesceKey = {});
@@ -143,6 +146,7 @@ class PluginLink : public QObject, public peers::Sender
     QHash<quint64, Conn>     m_conns;
     QHash<QString, InFlight> m_inFlight; // return code -> command
     QHash<QString, qint64>   m_linger;   // return code -> forget after
+    QHash<QString, Done>     m_lateDone; // return code -> callback of a command that timed out (a late Ok: LateOk)
     QTimer*                  m_timer   = nullptr;
     quint64                  m_seq     = 0;
     bool                     m_closing = false;

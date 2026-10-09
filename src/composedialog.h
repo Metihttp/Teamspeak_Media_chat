@@ -74,8 +74,9 @@ class ComposeDialog : public QDialog
     void       showDropTarget(bool shown);
 
   signals:
-    // The request reached Core. caption: what the caption field held (empty: no caption).
-    void sent(const QString& caption);
+    // The request reached Core. caption: what the caption field held (empty: no caption); batch: what
+    // Core::send returned (Core::captionSettled reports the caption under it).
+    void sent(const QString& caption, int batch);
 
   public slots:
     void reject() override; // Esc, Cancel and the close button: asks first when the user changed something

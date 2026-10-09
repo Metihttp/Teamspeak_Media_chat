@@ -16,7 +16,9 @@
 //  * Chat posts go one at a time: each waits for its own return-code answer, or postAnswerWaitMs.
 //    A post goes only while the general bucket keeps generalReserve points for the user's own typing:
 //    from rest about 8 posts back to back, then one every 3 s.
-//  * Transfers, file info and folder requests are charged to the general bucket (never held back).
+//  * Transfers, file info and folder requests spend the general bucket too. The sender's uploads
+//    (folders, upload starts) wait for generalReady(): they go while the bucket keeps the reserve plus
+//    room for one chat post, so a waiting post is never held back by them. Downloads are only charged.
 //  * Plugin commands spend their own bucket: from rest 24 back to back, then one a second.
 //  * 0x020c from either counter pauses both for the server's hint + floodHintMarginMs (or a fixed
 //    pause without a hint). After the pause exactly one command fits, then the steady rate follows.
@@ -90,6 +92,10 @@ class FloodGovernor
     bool postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int attempts, int retryHintMs = -1);
 
     // ---- other commands on the general counter (Core's transfers, folders, file info) -------------
+    // True when a command of that cost may go now: no flood pause, and after it the general bucket still
+    // keeps generalReserve plus one chat post (costText). Call charge() once it went.
+    bool   generalReady(Cost cost, qint64 nowMs) const;
+    qint64 nextGeneralCheckMs(Cost cost, qint64 nowMs) const; // when generalReady() becomes true by itself
     void charge(Cost cost, qint64 nowMs);
     void generalFlooded(qint64 nowMs, int retryHintMs = -1); // one of them got 0x020c
 
@@ -127,6 +133,7 @@ class FloodGovernor
         qint64 timeUntil(double level, qint64 nowMs) const;
     };
 
+    int costOf(Cost cost) const;
     // After a flood: both counters pause; the flooded one holds exactly one command's room at the end.
     void flooded(qint64 nowMs, int retryHintMs, int fallbackMs, Bucket& bucket, double oneFits);
 

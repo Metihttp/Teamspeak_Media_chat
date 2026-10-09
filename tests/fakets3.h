@@ -39,6 +39,11 @@ struct Message {
     QString    returnCode;
 };
 
+struct Directory {
+    QString path; // "/tsmedia"
+    QString returnCode;
+};
+
 // Fills ts3::funcs and forgets everything recorded before. configDir: what getConfigPath returns
 // (ts3::dataDir() is <configDir>/plugins/tsmedia).
 void install(const QString& configDir);
@@ -54,6 +59,7 @@ QList<Transfer> downloads(); // every requestFile, in order
 QList<Transfer> uploads();   // every sendFile, in order
 Transfer        transfer(anyID id);
 QList<Message>  messages();  // chat messages sent
+QList<Directory> directories(); // every requestCreateDirectory, in order (nobody answers: the test does)
 QStringList     logLines();  // what Core wrote to TeamSpeak's log
 bool            logContains(const QString& text);
 

@@ -87,14 +87,33 @@ bool FloodGovernor::postAnswered(quint64 ticket, qint64 nowMs, bool flooded, int
     return attempts <= m_limits.postRetries;
 }
 
+int FloodGovernor::costOf(Cost cost) const
+{
+    if (cost == Cost::FileInfo)
+        return m_limits.costFileInfo;
+    if (cost == Cost::Mkdir)
+        return m_limits.costMkdir;
+    return m_limits.costTransfer;
+}
+
+bool FloodGovernor::generalReady(Cost cost, qint64 nowMs) const
+{
+    return nextGeneralCheckMs(cost, nowMs) <= nowMs;
+}
+
+qint64 FloodGovernor::nextGeneralCheckMs(Cost cost, qint64 nowMs) const
+{
+    qint64 at = nowMs;
+    if (postsPaused(nowMs))
+        at = qMax(at, m_postsPausedUntil);
+    // Room for the user's typing and for one chat post after this command: posts come first.
+    const double room = m_limits.generalCapacity - m_limits.generalReserve - m_limits.costText - costOf(cost);
+    return qMax(at, m_general.timeUntil(qMax(0.0, room), nowMs));
+}
+
 void FloodGovernor::charge(Cost cost, qint64 nowMs)
 {
-    int points = m_limits.costTransfer;
-    if (cost == Cost::FileInfo)
-        points = m_limits.costFileInfo;
-    else if (cost == Cost::Mkdir)
-        points = m_limits.costMkdir;
-    m_general.add(points, nowMs);
+    m_general.add(costOf(cost), nowMs);
 }
 
 void FloodGovernor::generalFlooded(qint64 nowMs, int retryHintMs)

@@ -10,6 +10,7 @@
 #include <QPair>
 #include <QPointF>
 #include <QRect>
+#include <QSet>
 #include <QSize>
 #include <QString>
 #include <QStringList>
@@ -85,6 +86,29 @@ struct Album {
 // `count` keys, with placeholders for what hasn't arrived. Other runs show only their items, by
 // position. A run with fewer than two keys is no album: its items stay single previews.
 QVector<Album> group(const QVector<Message>& messages);
+
+// ---- keeping a chat document in step ---------------------------------------------------------------
+
+// The keys of the album items in each message of group()'s result (message index -> keys). No link to
+// one of these files in that message gets a single preview of its own: the grid there shows it. The
+// chat's scan (which adds single previews) and its album plan (which takes stale ones out) both follow
+// this, so a second link to an album item in the same message never gets a preview that the plan then
+// takes out again, scan after scan.
+QHash<int, QSet<QString>> memberKeys(const QVector<Album>& albums, const QVector<Message>& messages);
+
+// A grid in a chat document, or one an album plan wants there: its message (block) and object id.
+struct GridPlace {
+    int     block = 0;
+    QString id;
+};
+// What becomes of the grids of a document. remove: indexes into existing of grids that are no longer
+// wanted (or a copy too many); insert: indexes into wanted of grids that aren't there yet. A message
+// can hold several grids (two albums in one message, or one album split in two runs).
+struct GridEdits {
+    QVector<int> remove;
+    QVector<int> insert;
+};
+GridEdits gridEdits(const QVector<GridPlace>& existing, const QVector<GridPlace>& wanted);
 
 // ---- TeamSpeak's message header ----------------------------------------------------------------------
 

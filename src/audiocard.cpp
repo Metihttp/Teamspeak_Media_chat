@@ -122,6 +122,8 @@ QStringList statusTexts(const MediaEntry& e, const PlaybackOverlay& o)
         return {title};
     }
     if (e.state == MediaState::Downloading) {
+        if (isCheckingShown(e)) // 2.2 sha: downloaded, being checked (the ring follows the check)
+            return {checkingText(e), i18n::t("Checking…")};
         const int   percent = qRound(qBound(0.0, e.progress, 1.0) * 100.0);
         QStringList texts;
         if (e.link.size) {
@@ -382,6 +384,8 @@ double audioSeekFractionAt(const MediaEntry& entry, const PlaybackOverlay& overl
 QString audioZoneToolTip(const MediaEntry& entry, const PlaybackOverlay& overlay, VideoZone zone, double seekFraction)
 {
     if (overlay.busy) {
+        if (entry.state == MediaState::Downloading && isCheckingShown(entry)) // 2.2 sha
+            return i18n::t("%1 Click to cancel autoplay.").arg(checkingText(entry));
         if (entry.state == MediaState::Downloading)
             return i18n::t("Downloading… Click to cancel autoplay.");
         if (entry.state == MediaState::Ready)

@@ -271,6 +271,46 @@ QVector<Album> group(const QVector<Message>& messages)
     return albums;
 }
 
+QHash<int, QSet<QString>> memberKeys(const QVector<Album>& albums, const QVector<Message>& messages)
+{
+    QHash<int, QSet<QString>> keys;
+    for (const Album& album : albums) {
+        for (const auto& member : album.members) {
+            if (member.first < 0 || member.first >= messages.size())
+                continue;
+            const QVector<Link>& links = messages.at(member.first).links;
+            if (member.second >= 0 && member.second < links.size() && !links.at(member.second).key.isEmpty())
+                keys[member.first].insert(links.at(member.second).key);
+        }
+    }
+    return keys;
+}
+
+GridEdits gridEdits(const QVector<GridPlace>& existing, const QVector<GridPlace>& wanted)
+{
+    // Counted per (message, id): the same grid wanted twice in a message is there twice.
+    QHash<QPair<int, QString>, int> missing;
+    for (const GridPlace& place : wanted)
+        ++missing[qMakePair(place.block, place.id)];
+    GridEdits edits;
+    for (int i = 0; i < existing.size(); ++i) {
+        const auto it = missing.find(qMakePair(existing.at(i).block, existing.at(i).id));
+        if (it != missing.end() && it.value() > 0) {
+            --it.value(); // kept where it is
+            continue;
+        }
+        edits.remove.append(i);
+    }
+    for (int i = 0; i < wanted.size(); ++i) {
+        const auto it = missing.find(qMakePair(wanted.at(i).block, wanted.at(i).id));
+        if (it != missing.end() && it.value() > 0) {
+            --it.value();
+            edits.insert.append(i);
+        }
+    }
+    return edits;
+}
+
 // ============================================================================================
 // Header
 // ============================================================================================

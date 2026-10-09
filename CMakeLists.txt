@@ -268,6 +268,8 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
+        # 2.2 sending through Core: pacing of folder and upload requests, post order, retries, captions
+        tests/tst_coresend.cpp
         tests/fakets3.cpp         tests/fakets3.h
         src/core.cpp
         src/ts3api.cpp

@@ -290,6 +290,7 @@ void ChatIntegration::start()
     connect(m_core, &Core::entryChanged, this, &ChatIntegration::onEntryChanged, Qt::QueuedConnection);
     connect(m_core, &Core::uploadChanged, this, &ChatIntegration::onUploadChanged, Qt::QueuedConnection);
     connect(m_core, &Core::openRequested, this, &ChatIntegration::onOpenRequested, Qt::QueuedConnection);
+    connect(m_core, &Core::captionSettled, this, &ChatIntegration::onCaptionSettled, Qt::QueuedConnection); // 2.2 compose
 
     // Created after our own entryChanged connection, so previews are re-laid out (and frame sizes
     // updated) before the controller reacts to the same change.
@@ -613,7 +614,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
                     ++hiddenNotes;
             }
 
-            if (!hasPreview && previewsOn && !raw && !albumPlan.members.contains(hit.start)) // 2.2 album
+            // 2.2 album: an album item, or another link to one in the same message (the grid shows it).
+            if (!hasPreview && previewsOn && !raw && !albumPlan.members.contains(hit.start) && !albumPlan.memberKeys.value(block.blockNumber()).contains(hit.key))
                 ops.append({hit.end, 0, hit.key});
         }
     }
@@ -2570,12 +2572,13 @@ void ChatIntegration::openCompose(QWidget* source, const QStringList& files, con
     dialog->addImage(image);
     if (!caption.isEmpty())
         dialog->setPrefilledCaption(caption);
-    // The chat input's text went out as the caption: it is cleared, unless it changed meanwhile or the
-    // caption was emptied in the window (the text then stays for a message of its own).
-    const QPointer<QTextEdit> chatInput(input);
-    connect(dialog, &ComposeDialog::sent, this, [chatInput, inputText, caption](const QString& sentCaption) {
-        if (chatInput && !caption.isEmpty() && !sentCaption.isEmpty() && chatInput->toPlainText() == inputText)
-            chatInput->clear();
+    // The chat input's text went out as the caption: it is cleared once the caption is in the chat
+    // (onCaptionSettled), unless it changed meanwhile or the caption was emptied in the window (the text
+    // then stays for a message of its own). If the caption never gets posted, the text stays.
+    const QPointer<QObject> chatInput(input);
+    connect(dialog, &ComposeDialog::sent, this, [this, chatInput, inputText, caption](const QString& sentCaption, int batch) {
+        if (chatInput && batch != 0 && !caption.isEmpty() && !sentCaption.isEmpty())
+            m_captionClears.insert(batch, {chatInput, inputText});
     });
     m_compose = dialog;
     dialog->show();
@@ -2640,6 +2643,15 @@ void ChatIntegration::pickAndSendFiles()
         return;
     lastDir = QFileInfo(files.first()).absolutePath();
     openCompose(from.data(), files, QImage(), target); // 2.2 compose: caption, spoilers, what can't be sent
+}
+
+// 2.2 compose: the caption that came from the chat input is in the chat now (or never will be).
+void ChatIntegration::onCaptionSettled(int batch, bool posted)
+{
+    const CaptionClear clear = m_captionClears.take(batch);
+    auto*              input = qobject_cast<QTextEdit*>(clear.input.data());
+    if (posted && input && input->toPlainText() == clear.text)
+        input->clear();
 }
 
 void ChatIntegration::onUploadChanged(int id)

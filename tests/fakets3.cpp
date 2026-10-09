@@ -19,6 +19,7 @@ struct State {
     QHash<QString, QByteArray> files;
     QList<Transfer>            transfers;
     QList<Message>             messages;
+    QList<Directory>           directories;
     QStringList                log;
     anyID                      nextTransfer   = 100;
     int                        nextReturnCode = 0;
@@ -215,8 +216,9 @@ unsigned int requestDeleteFile(uint64, uint64, const char*, const char** file, c
     return ERROR_ok;
 }
 
-unsigned int requestCreateDirectory(uint64, uint64, const char*, const char*, const char*)
+unsigned int requestCreateDirectory(uint64, uint64, const char*, const char* directoryPath, const char* returnCode)
 {
+    state().directories.append({QString::fromUtf8(directoryPath), QString::fromUtf8(returnCode)});
     return ERROR_ok;
 }
 
@@ -339,6 +341,11 @@ Transfer transfer(anyID id)
 QList<Message> messages()
 {
     return state().messages;
+}
+
+QList<Directory> directories()
+{
+    return state().directories;
 }
 
 QStringList logLines()

@@ -180,6 +180,10 @@ void PeerDirectory::setLocal(const Local& local)
             it->hiTargets.clear();
             it->syncAt = -1;
         }
+        // What the transport still holds back (a flood pause, its reserve) doesn't go out either. A
+        // HELLO already on its way is taken back once its answer comes (helloDone).
+        m_sender.dropQueued("HELLO");
+        m_sender.dropQueued("HI");
     } else if (!wasOn && local.presence) {
         const qint64 now = m_env.nowMs();
         for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
@@ -406,13 +410,26 @@ void PeerDirectory::helloDone(quint64 sch, quint64 generation, SendResult result
         return;
     Conn&        c   = it.value();
     const qint64 now = m_env.nowMs();
-    c.helloInFlight  = false;
+    // It reached the channel: announced, unless presence was switched off meanwhile (then a BYE takes
+    // it back, as sayGoodbye would have).
+    const auto arrived = [this, &c, sch] {
+        if (presenceOn())
+            c.announced = true;
+        else if (!c.announced && !m_sender.blocked(sch))
+            m_sender.send(sch, proto::makeBye(), Target::toChannel(), {});
+    };
+    if (result == SendResult::LateOk) {
+        arrived(); // it counted as failed (that was handled then), but it did arrive
+        changed(sch);
+        return;
+    }
+    c.helloInFlight = false;
     if (result == SendResult::Blocked) {
         commandsBlocked(sch);
         return;
     }
     if (result == SendResult::Ok)
-        c.announced = true;
+        arrived();
     if (generation != c.generation)
         return; // we moved on meanwhile: that channel has its own HELLO
     if (result != SendResult::Ok && c.helloAttempts <= m_limits.helloRetries && presenceOn()) {

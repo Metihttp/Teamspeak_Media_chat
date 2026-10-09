@@ -428,19 +428,28 @@ bool ChatReactions::filterEvent(QObject* watched, QEvent* event)
         setSpot(spot);
         if (!reactive(hit.zone.zone))
             return false; // the picture, the chat text: ChatIntegration's
-        // 2.2 album: over an album's row no tile is hovered, the grid as a whole is.
-        if (albums::isObjectId(hit.key) && (m_chat->m_hoverObject != hit.key || m_chat->m_hoverTile != -1 || m_chat->m_hoverObjectIn != browser)) {
-            m_chat->m_hoverObject   = hit.key;
-            m_chat->m_hoverTile     = -1;
-            m_chat->m_hoverObjectIn = browser;
-            refresh(browser, hit.key);
+        // Over the row the preview is "hovered" (its add pill shows), outside the picture's own logic: the
+        // same pointer state updateHoverAt() gives the picture, also when the pointer came from outside
+        // it (renderFor asks for the chat and the object too). 2.2 album: over an album's row no tile is
+        // hovered, the grid as a whole is.
+        if (m_chat->m_hoverObject != hit.key || m_chat->m_hoverTile != -1 || m_chat->m_hoverObjectIn != browser) {
+            const QString                left   = m_chat->m_hoverObject;
+            const QPointer<QTextBrowser> leftIn = m_chat->m_hoverObjectIn;
+            m_chat->m_hoverObject               = hit.key;
+            m_chat->m_hoverTile                 = -1;
+            m_chat->m_hoverObjectIn             = browser;
+            if (left != hit.key && albums::isObjectId(left) && leftIn)
+                refresh(leftIn, left);
+            if (albums::isObjectId(hit.key))
+                refresh(browser, hit.key);
         }
-        // Over the row the preview stays "hovered" (its add pill shows), outside the picture's own logic.
-        if (m_chat->m_hoverKey != hit.key) {
-            const QString left = m_chat->m_hoverKey;
-            m_chat->m_hoverKey = hit.key;
-            if (!left.isEmpty())
-                refresh(browser, left);
+        if (m_chat->m_hoverKey != hit.key || m_chat->m_hoverBrowser != browser) {
+            const QString                left   = m_chat->m_hoverKey;
+            const QPointer<QTextBrowser> leftIn = m_chat->m_hoverBrowser;
+            m_chat->m_hoverKey                  = hit.key;
+            m_chat->m_hoverBrowser              = browser;
+            if (!left.isEmpty() && leftIn && (left != hit.key || leftIn != browser))
+                refresh(leftIn, left);
             refresh(browser, hit.key);
         }
         if (m_chat->m_media)

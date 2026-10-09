@@ -61,7 +61,9 @@ struct Target {
 };
 
 // Ok: the server accepted it. Superseded: a newer state of the same thing replaced it before it went out.
-enum class SendResult { Ok, Flooded, Blocked, Failed, Superseded };
+// LateOk: it was reported Failed (no answer in time), and then the server's Ok came after all: it did
+// reach the others (a second callback for the same command).
+enum class SendResult { Ok, Flooded, Blocked, Failed, Superseded, LateOk };
 
 // The plugin-command transport (PluginLink).
 class Sender
@@ -72,6 +74,9 @@ class Sender
     virtual void send(quint64 sch, const proto::Message& message, const Target& target, Done done) = 0;
     // Plugin commands were refused on this server (permissions, or a server that doesn't pass them on).
     virtual bool blocked(quint64 sch) const                                                = 0;
+    // Queued commands of that type (on every connection) are dropped before they go out; their
+    // callbacks get Superseded. Presence switched off: no HELLO or HI may follow.
+    virtual void dropQueued(const QByteArray& type) { Q_UNUSED(type); }
 };
 
 enum class PeerState { Unknown, Checking, Has, Without };

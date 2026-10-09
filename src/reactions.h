@@ -42,7 +42,7 @@ class ReactionStore : public QObject
         qint64 maxAgeSec      = 30LL * 86400; // older entries are dropped when saving / loading
         int    maxOrphans     = 64;
         qint64 orphanTtlMs    = 15000;
-        qint64 maxFileBytes   = 2 * 1024 * 1024;
+        qint64 maxFileBytes   = 2 * 1024 * 1024; // larger files aren't loaded; toJson() leaves the oldest media out to fit
         int    maxNameChars   = 64;
     };
 

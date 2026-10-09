@@ -236,6 +236,23 @@ void PluginLink::setClosing()
     for (auto it = m_conns.begin(); it != m_conns.end(); ++it)
         it->queue.clear(); // no callbacks: their owners are going away
     m_pendingCallbacks.clear();
+    m_lateDone.clear();
+}
+
+void PluginLink::dropQueued(const QByteArray& type)
+{
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+        QList<Item> kept;
+        for (Item& item : it->queue) {
+            if (item.type == type)
+                finish(item, peers::SendResult::Superseded);
+            else
+                kept.append(std::move(item));
+        }
+        it->queue = std::move(kept);
+    }
+    if (!m_pumping)
+        runCallbacks();
 }
 
 void PluginLink::schedule(qint64 wakeMs)
@@ -275,6 +292,8 @@ void PluginLink::pump()
             }
             InFlight flight = it.value();
             m_linger.insert(it.key(), now + m_limits.returnCodeLingerMs);
+            if (flight.item.done)
+                m_lateDone.insert(it.key(), flight.item.done); // a late Ok still reaches it (LateOk)
             it      = m_inFlight.erase(it);
             Conn& c = m_conns[flight.sch];
             ++c.counters.failed;
@@ -284,6 +303,7 @@ void PluginLink::pump()
         for (auto it = m_linger.begin(); it != m_linger.end();) {
             if (now >= it.value()) {
                 removeCode(it.key());
+                m_lateDone.remove(it.key());
                 it = m_linger.erase(it);
             } else {
                 take(it.value());
@@ -379,11 +399,15 @@ bool PluginLink::onServerError(quint64 sch, unsigned int error, const QString& r
 
     auto it = m_inFlight.find(returnCode);
     if (it == m_inFlight.end()) {
-        // A late answer to a command that timed out.
+        // A late answer to a command that timed out (it was reported Failed): an Ok means it did reach
+        // the others after all.
         m_linger.remove(returnCode);
+        const Done late = m_lateDone.take(returnCode);
         if (flooded && !m_closing)
             pause(m_conns[sch]);
-        pump();
+        else if (error == kErrorOk && !permissionError && late && !m_closing)
+            m_pendingCallbacks.append({late, peers::SendResult::LateOk});
+        pump(); // runs the callback
         return true;
     }
     InFlight flight = it.value();

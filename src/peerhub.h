@@ -61,6 +61,11 @@ class PeerHub : public QObject
     using PresentKeys = std::function<QStringList(const QString& serverUid)>;
     void setPresentKeys(QObject* owner, PresentKeys keys);
 
+    // Media posted in our private chat with partnerUid on sch this session (either of us sent it;
+    // plugin.cpp reports TeamSpeak's private text messages). A private reaction (s=p) is accepted only
+    // from that partner and only for these keys: anyone can address a plugin command to us.
+    void notePrivateMedia(quint64 sch, const QString& partnerUid, const QStringList& keys);
+
     // Counters for the diagnostics feature: "plugin commands sent 14, dropped 0, ..." and versions.
     QString diagnosticsLine(quint64 sch) const;
     // The diagnostic info's "Presence and reactions" section (plugin.cpp registers it): the settings,
@@ -100,7 +105,7 @@ class PeerHub : public QObject
     void    receiveSync(quint64 sch, quint16 from, const QString& uid, const proto::Sync& sync);
     void    sendSync(quint64 sch);
     void    flushPending();
-    void    reactionSent(const QString& key, quint64 generation, quint8 mask, peers::SendResult result);
+    void    reactionSent(quint64 sch, const QString& key, quint64 generation, quint8 mask, peers::SendResult result);
     void    scheduleTimers();
     void    storeChanged(const QString& key);
     void    save();
@@ -123,6 +128,7 @@ class PeerHub : public QObject
     mutable QHash<quint64, QString> m_ownUids; // connection -> our identity there
     QHash<QString, Pending>  m_pending;          // media key -> your toggle on its way
     QHash<quint64, qint64>   m_syncSentMs;       // connection -> our last SYNC (answers are accepted 10 s)
+    QHash<quint64, QHash<QString, QStringList>> m_privateMedia; // connection -> partner uid -> keys (notePrivateMedia), oldest first
     QHash<QString, qint64>   m_syncAnsweredMs;   // "sch/uid" -> our last answer to their SYNC
     struct SyncAnswer {
         quint64     sch = 0;

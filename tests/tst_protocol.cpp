@@ -4,6 +4,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
@@ -245,6 +246,7 @@ class TestProtocol : public QObject
     void syncDueNeedsReactionPeer();
     void blockedHidesPresence();
     void floodedHelloIsRetried();
+    void presenceOffDropsHeldHello();
     void presenceTexts();
     void presenceNames();
 
@@ -256,6 +258,7 @@ class TestProtocol : public QObject
     void storePersistence();
     void storeHostileFile();
     void storeLimitsOnLoad();
+    void storeSaveFitsLoadLimit();
 
     // reaction row
     void rowLayout();
@@ -598,10 +601,30 @@ void TestProtocol::linkTimeoutIsNotSent()
     link.pump();
     QVERIFY(sameItems<peers::SendResult>(results, {peers::SendResult::Failed}));
     QCOMPARE(link.counters(7).timeouts, 1);
-    // A late answer is still ours (TeamSpeak must not print it), and changes nothing.
+    // A late answer is still ours (TeamSpeak must not print it). An Ok means the command did arrive
+    // after all: its owner hears LateOk (a reaction is shown again, a SYNC's answers count).
     QVERIFY(PluginLink::isOwnReturnCode(rc));
     QVERIFY(link.onServerError(7, 0, rc, QString(), false));
-    QCOMPARE(results.size(), 1);
+    QVERIFY(sameItems<peers::SendResult>(results, {peers::SendResult::Failed, peers::SendResult::LateOk}));
+    QVERIFY(!link.onServerError(7, 0, rc, QString(), false)); // once
+    QCOMPARE(results.size(), 2);
+
+    // A late error changes nothing; a late Ok after the linger time isn't ours any more.
+    link.sendWith(7, proto::makeBye(), peers::Target::toChannel(), PluginLink::Priority::Reaction, [&](peers::SendResult r) { results.append(r); });
+    const QString second = backend.commands.last().rc;
+    backend.now += 3000;
+    link.pump();
+    QCOMPARE(results.last(), peers::SendResult::Failed);
+    QVERIFY(link.onServerError(7, 0x0a08, second, QString(), false));
+    QCOMPARE(results.size(), 3);
+    link.sendWith(7, proto::makeBye(), peers::Target::toChannel(), PluginLink::Priority::Reaction, [&](peers::SendResult r) { results.append(r); });
+    const QString third = backend.commands.last().rc;
+    backend.now += 3000;
+    link.pump();
+    backend.now += 30000; // the linger time
+    link.pump();
+    QVERIFY(!link.onServerError(7, 0, third, QString(), false));
+    QCOMPARE(results.size(), 4);
 }
 
 void TestProtocol::linkFloodPausesAndRetriesPresence()
@@ -1105,6 +1128,57 @@ void TestProtocol::floodedHelloIsRetried()
     QCOMPARE(dir.summary(1, kModeChannel, 0).without.size(), 1);
 }
 
+void TestProtocol::presenceOffDropsHeldHello()
+{
+    // The real transport between the directory and a fake server. A HELLO it still holds back (a flood
+    // pause) never goes out once presence is switched off; one already on its way is taken back with a
+    // BYE when its Ok comes; one whose Ok comes after its timeout counts as announced after all.
+    FakeEnv     env;
+    FakeBackend backend;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    PluginLink           link(backend);
+    peers::PeerDirectory dir(env, link);
+    dir.setAutoTimer(false);
+    const auto commands = [&backend](const char* type) {
+        int n = 0;
+        for (const FakeBackend::Command& c : qAsConst(backend.commands)) {
+            const QByteArray head = QByteArray("tsm1 ") + type;
+            n += c.payload == head || c.payload.startsWith(head + ' ') ? 1 : 0;
+        }
+        return n;
+    };
+
+    backend.flood.commandFlooded(backend.now, 5000);
+    dir.setLocal({QStringLiteral("2.2.0"), true, true});
+    dir.connected(1);
+    advance(env, dir, 1000);
+    QCOMPARE(commands("HELLO"), 0); // held back by the pause
+    dir.setLocal({QStringLiteral("2.2.0"), false, true});
+    backend.now += 6000;
+    link.pump();
+    QVERIFY(backend.commands.isEmpty()); // neither the HELLO nor a BYE: nobody was told anything
+
+    backend.flood = FloodGovernor(roomyLimits());
+    dir.setLocal({QStringLiteral("2.2.0"), true, true});
+    advance(env, dir, 1000);
+    QCOMPARE(commands("HELLO"), 1);
+    const QString rc = backend.commands.last().rc;
+    dir.setLocal({QStringLiteral("2.2.0"), false, true});
+    QCOMPARE(commands("BYE"), 0); // not announced yet
+    QVERIFY(link.onServerError(1, 0, rc, QString(), false));
+    QCOMPARE(commands("BYE"), 1); // it arrived: taken back
+
+    dir.setLocal({QStringLiteral("2.2.0"), true, true});
+    advance(env, dir, 1000);
+    QCOMPARE(commands("HELLO"), 2);
+    const QString late = backend.commands.last().rc;
+    backend.now += 3000;
+    link.pump();                                               // no answer in time: Failed
+    QVERIFY(link.onServerError(1, 0, late, QString(), false)); // then its Ok after all
+    dir.setLocal({QStringLiteral("2.2.0"), false, true});
+    QCOMPARE(commands("BYE"), 2);
+}
+
 void TestProtocol::presenceTexts()
 {
     using K = peers::PresenceSummary::Kind;
@@ -1366,6 +1440,38 @@ void TestProtocol::storeLimitsOnLoad()
     QVERIFY(!small.load(path, now));
     QVERIFY(small.keys().isEmpty());
     QVERIFY(QFile::exists(path + QStringLiteral(".bad")));
+}
+
+void TestProtocol::storeSaveFitsLoadLimit()
+{
+    // A full store can be larger than the file load() accepts: save() leaves the oldest media out, so
+    // the next start reads it instead of moving it aside and starting empty.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("reactions.json"));
+    const qint64  now  = 1760010000;
+    ReactionStore::Limits limits;
+    limits.maxFileBytes = 4096;
+    ReactionStore store(limits);
+    for (int i = 0; i < 60; ++i) {
+        for (int r = 0; r < 4; ++r) {
+            const QString uid = QStringLiteral("q0Xn6%1=").arg(i * 10 + r, 22, 10, QLatin1Char('0'));
+            QCOMPARE(store.applyRemote(QString(), keyNumber(i), uid, QStringLiteral("A rather long display name %1").arg(r), 0x03, (now - 3600 + i * 10) * 1000),
+                     ReactionStore::Apply::Applied);
+        }
+    }
+    QCOMPARE(store.keys().size(), 60);
+    QVERIFY(store.toJson(now).size() <= limits.maxFileBytes);
+    QVERIFY(store.save(path, now));
+    QVERIFY(QFileInfo(path).size() <= limits.maxFileBytes);
+    ReactionStore loaded(limits);
+    QVERIFY(loaded.load(path, now));
+    QVERIFY(!QFile::exists(path + QStringLiteral(".bad")));
+    const QStringList keys = loaded.keys();
+    QVERIFY(keys.size() > 0 && keys.size() < 60);
+    QVERIFY(keys.contains(keyNumber(59))); // the newest are kept
+    QVERIFY(!keys.contains(keyNumber(0)));
+    QCOMPARE(loaded.reactorCount(keyNumber(59)), 4);
 }
 
 // ---- reaction row ---------------------------------------------------------------------------------
