@@ -25,6 +25,8 @@ How TS Media chat is put together: the modules, the link format it posts, how up
 | `src/video/mfvideo.*` | Media Foundation video probing and playback |
 | `src/mediaviewer.*` | Gallery viewer: zoom, video player, full screen, shortcuts |
 | `src/uploadtoast.*` | Upload progress panel |
+| `src/composedialog.*`, `src/composemodel.*` | The send window (paste, drop, picker): caption, spoilers, what can't be sent, one `Core::send` request; its rules without widgets |
+| `src/composehooks.*`, `src/composesettings.*` | Where other features plug into the send window (presence line, albums, own-drag marker), and its Sending setting |
 | `src/settings.*`, `src/settingsdialog.*` | Settings (INI file) and the tabbed settings dialog |
 | `src/settingssection.*` | Base class and building blocks for settings a feature adds to a tab (`SettingsDialog::addSection`) |
 | `src/floodgovernor.*` | Per-connection pacing of chat posts and plugin commands (TeamSpeak's anti-flood counts both) |

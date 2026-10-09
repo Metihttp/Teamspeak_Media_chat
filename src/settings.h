@@ -51,6 +51,9 @@ struct Settings {
     static constexpr const char* defaultUploadDirectory = "/tsmedia";
     // Not QStringLiteral: settings values must never share data with the DLL image (see settings.cpp).
     QString uploadDirectory = QString::fromLatin1(defaultUploadDirectory);
+    // 2.2 compose: a drop opens the send window (Ctrl held: sends right away); false: the other way round.
+    bool dropOpensSendWindow = true;
+    bool sendAsAlbum         = true; // the send window's "Send as an album", as last chosen
 
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this

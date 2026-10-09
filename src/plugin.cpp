@@ -16,6 +16,7 @@
 
 #include "accessgroup.h" // 2.2 servergroup
 #include "chatintegration.h"
+#include "composesettings.h" // 2.2 compose
 #include "core.h"
 #include "datasaver.h" // 2.2 per-server settings
 #include "diagnosticscollect.h" // 2.2 diagnostics
@@ -98,6 +99,7 @@ void showSettings(QWidget* parent)
     // Heap allocated and non-blocking so plugin shutdown can always close it.
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_core) {
             g_core->applyCacheLimit();    // a lower limit counts now, not after the next download
@@ -143,7 +145,7 @@ void printHelp(uint64 sch)
 {
     ts3::printInfo(sch, i18n::t(TSMEDIA_VERSION " — commands:"));
     const char* const commands[] = {
-        "[b]/tsmedia send[/b] — choose files to send to this chat",
+        "[b]/tsmedia send[/b] — choose files to send to this chat (opens the send window)",
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",

@@ -108,6 +108,11 @@ add_library(tsmedia SHARED
     src/diagnostics.cpp         src/diagnostics.h
     src/diagnosticscollect.cpp  src/diagnosticscollect.h
     src/diagnosticsdialog.cpp   src/diagnosticsdialog.h
+    # 2.2 compose: the send window
+    src/composehooks.cpp      src/composehooks.h
+    src/composemodel.cpp      src/composemodel.h
+    src/composedialog.cpp     src/composedialog.h
+    src/composesettings.cpp   src/composesettings.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -218,6 +223,10 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 diagnostics: the report, its redaction and the log parsers
         tests/tst_diagnostics.cpp
         src/diagnostics.cpp
+        # 2.2 compose
+        tests/tst_compose.cpp
+        src/composemodel.cpp
+        src/composehooks.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h

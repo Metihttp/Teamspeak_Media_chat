@@ -1326,6 +1326,8 @@ void TestLink22::captionToBBCodeTexts_data()
 {
     QTest::addColumn<QString>("caption");
     QTest::addColumn<QString>("bbcode");
+    // 2.2 compose (S0): brackets get a backslash ([noparse] doesn't work in TeamSpeak 3.6.2), addresses
+    // stay as typed (the chat links them by itself).
     QTest::newRow("plain") << QStringLiteral("hello world") << QStringLiteral("hello world");
     // S0: a backslash before [ and ] makes them text (TeamSpeak drops [noparse] but parses its content);
     // web addresses stay as typed (the chat links them).

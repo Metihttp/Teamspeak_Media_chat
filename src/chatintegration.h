@@ -11,12 +11,15 @@
 #include "core.h"
 #include "previewrenderer.h"
 
+class ComposeDialog; // 2.2 compose
 class InlineMediaController;
 class MediaViewer;
+class QDropEvent;
 class QMimeData;
 class QTabBar;
 class QTextBrowser;
 class QTextDocument;
+class QTextEdit;
 class QTimer;
 class UploadToast;
 
@@ -26,8 +29,8 @@ class UploadToast;
 //  * forwards hover/clicks to InlineMediaController (GIFs, video controls) and opens MediaViewer
 //  * right-click menu on previews (open, save, copy, show in folder, ...)
 //  * lets users drop files on the chat or paste screenshots/copied files into the chat input to send
-//    them (a paste asks first: the clipboard may hold something old the user did not mean to send;
-//    a drag shows where the drop will go)
+//    them (2.2: paste, drop and the file picker open the send window, ComposeDialog; a drop can send
+//    right away instead, see Settings::dropOpensSendWindow; a drag shows where the drop will go)
 class ChatIntegration : public QObject
 {
     Q_OBJECT
@@ -147,7 +150,12 @@ class ChatIntegration : public QObject
 
     bool          acceptsDrop(const QMimeData* mime) const;
     void          sendMime(const QMimeData* mime, const ChatTarget& target);
-    void          confirmPaste(QWidget* input, const QStringList& files, const QImage& image, const ChatTarget& target);
+    // 2.2 compose: the send window for files or a picture (raised, and given them when it is already
+    // open for the same chat). caption: text from the chat input; input is cleared after a send when it
+    // still holds exactly inputText.
+    void          openCompose(QWidget* source, const QStringList& files, const QImage& image, const ChatTarget& target,
+                              const QString& caption = {}, QTextEdit* input = nullptr, const QString& inputText = {});
+    bool          dropSendsNow(const QDropEvent* drop) const; // 2.2 compose: the setting, inverted by Ctrl
     bool          resolveTarget(QWidget* widget, ChatTarget* target) const; // false: unknown private chat partner
     bool          resolveCurrentTarget(ChatTarget* target, QWidget** source) const;
     SendBlock     checkSend(QWidget* widget, ChatTarget* target) const; // resolveTarget, connection, channel password
@@ -187,10 +195,10 @@ class ChatIntegration : public QObject
     bool                   m_visibilityQueued = false;
     bool                   m_testRawChat      = false; // TSMEDIA_TESTHOOKS "nohide"
     mutable int            m_scrollBarExtent  = 0;     // width a shown vertical scroll bar takes (measured)
-    QPointer<QWidget>      m_pasteConfirm;             // open "send what was pasted?" prompt
+    QPointer<ComposeDialog> m_compose;                 // 2.2 compose: the open send window
     QPointer<MediaViewer>  m_viewer;                   // viewer opened from the chat (paused when an inline video starts)
     QPointer<QWidget>      m_dropOverlay;              // "Drop to send" over the chat during a drag
     SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget
     ChatTarget             m_dropTarget;
-    QThreadPool            m_thumbnailPool; // paste prompt thumbnails of copied pictures (waited for on destruction)
+    bool                   m_dropNow = false;          // 2.2 compose: the overlay says the drop sends right away
 };

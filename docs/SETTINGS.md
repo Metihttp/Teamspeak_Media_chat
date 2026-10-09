@@ -58,7 +58,7 @@ Changing the volume in the gallery viewer updates this setting too.
 | Setting | Default | Range and notes |
 | --- | --- | --- |
 | Send files dropped on the chat (hold Shift for TeamSpeak's own drop) | on | |
-| Send screenshots and files pasted into the chat input (Ctrl+V) | on | Always asks before sending. |
+| Send screenshots and files pasted into the chat input (Ctrl+V) | on | Opens the send window; nothing is sent before you click **Send**. |
 | Convert pasted images over 2 MB to JPEG | on | Images with transparency stay PNG. |
 | Upload a small preview with large images and videos | on | Others see a sharp preview while the full file downloads. |
 | Upload size limit | 100 MB | 1–4096 MB. |
@@ -66,8 +66,16 @@ Changing the volume in the gallery viewer updates this setting too.
 
 - **Convert pasted images over 2 MB to JPEG** uses JPEG quality 90.
 - **Upload a small preview**: the [usage guide](USAGE.md#file-names-and-folders) lists which files get a preview and where it is stored.
-- **Upload size limit** is your own limit. The server's transfer quotas still apply. The paste dialog marks files over the limit before you click **Send**.
+- **Upload size limit** is your own limit. The server's transfer quotas still apply. The send window marks files over the limit before you click **Send**.
 - **Upload folder** is per user: each person sends into the folder set in their own settings. Without permission to create folders, files go to the channel root.
+
+### Dropping files
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| When you drop files on the chat | Open the send window | Or *Send right away*. Hold Ctrl while dropping to do the other; hold Shift for TeamSpeak's own drop. Only matters while *Send files dropped on the chat* is on. |
+
+- **Open the send window** lets you add a caption, mark spoilers and see what can't be sent before anything goes out. **Send right away** sends dropped files as soon as you let go (as in 2.1), except when none of them could be sent: the window then opens and says why.
 
 ## Note for people without the plugin
 
