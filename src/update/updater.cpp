@@ -228,6 +228,25 @@ bool Updater::builtIn()
 #endif
 }
 
+// New lines of the restart helper's log go into TeamSpeak's log once (bug reports then have them).
+void Updater::copyHelperLog()
+{
+    QByteArray text;
+    if (!fs::readAll(m_layout.helperLog(), &text, 128 * 1024))
+        return;
+    StateFile    st(m_layout.stateFile());
+    const qint64 copied = st.value("install", "helperLogCopied").toLongLong();
+    if (text.size() == copied)
+        return;
+    const QByteArray fresh = text.size() > copied && copied > 0 ? text.mid(static_cast<int>(copied)) : text.right(4096);
+    for (const QByteArray& line : fresh.split('\n')) {
+        const QString clean = QString::fromUtf8(line).trimmed();
+        if (!clean.isEmpty())
+            log(latin("[helper] ") + clean.left(300));
+    }
+    st.setValue("install", "helperLogCopied", QString::number(text.size()));
+}
+
 void Updater::pruneThreads()
 {
     for (int i = m_threads.size() - 1; i >= 0; --i) {
@@ -266,6 +285,7 @@ void Updater::start()
                         .arg(notice.version.toString(), m_current.toString()),
                     true, QString(), QString(), true);
     }
+    copyHelperLog();
     // Leftovers go once a restart helper has surely finished.
     QTimer::singleShot(2 * 60 * 1000, this, [this] { cleanup(m_layout, m_current, false); });
 
@@ -759,7 +779,10 @@ void Updater::startDownload()
         [this](qint64 done, qint64 all) {
             if (m_phase != Phase::Downloading || !m_dialog)
                 return;
-            m_dialog->showDownloading(m_manifest.version.toString(), done, all);
+            if (all > 0 && done >= all) // downloaded: the worker now checks the files (about 2 s)
+                m_dialog->showWorking(m_manifest.version.toString(), i18n::t("Checking the signature…"));
+            else
+                m_dialog->showDownloading(m_manifest.version.toString(), done, all);
         },
         [this](const PrepareOutcome& outcome) { onPrepareDone(outcome); });
     if (!thread) {
@@ -944,10 +967,15 @@ void Updater::restartNow()
         if (w->objectName().startsWith(QLatin1String("tsmedia")))
             w->deleteLater();
     }
-    if (QAction* quit = findQuitAction(parentWindow()))
+    if (QAction* quit = findQuitAction(parentWindow())) {
+        // Logged for the measurement of TeamSpeak's quit paths (docs/UPDATES.md).
+        log(latin("quitting through TeamSpeak's action \"") + quit->objectName() + latin("\" (") + quit->shortcut().toString(QKeySequence::PortableText)
+            + latin(")"));
         QMetaObject::invokeMethod(quit, "trigger", Qt::QueuedConnection);
-    else
+    } else {
+        log(latin("quitting through QCoreApplication::quit (no Quit action found)"));
         QTimer::singleShot(0, qApp, SLOT(quit()));
+    }
 }
 
 // ---- chat lines ----------------------------------------------------------------------------------
