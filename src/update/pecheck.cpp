@@ -253,6 +253,11 @@ QStringList unresolvedImports(const QVector<ImportedModule>& modules, const QStr
 {
     QStringList missing;
     for (const ImportedModule& module : modules) {
+        // A plain file name only: never load something by a path taken from the file.
+        if (module.name.contains(QLatin1Char('/')) || module.name.contains(QLatin1Char('\\')) || module.name.contains(QLatin1Char(':'))) {
+            missing.append(module.name);
+            continue;
+        }
         const std::wstring name   = module.name.toStdWString();
         HMODULE            handle = GetModuleHandleW(name.c_str());
         bool               loaded = false;

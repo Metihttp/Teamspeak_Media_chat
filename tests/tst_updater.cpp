@@ -573,6 +573,9 @@ class TestUpdater : public QObject
         ghost.name      = QStringLiteral("tsmedia_no_such_module_42.dll");
         ghost.functions = QStringList{QStringLiteral("f")};
         QCOMPARE(pe::unresolvedImports(QVector<pe::ImportedModule>{ghost}), QStringList{ghost.name});
+        pe::ImportedModule withPath;
+        withPath.name = QStringLiteral("..\\..\\Windows\\System32\\kernel32.dll");
+        QCOMPARE(pe::unresolvedImports(QVector<pe::ImportedModule>{withPath}), QStringList{withPath.name}); // never loaded by path
         QCOMPARE(pe::fileVersion(QStringLiteral("C:/no/such/file.dll")), QString());
     }
 
