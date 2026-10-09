@@ -42,13 +42,24 @@ struct Settings {
     static constexpr const char* defaultDownloadUrl = "https://github.com/Metihttp/Teamspeak_Media_chat";
     QString pluginDownloadUrl = QString::fromLatin1(defaultDownloadUrl);
     int     uploadMaxMB     = 100;
+    // Folder in the channel's file browser. Empty means this default; "/" is the top level.
+    static constexpr const char* defaultUploadDirectory = "/tsmedia";
     // Not QStringLiteral: settings values must never share data with the DLL image (see settings.cpp).
-    QString uploadDirectory = QString::fromLatin1("/tsmedia");
+    QString uploadDirectory = QString::fromLatin1(defaultUploadDirectory);
 
-    // General
-    int cacheLimitMB = 1024; // oldest cached media is deleted beyond this
+    // Media cache
+    int cacheLimitMB = 1024; // the least recently used media is deleted beyond this
 
     static Settings& instance();
     void             load();
     void             save() const;
+
+    // " a\b/ " -> "/a/b"; empty -> defaultUploadDirectory.
+    static QString normalizeUploadDirectory(const QString& dir);
+
+    // Why a link for the note can't be used (SettingsDialog shows a message for each).
+    enum class DownloadUrlProblem { None, NotWebAddress, Scheme, Brackets, TooLong };
+    // Checks a link typed for the note. "example.com/x" is taken as https. On None, *normalized is the
+    // encoded link, safe inside [URL=...], or empty for empty input (which means the default link).
+    static DownloadUrlProblem checkDownloadUrl(const QString& input, QString* normalized);
 };

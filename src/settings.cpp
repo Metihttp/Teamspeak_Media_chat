@@ -1,6 +1,7 @@
 #include "settings.h"
 
 #include <QSettings>
+#include <QUrl>
 
 #include "ts3api.h"
 
@@ -45,9 +46,13 @@ int readInt(const QSettings& s, const char* name, int fallback, Settings::Range 
     return qBound(range.min, ok ? value : fallback, range.max);
 }
 
-QString normalizeUploadDirectory(QString dir)
+} // namespace
+
+QString Settings::normalizeUploadDirectory(const QString& input)
 {
-    dir = dir.trimmed();
+    QString dir = input.trimmed();
+    if (dir.isEmpty()) // as the dialog's placeholder says; "/" is the way to pick the top level
+        return QString::fromLatin1(defaultUploadDirectory);
     dir.replace(QLatin1Char('\\'), QLatin1Char('/'));
     if (!dir.startsWith(QLatin1Char('/')))
         dir.prepend(QLatin1Char('/'));
@@ -56,7 +61,31 @@ QString normalizeUploadDirectory(QString dir)
     return dir;
 }
 
-} // namespace
+Settings::DownloadUrlProblem Settings::checkDownloadUrl(const QString& input, QString* normalized)
+{
+    normalized->clear();
+    QString text = input.trimmed();
+    if (text.isEmpty())
+        return DownloadUrlProblem::None;
+    // Checked before parsing: QUrl rejects a bracket in the path as a whole, which would hide the reason.
+    if (text.contains(QLatin1Char('[')) || text.contains(QLatin1Char(']')))
+        return DownloadUrlProblem::Brackets;
+    if (!text.contains(QLatin1String("://")))
+        text.prepend(QLatin1String("https://"));
+    const QUrl url(text, QUrl::StrictMode);
+    if (!url.isValid())
+        return DownloadUrlProblem::NotWebAddress;
+    const QString scheme = url.scheme().toLower();
+    if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
+        return DownloadUrlProblem::Scheme;
+    if (url.host().isEmpty())
+        return DownloadUrlProblem::NotWebAddress;
+    const QString encoded = QString::fromLatin1(url.toEncoded());
+    if (encoded.length() > maxDownloadUrlLength)
+        return DownloadUrlProblem::TooLong;
+    *normalized = encoded;
+    return DownloadUrlProblem::None;
+}
 
 Settings& Settings::instance()
 {
@@ -94,9 +123,10 @@ void Settings::load()
     if (pluginDownloadUrl.isEmpty() || pluginDownloadUrl.length() > maxDownloadUrlLength)
         pluginDownloadUrl = QString::fromLatin1(defaultDownloadUrl);
     uploadMaxMB     = readInt(s, "uploadMaxMB", d.uploadMaxMB, uploadMaxMBRange);
+    // Empty means the default folder, like an empty field in the dialog ("/" is the top level).
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
 
-    // General (a "language" key written by older versions is ignored)
+    // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
 }
 
