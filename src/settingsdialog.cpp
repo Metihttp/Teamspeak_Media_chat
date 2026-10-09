@@ -25,6 +25,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "accessgroupbox.h" // 2.2 servergroup
 #include "core.h"
 #include "i18n.h"
 #include "medialink.h"
@@ -499,6 +500,13 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     // 2.2 updater: a self-contained group with its own keys (apply() below; Restore defaults leaves them
     // alone). Added before the dirty tracking below, so its checkbox enables Apply.
     addSection(Tab::PrivacyUpdates, new upd::UpdateSettingsGroup(this));
+    // 2.2 servergroup: Server access, a self-contained box (its actions act on the server right away).
+    auto* serverAccess = new AccessGroupBox(this);
+    connect(serverAccess, &AccessGroupBox::contentsChanged, this, [this] {
+        if (isVisible())
+            QTimer::singleShot(0, this, [this] { fitToContents(); }); // once the layouts have taken in the new text
+    });
+    addSection(Tab::Servers, serverAccess);
     if (g_lastTab > 0 && g_lastTab < m_tabs->count() && m_tabs->isTabVisible(g_lastTab))
         m_tabs->setCurrentIndex(g_lastTab);
     connect(m_tabs, &QTabWidget::currentChanged, this, [](int index) { g_lastTab = index; });

@@ -41,6 +41,13 @@ endif()
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/version.h @ONLY)
 configure_file(src/version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc @ONLY)
 
+# 2.2 servergroup: the "tsmediachat" group icon as byte arrays. Its id on the server is the CRC-32 of
+# these exact bytes (2038059696), so the PNGs in assets/ must never be re-encoded.
+include(cmake/embed_files.cmake)
+tsmedia_embed_files(${CMAKE_CURRENT_BINARY_DIR}/generated/groupicon_data.h
+    tsmediachat_group_16 assets/tsmediachat_group_16.png
+    tsmediachat_group_32 assets/tsmediachat_group_32.png)
+
 # _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR: binaries from VS 2022 17.10+ crash in std::mutex when the machine has
 # an older msvcp140.dll (Microsoft's documented workaround). Users' Visual C++ runtimes come with TeamSpeak
 # and may be older than our compiler.
@@ -80,6 +87,13 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    # 2.2 servergroup: Settings > Server access, the Give / Remove access menu items
+    src/accessgroupplan.cpp   src/accessgroupplan.h
+    src/accessgroupjob.cpp    src/accessgroupjob.h
+    src/accessgroupview.cpp   src/accessgroupview.h
+    src/accessgroup.cpp       src/accessgroup.h
+    src/accessgroupbox.cpp    src/accessgroupbox.h
+    src/accessgroupexports.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -167,8 +181,14 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlog.cpp
         src/hashing.cpp
         src/floodgovernor.cpp
+        # 2.2 servergroup: plan, job state machine, texts
+        tests/tst_accessgroup.cpp
+        src/accessgroupplan.cpp
+        src/accessgroupjob.cpp
+        src/accessgroupview.cpp
     )
-    target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
+    target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
+        ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)

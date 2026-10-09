@@ -9,10 +9,12 @@
 #include <QRegularExpression>
 #include <QThread>
 #include <QTimer>
+#include <QVector>
 
 #include <cstdlib>
 #include <cstring>
 
+#include "accessgroup.h" // 2.2 servergroup
 #include "chatintegration.h"
 #include "core.h"
 #include "i18n.h"
@@ -37,9 +39,18 @@ QPointer<Core>            g_core;
 QPointer<ChatIntegration> g_chat;
 QPointer<SettingsDialog>  g_settings;
 QPointer<upd::Updater>    g_updater; // 2.2 updater
+QPointer<AccessGroup>     g_access;  // 2.2 servergroup
 bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
-enum MenuId { MenuSend = 1, MenuSettings, MenuCache, MenuUpdate /* 2.2 updater */ };
+// Explicit values: each feature owns its ids.
+enum MenuId {
+    MenuSend         = 1,
+    MenuSettings     = 2,
+    MenuCache        = 3,
+    MenuUpdate       = 4,  // 2.2 updater (official builds only)
+    MenuGiveAccess   = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
+    MenuRemoveAccess = 21, // 2.2 servergroup
+};
 
 template <typename Fn>
 void onGuiThread(Fn&& fn)
@@ -302,6 +313,11 @@ TS3_EXPORT int ts3plugin_init()
     g_core = core;
     g_chat = chat;
 
+    // 2.2 servergroup: Settings > Server access and the Give / Remove TS Media chat access menu items
+    g_access = new AccessGroup(MenuGiveAccess, MenuRemoveAccess);
+    if (QThread::currentThread() != qApp->thread())
+        g_access->moveToThread(qApp->thread());
+
     QMetaObject::invokeMethod(core, [core, chat] {
         g_mediaFoundation = mf::startup();
         if (!g_mediaFoundation)
@@ -347,6 +363,7 @@ TS3_EXPORT void ts3plugin_shutdown()
         for (const QPointer<QWidget>& w : leftovers)
             delete w.data();
 
+        delete g_access.data(); // 2.2 servergroup: stops its timers and a running icon upload
         delete g_core.data(); // waits for probe workers
 
         // Every mf::VideoPlayer is gone now (viewer windows, inline players).
@@ -449,23 +466,31 @@ TS3_EXPORT int ts3plugin_requestAutoload()
 TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** menuIcon)
 {
     struct Item {
-        MenuId  id;
-        QString text;
+        MenuId         id;
+        QString        text;
+        PluginMenuType type = PLUGIN_MENU_TYPE_GLOBAL;
     };
     const Item items[] = {
         {MenuSend, i18n::t("Send files to chat…")},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
         {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
+        {MenuGiveAccess, i18n::t("Give TS Media chat access"), PLUGIN_MENU_TYPE_CLIENT},     // 2.2 servergroup
+        {MenuRemoveAccess, i18n::t("Remove TS Media chat access"), PLUGIN_MENU_TYPE_CLIENT}, // 2.2 servergroup
     };
-    const size_t count = upd::Updater::builtIn() ? sizeof(items) / sizeof(items[0]) : sizeof(items) / sizeof(items[0]) - 1;
+    QVector<const Item*> shown;
+    for (const Item& item : items) {
+        if (item.id != MenuUpdate || upd::Updater::builtIn())
+            shown.append(&item);
+    }
+    const int count = shown.size();
 
     *menuItems = static_cast<PluginMenuItem**>(malloc(sizeof(PluginMenuItem*) * (count + 1)));
-    for (size_t i = 0; i < count; ++i) {
+    for (int i = 0; i < count; ++i) {
         auto* item = static_cast<PluginMenuItem*>(malloc(sizeof(PluginMenuItem)));
-        item->type = PLUGIN_MENU_TYPE_GLOBAL;
-        item->id   = items[i].id;
-        copyText(item->text, PLUGIN_MENU_BUFSZ, items[i].text);
+        item->type = shown.at(i)->type;
+        item->id   = shown.at(i)->id;
+        copyText(item->text, PLUGIN_MENU_BUFSZ, shown.at(i)->text);
         copyText(item->icon, PLUGIN_MENU_BUFSZ, QString());
         (*menuItems)[i] = item;
     }
@@ -497,9 +522,9 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
 
 TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID)
 {
-    Q_UNUSED(serverConnectionHandlerID);
     Q_UNUSED(type);
-    Q_UNUSED(selectedItemID);
+    if (AccessGroup::handleMenuItem(serverConnectionHandlerID, menuItemID, selectedItemID)) // 2.2 servergroup
+        return;
     switch (menuItemID) {
     case MenuSend:
         onGuiThread([] {
@@ -567,6 +592,7 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
     }
 #endif
     onGuiThread([] { updateMenus(); });
+    AccessGroup::handleConnectStatus(sch, newStatus); // 2.2 servergroup
     if (newStatus != STATUS_DISCONNECTED)
         return;
     onGuiThread([sch] {
@@ -577,8 +603,8 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
 
 TS3_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 serverConnectionHandlerID)
 {
-    Q_UNUSED(serverConnectionHandlerID);
     onGuiThread([] { updateMenus(); }); // another server tab: its connection state counts now
+    AccessGroup::handleCurrentConnectionChanged(serverConnectionHandlerID); // 2.2 servergroup
 }
 
 TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, anyID targetMode, anyID toID, anyID fromID, const char* fromName, const char* fromUniqueIdentifier, const char* message, int ffIgnored)
@@ -604,6 +630,9 @@ TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, an
 TS3_EXPORT int ts3plugin_onServerErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, const char* extraMessage)
 {
     Q_UNUSED(extraMessage);
+    // 2.2 servergroup: answers to Server access requests (TeamSpeak's own print is suppressed only for them)
+    if (AccessGroup::handleServerError(serverConnectionHandlerID, errorMessage, error, returnCode, 0, false))
+        return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
@@ -618,7 +647,9 @@ TS3_EXPORT int ts3plugin_onServerErrorEvent(uint64 serverConnectionHandlerID, co
 
 TS3_EXPORT int ts3plugin_onServerPermissionErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, unsigned int failedPermissionID)
 {
-    Q_UNUSED(failedPermissionID);
+    // 2.2 servergroup: Server access requests; the failed permission marks what needs a higher admin
+    if (AccessGroup::handleServerError(serverConnectionHandlerID, errorMessage, error, returnCode, failedPermissionID, true))
+        return 1;
     const QString rc = str(returnCode);
     if (rc.isEmpty() || !g_core || !g_core->isOwnReturnCode(rc))
         return 0;
@@ -634,6 +665,7 @@ TS3_EXPORT int ts3plugin_onServerPermissionErrorEvent(uint64 serverConnectionHan
 TS3_EXPORT void ts3plugin_onFileTransferStatusEvent(anyID transferID, unsigned int status, const char* statusMessage, uint64 remotefileSize, uint64 serverConnectionHandlerID)
 {
     Q_UNUSED(remotefileSize);
+    AccessGroup::handleTransferStatus(transferID, status, statusMessage, serverConnectionHandlerID); // 2.2 servergroup: its icon upload
     const QString msg = str(statusMessage);
     const uint64  sch = serverConnectionHandlerID;
     onGuiThread([transferID, status, msg, sch] {

@@ -77,3 +77,12 @@ Changing the volume in the gallery viewer updates this setting too.
 | Link in the note | the project's GitHub page | Where "TS Media chat" in the note links to. |
 
 - **Link in the note** must be an `http://` or `https://` address; `https://` is added when it is missing (you see it once you leave the field). Empty means the official page, `https://github.com/Metihttp/Teamspeak_Media_chat`. The link is checked when you leave the field: a problem (not a web address, another scheme, `[` or `]`, more than 512 characters) is explained right under it. The field can only be edited while the note is on.
+
+## Server access
+
+For server admins: creates and repairs the `tsmediachat` server group whose members can send files with TS Media chat, on the server of the tab you're looking at. These actions take effect on the server right away; **OK**, **Apply**, **Cancel** and **Restore defaults** don't affect them. The box contacts the server only while it is visible.
+
+- **Create TS Media chat group** creates the group with its icon, file permissions at power 75 and a copy of the default group's permissions. **Details…** lists every permission first. See the [server admin guide](SERVER-ADMIN.md#one-click-ts-media-chat-group).
+- **Repair TS Media chat group** appears when something is missing and adds only that. Permissions your server permissions can't grant are listed as needing a higher admin.
+- **Check again** reads the group from the server again.
+- People who can't create server groups only see whether they are in the group.
