@@ -292,6 +292,8 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_coresha.cpp
         # 2.2 sending through Core: pacing of folder and upload requests, post order, retries, captions
         tests/tst_coresend.cpp
+        # 2.2 wave 2 through Core: compressed videos (sha of the MP4, albums, Retry), voice messages, own files
+        tests/tst_coremedia.cpp
         tests/fakets3.cpp         tests/fakets3.h
         src/core.cpp
         src/ts3api.cpp

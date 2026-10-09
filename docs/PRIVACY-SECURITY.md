@@ -29,7 +29,7 @@ Where your files go, what stays on your computer, and how the plugin protects yo
 ## The microphone (voice messages)
 
 - **Only while you record.** The plugin opens the microphone only after you start a voice message, and only while the *Voice message* window shows *Recording*. If that window is closed, or TeamSpeak unloads the plugin, recording stops at once. Nothing is recorded in the background, and the hotkey can't record without the window appearing.
-- **Nothing leaves your computer until you press Send.** The sound is kept in memory, written to `%APPDATA%\TS3Client\plugins\tsmedia\voice` when you stop, and sent through TeamSpeak's file transfer like any file. Discarded recordings are deleted right away; sent ones are deleted with their upload, and leftovers after a day.
+- **Nothing leaves your computer until you press Send.** The sound is kept in memory, written to `%APPDATA%\TS3Client\plugins\tsmedia\voice` when you stop, and sent through TeamSpeak's file transfer like any file. Discarded recordings are deleted right away; sent ones are deleted with their upload (a failed one stays for Retry until you dismiss it), and anything left over at the next start.
 - **Your TeamSpeak microphone is muted while you record** (a setting), and others can see that. It is unmuted again when recording stops; it is never unmuted where you muted it yourself. If something goes wrong (TeamSpeak crashes, the connection drops), it stays muted rather than open.
 - The recording is the raw microphone: TeamSpeak's noise suppression and echo cancellation don't apply to it.
 

@@ -1175,16 +1175,17 @@ QList<Sample> buildSamples()
         reacted(QStringLiteral("reactions_audio_none_hover"), QStringLiteral("reactions: audio card hovered, none yet (no button)"), audioPicture, ReactionView(),
                 cardHover);
         // The pictures themselves, large and at pill size, to look at the drawing.
-        add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 72, 36, 24 and 16 px"), [](const PreviewStyle& st, QSize* ls) {
-            const QSize size(6 * 80, 72 + 8 + 36 + 8 + 24 + 8 + 16);
+        // 64 px at a 70 px step: the sample stays inside the contact sheet's 430 px column.
+        add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 64, 36, 24 and 16 px"), [](const PreviewStyle& st, QSize* ls) {
+            const QSize size(6 * 70, 64 + 8 + 36 + 8 + 24 + 8 + 16);
             QImage      out(size * st.dpr, QImage::Format_ARGB32_Premultiplied);
             out.setDevicePixelRatio(st.dpr);
             out.fill(Qt::transparent);
             QPainter p(&out);
             for (int i = 0; i < proto::kReactionCount; ++i) {
                 qreal y = 0;
-                for (const int px : {72, 36, 24, 16}) {
-                    rx::drawReaction(p, QRectF(i * 80 + (72 - px) / 2.0, y, px, px), i);
+                for (const int px : {64, 36, 24, 16}) {
+                    rx::drawReaction(p, QRectF(i * 70 + (64 - px) / 2.0, y, px, px), i);
                     y += px + 8;
                 }
             }
@@ -1296,6 +1297,44 @@ QList<Sample> buildSamples()
         voice(QStringLiteral("voice_narrow_160"), QStringLiteral("voice message, smallest (160 px, no time)"), voiceReady, o, nullptr, 160);
         voice(QStringLiteral("voice_large_font"), QStringLiteral("voice message playing, 11 pt chat font"), voiceReady, o,
               [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
+    }
+    // 2.2 integration: reactions on a voice card, as ChatIntegration composes them (no hover button on
+    // cards: the row's add pill, decisions).
+    {
+        auto voiceReacted = [&add, voiceReady, audioOverlay](const QString& name, const QString& label, std::initializer_list<std::pair<int, int>> counts,
+                                                            int mineMask, bool hover, rx::Zone zone) {
+            add(name, label, [=](const PreviewStyle& st, QSize* ls) {
+                QSize           size;
+                const QImage    img = renderAudioCard(voiceReady, audioOverlay(voiceReady), st, &size);
+                ReactionView    v;
+                for (const auto& c : counts)
+                    v.per[c.first].count = c.second;
+                for (int i = 0; i < proto::kReactionCount; ++i) {
+                    v.per[i].mine = (mineMask >> i) & 1;
+                    for (int n = 0; n < v.per[i].count - (v.per[i].mine ? 1 : 0) && n < 3; ++n)
+                        v.per[i].others << QStringLiteral("Friend %1").arg(n + 1);
+                }
+                rx::ObjectState state;
+                state.dark      = st.dark;
+                state.base      = st.dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff);
+                state.font      = st.font;
+                state.dpr       = st.dpr;
+                state.maxWidth  = st.maxWidth;
+                state.canAdd    = true;
+                state.noButton  = true; // ChatReactions sets it for audio and voice cards
+                state.hovered   = hover;
+                state.hoverZone = zone;
+                return rx::composeObject(img, size, v, state, nullptr, ls);
+            });
+        };
+        voiceReacted(QStringLiteral("reactions_voice_row"), QStringLiteral("reactions: voice message with a row"), {{proto::Heart, 3}, {proto::Laughing, 1}},
+                     1 << proto::Heart, false, rx::Zone::None);
+        voiceReacted(QStringLiteral("reactions_voice_row_hover"), QStringLiteral("reactions: voice message with a row, hover (add pill)"),
+                     {{proto::Heart, 3}, {proto::Laughing, 1}}, 1 << proto::Heart, true, rx::Zone::None);
+        voiceReacted(QStringLiteral("reactions_voice_none_hover"), QStringLiteral("reactions: voice message hovered, none yet (no button)"), {}, 0, true,
+                     rx::Zone::None);
+        voiceReacted(QStringLiteral("reactions_voice_add_pill_hover"), QStringLiteral("reactions: voice message, add pill under the pointer"),
+                     {{proto::ThumbsUp, 2}}, 0, true, rx::Zone::AddPill);
     }
     return list;
 }

@@ -446,6 +446,14 @@ TS3_EXPORT int ts3plugin_init()
             PeerHub* hub = PeerHub::instance();
             return hub ? diag::Section{PeerHub::diagnosticsTitle(), hub->diagnosticLines()} : diag::Section();
         });
+        // 2.2 compression and voice: their sections too (GUI thread; both objects outlive the dialog).
+        diag::addSectionProvider([]() -> diag::Section {
+            return g_core ? diag::Section{Core::compressionDiagnosticsTitle(), g_core->compressionDiagnostics()} : diag::Section();
+        });
+        diag::addSectionProvider([]() -> diag::Section {
+            VoiceController* voice = g_chat ? g_chat->voice() : nullptr;
+            return voice ? diag::Section{VoiceController::diagnosticsTitle(), voice->diagnosticLines()} : diag::Section();
+        });
         chat->start();
         if (chat->voice()) // 2.2 voice: "Open TS Media settings" in the recorder's errors
             QObject::connect(chat->voice(), &VoiceController::settingsRequested, chat, [] { showSettings(nullptr); });
@@ -461,10 +469,24 @@ TS3_EXPORT int ts3plugin_init()
 
 TS3_EXPORT void ts3plugin_shutdown()
 {
+    // The order matters; each step may still use what the later ones delete:
+    //   1. presence BYE and saved reactions          5. our windows (viewer, settings, send window, editor)
+    //   2. a voice recording (mic given back)        6. the chat (inline players), leftovers in TeamSpeak
+    //   3. compressions (transcode worker joined)    7. AccessGroup, PeerHub, then Core (its pools)
+    //   4. diagnostics hooks, the updater            8. Media Foundation, then the plugin log
     auto cleanup = [] {
         // 2.2 protocol: BYE where we said hello (not waiting for an answer), reactions.json written.
         if (g_peers)
             g_peers->prepareShutdown();
+
+        // 2.2 voice: a recording stops first: its capture or encode worker is joined and TeamSpeak's
+        // microphone given back (MicGuard) while every connection is still there; its window goes too.
+        if (g_chat && g_chat->voice())
+            g_chat->voice()->shutdown();
+        // 2.4 compress: running and queued transcodes are canceled and their worker joined before any
+        // window, the chat or Core goes (~Core would do it too, last).
+        if (g_core)
+            g_core->stopCompressions();
 
         diag::setDialogOpener(nullptr); // 2.2 diagnostics (its window is closed below and waits for its worker)
         diag::setLogTailProvider(nullptr);
@@ -616,10 +638,10 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
     };
     const Item items[] = {
         {MenuSend, i18n::t("Send files to chat…")},
+        {MenuVoice, i18n::t("Record voice message…")}, // 2.2 voice: next to the other way of sending
         // 2.2 data saver: an enable/disable pair (the SDK can't change a menu item's text or check mark).
         {MenuPauseDownloads, i18n::t("Pause automatic downloads on this server")},
         {MenuResumeDownloads, i18n::t("Resume automatic downloads on this server")},
-        {MenuVoice, i18n::t("Record voice message…")}, // 2.2 voice
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
         {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)

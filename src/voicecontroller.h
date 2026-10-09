@@ -61,6 +61,16 @@ class VoiceController : public QObject
 
     bool isActive() const { return m_phase != Phase::Idle; }
 
+    // 2.2 integration: plugin shutdown, first of all (plugin.cpp): a recording is canceled quietly, the
+    // capture or encode worker joined, TeamSpeak's microphone given back while the connections still
+    // exist, and the window deleted. The destructor does the same again.
+    void shutdown();
+
+    // 2.2 diagnostics: the "Voice messages" section: the settings, which microphone the last recording
+    // used (its kind, never its name), the last microphone error and the MicGuard state. GUI thread.
+    static QString diagnosticsTitle();
+    QStringList    diagnosticLines() const;
+
   signals:
     void settingsRequested(); // "Open TS Media settings" in an error
 
@@ -139,4 +149,13 @@ class VoiceController : public QObject
     qint64     m_lastHotkeyMs   = 0;
     qint64     m_targetTextMs   = 0; // when m_targetText was last refreshed
     VoicePanel::View m_errorView; // the error state's texts
+
+    // 2.2 diagnostics (GUI thread copies; the worker's DeviceChoice is only read once it recorded)
+    QString m_diagSource;              // "TeamSpeak's microphone", ...
+    int     m_diagRate           = 0;  // the capture's sample rate
+    bool    m_diagSettingMissing = false;
+    QString m_diagError;               // the last microphone or saving error
+    QString m_diagMicBack;             // what the last MicGuard release did
+    int     m_diagStarted        = 0;  // recordings started this session
+    int     m_diagSent           = 0;  // ... and sent
 };

@@ -22,7 +22,7 @@ VoiceSection::VoiceSection(QWidget* parent)
     m_microphone->setMinimumContentsLength(28);
     m_microphone->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed); // the whole row: device names are long
 
-    m_mute = new QCheckBox(i18n::t("&Mute my TeamSpeak microphone while recording"), group);
+    m_mute = new QCheckBox(i18n::t("M&ute my TeamSpeak microphone while recording"), group);
     QLabel* muteHint = hint(i18n::t("So people in your channel don't hear you live. Others see your microphone as muted until you finish."), group);
     m_mute->setAccessibleDescription(muteHint->text());
 
@@ -43,7 +43,7 @@ VoiceSection::VoiceSection(QWidget* parent)
     hotkeyRow->addWidget(setup);
 
     auto* rows = form(group);
-    rows->addRow(i18n::t("Mi&crophone:"), m_microphone);
+    rows->addRow(i18n::t("&Microphone:"), m_microphone);
     rows->addRow(m_mute);
     rows->addRow(muteHint);
     rows->addRow(m_review);

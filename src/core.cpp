@@ -477,6 +477,27 @@ void removeStaging(const QString& stagingDir)
     QDir(compressDirFor(stagingDir)).removeRecursively(); // 2.4 compress
 }
 
+// 2.2: where failed uploads' compressed MP4s wait for Retry, one folder per upload (cleared at start).
+QString keptCompressedDir()
+{
+    return ts3::dataDir() + QStringLiteral("/compressed");
+}
+
+// Deletes a file of ours (SendItem::ownTemp). A folder made for it alone (an edited copy's
+// <data>/edit/<hex>, a kept compressed video's <data>/compressed/<id>) goes with it once it is empty.
+void removeOwnFile(const QString& path)
+{
+    if (path.isEmpty())
+        return;
+    QFile::remove(path);
+    const QString folder = QFileInfo(path).absolutePath();
+    const QString data   = QDir(ts3::dataDir()).absolutePath();
+    for (const QLatin1String sub : {QLatin1String("/edit/"), QLatin1String("/compressed/")}) {
+        if (folder.startsWith(data + sub, Qt::CaseInsensitive))
+            QDir().rmdir(folder); // only when empty
+    }
+}
+
 void removeEmptyDirectories(const QString& root)
 {
     QStringList  dirs;
@@ -516,16 +537,9 @@ Core::~Core()
     if (m_verifier)
         m_verifier->shutdown();
     // 2.4 compress: a running transcode stops within about a frame (no Finalize), a queued one returns at
-    // once; joined first, its Media Foundation objects released on its own thread.
-    for (const CompressTask& task : qAsConst(m_compressing)) {
-        if (task.control)
-            task.control->cancel.store(true);
-    }
-    m_transcodePool.clear();
-    m_transcodePool.waitForDone();
-    for (const CompressTask& task : qAsConst(m_compressing))
-        QDir(task.outDir).removeRecursively();
-    m_compressing.clear();
+    // once; joined first, its Media Foundation objects released on its own thread. (Plugin shutdown has
+    // done this already.)
+    stopCompressions();
 
     // Workers only read files and post their result back; stop running staging copies, then join them.
     for (const auto& cancel : qAsConst(m_stagingCancel))
@@ -554,11 +568,14 @@ Core::~Core()
     m_stagingCancel.clear();
     for (auto& job : m_uploads) {
         cleanupUpload(job);
-        releaseSource(job); // pasted images kept for a retry
+        releaseSource(job); // own files (pasted, edited, recorded) kept for a retry
     }
     for (const QString& path : qAsConst(m_deleteAfterProbe))
-        QFile::remove(path);
+        removeOwnFile(path);
     m_deleteAfterProbe.clear();
+    for (const QString& path : qAsConst(m_keptCompressed)) // 2.2: compressed MP4s kept for a retry
+        removeOwnFile(path);
+    m_keptCompressed.clear();
 
     if (g_instance == this)
         g_instance = nullptr;
@@ -602,6 +619,7 @@ void Core::start()
     QDir(ts3::dataDir() + QStringLiteral("/paste")).removeRecursively();
     pruneExports(kExportMaxAgeMs); // 2.2 drag-out
     QDir(ts3::dataDir() + QStringLiteral("/edit")).removeRecursively(); // 2.2 editor: edited copies
+    QDir(keptCompressedDir()).removeRecursively(); // 2.2: compressed videos kept for a retry
 
     // The limit may have been lowered while TeamSpeak was closed.
     singleShotOwned(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
@@ -1939,7 +1957,7 @@ int Core::send(const SendRequest& request)
     const auto dropTemps = [&request] {
         for (const SendItem& item : request.items) {
             if (item.ownTemp)
-                QFile::remove(item.path);
+                removeOwnFile(item.path);
         }
     };
     // Checked once, so a dropped batch gives one line in the chat, not one per file.
@@ -2070,7 +2088,7 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
     if (!ts3::isConnected(target.sch)) {
         ts3::printWarning(ts3::currentConnection(), notConnectedText());
         if (deleteSource)
-            QFile::remove(sourcePath);
+            removeOwnFile(sourcePath);
         return 0;
     }
     if (target.serverUid.isEmpty())
@@ -2246,7 +2264,7 @@ void Core::onProbed(int id, bool staged, quint64 stagedSize, const LocalMediaInf
     m_stagingCancel.remove(id);
     const QString source = m_deleteAfterProbe.take(id); // the worker no longer reads it
     if (!source.isEmpty())
-        QFile::remove(source);
+        removeOwnFile(source);
     auto it = m_uploads.find(id);
     if (it == m_uploads.end() || it->state != UploadState::Preparing) {
         // Canceled or failed meanwhile; the staged file could not be deleted while it was open.
@@ -3265,7 +3283,7 @@ bool Core::canRetryUpload(int id) const
     // Uploaded, only its message failed: the message is posted again (no second upload).
     if (job->uploaded)
         return m_failedPosts.contains(id);
-    return QFileInfo(job->sourcePath).isFile();
+    return QFileInfo(job->sourcePath).isFile() || QFileInfo(m_keptCompressed.value(id)).isFile();
 }
 
 int Core::retryUpload(int id)
@@ -3298,6 +3316,21 @@ int Core::retryUpload(int id)
     item.pasted      = job.pasted;
     item.ownTemp     = job.deleteSource;
     job.deleteSource = false; // a pasted image now belongs to the new job
+    // 2.2: a video compressed before it failed goes again as the MP4 it became (now the new job's own
+    // file); it isn't compressed twice.
+    const QString kept = m_keptCompressed.take(id);
+    if (!kept.isEmpty() && QFileInfo(kept).isFile()) {
+        if (item.ownTemp)
+            removeOwnFile(item.path); // an own original (moved into staging, so normally gone already)
+        item.path    = kept;
+        item.ownTemp = true;
+        item.pasted  = false;
+        item.quality = SendQuality::Original;
+        if (!item.displayName.isEmpty())
+            item.displayName = QFileInfo(item.displayName).completeBaseName() + QStringLiteral(".mp4");
+    } else {
+        removeOwnFile(kept);
+    }
 
     // A caption that nothing of its send can carry any more (every other file failed or was canceled)
     // goes with the retry. While an album or file of it is still on its way, that one keeps it.
@@ -3358,6 +3391,7 @@ void Core::forgetUpload(int id)
     if (it == m_uploads.end())
         return;
     m_failedPosts.remove(id);
+    removeOwnFile(m_keptCompressed.take(id)); // 2.2: its compressed MP4, if one was kept for a retry
     const int batch = it->batch;
     releaseSource(it.value());
     m_uploads.erase(it);
@@ -3377,7 +3411,7 @@ void Core::releaseSource(UploadJob& job)
     if (m_probing.contains(job.id))
         m_deleteAfterProbe.insert(job.id, job.sourcePath);
     else
-        QFile::remove(job.sourcePath);
+        removeOwnFile(job.sourcePath);
     job.deleteSource = false;
 }
 
@@ -3456,6 +3490,7 @@ void Core::cleanupUpload(UploadJob& job)
         QDir(job.stagingDir).removeRecursively();
         QDir(previewStagingDir(job.stagingDir)).removeRecursively();
     } else {
+        keepCompressedForRetry(job); // 2.2: before the staging folder goes
         removeStaging(job.stagingDir);
     }
     job.stagingDir.clear();
@@ -3463,6 +3498,28 @@ void Core::cleanupUpload(UploadJob& job)
     // recording, which exists nowhere else) stays for a retry until its job is dismissed (forgetUpload).
     if (job.state != UploadState::Failed)
         releaseSource(job);
+}
+
+// The compressed MP4 of an upload that failed before the file was on the server: kept, so Retry sends
+// it without compressing again. Moved out of the staging folder (same volume), under the name a new
+// send of it should get ("holiday.mov" -> "holiday.mp4").
+void Core::keepCompressedForRetry(const UploadJob& job)
+{
+    if (job.state != UploadState::Failed || job.compression != CompressOutcome::Compressed || job.uploaded || job.stagingDir.isEmpty())
+        return;
+    const QString staged = job.stagingDir + QLatin1Char('/') + job.remoteName;
+    if (!QFileInfo(staged).isFile())
+        return;
+    QString base = QFileInfo(displayFileName(QFileInfo(job.sourcePath).fileName())).completeBaseName();
+    if (base.isEmpty())
+        base = QStringLiteral("video");
+    const QString folder = keptCompressedDir() + QLatin1Char('/') + QString::number(job.id);
+    const QString kept   = folder + QLatin1Char('/') + base + QStringLiteral(".mp4");
+    QDir(folder).removeRecursively();
+    if (QDir().mkpath(folder) && QFile::rename(staged, kept))
+        m_keptCompressed.insert(job.id, kept);
+    else
+        QDir(folder).removeRecursively(); // TeamSpeak may still hold it: Retry compresses again
 }
 
 void Core::deleteRemoteFile(uint64 sch, uint64 channelId, const QString& path)
@@ -3931,6 +3988,56 @@ void Core::continueUpload(int id)
         onDirectoryReady(id, false, true);
     else
         createRemoteDirectory(id, false);
+}
+
+void Core::stopCompressions()
+{
+    for (const CompressTask& task : qAsConst(m_compressing)) {
+        if (task.control)
+            task.control->cancel.store(true);
+    }
+    m_transcodePool.clear();
+    m_transcodePool.waitForDone();
+    // Their answers may still be queued: onCompressed finds no task and only removes the output.
+    for (const CompressTask& task : qAsConst(m_compressing))
+        QDir(task.outDir).removeRecursively();
+    m_compressing.clear();
+}
+
+QString Core::compressionDiagnosticsTitle()
+{
+    return i18n::t("Video compression");
+}
+
+QStringList Core::compressionDiagnostics()
+{
+    const Settings& s     = Settings::instance();
+    const auto      onOff = [](bool on) { return on ? i18n::t("on") : i18n::t("off"); };
+    QStringList     lines;
+    lines << i18n::t("Compress videos larger than %1 MB: %2. Quality: %3p. Convert hard-to-play videos: %4. Graphics card: %5")
+                 .arg(s.compressVideosOverMB)
+                 .arg(onOff(s.compressVideos))
+                 .arg(Settings::normalizeVideoQuality(s.compressVideoQuality))
+                 .arg(onOff(s.convertUnplayableVideos))
+                 .arg(onOff(s.compressUseGpu));
+    if (!mf::available()) {
+        lines << i18n::t("Media Foundation isn't available: videos are sent as they are");
+    } else if (m_encodersQueried) {
+        const QString none = i18n::t("none");
+        lines << i18n::t("H.264 encoders: %1 (graphics card); %2 (processor)")
+                     .arg(m_hardwareEncoders.isEmpty() ? none : m_hardwareEncoders.join(QStringLiteral(", ")))
+                     .arg(m_softwareEncoders.isEmpty() ? none : m_softwareEncoders.join(QStringLiteral(", ")));
+    } else {
+        queryEncoders(); // once: a later report has them
+        lines << i18n::t("H.264 encoders: not looked up yet");
+    }
+    int running = 0;
+    int waiting = 0;
+    for (const CompressTask& task : qAsConst(m_compressing))
+        ++(task.started ? running : waiting);
+    lines << i18n::t("Now: %1 compressing, %2 waiting; %3 compressed videos kept for a retry").arg(running).arg(waiting).arg(m_keptCompressed.size());
+    lines << i18n::t("Last compression: %1").arg(m_lastCompression.isEmpty() ? i18n::t("none this session") : m_lastCompression);
+    return lines;
 }
 
 // Reads the running compressions' progress into their jobs (the 250 ms progress timer). A change of half

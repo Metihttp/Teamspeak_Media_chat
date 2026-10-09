@@ -1,6 +1,5 @@
 #include "voicecontroller.h"
 
-#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
@@ -35,7 +34,6 @@ constexpr int    kSavingShowMs   = 300;
 constexpr int    kReviewTickMs   = 33;
 constexpr qint64 kKeepOnLossMs   = 1000; // a lost microphone keeps what was recorded from 1 s on
 constexpr int    kMaxHintLines   = 2;
-constexpr qint64 kLeftoverAgeSec = 24 * 3600;
 
 qint64 nowMs()
 {
@@ -120,6 +118,30 @@ voice::TeamSpeakCapture teamSpeakCapture(uint64 sch)
     return info;
 }
 
+// 2.2 diagnostics: the kind of a microphone error, in plain words (English, like the log).
+const char* captureErrorName(voice::CaptureError error)
+{
+    switch (error) {
+    case voice::CaptureError::None:
+        return "Voice messages unavailable (no Media Foundation)";
+    case voice::CaptureError::PrivacyBlocked:
+        return "blocked by Windows' microphone privacy setting";
+    case voice::CaptureError::NoDevice:
+        return "no microphone";
+    case voice::CaptureError::Busy:
+        return "microphone busy";
+    case voice::CaptureError::Disconnected:
+        return "microphone disconnected";
+    case voice::CaptureError::UnsupportedFormat:
+        return "unsupported microphone format";
+    case voice::CaptureError::EndOfStream:
+        return "the capture ended";
+    case voice::CaptureError::Generic:
+        break;
+    }
+    return "recording failed";
+}
+
 const char* sourceName(voice::DeviceChoice::Source source)
 {
     switch (source) {
@@ -168,6 +190,56 @@ VoiceController::VoiceController(ChatIntegration* chat, Core* core, QObject* par
 
     connect(m_chat, &ChatIntegration::playbackStarted, this, &VoiceController::onPlaybackStarted);
     cleanupOldRecordings();
+}
+
+void VoiceController::shutdown()
+{
+    m_openTimer->stop();
+    m_savingTimer->stop();
+    m_closeTimer->stop();
+    m_reviewTimer->stop();
+    m_recorder->cancel(); // joins the capture or encode worker
+    releaseMic();
+    closePreview();
+    removeRecording();
+    if (m_panel) {
+        disconnect(m_panel, nullptr, this, nullptr);
+        delete m_panel.data();
+    }
+    finish();
+}
+
+QString VoiceController::diagnosticsTitle()
+{
+    return i18n::t("Voice messages");
+}
+
+QStringList VoiceController::diagnosticLines() const
+{
+    const Settings& s     = Settings::instance();
+    const auto      onOff = [](bool on) { return on ? i18n::t("on") : i18n::t("off"); };
+    QStringList     lines;
+    lines << i18n::t("Microphone: %1. Mute TeamSpeak's microphone while recording: %2. Listen before sending: %3. Sounds: %4")
+                 .arg(s.voiceMicrophone.isEmpty() ? i18n::t("same as TeamSpeak") : i18n::t("chosen in the settings"))
+                 .arg(onOff(s.voiceMuteTeamSpeakMic))
+                 .arg(onOff(s.voiceReview))
+                 .arg(onOff(s.voiceSounds));
+    lines << i18n::t("This session: %1 recordings started, %2 sent").arg(m_diagStarted).arg(m_diagSent);
+    if (m_diagSource.isEmpty()) {
+        lines << i18n::t("Last recording: none this session");
+    } else {
+        QString last = i18n::t("Last recording: from %1 at %2 Hz").arg(m_diagSource).arg(m_diagRate);
+        if (m_diagSettingMissing)
+            last += i18n::t(" (the microphone chosen in the settings wasn't connected)");
+        lines << last;
+    }
+    lines << i18n::t("Last microphone error: %1").arg(m_diagError.isEmpty() ? i18n::t("none this session") : m_diagError);
+    QString mic = m_guard->engaged() ? i18n::t("TeamSpeak's microphone: muted for a recording on %1 connection(s)").arg(m_guard->mutedConnections().size())
+                                     : i18n::t("TeamSpeak's microphone: not muted by TS Media");
+    if (!m_diagMicBack.isEmpty())
+        mic += i18n::t("; last time %1").arg(m_diagMicBack);
+    lines << mic;
+    return lines;
 }
 
 VoiceController::~VoiceController()
@@ -252,6 +324,7 @@ void VoiceController::createPanel(bool fromHotkey)
 
 void VoiceController::beginRecording()
 {
+    ++m_diagStarted; // 2.2 diagnostics
     m_phase          = Phase::Starting;
     m_sendAfterSave  = false;
     m_confirm        = false;
@@ -330,6 +403,9 @@ void VoiceController::onRecorderState()
         if (m_phase == Phase::Starting) {
             m_phase = Phase::Recording;
             const voice::CaptureFormat format = m_recorder->format();
+            m_diagSource         = QString::fromLatin1(m_device ? sourceName(m_device->source) : "?"); // 2.2 diagnostics
+            m_diagRate           = format.sampleRate;
+            m_diagSettingMissing = m_device && m_device->settingMissing;
             ts3::log(LogLevel_INFO, m_target.sch, "Voice message: recording from %1 at %2 Hz", {ts3::pub(QString::fromLatin1(m_device ? sourceName(m_device->source) : "?")), ts3::pub(format.sampleRate)});
         }
         refresh();
@@ -485,6 +561,7 @@ void VoiceController::doSend()
     m_recorder->cancel(); // frees the recording in memory
     closeWindow();
     finish();
+    ++m_diagSent; // 2.2 diagnostics
     m_core->send(request);
 }
 
@@ -698,6 +775,8 @@ void VoiceController::onPreviewTick()
 
 void VoiceController::showError(voice::CaptureError error, long code)
 {
+    m_diagError = code ? QStringLiteral("%1 (0x%2)").arg(QString::fromLatin1(captureErrorName(error))).arg(static_cast<quint32>(code), 8, 16, QLatin1Char('0'))
+                       : QString::fromLatin1(captureErrorName(error)); // 2.2 diagnostics
     VoicePanel::View v;
     v.mode = VoicePanel::Mode::Error;
     switch (error) {
@@ -751,6 +830,7 @@ void VoiceController::showError(voice::CaptureError error, long code)
 
 void VoiceController::showSaveError()
 {
+    m_diagError = QStringLiteral("saving the recording failed"); // 2.2 diagnostics
     VoicePanel::View v;
     v.mode       = VoicePanel::Mode::Error;
     v.errorTitle = i18n::t("Couldn't save the recording");
@@ -770,6 +850,7 @@ void VoiceController::releaseMic()
     if (!m_guard->engaged())
         return;
     const voice::MicGuard::Released released = m_guard->release();
+    m_diagMicBack = i18n::t("given back on %1 connection(s), %2 left as they were").arg(released.restored).arg(released.kept); // 2.2 diagnostics
     ts3::log(LogLevel_INFO, m_target.sch, "Voice message: TeamSpeak microphone given back on %1 connection(s), %2 left as they were",
              {ts3::pub(released.restored), ts3::pub(released.kept)});
 }
@@ -814,14 +895,13 @@ void VoiceController::removeRecording()
 
 void VoiceController::cleanupOldRecordings()
 {
-    // Recordings handed to Core live as long as their upload job; a leftover from an earlier session
-    // (TeamSpeak closed mid-upload) goes after a day.
-    const QDir      dir(voiceDir());
-    const QDateTime limit = QDateTime::currentDateTimeUtc().addSecs(-kLeftoverAgeSec);
-    for (const QFileInfo& fi : dir.entryInfoList({QStringLiteral("voice_*.m4a")}, QDir::Files)) {
-        if (fi.lastModified().toUTC() < limit)
-            QFile::remove(fi.absoluteFilePath());
-    }
+    // Recordings handed to Core live as long as their upload job (a failed one until it is dismissed or
+    // retried), and no job outlives the plugin: whatever is left from an earlier session (TeamSpeak closed
+    // or crashed mid-upload) goes at start, like the paste and edit folders (Core::start). The start and
+    // stop sounds (cue_*.wav) stay.
+    const QDir dir(voiceDir());
+    for (const QFileInfo& fi : dir.entryInfoList({QStringLiteral("voice_*.m4a")}, QDir::Files))
+        QFile::remove(fi.absoluteFilePath());
 }
 
 // ---- the window's content ------------------------------------------------------------------------------

@@ -20,7 +20,7 @@ CompressSettingsSection::CompressSettingsSection(QWidget* dialog, Core* core)
 {
     auto* group = new QGroupBox(i18n::t("Videos"), this);
 
-    m_compress  = new QCheckBox(i18n::t("Compress videos la&rger than"), group);
+    m_compress  = new QCheckBox(i18n::t("&Compress videos larger than"), group);
     m_threshold = new QSpinBox(group);
     m_threshold->setRange(Settings::compressVideosOverMBRange.min, Settings::compressVideosOverMBRange.max);
     m_threshold->setSingleStep(5);

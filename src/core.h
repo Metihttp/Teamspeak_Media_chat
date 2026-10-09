@@ -290,8 +290,9 @@ class Core : public QObject
     // 30 min) so the user can retry them. Removing a job emits uploadChanged(id) once more.
     void dismissUpload(int id); // forgets a finished job; no-op while it runs
     // A failed job can be sent again while its source still exists, unless the file already reached
-    // the server (only the chat message failed: a retry would upload a duplicate). Pasted images are
-    // kept until their failed job is dismissed.
+    // the server (only the chat message failed: a retry would upload a duplicate). Own files (pasted
+    // and edited pictures, recordings, and the MP4 of a video compressed before its upload failed) are
+    // kept until their failed job is dismissed or retried.
     bool canRetryUpload(int id) const;
     // Sends the file of a failed job again as a new job and removes the failed one. Returns the new
     // job's id, or 0 if it cannot be retried (also when not connected: the job then stays).
@@ -315,6 +316,14 @@ class Core : public QObject
     void        queryEncoders(); // no-op once asked
     // "720p, graphics card, 9.8 s, 6.3x realtime" / "encoder 0xC00D36B4": the last compression (diagnostics).
     QString lastCompression() const { return m_lastCompression; }
+    // 2.2 integration: plugin shutdown (plugin.cpp), before the windows, the chat and Core go: every
+    // compression is canceled and the transcode worker joined (its Media Foundation objects are released
+    // on it). ~Core does the same, so calling both is fine.
+    void stopCompressions();
+    // 2.2 diagnostics: the "Video compression" section (settings, encoders, the last compression; never
+    // a file name). Looks the encoders up the first time (they show in the next report).
+    static QString compressionDiagnosticsTitle();
+    QStringList    compressionDiagnostics();
 
     // ---- cache ---------------------------------------------------------------------------
     QString cacheDir() const;
@@ -512,6 +521,9 @@ class Core : public QObject
     void    forgetUpload(int id);
     void    releaseSource(UploadJob& job);
     void    cleanupUpload(UploadJob& job);
+    // 2.2: a failed upload's compressed MP4 is kept for Retry (moved out of staging), like a pasted
+    // image, an edited copy or a recording; deleted when the job is dismissed or Core goes.
+    void    keepCompressedForRetry(const UploadJob& job);
     void    deleteRemoteFile(uint64 sch, uint64 channelId, const QString& path);
     QString previewDirFor(const UploadJob& job) const;
     QString previewRemoteFor(const UploadJob& job, bool inFolder) const;
@@ -645,4 +657,5 @@ class Core : public QObject
     bool                     m_encodersQueried = false;
     bool                     m_encodersAsked   = false;
     QString                  m_lastCompression;
+    QHash<int, QString>      m_keptCompressed; // 2.2: failed upload id -> its compressed MP4 (<data>/compressed/<id>/)
 };

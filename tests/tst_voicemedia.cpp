@@ -283,7 +283,9 @@ class TestVoiceMedia : public QObject
         QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Captured, 20000);
         const QString path = m_dir.filePath(QStringLiteral("canceled_encode.m4a"));
         rec.encode(path);
-        QTest::qWait(50);
+        // Once the sink writer has made the file, the encoder checks the flag between 100 ms samples. (The
+        // writer's setup itself can't be interrupted; under load in the full suite it once took 630 ms.)
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(path), 5000);
         QElapsedTimer clock;
         clock.start();
         rec.cancel(); // during the encode
