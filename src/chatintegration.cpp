@@ -2246,6 +2246,25 @@ void ChatIntegration::openCompose(QWidget* source, const QStringList& files, con
         }
     };
     host.albumDefault = Settings::instance().sendAsAlbum;
+    // 2.2 editor: edited copies under <dataDir>/edit (Core clears it at start-up), the paste rule, and
+    // the editor's last choices.
+    {
+        const Settings& s           = Settings::instance();
+        host.editDirectory          = ts3::dataDir() + QStringLiteral("/edit");
+        host.convertLargePngToJpeg  = s.convertLargePngToJpeg;
+        host.editorPrefs.color      = s.editorColor;
+        host.editorPrefs.stroke     = s.editorStroke;
+        host.editorPrefs.hideMode   = s.editorHideMode;
+        host.rememberEditorPrefs    = [](const imageedit::Prefs& prefs) {
+            Settings& settings = Settings::instance();
+            if (settings.editorColor == prefs.color && settings.editorStroke == prefs.stroke && settings.editorHideMode == prefs.hideMode)
+                return;
+            settings.editorColor    = prefs.color;
+            settings.editorStroke   = prefs.stroke;
+            settings.editorHideMode = prefs.hideMode;
+            settings.save();
+        };
+    }
 
     QWidget* parent = mainWindow();
     if (!parent && source)

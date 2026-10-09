@@ -13,7 +13,9 @@ Where your files go, what stays on your computer, and how the plugin protects yo
 ## What stays on your computer
 
 - **Local cache:** downloaded media is kept in `%APPDATA%\TS3Client\plugins\tsmedia\cache`, limited by the cache size you choose. You can clear it at any time in the settings.
-- **Temporary copies:** files being sent are staged in the `upload` and `paste` folders next to the cache. They are deleted once they have been sent or dismissed, and at the latest at the next start.
+- **Temporary copies:** files being sent are staged in the `upload` and `paste` folders next to the cache. They are deleted once they have been sent or dismissed, and at the latest at the next start. Pictures edited in the send window are written to the `edit` folder there and handled the same way.
+- **Photo metadata:** a picture you edit in the send window (crop, draw, hide details) is sent as a new file without any metadata: no EXIF, so no camera details and no location. Pictures you send without editing are sent exactly as they are, so a phone photo can still contain where it was taken.
+- **Hiding details:** *Black box* covers an area with solid black. *Pixelate* replaces it with coarse blocks (with a little fixed noise so the text can't be guessed back), but large text can stay partly readable; use *Black box* for passwords, codes and addresses.
 
 ## Nothing is sent by accident
 

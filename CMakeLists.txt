@@ -68,6 +68,10 @@ add_library(tsmedia SHARED
     src/composemodel.cpp      src/composemodel.h
     src/composedialog.cpp     src/composedialog.h
     src/composesettings.cpp   src/composesettings.h
+    # 2.2 editor: crop & annotate (opened from the send window)
+    src/imageeditmodel.cpp    src/imageeditmodel.h
+    src/imageeditor.cpp       src/imageeditor.h
+    src/imageeditorcanvas.cpp src/imageeditor_p.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -118,6 +122,9 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_compose.cpp
         src/composemodel.cpp
         src/composehooks.cpp
+        # 2.2 editor
+        tests/tst_imageedit.cpp
+        src/imageeditmodel.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})

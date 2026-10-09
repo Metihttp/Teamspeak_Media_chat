@@ -49,6 +49,14 @@ struct Settings {
     // 2.2 compose: a drop opens the send window (Ctrl held: sends right away); false: the other way round.
     bool dropOpensSendWindow = true;
     bool sendAsAlbum         = true; // the send window's "Send as an album", as last chosen
+    // 2.2 editor: the picture editor's last colour (Red, Yellow, Green, Blue, White, Black), size
+    // (Thin, Medium, Thick) and "Hide details" mode (Pixelate, Black box).
+    static constexpr Range editorColorRange    = {0, 5};
+    static constexpr Range editorStrokeRange   = {0, 2};
+    static constexpr Range editorHideModeRange = {0, 1};
+    int editorColor    = 0;
+    int editorStroke   = 1;
+    int editorHideMode = 0;
 
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this

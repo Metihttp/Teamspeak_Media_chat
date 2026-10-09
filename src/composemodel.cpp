@@ -142,9 +142,11 @@ QString typeText(const Item& item)
 
 QString metaText(const Item& item)
 {
+    // 2.2 editor: an edited item says so first.
+    const QString edited = item.edited ? i18n::t("Edited") + dot() : QString();
     if (item.isPasted()) // its name already says "Pasted image"
-        return item.pixels.isValid() && !item.pixels.isEmpty() ? i18n::t("%1 × %2").arg(item.pixels.width()).arg(item.pixels.height()) : typeText(item);
-    QString text = typeText(item);
+        return edited + (item.pixels.isValid() && !item.pixels.isEmpty() ? i18n::t("%1 × %2").arg(item.pixels.width()).arg(item.pixels.height()) : typeText(item));
+    QString text = edited + typeText(item);
     if (isVideo(item) && item.durationMs > 0)
         text += dot() + formatDuration(item.durationMs);
     text += dot() + formatSize(static_cast<quint64>(qMax<qint64>(0, item.size)));
@@ -162,6 +164,8 @@ QString accessibleName(const Item& item)
         name += typeText(item) + QStringLiteral(", ") + formatSize(static_cast<quint64>(qMax<qint64>(0, item.size)));
     if (item.spoiler)
         name += i18n::t(", spoiler");
+    if (item.edited) // 2.2 editor
+        name += i18n::t(", edited");
     return name;
 }
 

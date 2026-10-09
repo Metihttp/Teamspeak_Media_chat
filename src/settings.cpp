@@ -127,6 +127,9 @@ void Settings::load()
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
     dropOpensSendWindow = readBool(s, "dropOpensSendWindow", d.dropOpensSendWindow); // 2.2 compose
     sendAsAlbum         = readBool(s, "sendAsAlbum", d.sendAsAlbum);
+    editorColor         = readInt(s, "editorColor", d.editorColor, editorColorRange); // 2.2 editor
+    editorStroke        = readInt(s, "editorStroke", d.editorStroke, editorStrokeRange);
+    editorHideMode      = readInt(s, "editorHideMode", d.editorHideMode, editorHideModeRange);
 
     // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
@@ -160,6 +163,9 @@ void Settings::save() const
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
     s.setValue(key("dropOpensSendWindow"), dropOpensSendWindow); // 2.2 compose
     s.setValue(key("sendAsAlbum"), sendAsAlbum);
+    s.setValue(key("editorColor"), editorColor); // 2.2 editor
+    s.setValue(key("editorStroke"), editorStroke);
+    s.setValue(key("editorHideMode"), editorHideMode);
 
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
     s.sync();

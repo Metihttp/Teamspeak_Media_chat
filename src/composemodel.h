@@ -37,6 +37,9 @@ struct Item {
     bool      probed     = false; // the worker has looked at it (thumbnail, size, readable)
     Problem   problem    = Problem::None;
     bool      spoiler    = false;
+    // 2.2 editor: edited in the send window. path, fileName, size and pixels (image, for a paste) then
+    // describe the edited copy; the window keeps the original for "Revert to original".
+    bool      edited     = false;
 
     bool isPasted() const { return path.isEmpty(); }
     bool canSend() const { return problem == Problem::None; }
@@ -54,8 +57,8 @@ bool isAlbumKind(const Item& item);
 
 QString displayName(const Item& item);    // "holiday.jpg" (display-safe), "Pasted image"
 QString typeText(const Item& item);       // "JPG image", "MP4 video", "ZIP archive", "Pasted image"
-QString metaText(const Item& item);       // "JPG image · 2.4 MB · 4032 × 3024", "MP4 video · 0:42 · 180 MB"
-QString accessibleName(const Item& item); // "holiday.jpg, JPG image, 2.4 MB, spoiler"
+QString metaText(const Item& item);       // "JPG image · 2.4 MB · 4032 × 3024", "MP4 video · 0:42 · 180 MB" ("Edited · …")
+QString accessibleName(const Item& item); // "holiday.jpg, JPG image, 2.4 MB, spoiler" (", edited")
 
 int     sendableCount(const QVector<Item>& items);
 // The Send button: "Send" for one item, "Send 3 images" / "Send 2 videos" / "Send 5 files" (sendable only).
