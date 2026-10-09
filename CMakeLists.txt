@@ -92,7 +92,12 @@ set(TSMEDIA_UPDATE_SOURCES
     src/update/updatefiles.cpp        src/update/updatefiles.h
     src/update/updateinstaller.cpp    src/update/updateinstaller.h
 )
-target_sources(tsmedia PRIVATE ${TSMEDIA_UPDATE_SOURCES})
+target_sources(tsmedia PRIVATE ${TSMEDIA_UPDATE_SOURCES}
+    src/update/updatesettings.cpp       src/update/updatesettings.h
+    src/update/updater.cpp              src/update/updater.h
+    src/update/updatedialog.cpp         src/update/updatedialog.h
+    src/update/updatesettingsgroup.cpp  src/update/updatesettingsgroup.h
+)
 target_link_libraries(tsmedia PRIVATE bcrypt)
 if(TSMEDIA_UPDATER)
     target_sources(tsmedia PRIVATE

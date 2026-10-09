@@ -503,6 +503,8 @@ LaunchError startHelper(const Layout& layout, const QString& stagedHelper, const
     ini += latin("plugins=") + QString::fromStdWString(fs::native(layout.pluginsDir)) + latin("\r\n");
     ini += latin("config=") + QString::fromStdWString(fs::native(layout.configDir)) + latin("\r\n");
     ini += latin("wait=") + QString::number(qBound(5, job.waitSec, 600)) + latin("\r\n");
+    if (job.quiet)
+        ini += latin("quiet=1\r\n");
     QByteArray bytes("\xff\xfe", 2);
     bytes.append(reinterpret_cast<const char*>(ini.utf16()), ini.size() * 2);
     if (!fs::writeAll(layout.helperJob(), bytes)) {

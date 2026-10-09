@@ -21,6 +21,8 @@
 #include "settings.h"
 #include "settingsdialog.h"
 #include "ts3api.h"
+#include "update/updateinstaller.h" // 2.2 updater
+#include "update/updater.h"         // 2.2 updater
 #include "version.h"
 #include "video/mfvideo.h"
 
@@ -32,9 +34,10 @@ namespace {
 QPointer<Core>            g_core;
 QPointer<ChatIntegration> g_chat;
 QPointer<SettingsDialog>  g_settings;
+QPointer<upd::Updater>    g_updater; // 2.2 updater
 bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
-enum MenuId { MenuSend = 1, MenuSettings, MenuCache };
+enum MenuId { MenuSend = 1, MenuSettings, MenuCache, MenuUpdate /* 2.2 updater */ };
 
 template <typename Fn>
 void onGuiThread(Fn&& fn)
@@ -96,10 +99,14 @@ void printHelp(uint64 sch)
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",
+        "[b]/tsmedia update[/b] — check for a new version", // 2.2 updater (official builds only)
         "[b]/tsmedia help[/b] — show this list",
     };
-    for (const char* line : commands)
+    for (const char* line : commands) {
+        if (!upd::Updater::builtIn() && strstr(line, "/tsmedia update")) // 2.2 updater
+            continue;
         ts3::print(sch, i18n::t(line));
+    }
     ts3::print(sch, i18n::t("Tip: drop files on the chat to send them (hold Shift to skip), or copy files or a screenshot and press Ctrl+V in the chat input."));
 }
 
@@ -123,6 +130,20 @@ void cancelUploads(uint64 sch)
         ts3::printInfo(where, i18n::t("Canceled 1 upload."));
     else
         ts3::printInfo(where, i18n::t("Canceled %1 uploads.").arg(canceled));
+}
+
+// 2.2 updater: uploads a TeamSpeak restart would cancel.
+int runningUploads()
+{
+    int running = 0;
+    if (g_core) {
+        for (int id : g_core->uploadIds()) {
+            const UploadJob* job = g_core->upload(id);
+            if (job && (job->state == UploadState::Preparing || job->state == UploadState::Uploading))
+                ++running;
+        }
+    }
+    return running;
 }
 
 // "Send files to chat…" is only offered while the current server tab is connected.
@@ -245,6 +266,13 @@ TS3_EXPORT int ts3plugin_init()
     if (!qApp)
         return 1;
 
+    // 2.2 updater: before anything else, a just-updated version whose previous start never finished
+    // (a crash in init) puts the previous version back; returning 1 makes TeamSpeak unload it.
+    if (upd::bootGuard(upd::Layout::forRunningPlugin(ts3::dataDir()), upd::Version::parse(QString::fromLatin1(TSMEDIA_VERSION))) == upd::BootGuard::RolledBack) {
+        ts3::log(QString::fromLatin1("[update] " TSMEDIA_VERSION " didn't start last time: the previous version was restored"), LogLevel_WARNING);
+        return 1;
+    }
+
     Settings::instance().load();
 
     auto* core = new Core;
@@ -263,6 +291,10 @@ TS3_EXPORT int ts3plugin_init()
         core->start();
         chat->start();
         updateMenus();
+        // 2.2 updater: this start counts as successful (started marker, applied -> done), then the
+        // consent window / daily check are scheduled. Deleted first in ts3plugin_shutdown.
+        g_updater = new upd::Updater(ts3::dataDir(), upd::Updater::Hooks{[] { return runningUploads(); }});
+        g_updater->start();
         ts3::log(QStringLiteral(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded"));
     }, Qt::QueuedConnection);
     return 0;
@@ -271,6 +303,10 @@ TS3_EXPORT int ts3plugin_init()
 TS3_EXPORT void ts3plugin_shutdown()
 {
     auto cleanup = [] {
+        // 2.2 updater: cancels a running check or download (waits at most 1 s; a job still in a network
+        // read keeps the DLL pinned and ends on its own) and closes its windows.
+        delete g_updater.data();
+
         // Our windows must be gone before the DLL is unloaded. Deleting one window can delete
         // another (owned dialogs), hence the guarded second pass.
         QList<QPointer<QWidget>> windows;
@@ -351,6 +387,14 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
         });
     } else if (cmd == QLatin1String("cancel")) {
         onGuiThread([sch] { cancelUploads(sch); });
+    } else if (cmd == QLatin1String("update")) { // 2.2 updater
+        onGuiThread([sch] {
+            if (g_updater && upd::Updater::builtIn())
+                g_updater->checkNow(upd::Updater::Origin::Chat);
+            else
+                ts3::printInfo(sch, i18n::t("Updates are turned off in versions you build yourself. Check "
+                                            "github.com/Metihttp/Teamspeak_Media_chat/releases for new versions."));
+        });
     } else if (cmd == QLatin1String("debug")) {
         onGuiThread([sch] {
             if (!g_chat)
@@ -391,8 +435,9 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
         {MenuSend, i18n::t("Send files to chat…")},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
+        {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
     };
-    constexpr size_t count = sizeof(items) / sizeof(items[0]);
+    const size_t count = upd::Updater::builtIn() ? sizeof(items) / sizeof(items[0]) : sizeof(items) / sizeof(items[0]) - 1;
 
     *menuItems = static_cast<PluginMenuItem**>(malloc(sizeof(PluginMenuItem*) * (count + 1)));
     for (size_t i = 0; i < count; ++i) {
@@ -448,6 +493,13 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
         onGuiThread([] {
             if (g_core)
                 g_core->openCacheFolder();
+        });
+        break;
+    case MenuUpdate: // 2.2 updater: the result shows in Settings → Updates (or the update dialog)
+        onGuiThread([] {
+            showSettings(nullptr);
+            if (g_updater)
+                g_updater->checkNow(upd::Updater::Origin::Settings);
         });
         break;
     default:

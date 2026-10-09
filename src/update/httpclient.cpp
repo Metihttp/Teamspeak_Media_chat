@@ -105,7 +105,6 @@ Error mapError(DWORD error)
     case ERROR_WINHTTP_NAME_NOT_RESOLVED:
     case ERROR_WINHTTP_CANNOT_CONNECT:
     case ERROR_WINHTTP_CONNECTION_ERROR:
-    case ERROR_WINHTTP_PROXY_AUTH_REQUIRED: // a proxy we can't pass: same advice as offline
         return Error::Offline;
     case ERROR_WINHTTP_TIMEOUT:
         return Error::Timeout;
@@ -315,6 +314,8 @@ Response get(const Request& request)
         }
         if (status == 404)
             return fail(Error::NotFound);
+        if (status == 407)
+            return fail(Error::Offline); // a proxy that wants a password: same advice as offline
         if (status == 403 || status == 429) {
             response.retryAfterSec = retryAfter(api, req.get());
             return fail(Error::RateLimited);

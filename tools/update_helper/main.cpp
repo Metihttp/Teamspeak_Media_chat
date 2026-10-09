@@ -194,6 +194,7 @@ struct Job {
     std::wstring plugins;
     std::wstring config;
     int          waitSec = 60;
+    bool         quiet   = false; // no message box (automated tests)
 };
 
 bool readJob(Job* job)
@@ -209,6 +210,7 @@ bool readJob(Job* job)
     job->plugins = iniValue(file, L"job", L"plugins");
     job->config  = iniValue(file, L"job", L"config");
     job->waitSec = _wtoi(iniValue(file, L"job", L"wait").c_str());
+    job->quiet   = iniValue(file, L"job", L"quiet") == L"1";
     if (job->waitSec < 5 || job->waitSec > 600)
         job->waitSec = 60;
 
@@ -348,10 +350,13 @@ bool markerFrom(const Job& job, DWORD childPid)
     return strtoul(text, nullptr, 10) == childPid;
 }
 
+bool g_quiet = false;
+
 void showMessage(const std::wstring& text)
 {
     // No MB_SETFOREGROUND: it must not steal the focus from a full-screen game.
-    MessageBoxW(nullptr, text.c_str(), L"TS Media chat", MB_OK | MB_ICONWARNING);
+    if (!g_quiet)
+        MessageBoxW(nullptr, text.c_str(), L"TS Media chat", MB_OK | MB_ICONWARNING);
 }
 
 // Puts rollback/<from>/<name>.bak back for both plugin names, own architecture first.
@@ -424,6 +429,7 @@ int run()
         log(L"invalid or missing helper-job.ini");
         return 2;
     }
+    g_quiet = job.quiet;
     log(L"waiting for TeamSpeak to quit (update " + job.from + L" -> " + job.expect + L")");
 
     // 1. TeamSpeak quits. A PID that now belongs to another program means it has quit already.

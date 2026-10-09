@@ -24,6 +24,7 @@
 #include "i18n.h"
 #include "medialink.h"
 #include "uiutil.h"
+#include "update/updatesettingsgroup.h" // 2.2 updater
 #include "version.h"
 
 namespace {
@@ -419,6 +420,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* right = new QVBoxLayout;
     right->addWidget(send);
     right->addWidget(note);
+    right->addWidget(new upd::UpdateSettingsGroup(this)); // 2.2 updater: self-contained group (Settings → Updates)
     right->addStretch(1);
     auto* columns = new QHBoxLayout;
     columns->setSpacing(12);
@@ -651,6 +653,8 @@ bool SettingsDialog::apply()
     take(s.pluginDownloadUrl, m_loaded.pluginDownloadUrl, form.pluginDownloadUrl);
     s.save();
     m_loaded = form;
+    if (auto* updates = findChild<upd::UpdateSettingsGroup*>()) // 2.2 updater: its own keys; Restore defaults leaves them alone
+        updates->apply();
 
     // After Apply the dialog stays open: show what was saved ("/tsmedia" for an empty folder, the
     // link with its https://).

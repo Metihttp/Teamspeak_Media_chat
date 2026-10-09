@@ -91,6 +91,7 @@ struct HelperJob {
     Version       expect;
     Version       from;
     int           waitSec = 60;
+    bool          quiet   = false; // automated tests only: the helper shows no message box
 };
 
 enum class LaunchError { None, Blocked, HashMismatch, WriteFailed, Failed };
