@@ -44,6 +44,9 @@ struct ComposeHost {
     std::function<int(const SendRequest&)>                 send;            // Core::send: the batch id, 0 if nothing was started
     std::function<void(bool)>                              rememberAlbum;   // the "Send as an album" choice, after a send
     bool                                                   albumDefault = true;
+    // 2.4 compress: the compression settings (Core::compressOptions); unset: no Quality combo, videos over
+    // the limit can't be sent.
+    std::function<videocompress::Options()>                compressOptions;
 };
 
 class ComposeDialog : public QDialog
@@ -70,6 +73,8 @@ class ComposeDialog : public QDialog
     void       setSpoiler(int index, bool spoiler);
     void       setAlbum(bool album);
     bool       isBusy() const; // thumbnails are still being made
+    void       setQualityIndex(int index, int quality); // 2.4 compress: picks a Quality entry (render tools)
+    QVector<videocompress::Choice> qualityChoices(int index) const;
     QLineEdit* captionField() const { return m_caption; }
     void       showDropTarget(bool shown);
 
@@ -99,6 +104,11 @@ class ComposeDialog : public QDialog
     class DropHint;
 
     void     startProbe(const compose::Item& item);
+    // 2.4 compress: the planner's Quality entries for a probed video, and whether it can be sent.
+    void     setVideoFacts(int id, const videocompress::VideoFacts& facts);
+    void     planQuality(compose::Item& item);
+    void     setQuality(int id, int index);
+    bool     fitsCompressed(const compose::Item& item) const; // over the limit, but a picked quality fits
     // A worker looked at an item: readable, its size in pixels, its length, a picture of it.
     void     onProbed(int id, bool readable, const QSize& pixels, qint64 durationMs, const QImage& thumb);
     void     removeItem(int id);
@@ -162,6 +172,7 @@ class ComposeDialog : public QDialog
     QHash<int, Row*>     m_rows;
     Thumb*               m_singleThumb = nullptr;
     QCheckBox*           m_singleSpoiler = nullptr;
+    QWidget*             m_singleQuality = nullptr; // 2.4 compress: the single view's Quality combo
     int                  m_singleId    = -1;
     QLabel*              m_spoilerHint = nullptr;
     QPushButton*         m_addFiles   = nullptr;

@@ -45,6 +45,12 @@ Pasting, dropping and the file picker all open the same window. It names where t
 
 The clipboard may hold something old you forgot about, so a paste never sends anything without the window.
 
+### Large videos
+
+Videos larger than 25 MB, and iPhone (HEVC), AV1, VP9 or camcorder videos of any size, are converted on your computer to an MP4 (H.264 and AAC) that plays everywhere, before they are uploaded. In the send window each video has a **Quality** list (*Original*, *High (1080p)*, *Balanced (720p)*, *Smaller (480p)*) with the size each choice is expected to have; the default is what your [settings](SETTINGS.md#videos) say. A video over your upload limit gets a smaller quality that fits, picked for you.
+
+While a video is compressed, the upload panel shows *Compressing · 240 MB → about 18 MB · 1 min left*, a **Send original** button (when the original fits your upload limit) and **×** to cancel. Other files of the same send keep going, and their messages still appear in the order you chose. When it is done, the panel shows *Sent · 240 MB → 18.0 MB*. If compressing fails, the original is sent when it fits (*Sent the original*; the panel's tooltip says why).
+
 ### Upload progress
 
 <p align="center">

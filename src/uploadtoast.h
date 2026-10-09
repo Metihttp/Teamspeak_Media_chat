@@ -54,6 +54,7 @@ class UploadToast : public QFrame
         ElidedLabel*  title   = nullptr;
         QLabel*       percent = nullptr; // "45%" while uploading
         QToolButton*  retry   = nullptr; // failed jobs that can be sent again
+        QToolButton*  original = nullptr; // 2.4 compress: "Send original" while a video is compressed
         GlyphButton*  close   = nullptr; // cancels while running, dismisses afterwards
         ProgressLine* bar     = nullptr;
         AlertGlyph*   alert   = nullptr; // in front of the error text of a failed job

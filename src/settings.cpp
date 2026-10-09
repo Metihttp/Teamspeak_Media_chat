@@ -61,6 +61,11 @@ QString Settings::normalizeUploadDirectory(const QString& input)
     return dir;
 }
 
+int Settings::normalizeVideoQuality(int shortSide) // 2.4 compress
+{
+    return shortSide == 480 || shortSide == 1080 ? shortSide : 720;
+}
+
 Settings::DownloadUrlProblem Settings::checkDownloadUrl(const QString& input, QString* normalized)
 {
     normalized->clear();
@@ -134,6 +139,12 @@ void Settings::load(const QString& file)
     uploadDirectory = normalizeUploadDirectory(s.value(key("uploadDirectory"), d.uploadDirectory).toString());
     dropOpensSendWindow = readBool(s, "dropOpensSendWindow", d.dropOpensSendWindow); // 2.2 compose
     sendAsAlbum         = readBool(s, "sendAsAlbum", d.sendAsAlbum);
+    // 2.4 compress
+    compressVideos          = readBool(s, "compressVideos", d.compressVideos);
+    compressVideosOverMB    = readInt(s, "compressVideosOverMB", d.compressVideosOverMB, compressVideosOverMBRange);
+    compressVideoQuality    = normalizeVideoQuality(s.value(key("compressVideoQuality")).toInt());
+    convertUnplayableVideos = readBool(s, "convertUnplayableVideos", d.convertUnplayableVideos);
+    compressUseGpu          = readBool(s, "compressUseGpu", d.compressUseGpu);
 
     // Media cache (a "language" key written by older versions is ignored)
     cacheLimitMB = readInt(s, "cacheLimitMB", d.cacheLimitMB, cacheLimitMBRange);
@@ -181,6 +192,11 @@ void Settings::save(const QString& file) const
     s.setValue(key("uploadDirectory"), ownedCopy(normalizeUploadDirectory(uploadDirectory)));
     s.setValue(key("dropOpensSendWindow"), dropOpensSendWindow); // 2.2 compose
     s.setValue(key("sendAsAlbum"), sendAsAlbum);
+    s.setValue(key("compressVideos"), compressVideos); // 2.4 compress
+    s.setValue(key("compressVideosOverMB"), compressVideosOverMB);
+    s.setValue(key("compressVideoQuality"), normalizeVideoQuality(compressVideoQuality));
+    s.setValue(key("convertUnplayableVideos"), convertUnplayableVideos);
+    s.setValue(key("compressUseGpu"), compressUseGpu);
 
     s.setValue(key("cacheLimitMB"), cacheLimitMB);
 

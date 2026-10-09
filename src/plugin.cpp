@@ -17,6 +17,7 @@
 #include "accessgroup.h" // 2.2 servergroup
 #include "chatintegration.h"
 #include "composesettings.h" // 2.2 compose
+#include "compresssettings.h" // 2.4 compress
 #include "core.h"
 #include "datasaver.h" // 2.2 per-server settings
 #include "diagnosticscollect.h" // 2.2 diagnostics
@@ -107,6 +108,7 @@ void showSettings(QWidget* parent)
     dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
     dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
     dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
+    dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, g_core)); // 2.4 compress
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_peers)
             g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
