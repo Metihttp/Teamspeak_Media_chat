@@ -2963,7 +2963,9 @@ void Core::runTranscode(int id)
     task->control      = control;
     task->started      = false;
     mf::TranscodeRequest request;
-    request.source          = it->sourcePath;
+    // The original where it is; a file of ours (ownTemp) may have been moved into staging already.
+    const QString staged    = it->stagingDir + QLatin1Char('/') + it->remoteName;
+    request.source          = QFileInfo::exists(staged) ? staged : it->sourcePath;
     request.target          = task->outDir + QStringLiteral("/out.mp4");
     request.frameSize       = task->plan.frameSize;
     request.fps             = task->plan.fpsCap > 0 ? task->plan.fpsCap : task->plan.fps;
@@ -3176,7 +3178,9 @@ void Core::stageOriginal(int id, CompressOutcome outcome, const QString& note)
     }
     setUploadState(job, UploadState::Preparing, outcome == CompressOutcome::SentOriginal ? i18n::t("Sending the original…") : i18n::t("Couldn't compress. Sending the original…"));
 
-    removeStaging(job.stagingDir);
+    // The staging folder only holds the original when it is a file of ours that was moved there.
+    QDir(previewStagingDir(job.stagingDir)).removeRecursively();
+    QDir(compressDirFor(job.stagingDir)).removeRecursively();
     QDir().mkpath(job.stagingDir);
     const QString  staged = job.stagingDir + QLatin1Char('/') + job.remoteName;
     const QString  nested = job.remoteDir == QLatin1String("/") ? QString() : job.stagingDir + job.remoteDir + QLatin1Char('/') + job.remoteName;
@@ -3186,7 +3190,7 @@ void Core::stageOriginal(int id, CompressOutcome outcome, const QString& note)
     m_probing.insert(id, job.stagingDir);
     m_stagingCancel.insert(id, cancel);
     m_pool.start([self, id, source, staged, nested, cancel] {
-        bool ok = copyForStaging(source, staged, cancel.get());
+        bool ok = QFileInfo::exists(staged) || copyForStaging(source, staged, cancel.get());
         if (ok && !nested.isEmpty()) {
             QDir().mkpath(QFileInfo(nested).absolutePath());
             ok = linkOrCopy(staged, nested);
