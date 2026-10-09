@@ -2,6 +2,7 @@
 // this file only adapts the C API and moves work onto the Qt GUI thread.
 
 #include <QApplication>
+#include <QDir>
 #include <QFile>
 #include <QMetaObject>
 #include <QPointer>
@@ -83,10 +84,52 @@ void showSettings(QWidget* parent)
     dialog->activateWindow();
 }
 
+// One line per command. Only the first line carries the plugin's name (printInfo adds it); "debug"
+// is for bug reports and not listed.
 void printHelp(uint64 sch)
 {
-    ts3::printInfo(sch, i18n::t(TSMEDIA_NAME " " TSMEDIA_VERSION " — commands: /tsmedia send | settings | cache | debug"));
-    ts3::printInfo(sch, i18n::t("Drop files on the chat or paste a screenshot (Ctrl+V) into the chat line to send it."));
+    ts3::printInfo(sch, i18n::t(TSMEDIA_VERSION " — commands:"));
+    const char* const commands[] = {
+        "[b]/tsmedia send[/b] — choose files to send to this chat",
+        "[b]/tsmedia cancel[/b] — cancel all running uploads",
+        "[b]/tsmedia settings[/b] — open the settings",
+        "[b]/tsmedia cache[/b] — open the media cache folder",
+        "[b]/tsmedia help[/b] — show this list",
+    };
+    for (const char* line : commands)
+        ts3::print(sch, i18n::t(line));
+    ts3::print(sch, i18n::t("Tip: drop files on the chat to send them (hold Shift to skip), or copy files or a screenshot and press Ctrl+V in the chat input."));
+}
+
+// "/tsmedia cancel" and its hotkey: the keyboard way to stop sending (the toast never takes the focus).
+void cancelUploads(uint64 sch)
+{
+    if (!g_core)
+        return;
+    int canceled = 0;
+    for (int id : g_core->uploadIds()) {
+        const UploadJob* job = g_core->upload(id);
+        if (job && (job->state == UploadState::Preparing || job->state == UploadState::Uploading)) {
+            g_core->cancelUpload(id);
+            ++canceled;
+        }
+    }
+    const uint64 where = sch ? sch : ts3::currentConnection();
+    if (canceled == 0)
+        ts3::printInfo(where, i18n::t("No uploads are running."));
+    else if (canceled == 1)
+        ts3::printInfo(where, i18n::t("Canceled 1 upload."));
+    else
+        ts3::printInfo(where, i18n::t("Canceled %1 uploads.").arg(canceled));
+}
+
+// "Send files to chat…" is only offered while the current server tab is connected.
+void updateMenus()
+{
+    if (!ts3::funcs.setPluginMenuEnabled || ts3::pluginId.isEmpty())
+        return;
+    const QByteArray id = ts3::pluginId.toUtf8();
+    ts3::funcs.setPluginMenuEnabled(id.constData(), MenuSend, ts3::isConnected(ts3::currentConnection()) ? 1 : 0);
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -217,6 +260,7 @@ TS3_EXPORT int ts3plugin_init()
             ts3::log(QStringLiteral("Media Foundation is not available: videos can't be played inside the chat"), LogLevel_WARNING);
         core->start();
         chat->start();
+        updateMenus();
         ts3::log(QStringLiteral(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded"));
     }, Qt::QueuedConnection);
     return 0;
@@ -303,18 +347,23 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
             if (g_core)
                 g_core->openCacheFolder();
         });
+    } else if (cmd == QLatin1String("cancel")) {
+        onGuiThread([sch] { cancelUploads(sch); });
     } else if (cmd == QLatin1String("debug")) {
         onGuiThread([sch] {
             if (!g_chat)
                 return;
             const QString path = ts3::dataDir() + QStringLiteral("/widget_dump.txt");
             QFile         file(path);
-            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                file.write(g_chat->dumpWidgetTree().toUtf8());
-                ts3::printInfo(sch, i18n::t("Widget dump written to %1").arg(path));
-            }
+            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(g_chat->dumpWidgetTree().toUtf8()) >= 0)
+                ts3::printInfo(sch, i18n::t("Diagnostics saved to %1. Attach this file to your bug report.").arg(QDir::toNativeSeparators(path)));
+            else
+                ts3::printWarning(sch, i18n::t("Couldn't save diagnostics to %1. Check that you can write to that folder.").arg(QDir::toNativeSeparators(path)));
         });
     } else {
+        // A typo gets a hint instead of silently showing the list.
+        if (!cmd.isEmpty() && cmd != QLatin1String("help"))
+            ts3::printWarning(sch, i18n::t("Unknown command “%1”.").arg(str(command).trimmed().left(40)));
         printHelp(sch);
     }
     return 0;
@@ -337,7 +386,7 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
         QString text;
     };
     const Item items[] = {
-        {MenuSend, i18n::t("Send file / image to chat…")},
+        {MenuSend, i18n::t("Send files to chat…")},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
     };
@@ -358,12 +407,24 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
 
 TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
 {
-    *hotkeys = static_cast<PluginHotkey**>(malloc(sizeof(PluginHotkey*) * 2));
-    auto* hk = static_cast<PluginHotkey*>(malloc(sizeof(PluginHotkey)));
-    copyText(hk->keyword, PLUGIN_HOTKEY_BUFSZ, QStringLiteral("tsmedia_send"));
-    copyText(hk->description, PLUGIN_HOTKEY_BUFSZ, i18n::t("Send file / image to the current chat"));
-    (*hotkeys)[0] = hk;
-    (*hotkeys)[1] = nullptr;
+    struct Hotkey {
+        const char* keyword;
+        QString     description;
+    };
+    const Hotkey keys[] = {
+        {"tsmedia_send", i18n::t("Send files to the current chat")},
+        {"tsmedia_cancel", i18n::t("Cancel all uploads")},
+    };
+    constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
+
+    *hotkeys = static_cast<PluginHotkey**>(malloc(sizeof(PluginHotkey*) * (count + 1)));
+    for (size_t i = 0; i < count; ++i) {
+        auto* hk = static_cast<PluginHotkey*>(malloc(sizeof(PluginHotkey)));
+        copyText(hk->keyword, PLUGIN_HOTKEY_BUFSZ, QString::fromLatin1(keys[i].keyword));
+        copyText(hk->description, PLUGIN_HOTKEY_BUFSZ, keys[i].description);
+        (*hotkeys)[i] = hk;
+    }
+    (*hotkeys)[count] = nullptr;
 }
 
 TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID)
@@ -394,11 +455,14 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
 
 TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
 {
-    if (str(keyword) == QLatin1String("tsmedia_send")) {
+    const QString key = str(keyword);
+    if (key == QLatin1String("tsmedia_send")) {
         onGuiThread([] {
             if (g_chat)
                 g_chat->pickAndSendFiles();
         });
+    } else if (key == QLatin1String("tsmedia_cancel")) {
+        onGuiThread([] { cancelUploads(0); });
     }
 }
 
@@ -427,12 +491,19 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
         });
     }
 #endif
+    onGuiThread([] { updateMenus(); });
     if (newStatus != STATUS_DISCONNECTED)
         return;
     onGuiThread([sch] {
         if (g_core)
             g_core->onConnectionLost(sch);
     });
+}
+
+TS3_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 serverConnectionHandlerID)
+{
+    Q_UNUSED(serverConnectionHandlerID);
+    onGuiThread([] { updateMenus(); }); // another server tab: its connection state counts now
 }
 
 TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, anyID targetMode, anyID toID, anyID fromID, const char* fromName, const char* fromUniqueIdentifier, const char* message, int ffIgnored)
