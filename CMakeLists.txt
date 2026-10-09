@@ -63,6 +63,8 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    # 2.2 sha
+    src/fileverify.cpp        src/fileverify.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -109,6 +111,9 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlog.cpp
         src/hashing.cpp
         src/floodgovernor.cpp
+        # 2.2 sha
+        tests/tst_fileverify.cpp
+        src/fileverify.cpp src/fileverify.h
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -125,6 +130,41 @@ if(TSMEDIA_BUILD_TESTS)
     else()
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
+    endif()
+
+    # 2.2 sha: Core itself against a fake TeamSpeak (tests/fakets3.*): downloads are checked against their
+    # sha, mismatches blocked, made-up hashes refused, sent links hashed. Its own executable: it links the
+    # real ts3api.cpp, which tsmedia_tests stubs.
+    add_executable(tsmedia_core_tests
+        tests/tst_coresha.cpp
+        tests/fakets3.cpp         tests/fakets3.h
+        tests/testmain.h
+        src/core.cpp              src/core.h
+        src/fileverify.cpp        src/fileverify.h
+        src/ts3api.cpp
+        src/settings.cpp
+        src/i18n.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/mediaprobe.cpp
+        src/video/mfvideo.cpp
+        src/logtext.cpp
+        src/pluginlog.cpp
+        src/hashing.cpp
+        src/floodgovernor.cpp
+    )
+    target_include_directories(tsmedia_core_tests PRIVATE src tests third_party/ts3client-pluginsdk/include)
+    target_compile_definitions(tsmedia_core_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(tsmedia_core_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(tsmedia_core_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(tsmedia_core_tests)
+    add_test(NAME tsmedia_core_tests COMMAND tsmedia_core_tests)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+        set_tests_properties(tsmedia_core_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
+    else()
+        set_tests_properties(tsmedia_core_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 

@@ -193,7 +193,7 @@ PlaybackOverlay InlineMediaController::overlay(const QString& key) const
     if (!v->player) {
         if (v->wantPlay && e && (e->state == MediaState::Idle || e->state == MediaState::Queued || e->state == MediaState::Downloading)) {
             o.busy         = true;
-            o.busyProgress = e->state == MediaState::Downloading ? e->progress : -1.0;
+            o.busyProgress = e->state == MediaState::Downloading ? shownDownloadProgress(*e) : -1.0; // 2.2 sha: the check's, when shown
         }
         return o;
     }

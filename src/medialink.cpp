@@ -963,6 +963,8 @@ QString downloadErrorTitle(MediaError error)
         return i18n::t("Not connected to this server");
     case MediaError::Quota:
         return i18n::t("Server transfer limit reached");
+    case MediaError::Mismatch: // 2.2 sha
+        return i18n::t("File doesn't match what was sent");
     case MediaError::None:
     case MediaError::Other:
         break;
@@ -983,6 +985,9 @@ QString downloadErrorText(MediaError error, const QString& serverText)
         return i18n::t("Reconnect to this server to download the file. Interrupted downloads resume by themselves.");
     case MediaError::Quota:
         return i18n::t("This server's file transfer quota is used up. Ask a server admin.");
+    case MediaError::Mismatch: // 2.2 sha
+        return i18n::t("The downloaded file is different from the one that was sent. It may have been replaced on the server, so it wasn't "
+                       "shown or saved. Ask the sender to send it again.");
     case MediaError::None:
     case MediaError::Other:
         break;
@@ -1007,6 +1012,7 @@ QString uploadErrorText(MediaError error, const QString& serverText)
         return i18n::t("The upload folder no longer exists on the server. Try again.");
     case MediaError::None:
     case MediaError::Other:
+    case MediaError::Mismatch: // downloads only
         break;
     }
     const QString server = quoted(serverText);
@@ -1025,6 +1031,7 @@ QString postErrorText(MediaError error, const QString& serverText)
     case MediaError::NotFound:
     case MediaError::Quota:
     case MediaError::Other:
+    case MediaError::Mismatch: // downloads only
         break;
     }
     const QString server = quoted(serverText);
