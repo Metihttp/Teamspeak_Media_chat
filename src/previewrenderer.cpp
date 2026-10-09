@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "albums.h" // 2.2 album
 #include "i18n.h"
 #include "previewpaint.h" // 2.2 audio
 #include "spoiler.h" // 2.2 spoiler
@@ -1513,6 +1514,239 @@ QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool reve
 {
     return statusTexts(entry, cannotPreview, revealOnly).value(0);
 }
+
+// ==== 2.2 album grid =============================================================================
+
+namespace {
+
+constexpr qreal kTileRadius        = 3.0;  // inner corners; the grid's own corners keep kRadius
+constexpr int   kOverflowDim       = 140;  // "+N" over the last tile's picture: white text 4.7:1 over white
+constexpr int   kTileFailedDim     = 150;  // failed tile: its title white over white pixels 5.4:1
+constexpr int   kTilePressedAlpha  = 30;
+constexpr int   kTileCoverDim      = 110;  // spoiler cover
+constexpr qreal kTileDisc          = 32.0; // download / progress disc
+constexpr qreal kTileVideoDisc     = 36.0; // play disc
+constexpr qreal kTileAlertDisc     = 20.0;
+constexpr qreal kTilePlaceholderGlyph = 24.0;
+constexpr int   kTileLabelMinWidth  = 140; // size pill and error title only on tiles this wide ...
+constexpr int   kTileLabelMinHeight = 96;  // ... (the title also this tall)
+constexpr int   kTileGifMinWidth    = 64;
+
+// A rectangle with its own radius per corner (top-left, top-right, bottom-right, bottom-left).
+QPainterPath cornerPath(const QRectF& r, qreal tl, qreal tr, qreal br, qreal bl)
+{
+    QPainterPath path;
+    path.moveTo(r.left() + tl, r.top());
+    path.lineTo(r.right() - tr, r.top());
+    if (tr > 0)
+        path.arcTo(QRectF(r.right() - 2 * tr, r.top(), 2 * tr, 2 * tr), 90, -90);
+    path.lineTo(r.right(), r.bottom() - br);
+    if (br > 0)
+        path.arcTo(QRectF(r.right() - 2 * br, r.bottom() - 2 * br, 2 * br, 2 * br), 0, -90);
+    path.lineTo(r.left() + bl, r.bottom());
+    if (bl > 0)
+        path.arcTo(QRectF(r.left(), r.bottom() - 2 * bl, 2 * bl, 2 * bl), 270, -90);
+    path.lineTo(r.left(), r.top() + tl);
+    if (tl > 0)
+        path.arcTo(QRectF(r.left(), r.top(), 2 * tl, 2 * tl), 180, -90);
+    path.closeSubpath();
+    return path;
+}
+
+// A tile's outline: the grid's rounded corners where it has one, small ones inside. inset: half a pixel
+// for the hairline.
+QPainterPath tileShape(const QRect& tile, const QSize& box, qreal inset = 0.0)
+{
+    const bool   left   = tile.x() == 0;
+    const bool   top    = tile.y() == 0;
+    const bool   right  = tile.x() + tile.width() == box.width();
+    const bool   bottom = tile.y() + tile.height() == box.height();
+    const QRectF r      = QRectF(tile).adjusted(inset, inset, -inset, -inset);
+    auto         radius = [inset](bool outer) { return (outer ? kRadius : kTileRadius) - inset; };
+    return cornerPath(r, radius(top && left), radius(top && right), radius(bottom && right), radius(bottom && left));
+}
+
+// A spoiler that isn't revealed: only a heavy blur of the picture and a "Spoiler" pill.
+// TODO(spoiler): the spoiler area's cover replaces this, so a tile and a single preview look the same.
+void drawTileCover(QPainter& p, const QRectF& r, const QImage& pixels, const PreviewStyle& style)
+{
+    if (!pixels.isNull()) {
+        const QImage tiny = pixels.scaled(12, 12, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        const QImage soft = tiny.scaled(tiny.size() * 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        p.drawImage(coverRect(QSizeF(soft.size()), r.adjusted(-8, -8, 8, 8)), soft);
+    }
+    p.fillRect(r, QColor(0, 0, 0, kTileCoverDim));
+    const QFont         font = fontFor(style, -2, true);
+    const QFontMetricsF fm(font);
+    const QString       text = i18n::t("Spoiler");
+    const QSizeF        size(fm.horizontalAdvance(text) + 20.0, qCeil(fm.height()) + 8.0);
+    if (size.width() > r.width() - 16.0 || size.height() > r.height() - 8.0)
+        return;
+    const QRectF pill = centered(size, r);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, kPillAlpha));
+    p.drawRoundedRect(pill, size.height() / 2.0, size.height() / 2.0);
+    p.setFont(font);
+    p.setPen(Qt::white);
+    p.drawText(pill, Qt::AlignCenter, text);
+}
+
+// What a failed item says inside its tile: the alert disc, and the short cause when there is room.
+void drawTileFailure(QPainter& p, const QRectF& r, const MediaEntry& e, const PreviewStyle& style)
+{
+    p.fillRect(r, QColor(0, 0, 0, kTileFailedDim));
+    const QFont         font = fontFor(style, -1, true);
+    const QFontMetricsF fm(font);
+    const bool          withTitle = r.width() >= kTileLabelMinWidth && r.height() >= kTileLabelMinHeight;
+    const qreal         blockH    = kTileAlertDisc + (withTitle ? 6.0 + fm.height() : 0.0);
+    const qreal         top       = r.center().y() - blockH / 2.0;
+    drawAlertIcon(p, QRectF(r.center().x() - kTileAlertDisc / 2.0, top, kTileAlertDisc, kTileAlertDisc), kAlertRed, Qt::white);
+    if (!withTitle)
+        return;
+    p.setFont(font);
+    p.setPen(Qt::white);
+    const QRectF line(r.left() + 8.0, top + kTileAlertDisc + 6.0, r.width() - 16.0, fm.height());
+    p.drawText(line, Qt::AlignCenter, fm.elidedText(downloadErrorTitle(e.error), Qt::ElideRight, line.width()));
+}
+
+void drawAlbumTile(QPainter& p, const QRect& tile, const QSize& box, const AlbumTile& t, int overflow, const PreviewStyle& style, const Palette& pal)
+{
+    const QRectF r(tile);
+    p.save();
+    p.setClipPath(tileShape(tile, box));
+    p.fillRect(r, pal.placeholder);
+
+    const MediaEntry* e = t.entry;
+    if (!e) {
+        // Not arrived yet: quiet and static (it may wait a long time; no shimmer).
+        QColor glyph = pal.muted;
+        glyph.setAlphaF(0.35);
+        drawImageGlyph(p, centered(QSizeF(kTilePlaceholderGlyph, kTilePlaceholderGlyph), r), glyph);
+    } else {
+        const QImage& pixels = !t.frame.isNull() && !t.concealed ? t.frame : t.still.image;
+        const bool    actionable = isPreviewActionable(*e);
+        if (t.concealed) {
+            drawTileCover(p, r, pixels, style);
+        } else if (!pixels.isNull()) {
+            p.drawImage(coverRect(QSizeF(pixels.size()), r), pixels);
+        }
+
+        if (overflow > 0) {
+            // "+N": the picture stays recognisable behind the count.
+            p.fillRect(r, QColor(0, 0, 0, kOverflowDim));
+            p.setFont(fontFor(style, 10, true));
+            p.setPen(Qt::white);
+            p.drawText(r, Qt::AlignCenter, i18n::t("+%1").arg(overflow));
+        } else if (!t.concealed && e->state == MediaState::Failed) {
+            drawTileFailure(p, r, *e, style);
+        } else if (!t.concealed) {
+            const bool   video    = e->kind == MediaKind::Video;
+            const bool   hovered  = t.hovered && actionable;
+            const bool   pressed  = t.pressed && actionable;
+            const QFont  pillFont = fontFor(style, -2);
+            const qreal  room     = qMin(r.width(), r.height()) - 12.0;
+            const QRectF disc     = centered(QSizeF(qMin(kTileDisc, room), qMin(kTileDisc, room)), r);
+            const QRectF playDisc = centered(QSizeF(qMin(kTileVideoDisc, room), qMin(kTileVideoDisc, room)), r);
+            switch (e->state) {
+            case MediaState::Queued:
+                drawProgressDisc(p, disc, -1, true, false, style, hovered, pressed);
+                break;
+            case MediaState::Downloading:
+                drawProgressDisc(p, disc, e->progress, false, false, style, hovered, pressed);
+                break;
+            case MediaState::Idle:
+            case MediaState::Ready:
+                if (video) {
+                    PressScale scale(p, playDisc.center(), pressed);
+                    drawButtonDisc(p, playDisc, hovered, pressed);
+                    drawPlayIcon(p, discIcon(playDisc, 0.28).translated(playDisc.width() * 0.02, 0), Qt::white);
+                } else if (e->state == MediaState::Idle && t.still.source != MediaStill::Preview) {
+                    PressScale scale(p, disc.center(), pressed);
+                    drawButtonDisc(p, disc, hovered, pressed);
+                    drawDownloadIcon(p, discIcon(disc, 0.27), Qt::white);
+                } else if (e->state == MediaState::Ready && pixels.isNull()) {
+                    drawImageGlyph(p, centered(QSizeF(kTilePlaceholderGlyph, kTilePlaceholderGlyph), r), pal.muted); // can't preview
+                }
+                break;
+            case MediaState::Failed:
+                break;
+            }
+            if (video && e->link.durationMs > 0)
+                drawPill(p, r, Qt::BottomRightCorner, PillIcon::None, -1, {formatDuration(e->link.durationMs)}, pillFont);
+            else if (!video && e->state == MediaState::Idle && r.width() >= kTileLabelMinWidth)
+                drawPill(p, r, Qt::BottomLeftCorner, PillIcon::Download, -1, {sizeText(*e)}, pillFont);
+            if (e->kind == MediaKind::AnimatedImage && r.width() >= kTileGifMinWidth)
+                drawGifBadge(p, r, style);
+        }
+        if (t.pressed && actionable)
+            p.fillRect(r, QColor(0, 0, 0, kTilePressedAlpha));
+    }
+    p.restore();
+
+    p.setPen(QPen(pal.hairline, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(tileShape(tile, box, 0.5));
+}
+
+} // namespace
+
+QSize albumLogicalSize(int items, const PreviewStyle& style)
+{
+    return albums::layout(items, style.maxWidth, style.maxHeight).box;
+}
+
+QImage renderAlbum(const QVector<AlbumTile>& tiles, const PreviewStyle& style, QSize* logicalSize)
+{
+    const albums::Geometry g = albums::layout(tiles.size(), style.maxWidth, style.maxHeight);
+    if (logicalSize)
+        *logicalSize = g.box;
+    if (g.box.isEmpty())
+        return {};
+    QImage   out = makeCanvas(g.box, ratioOf(style));
+    QPainter p(&out);
+    preparePainter(p);
+    p.setLayoutDirection(Qt::LeftToRight);
+    const Palette pal = paletteFor(style.dark);
+    for (int i = 0; i < g.tiles.size(); ++i)
+        drawAlbumTile(p, g.tiles.at(i), g.box, tiles.at(i), i == g.tiles.size() - 1 ? g.overflow : 0, style, pal);
+    return out;
+}
+
+QSize albumTileStillPixels(const MediaEntry& entry, const QSize& tile, qreal dpr)
+{
+    const qreal  ratio   = dpr > 0.0 ? qBound(0.5, dpr, 8.0) : 1.0;
+    const QSizeF natural = linkSize(entry);
+    if (tile.isEmpty())
+        return {};
+    if (natural.isEmpty()) {
+        // No dimensions in the link: a square twice the tile's longer side covers it for any picture up to 2:1.
+        const int side = qCeil(qMax(tile.width(), tile.height()) * ratio * 2.0);
+        return QSize(side, side);
+    }
+    const QSizeF cover = natural.scaled(QSizeF(tile) * ratio, Qt::KeepAspectRatioByExpanding);
+    return QSize(qCeil(cover.width()), qCeil(cover.height()));
+}
+
+QVector<PreviewColorPair> albumColorPairs(bool dark)
+{
+    const Palette             pal = paletteFor(dark);
+    const QColor              white(Qt::white);
+    QVector<PreviewColorPair> pairs;
+    auto add = [&pairs](const char* name, const QColor& foreground, const QColor& background, double minimum) {
+        pairs.append({QString::fromLatin1(name), foreground, background, minimum});
+    };
+    const QColor overflow = ui::flatten(QColor(0, 0, 0, kOverflowDim), white);
+    add("album +N over white", white, overflow, 4.5);
+    add("album +N over white (pressed)", white, ui::flatten(QColor(0, 0, 0, kTilePressedAlpha), overflow), 4.5);
+    add("album error title over white", white, ui::flatten(QColor(0, 0, 0, kTileFailedDim), white), 4.5);
+    add("album error title on placeholder", white, ui::flatten(QColor(0, 0, 0, kTileFailedDim), pal.placeholder), 4.5);
+    add("album alert mark on its disc", white, kAlertRed, 3.0); // the disc reads by its white mark
+    const QColor cover = ui::flatten(QColor(0, 0, 0, kTileCoverDim), white);
+    add("album spoiler pill text over white", white, ui::flatten(QColor(0, 0, 0, kPillAlpha), cover), 4.5);
+    return pairs;
+}
+
+// ==== end of 2.2 album grid ======================================================================
 
 QVector<PreviewColorPair> previewColorPairs(bool dark)
 {

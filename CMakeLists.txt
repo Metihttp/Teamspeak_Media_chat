@@ -120,6 +120,9 @@ add_library(tsmedia SHARED
     src/spoilercover.cpp      src/spoilercover.h
     src/spoilersection.cpp    src/spoilersection.h
     src/chatintegration_spoiler.cpp
+    # 2.2 album
+    src/albums.cpp            src/albums.h
+    src/chatalbums.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -240,6 +243,9 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 spoiler: reveal state, cover picture, crossfade (the drawing is checked by render_gallery)
         tests/tst_spoiler.cpp
         src/spoiler.cpp
+        # 2.2 album
+        tests/tst_albums.cpp
+        src/albums.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
@@ -281,6 +287,7 @@ if(TSMEDIA_BUILD_TESTS)
         src/filenames.cpp         # 2.2 drag-out
         src/serversettings.cpp    # 2.2 per-server settings
         src/spoiler.cpp           # 2.2 spoiler
+        src/albums.cpp            # 2.2 album
         src/logtext.cpp
         src/pluginlog.cpp
         src/hashing.cpp
@@ -330,6 +337,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/i18n.cpp
         src/uiutil.cpp
         src/spoiler.cpp # 2.2 spoiler
+        src/albums.cpp # 2.2 album
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})

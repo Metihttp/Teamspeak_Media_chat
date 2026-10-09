@@ -714,16 +714,16 @@ TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, an
     Q_UNUSED(toID);
     Q_UNUSED(fromID);
     Q_UNUSED(fromName);
-    Q_UNUSED(fromUniqueIdentifier);
     if (ffIgnored)
         return 0;
     const QString text = str(message);
     if (!text.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
         return 0;
-    const uint64 sch = serverConnectionHandlerID;
-    onGuiThread([sch, text] {
+    const uint64  sch    = serverConnectionHandlerID;
+    const QString sender = str(fromUniqueIdentifier); // 2.2 album: filled in by the server, so it can be trusted
+    onGuiThread([sch, text, sender] {
         if (g_core)
-            g_core->onTextMessage(sch, text);
+            g_core->onTextMessage(sch, text, sender);
     });
     return 0; // never hide the message: the link is the fallback for clients without the plugin
 }

@@ -98,6 +98,15 @@ anyID ownClientId(uint64 sch)
     return id;
 }
 
+// 2.2 album
+QString ownUid(uint64 sch)
+{
+    char* value = nullptr;
+    if (!funcs.getClientSelfVariableAsString || funcs.getClientSelfVariableAsString(sch, CLIENT_UNIQUE_IDENTIFIER, &value) != ERROR_ok)
+        return {};
+    return takeString(value);
+}
+
 uint64 ownChannel(uint64 sch)
 {
     const anyID me = ownClientId(sch);

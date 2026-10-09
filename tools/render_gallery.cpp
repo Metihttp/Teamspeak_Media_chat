@@ -21,6 +21,7 @@
 #include <functional>
 
 #include "audiocard.h"
+#include "albums.h" // 2.2 album
 #include "blurhash.h"
 #include "dragpixmap.h" // 2.2 drag-out
 #include "previewrenderer.h"
@@ -33,6 +34,7 @@ const QString kReferenceHash = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj");
 
 QString g_mediaDir;
 int     g_layoutFailures = 0; // samples whose box differs from what the chat reserves (a layout jump)
+int     g_layoutErrors = 0; // 2.2 album: grids whose size depended on what their tiles show
 
 QImage loadSource(const QString& fileName)
 {
@@ -306,6 +308,146 @@ QList<Sample> buildSamples()
         const MediaEntry e = downloading(gifReady, 0.55);
         return renderPreview(e, hashStill(gifHash, 480, 270, stillPixels(e, st)), st, ls);
     });
+
+    // ---- 2.2 album grid ---------------------------------------------------------------------
+    // Every grid must have albumLogicalSize(): what its tiles show never changes its size.
+    {
+        struct TileSpec {
+            MediaEntry         entry;
+            QImage             picture;                    // what the still is made from (Full / Preview)
+            MediaStill::Source source    = MediaStill::Full; // BlurHash: decoded from entry.link.blurHash
+            QImage             frame;                      // a GIF frame while it animates
+            bool               arrived   = true;
+            bool               concealed = false;
+            bool               hovered   = false;
+            bool               pressed   = false;
+        };
+        const QImage gifStill = gif;
+        const QImage pictures[] = {photo, sunset, friendPic, cropToAspect(friendPic, 1.0).mirrored(true, false), photo.mirrored(true, false), sunset.mirrored(true, true),
+                                   cropToAspect(photo, 9.0 / 16.0), cropToAspect(sunset, 1.0)};
+        auto ready = [&pictures](int n) {
+            const QImage& pic = pictures[n % 8];
+            TileSpec      t;
+            t.entry         = makeEntry(QStringLiteral("trip_%1_3f9a1c2e.jpg").arg(n + 1), 845221 + static_cast<quint64>(n) * 91733, pic.width(), pic.height(), 0, MediaState::Ready);
+            t.entry.link.protocol = MediaLink::kProtocol;
+            t.entry.link.blurHash = hashOf(pic);
+            t.picture       = pic;
+            return t;
+        };
+        auto withState = [](TileSpec t, MediaState state, double progress = 0.0) {
+            t.entry.state    = state;
+            t.entry.progress = progress;
+            t.source         = MediaStill::BlurHash;
+            return t;
+        };
+        auto readyAlbum = [&ready](int count) {
+            QVector<TileSpec> specs;
+            for (int i = 0; i < count; ++i)
+                specs.append(ready(i));
+            return specs;
+        };
+        auto album = [&add](const QString& name, const QString& label, const QVector<TileSpec>& specs, int maxWidth = 400) {
+            add(name, label, [specs, name](const PreviewStyle& st, QSize* ls) {
+                const albums::Geometry g = albums::layout(specs.size(), st.maxWidth, st.maxHeight);
+                QVector<AlbumTile>     tiles(specs.size());
+                for (int i = 0; i < specs.size() && i < g.tiles.size(); ++i) {
+                    const TileSpec& s = specs.at(i);
+                    if (!s.arrived)
+                        continue;
+                    AlbumTile& t     = tiles[i];
+                    t.entry          = &s.entry;
+                    const QSize px   = albumTileStillPixels(s.entry, g.tiles.at(i).size(), st.dpr);
+                    if (s.source == MediaStill::BlurHash)
+                        t.still = hashStill(s.entry.link.blurHash, s.entry.link.width, s.entry.link.height, px);
+                    else if (!s.picture.isNull())
+                        t.still = pictureStill(s.picture, s.source, px);
+                    if (!s.frame.isNull())
+                        t.frame = fitScaled(s.frame, px);
+                    t.concealed = s.concealed;
+                    t.hovered   = s.hovered;
+                    t.pressed   = s.pressed;
+                }
+                const QImage image = renderAlbum(tiles, st, ls);
+                if (!ls || *ls != albumLogicalSize(specs.size(), st)) {
+                    QTextStream(stderr) << "error: " << name << " is not albumLogicalSize()\n";
+                    ++g_layoutErrors;
+                }
+                return image;
+            }, maxWidth);
+        };
+
+        for (const int count : {2, 3, 4, 5})
+            album(QStringLiteral("album_%1").arg(count), QStringLiteral("album, %1 pictures").arg(count), readyAlbum(count));
+        album(QStringLiteral("album_7_plus2"), QStringLiteral("album, 7 pictures (+2)"), readyAlbum(7));
+        album(QStringLiteral("album_10_plus5"), QStringLiteral("album, 10 pictures (+5)"), readyAlbum(10));
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[1]                = withState(specs[1], MediaState::Downloading, 0.35);
+            specs[2]                = withState(specs[2], MediaState::Idle);
+            specs[2].entry.link.size = 31457280;
+            specs[3].entry          = failed(specs[3].entry, MediaError::Permission);
+            specs[3].source         = MediaStill::Preview;
+            album(QStringLiteral("album_4_mixed"), QStringLiteral("album: ready / 35% / not downloaded / failed"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[2].arrived        = false;
+            specs[3].arrived        = false;
+            album(QStringLiteral("album_4_open_placeholders"), QStringLiteral("album: 2 of 4 arrived"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(3);
+            for (TileSpec& s : specs)
+                s = withState(s, MediaState::Queued);
+            specs[0] = withState(specs[0], MediaState::Downloading, 0.6);
+            album(QStringLiteral("album_3_loading"), QStringLiteral("album: loading (blurhash, queued)"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            TileSpec          g     = ready(0);
+            g.entry                 = makeEntry(QStringLiteral("funny_3f9a1c2e.gif"), 387333, gifStill.width(), gifStill.height(), 0, MediaState::Ready);
+            g.entry.link.protocol   = MediaLink::kProtocol;
+            g.picture               = gifStill;
+            g.frame                 = gifFrame(12, QSize(800, 800));
+            specs[0]                = g;
+            TileSpec v              = ready(1);
+            v.entry                 = makeEntry(QStringLiteral("clip_3f9a1c2e.mp4"), 3993912, 1280, 720, 10000, MediaState::Idle);
+            v.entry.link.protocol   = MediaLink::kProtocol;
+            v.picture               = cropToAspect(sunset, 16.0 / 9.0);
+            v.source                = MediaStill::Preview;
+            specs[1]                = v;
+            TileSpec v2             = v;
+            v2.entry                = downloading(v.entry, 0.4);
+            v2.entry.link.durationMs = 73000;
+            v2.picture              = cropToAspect(friendPic, 16.0 / 9.0);
+            specs[2]                = v2;
+            album(QStringLiteral("album_gif_video"), QStringLiteral("album: GIF, video, video downloading"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[0].concealed      = true;
+            specs[3].concealed      = true;
+            album(QStringLiteral("album_spoiler_tiles"), QStringLiteral("album: spoiler tiles (cover hook)"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(4);
+            specs[1].hovered        = true;
+            specs[1].pressed        = true;
+            specs[2]                = withState(specs[2], MediaState::Idle);
+            specs[2].hovered        = true;
+            album(QStringLiteral("album_pressed_hover"), QStringLiteral("album: tile 2 pressed, tile 3 hovered"), specs);
+        }
+        {
+            QVector<TileSpec> specs = readyAlbum(6);
+            specs[0].entry          = failed(specs[0].entry, MediaError::NotFound);
+            specs[4].entry          = failed(specs[4].entry, MediaError::Permission);
+            specs[5]                = withState(specs[5], MediaState::Idle);
+            album(QStringLiteral("album_6_failed_small"), QStringLiteral("album: small failed tiles"), specs);
+        }
+        album(QStringLiteral("album_narrow_3"), QStringLiteral("album, narrow chat (max 200 px), 3"), readyAlbum(3), 200);
+        album(QStringLiteral("album_narrow_5"), QStringLiteral("album, narrow chat (max 200 px), 5 (+2)"), readyAlbum(5), 200);
+        album(QStringLiteral("album_wide_4"), QStringLiteral("album, max width 600, 4"), readyAlbum(4), 600);
+    }
 
     // ---- videos ----------------------------------------------------------------------------
     const QImage     poster      = cropToAspect(sunset, 16.0 / 9.0);
@@ -908,7 +1050,7 @@ int contrastReport(const QString& outDir)
     int         failures = 0;
     for (const bool dark : {false, true}) {
         out << (dark ? "dark theme\n" : "light theme\n");
-        for (const PreviewColorPair& pair : previewColorPairs(dark) + audioCardColorPairs(dark)) {
+        for (const PreviewColorPair& pair : previewColorPairs(dark) + audioCardColorPairs(dark) + albumColorPairs(dark)) { // 2.2 album
             const double ratio = ui::contrastRatio(pair.foreground, pair.background);
             const bool   ok    = ratio + 0.005 >= pair.minimum;
             failures += ok ? 0 : 1;
@@ -1098,5 +1240,6 @@ int main(int argc, char* argv[])
     const int dragCard         = checkDragCardContrast(); // 2.2 drag-out
     if (g_layoutFailures)
         QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
-    return contrastFailures == 0 && dragCard == 0 && g_layoutFailures == 0 ? 0 : 1;
+    // 2.2 album: and every grid's size (g_layoutErrors)
+    return contrastFailures == 0 && dragCard == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
 }

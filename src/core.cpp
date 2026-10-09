@@ -1940,7 +1940,7 @@ int Core::send(const SendRequest& request)
     QVector<QVector<int>> units;
     QVector<int>          media;
     for (int i = 0; i < items.size(); ++i) {
-        if (request.album && isAlbumKind(items.at(i)))
+        if (request.album && albums::enabled() && isAlbumKind(items.at(i))) // 2.2 album: the feature switch
             media.append(i);
     }
     if (media.size() >= 2) {
@@ -2621,10 +2621,12 @@ void Core::composeUnit(int batch, int index)
         quint32 album = 0;
         while (album == 0)
             album = QRandomGenerator::global()->generate();
+        const QString own = ts3::ownUid(first.target.sch); // 2.2 album: our own albums group without waiting for the echo
         for (int i = 0; i < links.size(); ++i) {
             links[i].albumId    = album;
             links[i].albumIndex = i + 1;
             links[i].albumCount = links.size();
+            m_albums.note(links.at(i).serverUid, album, i + 1, links.size(), links.at(i).key(), own); // 2.2 album
             m_uploadExtra[ids.at(i)].link = links.at(i);
             // The sender's own copy knows its album too (the key doesn't change).
             auto e = m_entries.find(links.at(i).key());
@@ -3450,11 +3452,21 @@ bool Core::isOwnReturnCode(const QString& returnCode) const
     return m_returnCodes.contains(returnCode);
 }
 
-void Core::onTextMessage(uint64 sch, const QString& message)
+void Core::onTextMessage(uint64 sch, const QString& message, const QString& senderUid)
 {
     Q_UNUSED(sch);
-    for (const MediaLink& link : MediaLink::findInMessage(message))
+    for (const MediaLink& link : MediaLink::findInMessage(message)) {
         ensure(link);
+        // 2.2 album: the first sender of an album owns it (ChatIntegration groups by it).
+        if (link.hasAlbum())
+            m_albums.note(link.serverUid, link.albumId, link.albumIndex, link.albumCount, link.key(), senderUid);
+    }
+}
+
+// 2.2 album
+QString Core::albumSender(const QString& serverUid, quint32 albumId, int index, const QString& key) const
+{
+    return m_albums.senderOf(serverUid, albumId, index, key);
 }
 
 void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCode, const QString& message, bool permissionError, const QString& extraMessage)

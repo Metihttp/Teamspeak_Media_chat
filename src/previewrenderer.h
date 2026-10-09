@@ -116,3 +116,27 @@ QVector<PreviewColorPair> previewColorPairs(bool dark);
 // rect (32 x 40 on a card), for the mini card that follows the pointer (dragpixmap.cpp).
 class QPainter;
 void drawFileTypeGlyph(QPainter& p, const QRectF& rect, const MediaEntry& entry, const PreviewStyle& style);
+
+// ---- 2.2 album grid (the geometry is albums::layout(), shared with the hit test) ------------------
+
+// One item of an album as the grid draws it.
+struct AlbumTile {
+    const MediaEntry* entry = nullptr; // nullptr: the item hasn't arrived yet (a placeholder tile)
+    MediaStill        still;           // requested at albumTileStillPixels(): it covers the tile
+    QImage            frame;           // the current GIF frame while it animates (device pixels), else null
+    bool              concealed = false; // a spoiler not revealed yet: a cover, never the sharp picture
+    bool              hovered   = false;
+    bool              pressed   = false;
+};
+
+// The size of an album of `items` in the chat: albums::layout() for the style's limits. Only the number
+// of items decides it, so the grid keeps its size while its pictures load.
+QSize  albumLogicalSize(int items, const PreviewStyle& style);
+// The whole grid. tiles: one per item of the album, in order; the items past the grid's last tile are
+// not drawn, and that tile says "+N".
+QImage renderAlbum(const QVector<AlbumTile>& tiles, const PreviewStyle& style, QSize* logicalSize);
+// Device pixels to ask Core::still() for: the picture scaled to cover a tile of that logical size
+// (from the link's dimensions), so a tile is never blurry and nothing larger is decoded.
+QSize  albumTileStillPixels(const MediaEntry& entry, const QSize& tile, qreal dpr);
+// The album's text colours with what they are drawn on (tools/render_gallery checks them).
+QVector<PreviewColorPair> albumColorPairs(bool dark);
