@@ -53,6 +53,7 @@
 #include "mediaviewer.h"
 #include "ownedtimer.h"
 #include "settings.h"
+#include "spoiler.h" // 2.2 spoiler
 #include "uiutil.h"
 #include "uploadtoast.h"
 // 2.2 compose
@@ -287,6 +288,9 @@ void ChatIntegration::start()
         if (m_viewer)
             m_viewer->pausePlayback();
     });
+    // 2.2 spoiler: each step of a reveal crossfade is redrawn like a frame.
+    m_reveals = new RevealFades(this);
+    connect(m_reveals, &RevealFades::changed, this, &ChatIntegration::onFrameChanged);
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -693,6 +697,10 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     style.hovered    = !m_hoverKey.isEmpty() && key == m_hoverKey && browser == m_hoverBrowser;
     style.pressed    = style.hovered && key == m_pressedKey && browser == m_pressBrowser && !m_seeking;
     style.revealOnly = !media && e->state == MediaState::Ready && m_core->isUnsafeToOpen(key);
+    // 2.2 spoiler: covered while hidden, then the crossfade after a reveal.
+    style.concealOpacity = spoilerCoverOpacity(key);
+    if (media && style.concealOpacity <= 0.0 && browser->isVisible())
+        m_core->noteShownOpen(key);
     const QSize stillPixels = stillPixelsFor(*e, style);
     QSize       size;
     QImage      img;
@@ -1159,6 +1167,8 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
     if (!e)
         return {};
     *area = hit.rect.toAlignedRect();
+    if (m_core->isSpoilerHidden(hit.key))
+        return spoilerToolTip(); // 2.2 spoiler: no name, size or state
 
     QString    detail;
     const bool audioCard = m_media && m_media->mode(hit.key) == InlineMediaController::Mode::Audio; // 2.2 audio
@@ -1252,6 +1262,10 @@ void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool 
     if (!e)
         return;
     const QString key = hit.key;
+    if (m_core->isSpoilerHidden(key)) { // 2.2 spoiler: the first click only reveals (no download, playback or viewer)
+        revealSpoiler(key);
+        return;
+    }
 
     // 2.2 audio: the card plays inline; its controls are always shown, so the zone is taken as is.
     if (m_media && m_media->mode(key) == InlineMediaController::Mode::Audio) {
@@ -1425,6 +1439,10 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     const MediaEntry* e = m_core->entry(key);
     if (!e)
         return;
+    if (m_core->isSpoilerHidden(key)) { // 2.2 spoiler: "Reveal spoiler", nothing that shows the content
+        showSpoilerMenu(browser, key, globalPos);
+        return;
+    }
     const bool ready = e->state == MediaState::Ready;
     const bool media = isMediaKind(e->kind);
     // Deleted from the server or in a password-protected channel: nothing here can get the file
@@ -1535,6 +1553,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             }
         });
     }
+    addHideSpoilerAction(menu, key); // 2.2 spoiler
 
     if (primary)
         menu->setDefaultAction(primary);
@@ -1741,11 +1760,14 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
 {
     const QPoint      pos   = viewportPos.toPoint();
     const Hit         hit   = previewAt(browser, pos);
-    const MediaEntry* entry = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
-    VideoZone         zone  = VideoZone::None;
+    const MediaEntry* entry   = hit.key.isEmpty() ? nullptr : m_core->entry(hit.key);
+    const bool        covered = !hit.key.isEmpty() && m_core->isSpoilerHidden(hit.key); // 2.2 spoiler: no controls, always a button
+    VideoZone         zone    = VideoZone::None;
     if (!hit.key.isEmpty()) {
         const InlineMediaController::Mode mode = m_media->mode(hit.key);
-        if (mode == InlineMediaController::Mode::Video)
+        if (covered)
+            zone = VideoZone::Body;
+        else if (mode == InlineMediaController::Mode::Video)
             zone = videoZoneAt(hit.rect.size().toSize(), viewportPos - hit.rect.topLeft(), !m_media->overlay(hit.key).playing);
         else if (mode == InlineMediaController::Mode::Audio && entry) // 2.2 audio
             zone = audioZoneAt(*entry, m_media->overlay(hit.key), styleFor(browser), hit.rect.size().toSize(), viewportPos - hit.rect.topLeft());
@@ -1769,7 +1791,7 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
     // they would stay over a video that moved away.
     if (moved || changed)
         m_media->hover(hit.key, zone);
-    updateCursor(browser, !hit.key.isEmpty(), pos, !entry || isPreviewActionable(*entry));
+    updateCursor(browser, !hit.key.isEmpty(), pos, !entry || covered || isPreviewActionable(*entry));
     if (zoneOut)
         *zoneOut = zone;
     return hit;
@@ -1817,9 +1839,11 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (!m_pressedKey.isEmpty() && (me->buttons() & Qt::LeftButton) && m_pressBrowser == browser
             && (me->pos() - m_pressPos).manhattanLength() >= QApplication::startDragDistance()) {
             const QString key   = m_pressedKey;
-            bool          drags = true;
+            bool          drags = !m_core->isSpoilerHidden(key); // 2.2 spoiler: a covered file is never dragged out
             const InlineMediaController::Mode pressMode = m_media->mode(key);
-            if (m_pressControlsVisible && pressMode == InlineMediaController::Mode::Video) {
+            if (!drags) {
+                // stays a click: the release reveals it
+            } else if (m_pressControlsVisible && pressMode == InlineMediaController::Mode::Video) {
                 const VideoZone zone = videoZoneAt(m_pressRect.size().toSize(), QPointF(m_pressPos) - m_pressRect.topLeft(), !m_media->overlay(key).playing);
                 drags                = zone == VideoZone::Body || zone == VideoZone::None;
             } else if (pressMode == InlineMediaController::Mode::Audio) { // 2.2 audio
@@ -1888,9 +1912,14 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             return true; // the context menu event follows
         if (me->button() != Qt::LeftButton)
             break;
-        const MediaEntry* e     = m_core->entry(hit.key);
-        const bool        video = e && e->kind == MediaKind::Video;
-        const bool        audio = e && m_media && m_media->mode(hit.key) == InlineMediaController::Mode::Audio; // 2.2 audio
+        const MediaEntry* e = m_core->entry(hit.key);
+        // 2.2 spoiler: a covered video is pressed like a picture (no controls), and the second click of
+        // a double click that revealed a spoiler doesn't play or open it as well.
+        const bool hidden = m_core->isSpoilerHidden(hit.key);
+        const bool video  = e && e->kind == MediaKind::Video && !hidden;
+        const bool audio  = e && !hidden && m_media && m_media->mode(hit.key) == InlineMediaController::Mode::Audio; // 2.2 audio
+        if (event->type() == QEvent::MouseButtonDblClick && m_reveals && m_reveals->revealedWithin(hit.key, QApplication::doubleClickInterval()))
+            return true;
         if (event->type() == QEvent::MouseButtonDblClick && !video && !audio)
             return true; // the first click already opened it
         m_pressedKey           = hit.key;

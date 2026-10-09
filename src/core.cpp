@@ -621,6 +621,8 @@ void Core::ensure(const MediaLink& rawLink)
 
     const MediaLink link = sanitized(rawLink);
     const QString   key  = link.key();
+    // 2.2 spoiler: one link with sp=1 makes the file a spoiler for the session (key() ignores sp).
+    const bool newSpoiler = m_spoilers.noteSighting(key, link.spoiler && spoiler::appliesTo(kindForFileName(link.fileName)));
     if (m_entries.contains(key)) {
         // Seen while inline previews were off, or its files left the cache (cleared / evicted) while
         // it is still in a chat: start what would start for a new link.
@@ -630,6 +632,8 @@ void Core::ensure(const MediaLink& rawLink)
             if (pending || rearm)
                 startAutoDownloads(key);
         }
+        if (newSpoiler)
+            emit entryChanged(key); // 2.2 spoiler: its previews get the cover
         return;
     }
 
@@ -714,6 +718,13 @@ void Core::startAutoDownloads(const QString& key)
             if (!wantPreview)
                 touch(e); // the card's status line changes
         }
+    }
+
+    // 2.2 spoiler: a hidden spoiler loads only what its cover is made from (the preview); the file follows
+    // the same rules once it is revealed (setSpoilerRevealed).
+    if (wantMain && isSpoilerHidden(key)) {
+        wantMain = false;
+        m_spoilers.holdDownload(key);
     }
 
     // Previews first: they are what the chat shows until the real file is there.
@@ -1633,6 +1644,45 @@ void Core::setInUse(const QString& key, bool inUse)
     if (const MediaEntry* e = entry(key)) {
         if (e->state == MediaState::Ready)
             refreshFileTime(e->localPath);
+    }
+}
+
+// ---- 2.2 spoiler ---------------------------------------------------------------------------------
+
+bool Core::isSpoilerHidden(const QString& key) const
+{
+    const MediaEntry* e = entry(key);
+    return e && spoiler::appliesTo(e->kind) && m_spoilers.isHidden(key, Settings::instance().revealSpoilers);
+}
+
+bool Core::isSpoiler(const QString& key) const
+{
+    const MediaEntry* e = entry(key);
+    return e && spoiler::appliesTo(e->kind) && m_spoilers.isSpoiler(key);
+}
+
+void Core::setSpoilerRevealed(const QString& key, bool revealed)
+{
+    if (!m_spoilers.setRevealed(key, revealed))
+        return;
+    // An automatic download that waited for the reveal starts now (the preview shows its progress).
+    if (revealed && m_spoilers.releaseDownload(key) && Settings::instance().inlinePreviews)
+        startAutoDownloads(key);
+    emit entryChanged(key);
+}
+
+void Core::noteShownOpen(const QString& key)
+{
+    m_spoilers.noteShownOpen(key);
+}
+
+void Core::spoilerSettingChanged()
+{
+    const QStringList keys = m_spoilers.spoilers();
+    for (const QString& key : keys) {
+        if (!isSpoilerHidden(key) && m_spoilers.releaseDownload(key) && Settings::instance().inlinePreviews)
+            startAutoDownloads(key); // shown without blurring now: loads like any other picture
+        emit entryChanged(key);
     }
 }
 

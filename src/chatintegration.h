@@ -15,12 +15,14 @@ class ComposeDialog; // 2.2 compose
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
+class QMenu;
 class QMimeData;
 class QTabBar;
 class QTextBrowser;
 class QTextDocument;
 class QTextEdit;
 class QTimer;
+class RevealFades;
 class UploadToast;
 
 // Hooks into the TeamSpeak chat widgets (QTextBrowser based):
@@ -145,6 +147,14 @@ class ChatIntegration : public QObject
     bool         testShowsRawChat(const MediaLink& link) const;
     void         requestSnapshot(QTextBrowser* browser, const QString& reason);
 
+    // 2.2 spoiler (chatintegration_spoiler.cpp): a click on a covered preview only reveals it (with a
+    // short crossfade); its menu offers "Reveal spoiler" and leaves out what would show the content.
+    void    revealSpoiler(const QString& key);
+    void    showSpoilerMenu(QTextBrowser* browser, const QString& key, const QPoint& globalPos);
+    void    addHideSpoilerAction(QMenu* menu, const QString& key); // revealed spoilers: cover it again
+    qreal   spoilerCoverOpacity(const QString& key) const;          // PreviewStyle::concealOpacity
+    QString spoilerToolTip() const;
+
     // Why nothing can be sent from a chat right now (checked before a picker, paste prompt or drop).
     enum class SendBlock { None, NoRecipient, NotConnected, Password };
 
@@ -201,4 +211,5 @@ class ChatIntegration : public QObject
     SendBlock              m_dropBlock = SendBlock::None; // checked when the drag entered a widget
     ChatTarget             m_dropTarget;
     bool                   m_dropNow = false;          // 2.2 compose: the overlay says the drop sends right away
+    RevealFades*           m_reveals = nullptr;        // 2.2 spoiler: reveal crossfades (a child: stops with us)
 };

@@ -31,6 +31,7 @@ struct Settings {
     int  previewMaxHeight    = 300;
     // 2.2 data saver: no automatic downloads of full files (previews still load); the limits above are kept.
     bool dataSaver = false;
+    bool revealSpoilers      = false; // 2.2 spoiler: "Show spoilers without blurring" (no covers at all)
 
     // Playback
     int  videoVolume      = 80; // percent

@@ -112,6 +112,7 @@ void Settings::load(const QString& file)
     previewMaxWidth     = readInt(s, "previewMaxWidth", d.previewMaxWidth, previewMaxWidthRange);
     previewMaxHeight    = readInt(s, "previewMaxHeight", d.previewMaxHeight, previewMaxHeightRange);
     dataSaver           = readBool(s, "dataSaver", d.dataSaver); // 2.2 data saver
+    revealSpoilers      = readBool(s, "revealSpoilers", d.revealSpoilers); // 2.2 spoiler
 
     // Playback
     videoVolume      = readInt(s, "videoVolume", d.videoVolume, videoVolumeRange);
@@ -159,6 +160,7 @@ void Settings::save(const QString& file) const
     s.setValue(key("previewMaxWidth"), previewMaxWidth);
     s.setValue(key("previewMaxHeight"), previewMaxHeight);
     s.setValue(key("dataSaver"), dataSaver); // 2.2 data saver
+    s.setValue(key("revealSpoilers"), revealSpoilers); // 2.2 spoiler
 
     s.setValue(key("videoVolume"), videoVolume);
     s.setValue(key("videosStartMuted"), videosStartMuted);

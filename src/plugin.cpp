@@ -28,6 +28,7 @@
 #include "previewrenderer.h"
 #include "settings.h"
 #include "settingsdialog.h"
+#include "spoilersection.h" // 2.2 spoiler
 #include "ts3api.h"
 #include "update/updateinstaller.h" // 2.2 updater
 #include "update/updater.h"         // 2.2 updater
@@ -100,10 +101,12 @@ void showSettings(QWidget* parent)
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
+    dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_core) {
             g_core->applyCacheLimit();    // a lower limit counts now, not after the next download
             g_core->onDataSaverChanged(); // 2.2 data saver: may stop or release automatic downloads
+            g_core->spoilerSettingChanged(); // 2.2 spoiler: an open viewer follows "without blurring" too
         }
         if (g_chat)
             g_chat->refreshAll();
