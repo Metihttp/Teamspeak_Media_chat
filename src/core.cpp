@@ -2179,8 +2179,8 @@ void Core::finishUpload(int id)
 
     // The messages of one send appear in its order: a file that finishes before an earlier one (or
     // before the rest of its album) waits; pumpPostUnits posts it when its turn has come.
-    const bool held = waitsForEarlierPosts(job);
-    setUploadState(job, UploadState::Posting, held ? heldText(job) : i18n::t("Posting to chat…"), held);
+    const QString held = heldText(job);
+    setUploadState(job, UploadState::Posting, held.isEmpty() ? i18n::t("Posting to chat…") : held, !held.isEmpty());
 }
 
 namespace {
@@ -2192,42 +2192,30 @@ bool isPreparing(UploadState state)
 
 } // namespace
 
-// True while an earlier part of the same send (an earlier file, or the rest of its album) may still
-// post first.
-bool Core::waitsForEarlierPosts(const UploadJob& job) const
-{
-    const auto batch = m_batches.constFind(job.batch);
-    if (batch == m_batches.constEnd())
-        return false;
-    for (const PostUnit& unit : batch->units) {
-        const bool mine = unit.jobs.contains(job.id);
-        if (!unit.composed) {
-            for (int id : unit.jobs) {
-                const UploadJob* other = upload(id);
-                if (id != job.id && other && isPreparing(other->state))
-                    return true;
-            }
-            if (!mine)
-                return true; // an earlier unit is still to be posted
-        }
-        if (mine)
-            return false;
-    }
-    return false;
-}
-
+// What an uploaded file's message waits for: an earlier part of its send that still has to be posted,
+// or the rest of its album (an upload still preparing, compressing or uploading). Empty when its turn
+// has come. The one rule for holding messages: pumpPostUnits and the toast texts follow it.
 QString Core::heldText(const UploadJob& job) const
 {
     const auto batch = m_batches.constFind(job.batch);
-    if (batch != m_batches.constEnd()) {
-        for (const PostUnit& unit : batch->units) {
-            if (unit.jobs.contains(job.id))
-                return unit.album ? i18n::t("Waiting for the rest of the album…") : i18n::t("Waiting for earlier files…");
+    if (batch == m_batches.constEnd())
+        return {};
+    for (const PostUnit& unit : batch->units) {
+        if (!unit.jobs.contains(job.id)) {
             if (!unit.composed)
-                break; // an earlier file comes first
+                return i18n::t("Waiting for earlier files…");
+            continue;
         }
+        if (unit.composed)
+            return {};
+        for (int id : unit.jobs) {
+            const UploadJob* other = upload(id);
+            if (id != job.id && other && isPreparing(other->state))
+                return i18n::t("Waiting for the rest of the album…");
+        }
+        return {};
     }
-    return i18n::t("Waiting for earlier files…");
+    return {};
 }
 
 // Composes the units whose turn has come: in each batch, in order, every unit whose uploads are all
@@ -2258,10 +2246,12 @@ void Core::pumpPostUnits()
                 continue;
             }
             // Held: say what it waits for (only when that changed: every update runs the queue again).
-            const QString text = !earlierPending && unit.album ? i18n::t("Waiting for the rest of the album…") : i18n::t("Waiting for earlier files…");
             for (int id : unit.jobs) {
                 auto job = m_uploads.find(id);
-                if (job != m_uploads.end() && job->state == UploadState::Posting && job->waiting && job->message != text)
+                if (job == m_uploads.end() || job->state != UploadState::Posting || !job->waiting)
+                    continue;
+                const QString text = heldText(job.value());
+                if (!text.isEmpty() && job->message != text)
                     setUploadState(job.value(), UploadState::Posting, text, true);
             }
             earlierPending = true;
@@ -2281,15 +2271,19 @@ void Core::composeUnit(int batch, int index)
     const QString    caption = b->captionDone ? QString() : b->caption;
     QVector<int>     ids;
     QList<MediaLink> links;
+    QStringList      files; // remote paths, for the log
     for (int id : qAsConst(unit.jobs)) {
         const UploadJob* job = upload(id);
         if (job && job->uploaded && job->state == UploadState::Posting && m_uploadExtra.contains(id)) {
             ids.append(id);
             links.append(m_uploadExtra.value(id).link);
+            files.append(joinRemote(job->remoteDir, job->remoteName));
         }
     }
     if (ids.isEmpty())
         return; // nothing of it reached the server: the caption waits for the next unit
+    // Taken now: touch() below emits signals, and nothing may be assumed about the jobs afterwards.
+    const UploadJob first = *upload(ids.first());
 
     // An album is numbered over what was uploaded; a single survivor is a normal file.
     if (unit.album && ids.size() >= 2) {
@@ -2323,7 +2317,6 @@ void Core::composeUnit(int batch, int index)
             info->captionDone = true;
     }
 
-    const UploadJob first = *upload(ids.first());
     for (const ComposedMessage& message : composeChatMessagesDetailed(links, options)) {
         PostItem post;
         post.sch       = first.target.sch;
@@ -2333,8 +2326,7 @@ void Core::composeUnit(int batch, int index)
         for (int link : message.links)
             post.jobs.append(ids.at(link));
         if (!message.dropped.isEmpty() || message.tooLong) {
-            const UploadJob* job = post.jobs.isEmpty() ? nullptr : upload(post.jobs.first());
-            const QString    file = job ? joinRemote(job->remoteDir, job->remoteName) : QString();
+            const QString file = message.links.isEmpty() ? QString() : files.at(message.links.first());
             if (!message.dropped.isEmpty())
                 ts3::log(LogLevel_WARNING, post.sch, "Message for %1 dropped %2 to fit TeamSpeak's message limit",
                          {ts3::file(file), ts3::pub(message.dropped.join(QStringLiteral(", ")))});

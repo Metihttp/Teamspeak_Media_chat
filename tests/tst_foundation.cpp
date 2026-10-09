@@ -12,6 +12,7 @@
 #include "floodgovernor.h"
 #include "hashing.h"
 #include "logtext.h"
+#include "medialink.h"
 #include "pluginlog.h"
 #include "testmain.h"
 
@@ -319,9 +320,18 @@ void TestFoundation::sha256FileCancelAndErrors()
 void TestFoundation::digestTexts()
 {
     const QByteArray empty = hashing::sha256(QByteArray());
-    QCOMPARE(hashing::toBase64Url(empty), QStringLiteral("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"));
+    QCOMPARE(hashing::toHex(empty), QStringLiteral("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"));
     QCOMPARE(hashing::toHex(hashing::sha256("abc")), QStringLiteral("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"));
-    QCOMPARE(hashing::toBase64Url(empty.left(16)), QStringLiteral("47DEQpj8HBSa-_TImW-5JA"));
+    // What a link carries for it (MediaLink encodes the raw bytes).
+    MediaLink link;
+    link.serverUid   = QStringLiteral("uid");
+    link.channelId   = 1;
+    link.fileName    = QStringLiteral("a_3f9a1c2e.png");
+    link.protocol    = MediaLink::kProtocol;
+    link.sha256      = empty;
+    link.previewFile = QStringLiteral("/previews/3f9a1c2e.jpg");
+    link.previewSha  = empty.left(16);
+    QVERIFY(link.toUrl().endsWith(QStringLiteral("&sha=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU&ph=47DEQpj8HBSa-_TImW-5JA")));
 }
 
 // ---- FloodGovernor -----------------------------------------------------------------------------

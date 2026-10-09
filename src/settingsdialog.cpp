@@ -416,7 +416,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     // Only fills in the form: nothing is saved until OK or Apply, and Cancel undoes it. Sections keep
     // what Restore defaults must not touch (SettingsSection::restoreDefaults).
     connect(restore, &QPushButton::clicked, this, [this] {
-        load(Settings());
+        load(Settings(), false);
         m_loading = true;
         for (SettingsSection* section : qAsConst(m_sections))
             section->restoreDefaults(Settings());
@@ -580,7 +580,7 @@ void SettingsDialog::updateGifHint()
         QTimer::singleShot(0, this, [this] { fitToContents(); }); // once the layouts have taken in the new row
 }
 
-void SettingsDialog::load(const Settings& s)
+void SettingsDialog::load(const Settings& s, bool sections)
 {
     m_loading = true;
     m_inlinePreviews->setChecked(s.inlinePreviews);
@@ -611,8 +611,10 @@ void SettingsDialog::load(const Settings& s)
     m_downloadUrl->setText(s.pluginDownloadUrl == QLatin1String(Settings::defaultDownloadUrl) ? QString() : s.pluginDownloadUrl);
     m_downloadUrl->setCursorPosition(0); // the start of a long link matters most
 
-    for (SettingsSection* section : qAsConst(m_sections))
-        section->load(s);
+    if (sections) {
+        for (SettingsSection* section : qAsConst(m_sections))
+            section->load(s);
+    }
     m_loading = false;
 
     updateEnabled();

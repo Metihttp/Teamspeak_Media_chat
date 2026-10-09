@@ -24,7 +24,8 @@ QByteArray sha256File(const QString& path, const std::atomic<bool>* cancel = nul
 
 QByteArray sha256(const QByteArray& data);
 
-QString toHex(const QByteArray& digest);       // upper case, like Windows' Get-FileHash
-QString toBase64Url(const QByteArray& digest); // without padding, as in links
+// Upper case, like Windows' Get-FileHash (logs, "Copy details"). Links take the raw bytes
+// (MediaLink::sha256 / previewSha) and encode them themselves.
+QString toHex(const QByteArray& digest);
 
 } // namespace hashing

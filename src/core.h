@@ -341,8 +341,7 @@ class Core : public QObject
     void    resendWithNewName(int id, anyID failedTransfer);
     bool    renameUpload(UploadJob& job);
     void    finishUpload(int id);
-    bool    waitsForEarlierPosts(const UploadJob& job) const;
-    QString heldText(const UploadJob& job) const; // why an uploaded file's message waits
+    QString heldText(const UploadJob& job) const; // why an uploaded file's message waits; empty: its turn
     void    pumpPostUnits();                      // composes the units whose turn has come
     void    composeUnit(int batch, int index);
     void    pumpPosts();                          // sends queued messages as their governors allow

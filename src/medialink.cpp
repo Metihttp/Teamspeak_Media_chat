@@ -32,6 +32,14 @@ QString encode(const QString& value)
     return QString::fromLatin1(QUrl::toPercentEncoding(value));
 }
 
+// LRM, RLM, ALM; LRE, RLE, PDF, LRO, RLO; LRI, RLI, FSI, PDI. (ZWNJ/ZWJ stay: some scripts need them.)
+// Removed from file names on display and from captions.
+bool isBidiControl(QChar ch)
+{
+    const ushort u = ch.unicode();
+    return u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
+}
+
 // ---- 2.2 metadata encodings ----------------------------------------------------------------------
 
 QString toBase64Url(const QByteArray& bytes)
@@ -716,14 +724,12 @@ QString sanitizeCaption(const QString& typed)
     out.reserve(qMin(typed.size(), kCaptionMaxChars + 1));
     bool space = false;
     for (int i = 0; i < typed.size(); ++i) {
-        const QChar  ch = typed.at(i);
-        const ushort u  = ch.unicode();
-        const bool   bidiControl = u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
+        const QChar ch = typed.at(i);
         if (ch.isSpace()) { // also tabs, line breaks and line or paragraph separators
             space = !out.isEmpty();
             continue;
         }
-        if (bidiControl || ch.category() == QChar::Other_Control)
+        if (isBidiControl(ch) || ch.category() == QChar::Other_Control)
             continue;
         if (ch.isSurrogate()) {
             // Whole pairs only.
@@ -873,11 +879,8 @@ QString displayFileName(const QString& name)
     QString out;
     out.reserve(name.size());
     for (const QChar ch : name) {
-        const ushort u = ch.unicode();
-        // LRM, RLM, ALM; LRE, RLE, PDF, LRO, RLO; LRI, RLI, FSI, PDI. (ZWNJ/ZWJ stay: some scripts need them.)
-        const bool bidiControl = u == 0x200E || u == 0x200F || u == 0x061C || (u >= 0x202A && u <= 0x202E) || (u >= 0x2066 && u <= 0x2069);
         const QChar::Category category = ch.category();
-        if (bidiControl || category == QChar::Other_Control || category == QChar::Separator_Line || category == QChar::Separator_Paragraph)
+        if (isBidiControl(ch) || category == QChar::Other_Control || category == QChar::Separator_Line || category == QChar::Separator_Paragraph)
             continue;
         out += ch;
     }

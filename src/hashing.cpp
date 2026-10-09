@@ -55,9 +55,4 @@ QString toHex(const QByteArray& digest)
     return QString::fromLatin1(digest.toHex()).toUpper();
 }
 
-QString toBase64Url(const QByteArray& digest)
-{
-    return QString::fromLatin1(digest.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
-}
-
 } // namespace hashing

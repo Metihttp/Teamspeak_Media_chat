@@ -42,7 +42,7 @@ class SettingsDialog : public QDialog
     void changeEvent(QEvent* event) override;
 
   private:
-    void load(const Settings& settings); // fills the form; Apply stays as it is
+    void load(const Settings& settings, bool sections = true); // fills the form; Apply stays as it is
     bool apply();                        // saves what changed; false (and nothing saved) if an input is invalid
     void setDirty(bool dirty);
     void updateEnabled();
