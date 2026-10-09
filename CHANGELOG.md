@@ -44,6 +44,11 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - File names are shown without the random part added on upload, and pasted pictures as *Pasted image*.
 - The note for people without the plugin is easier to read on TeamSpeak's default white chat.
 
+### Fixed
+
+- TeamSpeak could crash while closing when it was closed soon after starting or within about 30 seconds of sending a file (also in 2.0.x).
+- Plugin messages in the chat showed `[noparse]` tags around their text.
+
 ## [2.0.7] - 2026-10-09
 
 ### Changed

@@ -12,9 +12,12 @@ bool chatDark = false; // setChatDark: the chat the lines are printed into has a
 
 QString escapeBBCode(QString text)
 {
-    // [noparse] is supported by the TeamSpeak chat and keeps user supplied names from being interpreted.
-    text.replace(QStringLiteral("[/noparse]"), QStringLiteral("[ /noparse]"));
-    return QStringLiteral("[noparse]") + text + QStringLiteral("[/noparse]");
+    // TeamSpeak 3.6 drops [noparse] tags but still parses their content (and printMessage shows them
+    // literally). A backslash before a bracket makes it literal in chat messages and printMessage alike,
+    // so user supplied names can't turn into links or formatting.
+    text.replace(QLatin1Char('['), QLatin1String("\\["));
+    text.replace(QLatin1Char(']'), QLatin1String("\\]"));
+    return text;
 }
 } // namespace
 
