@@ -50,6 +50,15 @@ struct Settings {
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this
 
+    // 2.2 voice: voice messages
+    static constexpr int maxVoiceMicrophoneLength = 512;
+    QString voiceMicrophone;               // Windows endpoint id of the microphone; empty = the one TeamSpeak uses
+    bool    voiceMuteTeamSpeakMic = true;  // mute the TeamSpeak microphone while recording (always given back)
+    bool    voiceReview           = true;  // the hotkey's second press stops for a listen; off: it sends
+    bool    voiceSounds           = true;  // a short sound when recording starts and stops
+    // A stored microphone id as load() keeps it: printable ASCII up to maxVoiceMicrophoneLength, else empty.
+    static QString validVoiceMicrophone(const QString& value);
+
     static Settings& instance();
     void             load();
     void             save() const;

@@ -13,6 +13,7 @@
 
 #include "i18n.h"
 #include "previewpaint.h" // 2.2 audio
+#include "voicecard.h" // 2.2 voice
 #include "uiutil.h"
 
 namespace {
@@ -1170,6 +1171,8 @@ QSize previewLogicalSize(const MediaEntry& entry, const PreviewStyle& style)
         return mediaLayout(natural.isEmpty() ? QSizeF(16, 9) : natural, style, true).box;
     if (isPreviewableImage(entry.kind) && !natural.isEmpty())
         return mediaLayout(natural, style, false).box;
+    if (isVoiceCard(entry)) // 2.2 voice: the 56 px voice card in every state
+        return voiceCardSize(style);
     return cardSize(style);
 }
 
@@ -1189,6 +1192,12 @@ QImage renderPreview(const MediaEntry& entry, const MediaStill& still, const Pre
             return renderPicture(entry, still.image, still.source, false, mediaLayout(fromStill, style, false), style, logicalSize);
         }
         return renderCard(entry, style, entry.state == MediaState::Ready, logicalSize);
+    }
+    if (isVoiceCard(entry)) { // 2.2 voice: no inline player here (no Media Foundation): it opens in the default app
+        PlaybackOverlay o = staticOverlay(entry);
+        o.durationMs      = entry.link.durationMs;
+        o.externalOnly    = true;
+        return renderVoiceCard(entry, o, style, logicalSize);
     }
     return renderCard(entry, style, false, logicalSize);
 }

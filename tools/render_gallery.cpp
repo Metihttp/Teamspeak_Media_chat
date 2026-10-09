@@ -22,6 +22,7 @@
 
 #include "audiocard.h"
 #include "blurhash.h"
+#include "voicecard.h" // 2.2 voice
 #include "previewrenderer.h"
 #include "uiutil.h"
 
@@ -725,6 +726,110 @@ QList<Sample> buildSamples()
         o.positionMs      = 100000;
         return o;
     }(), [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
+
+    // ---- 2.2 voice messages ------------------------------------------------------------------
+    // Drawn through renderAudioCard (as the chat does); every state keeps the 56 px voice card's box.
+    const MediaEntry voiceIdle = [] {
+        MediaEntry e      = makeEntry(QStringLiteral("voice_message_3f9a1c2e.m4a"), 146320, 0, 0, 12040, MediaState::Idle);
+        e.link.protocol   = MediaLink::kProtocol;
+        e.link.voice      = true;
+        // A spoken sentence: syllables, two pauses (64 levels, as the recorder sends them).
+        const int shape[64] = {2, 6, 11, 14, 12, 9, 13, 15, 10, 6, 3, 1, 0, 0, 4, 9, 12, 14, 13, 11, 8, 12, 14, 10, 7, 4, 2, 1, 1, 0, 0, 3,
+                               8, 13, 15, 14, 9, 6, 10, 13, 12, 8, 5, 9, 12, 11, 7, 4, 2, 0, 0, 5, 10, 14, 15, 12, 8, 11, 9, 6, 4, 2, 1, 0};
+        for (const int level : shape)
+            e.link.waveform.append(static_cast<char>(level));
+        return e;
+    }();
+    MediaEntry voiceReady = voiceIdle;
+    voiceReady.state      = MediaState::Ready;
+    voiceReady.progress   = 1.0;
+    auto voice = [&add](const QString& name, const QString& label, const MediaEntry& e, const PlaybackOverlay& o,
+                        std::function<PreviewStyle(const PreviewStyle&)> change = nullptr, int maxWidth = 400) {
+        add(name, label, [e, o, change](const PreviewStyle& st, QSize* ls) {
+            const PreviewStyle s = change ? change(st) : st;
+            QSize              logical;
+            const QImage       img = renderAudioCard(e, o, s, &logical);
+            if (logical != previewLogicalSize(e, s) || logical != voiceCardSize(s)) {
+                QTextStream(stderr) << "error: voice card " << e.link.fileName << " is " << logical.width() << "x" << logical.height()
+                                    << ", the chat reserves " << previewLogicalSize(e, s).width() << "x" << previewLogicalSize(e, s).height() << "\n";
+                ++g_layoutFailures;
+            }
+            if (ls)
+                *ls = logical;
+            return img;
+        }, maxWidth);
+    };
+    voice(QStringLiteral("voice_idle"), QStringLiteral("voice message, not downloaded yet"), voiceIdle, audioOverlay(voiceIdle));
+    voice(QStringLiteral("voice_ready"), QStringLiteral("voice message 0:12, ready"), voiceReady, audioOverlay(voiceReady));
+    voice(QStringLiteral("voice_ready_hover"), QStringLiteral("voice message, hover on play"), voiceReady, [&] {
+        PlaybackOverlay o = audioOverlay(voiceReady);
+        o.hover           = VideoZone::PlayPause;
+        return o;
+    }(), [](const PreviewStyle& st) { return hovered(st); });
+    {
+        const MediaEntry e = downloading(voiceIdle, 0.45);
+        PlaybackOverlay  o = audioOverlay(e);
+        o.busy             = true;
+        o.busyProgress     = 0.45;
+        voice(QStringLiteral("voice_downloading"), QStringLiteral("voice message downloading 45% (pressed play)"), e, o);
+        voice(QStringLiteral("voice_auto_downloading"), QStringLiteral("voice message downloading by itself"), e, audioOverlay(e));
+        PlaybackOverlay opening = audioOverlay(voiceReady);
+        opening.busy            = true;
+        voice(QStringLiteral("voice_opening"), QStringLiteral("voice message opening"), voiceReady, opening);
+    }
+    {
+        PlaybackOverlay o = audioOverlay(voiceReady);
+        o.playing         = true;
+        o.positionMs      = 4214; // 35 %
+        voice(QStringLiteral("voice_playing_35"), QStringLiteral("voice message playing 35%"), voiceReady, o);
+        o.hover   = VideoZone::PlayPause;
+        o.pressed = VideoZone::PlayPause;
+        voice(QStringLiteral("voice_pause_pressed"), QStringLiteral("voice message, pause pressed"), voiceReady, o, [](const PreviewStyle& st) { return hovered(st, true); });
+        PlaybackOverlay paused = audioOverlay(voiceReady);
+        paused.positionMs      = 7800;
+        paused.hover           = VideoZone::Seek;
+        voice(QStringLiteral("voice_paused_hover_wave"), QStringLiteral("voice message paused at 0:07, hover on the waveform"), voiceReady, paused,
+              [](const PreviewStyle& st) { return hovered(st); });
+        PlaybackOverlay ended = audioOverlay(voiceReady);
+        ended.ended           = true;
+        ended.positionMs      = voiceReady.link.durationMs;
+        voice(QStringLiteral("voice_ended"), QStringLiteral("voice message played to the end (back at rest)"), voiceReady, ended);
+        PlaybackOverlay external = audioOverlay(voiceReady);
+        external.externalOnly    = true;
+        voice(QStringLiteral("voice_external"), QStringLiteral("voice message can't play here (opens externally)"), voiceReady, external);
+    }
+    {
+        MediaEntry e = voiceReady;
+        e.link.waveform.clear();
+        PlaybackOverlay o = audioOverlay(e);
+        o.playing         = true;
+        o.positionMs      = 5000;
+        voice(QStringLiteral("voice_no_waveform"), QStringLiteral("voice message without a waveform, playing"), e, o);
+    }
+    voice(QStringLiteral("voice_failed_retry"), QStringLiteral("voice message failed: not connected (retry)"), failed(voiceIdle, MediaError::NotConnected), audioOverlay(voiceIdle));
+    voice(QStringLiteral("voice_failed_notfound"), QStringLiteral("voice message failed: deleted (no retry)"), failed(voiceIdle, MediaError::NotFound), audioOverlay(voiceIdle));
+    {
+        MediaEntry shortOne      = voiceReady;
+        shortOne.link.durationMs = 1100;
+        voice(QStringLiteral("voice_0_01"), QStringLiteral("voice message 0:01"), shortOne, audioOverlay(shortOne));
+        MediaEntry longest      = voiceReady;
+        longest.link.durationMs = 300000;
+        PlaybackOverlay o       = audioOverlay(longest);
+        o.positionMs            = 245000;
+        voice(QStringLiteral("voice_5_00_paused"), QStringLiteral("voice message 5:00, paused at 4:05"), longest, o);
+        MediaEntry unknown      = voiceReady;
+        unknown.link.durationMs = 0;
+        voice(QStringLiteral("voice_no_duration"), QStringLiteral("voice message without a length"), unknown, audioOverlay(unknown));
+    }
+    {
+        PlaybackOverlay o = audioOverlay(voiceReady);
+        o.playing         = true;
+        o.positionMs      = 6000;
+        voice(QStringLiteral("voice_narrow_200"), QStringLiteral("voice message, narrow chat (200 px)"), voiceReady, o, nullptr, 200);
+        voice(QStringLiteral("voice_narrow_160"), QStringLiteral("voice message, smallest (160 px, no time)"), voiceReady, o, nullptr, 160);
+        voice(QStringLiteral("voice_large_font"), QStringLiteral("voice message playing, 11 pt chat font"), voiceReady, o,
+              [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
+    }
     return list;
 }
 
@@ -736,7 +841,7 @@ int contrastReport(const QString& outDir)
     int         failures = 0;
     for (const bool dark : {false, true}) {
         out << (dark ? "dark theme\n" : "light theme\n");
-        for (const PreviewColorPair& pair : previewColorPairs(dark) + audioCardColorPairs(dark)) {
+        for (const PreviewColorPair& pair : previewColorPairs(dark) + audioCardColorPairs(dark) + voiceCardColorPairs(dark)) { // 2.2 voice
             const double ratio = ui::contrastRatio(pair.foreground, pair.background);
             const bool   ok    = ratio + 0.005 >= pair.minimum;
             failures += ok ? 0 : 1;

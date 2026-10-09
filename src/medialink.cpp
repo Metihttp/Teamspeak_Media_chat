@@ -1,6 +1,7 @@
 #include "medialink.h"
 
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
@@ -892,6 +893,10 @@ QString displayNameFor(const MediaLink& link)
 {
     if (link.protocol <= 0)
         return displayFileName(link.fileName);
+    if (link.voice && link.isTsMedia() && kindForFileName(link.fileName) == MediaKind::Audio) { // 2.2 voice: from the vm flag
+        const QString ext = QFileInfo(link.fileName).suffix().toLower();
+        return i18n::t("Voice message") + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
+    }
 
     // Core::makeRemoteName: <base>_<8 lower-case hex digits>[.<ext>]. A leading dot starts a name.
     static const QRegularExpression randomPart(QStringLiteral("_[0-9a-f]{8}$"));
@@ -907,6 +912,18 @@ QString displayNameFor(const MediaLink& link)
             base = stripped;
     }
     return displayFileName(base + ext);
+}
+
+// 2.2 voice
+QString voiceSaveName(const MediaLink& link)
+{
+    QString ext = QFileInfo(link.fileName).suffix().toLower();
+    if (ext.isEmpty() || ext.size() > 8)
+        ext = QStringLiteral("m4a");
+    if (link.dateTime <= 0)
+        return i18n::t("Voice message") + QLatin1Char('.') + ext;
+    const QDateTime when = QDateTime::fromSecsSinceEpoch(link.dateTime).toLocalTime();
+    return i18n::t("Voice message %1").arg(when.toString(QStringLiteral("yyyy-MM-dd HH-mm"))) + QLatin1Char('.') + ext;
 }
 
 QString formatSize(quint64 bytes)

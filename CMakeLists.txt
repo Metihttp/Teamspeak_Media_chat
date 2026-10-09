@@ -66,6 +66,20 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    # 2.2 voice
+    src/audio/capture.h
+    src/audio/waveform.cpp      src/audio/waveform.h
+    src/audio/capturedevice.cpp src/audio/capturedevice.h
+    src/audio/wasapicapture.cpp src/audio/wasapicapture.h
+    src/audio/fakecapture.cpp   src/audio/fakecapture.h
+    src/audio/aacwriter.cpp     src/audio/aacwriter.h
+    src/audio/voicerecorder.cpp src/audio/voicerecorder.h
+    src/audio/micguard.cpp      src/audio/micguard.h
+    src/audio/cues.cpp          src/audio/cues.h
+    src/voicecard.cpp           src/voicecard.h
+    src/voicepanel.cpp          src/voicepanel.h
+    src/voicecontroller.cpp     src/voicecontroller.h
+    src/voicesection.cpp        src/voicesection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -112,6 +126,12 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlog.cpp
         src/hashing.cpp
         src/floodgovernor.cpp
+        # 2.2 voice: waveform, MicGuard (fake TeamSpeak), microphone mapping, cues
+        tests/tst_voice.cpp
+        src/audio/waveform.cpp
+        src/audio/micguard.cpp
+        src/audio/capturedevice.cpp
+        src/audio/cues.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -141,6 +161,7 @@ if(TSMEDIA_BUILD_TESTS)
         src/i18n.cpp
         src/uiutil.cpp
         src/settings.cpp # ts3::dataDir() is stubbed in the test
+        src/voicecard.cpp src/audio/waveform.cpp # 2.2 voice: audiocard.cpp hands voice messages over
     )
     target_include_directories(tsmedia_audio_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_audio_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -153,6 +174,41 @@ if(TSMEDIA_BUILD_TESTS)
         set_tests_properties(tsmedia_audio_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
     else()
         set_tests_properties(tsmedia_audio_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
+    endif()
+
+    # 2.2 voice: the encoder (generated sound -> .m4a -> probe), the recorder with FakeCapture (never a
+    # real microphone) and the voice card's geometry. Needs Media Foundation (delay-loaded, as in the plugin).
+    add_executable(tsmedia_voice_tests
+        tests/tst_voicemedia.cpp
+        tests/testmain.h
+        src/audio/aacwriter.cpp
+        src/audio/voicerecorder.cpp
+        src/audio/fakecapture.cpp
+        src/audio/waveform.cpp
+        src/audio/wasapicapture.cpp # only lists endpoints in the test; never opens one
+        src/audio/capturedevice.cpp
+        src/video/mfcommon.cpp
+        src/video/mfvideo.cpp
+        src/voicecard.cpp
+        src/audiocard.cpp
+        src/previewrenderer.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+        src/uiutil.cpp
+    )
+    target_include_directories(tsmedia_voice_tests PRIVATE src third_party/ts3client-pluginsdk/include)
+    target_compile_definitions(tsmedia_voice_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(tsmedia_voice_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(tsmedia_voice_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(tsmedia_voice_tests)
+    add_test(NAME tsmedia_voice_tests COMMAND tsmedia_voice_tests)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
+        set_tests_properties(tsmedia_voice_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
+    else()
+        set_tests_properties(tsmedia_voice_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 
@@ -179,6 +235,7 @@ if(TSMEDIA_BUILD_TOOLS)
         tools/render_gallery.cpp
         src/previewrenderer.cpp
         src/audiocard.cpp # 2.2 audio
+        src/voicecard.cpp src/audio/waveform.cpp # 2.2 voice
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp

@@ -103,6 +103,30 @@ When a download fails, the preview or card says why:
 
 Deleted files and files in password-protected channels can't be retried: their previews show the normal pointer and do nothing when clicked. For everything else, click the picture or the card's **Retry** button to try again. Point at a card to read the whole message.
 
+## Voice messages
+
+### What do the messages in the Voice message window mean?
+
+| Message | Cause | What to do |
+| --- | --- | --- |
+| Microphone access is blocked | Windows' privacy setting keeps desktop apps (TeamSpeak too) away from the microphone. | **Open Windows settings**, turn on *Let desktop apps access your microphone*, then try again. |
+| No microphone found | Windows has no microphone that is on. | Connect one, or pick one in **Open sound settings**. |
+| The microphone is busy | Another app uses the microphone in exclusive mode. | Close that app (or turn off *Allow applications to take exclusive control* for the device), then **Try again**. |
+| The microphone was disconnected | It was unplugged or turned off. With 1 second or more recorded, you get the review instead and keep what you said. | Reconnect it, then **Try again**. |
+| This microphone can't be used | Its audio format isn't 44.1 or 48 kHz, which Windows' encoder needs. | Pick another microphone in the TS Media settings, or change the device's format in Windows sound settings. |
+| Voice messages aren't available | Windows Media Foundation is missing (Windows N editions). | Install the Media Feature Pack. |
+| Couldn't save the recording | The file couldn't be written (disk full?). Your recording is kept while the window is open. | Free some space, then **Try again**. |
+| No sound from the microphone | Nothing louder than -50 dB arrived for 3 seconds: the microphone may be muted in Windows or on the headset. | Unmute it; the recording goes on meanwhile. |
+| Recording from Windows' default communications microphone | The plugin couldn't tell which microphone TeamSpeak uses. | If that's the wrong one, pick yours under **Settings → General → Voice messages → Microphone**. |
+
+### Others saw my microphone as muted
+
+That's on purpose: while you record, your TeamSpeak microphone is muted so voice activation doesn't send you live to the channel. It is unmuted as soon as the recording stops. If TeamSpeak lost the connection meanwhile, it may stay muted for that server: unmute it with TeamSpeak's mute button. Turn this off with *Mute my TeamSpeak microphone while recording* in the settings.
+
+### Does the plugin listen all the time?
+
+No. The microphone is only opened while the *Voice message* window shows *Recording*, and closing the window stops it. Windows' microphone icon in the taskbar shows TeamSpeak as using it during that time (the plugin runs inside TeamSpeak).
+
 ## Permissions
 
 ### "No permission to download"

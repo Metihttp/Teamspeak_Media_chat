@@ -24,6 +24,8 @@
 #include "ts3api.h"
 #include "version.h"
 #include "video/mfvideo.h"
+#include "voicecontroller.h" // 2.2 voice
+#include "voicesection.h"    // 2.2 voice
 
 #define PLUGIN_API_VERSION 26
 #define TS3_EXPORT extern "C" __declspec(dllexport)
@@ -35,7 +37,7 @@ QPointer<ChatIntegration> g_chat;
 QPointer<SettingsDialog>  g_settings;
 bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
-enum MenuId { MenuSend = 1, MenuSettings, MenuCache };
+enum MenuId { MenuSend = 1, MenuSettings, MenuCache, MenuVoice /* 2.2 voice */ };
 
 template <typename Fn>
 void onGuiThread(Fn&& fn)
@@ -75,6 +77,7 @@ void showSettings(QWidget* parent)
     // Heap allocated and non-blocking so plugin shutdown can always close it.
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->addSection(SettingsDialog::Tab::General, new VoiceSection(dialog)); // 2.2 voice (General has the room: Sending is full)
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_core)
             g_core->applyCacheLimit(); // a lower limit counts now, not after the next download
@@ -94,6 +97,7 @@ void printHelp(uint64 sch)
     ts3::printInfo(sch, i18n::t(TSMEDIA_VERSION " — commands:"));
     const char* const commands[] = {
         "[b]/tsmedia send[/b] — choose files to send to this chat",
+        "[b]/tsmedia voice[/b] — record a voice message for this chat", // 2.2 voice
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",
@@ -133,6 +137,18 @@ void updateMenus()
         return;
     const QByteArray id = ts3::pluginId.toUtf8();
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuSend, ts3::isConnected(ts3::currentConnection()) ? 1 : 0);
+    ts3::funcs.setPluginMenuEnabled(id.constData(), MenuVoice, ts3::isConnected(ts3::currentConnection()) ? 1 : 0); // 2.2 voice
+}
+
+// 2.2 voice: the recorder for the visible chat (menu, command, hotkey).
+void recordVoice(VoiceController::Origin origin)
+{
+    if (!g_chat || !g_chat->voice())
+        return;
+    if (origin == VoiceController::Origin::Hotkey)
+        g_chat->voice()->hotkey();
+    else
+        g_chat->voice()->start(origin);
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -203,6 +219,24 @@ void selfTestPlay(uint64 sch, int attempt)
     ts3::log(QStringLiteral("[test] self-test play: waiting for a video (attempt %1)").arg(attempt + 1));
     QTimer::singleShot(2000, g_core.data(), [sch, attempt] { selfTestPlay(sch, attempt + 1); });
 }
+
+// 2.2 voice: <data dir>/selftest_voice.txt ("<ms>[;send][;silence][;unplug@<ms>]") records a voice
+// message from generated sound (FakeCapture, never the microphone) in the visible chat.
+void selfTestVoice(uint64 sch)
+{
+    QString content;
+    if (!takeTrigger(QStringLiteral("selftest_voice.txt"), &content))
+        return;
+    if (!isLocalServer(sch)) {
+        ts3::log("[test] self-test voice skipped: not a localhost server");
+        return;
+    }
+    QFile fake(ts3::dataDir() + QStringLiteral("/voice_fake.txt"));
+    if (fake.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        fake.write(content.trimmed().toUtf8());
+    fake.close();
+    recordVoice(VoiceController::Origin::Command);
+}
 #endif
 
 } // namespace
@@ -264,6 +298,8 @@ TS3_EXPORT int ts3plugin_init()
             ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
         core->start();
         chat->start();
+        if (chat->voice()) // 2.2 voice: "Open TS Media settings" in the recorder's errors
+            QObject::connect(chat->voice(), &VoiceController::settingsRequested, chat, [] { showSettings(nullptr); });
         updateMenus();
         ts3::log(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded");
     }, Qt::QueuedConnection);
@@ -347,6 +383,8 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
             if (g_chat)
                 g_chat->pickAndSendFiles();
         });
+    } else if (cmd == QLatin1String("voice")) { // 2.2 voice
+        onGuiThread([] { recordVoice(VoiceController::Origin::Command); });
     } else if (cmd == QLatin1String("settings")) {
         onGuiThread([] { showSettings(nullptr); });
     } else if (cmd == QLatin1String("cache")) {
@@ -394,6 +432,7 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
     };
     const Item items[] = {
         {MenuSend, i18n::t("Send files to chat…")},
+        {MenuVoice, i18n::t("Record voice message…")}, // 2.2 voice
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
     };
@@ -421,6 +460,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
     const Hotkey keys[] = {
         {"tsmedia_send", i18n::t("Send files to the current chat")},
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
+        {VoiceSection::kHotkeyKeyword, i18n::t("Record a voice message (press to start, press again to stop)")}, // 2.2 voice
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
 
@@ -455,6 +495,9 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
                 g_core->openCacheFolder();
         });
         break;
+    case MenuVoice: // 2.2 voice
+        onGuiThread([] { recordVoice(VoiceController::Origin::Menu); });
+        break;
     default:
         break;
     }
@@ -470,6 +513,8 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
         });
     } else if (key == QLatin1String("tsmedia_cancel")) {
         onGuiThread([] { cancelUploads(0); });
+    } else if (key == QLatin1String(VoiceSection::kHotkeyKeyword)) { // 2.2 voice
+        onGuiThread([] { recordVoice(VoiceController::Origin::Hotkey); });
     }
 }
 
@@ -485,7 +530,10 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
     // Test builds only, and only against localhost servers (checked when the hooks fire).
     if (newStatus == STATUS_CONNECTION_ESTABLISHED) {
         onGuiThread([sch] {
-            QTimer::singleShot(3000, g_core.data(), [sch] { selfTestUpload(sch); });
+            QTimer::singleShot(3000, g_core.data(), [sch] {
+                selfTestUpload(sch);
+                selfTestVoice(sch); // 2.2 voice
+            });
             QTimer::singleShot(6000, g_core.data(), [sch] {
                 if (!takeTrigger(QStringLiteral("selftest_play.txt"), nullptr))
                     return;

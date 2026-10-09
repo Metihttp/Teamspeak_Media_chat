@@ -623,9 +623,9 @@ void Core::startAutoDownloads(const QString& key)
     const bool      isVideo    = e.kind == MediaKind::Video;
     const quint64   imageLimit = megabytes(s.autoDownloadMaxMB);
     const quint64   videoLimit = megabytes(s.videoAutoDownloadMB);
-    // 2.2 audio: audio files have their own rule (audioplayback.h); voice: pass link.voice once the link carries vm.
+    // 2.2 audio: audio files have their own rule (audioplayback.h); 2.2 voice: voice messages (vm=1) like images.
     const bool    isAudio    = e.kind == MediaKind::Audio;
-    const quint64 audioLimit = isAudio ? audioplayback::autoDownloadLimit(s, false) : 0;
+    const quint64 audioLimit = isAudio ? audioplayback::autoDownloadLimit(s, e.link.voice) : 0;
     if (isImage)
         e.tooLargeForAuto = e.link.size > imageLimit;
     else if (isVideo)
@@ -1184,8 +1184,8 @@ void Core::resumeInterrupted()
 quint64 Core::autoDownloadLimit(const MediaEntry& e) const
 {
     const Settings& s = Settings::instance();
-    if (e.kind == MediaKind::Audio) // 2.2 audio (voice: pass link.voice once the link carries vm)
-        return audioplayback::autoDownloadLimit(s, false);
+    if (e.kind == MediaKind::Audio) // 2.2 audio; 2.2 voice: voice messages have their own limit
+        return audioplayback::autoDownloadLimit(s, e.link.voice);
     return e.kind == MediaKind::Video ? megabytes(s.videoAutoDownloadMB) : megabytes(s.autoDownloadMaxMB);
 }
 
@@ -1476,7 +1476,8 @@ QString Core::saveAs(const QString& key, QWidget* parent) const
     // The dialog runs an event loop: copy what is needed, the entry may change meanwhile.
     const QString   localPath = e->localPath;
     const MediaKind kind      = e->kind;
-    const QString   name      = localFileName(displayNameFor(e->link)); // without the cache prefix and the random part
+    // Without the cache prefix and the random part; 2.2 voice: "Voice message 2026-10-09 18-02.m4a".
+    const QString   name      = localFileName(e->link.voice ? voiceSaveName(e->link) : displayNameFor(e->link));
 
     static QString lastDir;
     QString        dir = lastDir;
@@ -2722,7 +2723,9 @@ void Core::cleanupUpload(UploadJob& job)
     }
     job.stagingDir.clear();
     // A failed pasted image stays for a retry until its job is dismissed (forgetUpload).
-    if (!(job.pasted && job.state == UploadState::Failed))
+    // 2.2 voice: so does a failed voice message (the recording exists nowhere else).
+    const bool keepForRetry = job.pasted || m_jobItems.value(job.id).voice;
+    if (!(keepForRetry && job.state == UploadState::Failed))
         releaseSource(job);
 }
 

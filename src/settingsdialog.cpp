@@ -187,9 +187,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* receive     = new QGroupBox(i18n::t("Receiving"), m_pages.at(static_cast<int>(Tab::ReceivingPlayback)));
     m_inlinePreviews  = new QCheckBox(i18n::t("&Show images, videos and file cards in the chat"), receive);
     m_receiveDetails  = new QWidget(receive);
-    m_autoDownload    = new QCheckBox(i18n::t("Download &images and GIFs automatically up to"), m_receiveDetails);
+    m_autoDownload    = new QCheckBox(i18n::t("Download &images, GIFs and voice messages automatically up to"), m_receiveDetails); // 2.2 voice
     m_autoDownloadMax = spin(Settings::autoDownloadMaxMBRange, 5, megabytes(), m_receiveDetails);
-    m_autoDownloadMax->setAccessibleName(i18n::t("Download images and GIFs automatically up to"));
+    m_autoDownloadMax->setAccessibleName(i18n::t("Download images, GIFs and voice messages automatically up to")); // 2.2 voice
     m_autoplayGifs = new QCheckBox(i18n::t("Play &GIFs automatically"), m_receiveDetails);
     m_autoplayGifs->setToolTip(i18n::t("When this is off, or animations are turned off in Windows, GIFs play only while the pointer is over them."));
     m_gifHint = hint(i18n::t("Windows animations are turned off, so GIFs play only while the pointer is over them."), m_receiveDetails);
