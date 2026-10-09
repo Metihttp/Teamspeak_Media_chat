@@ -1,7 +1,7 @@
 // Unit tests for the updater (docs/UPDATES.md): SHA-256 and ECDSA through CNG, the signed manifest
 // (including hostile inputs), versions, the URL allowlist and schedule, the PE checks, and the
 // installer against a temporary plugins folder (swap, undo, rename of a loaded DLL, self-rollback,
-// startup reconcile, cleanup). Built as target tsmedia_update_tests (see CMakeLists.txt).
+// startup reconcile, cleanup). Runs inside tsmedia_tests (tests/testmain.h).
 //
 // The signed vectors in tests/data/update were made with the test key 99, whose private key lives
 // outside the repository (C:/dev/tsmedia-devtools/signing). This test is built without
@@ -27,6 +27,7 @@
 #include "update/updatemanifest.h"
 #include "update/updatepolicy.h"
 #include "update/updatesettings.h"
+#include "testmain.h"
 
 using namespace upd;
 
@@ -870,5 +871,6 @@ class TestUpdater : public QObject
     }
 };
 
-QTEST_GUILESS_MAIN(TestUpdater)
+TSMEDIA_REGISTER_TEST(TestUpdater)
+
 #include "tst_updater.moc"

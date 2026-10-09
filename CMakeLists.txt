@@ -97,6 +97,13 @@ add_library(tsmedia SHARED
     src/accessgroupbox.cpp    src/accessgroupbox.h
     src/accessgroupexports.cpp
     src/video/mfcommon.cpp    src/video/mfcommon.h  # 2.2 audio: shared Media Foundation helpers
+    # 2.2 drag-out and per-server settings
+    src/filenames.cpp         src/filenames.h
+    src/filedrag.cpp          src/filedrag.h
+    src/dragpixmap.cpp        src/dragpixmap.h
+    src/serversettings.cpp    src/serversettings.h
+    src/serverssection.cpp    src/serverssection.h
+    src/datasaver.cpp         src/datasaver.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -169,15 +176,18 @@ option(TSMEDIA_BUILD_TESTS "Build unit tests" ON)
 if(TSMEDIA_BUILD_TESTS)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
     enable_testing()
+    # One executable: tests/testmain.h runs every test class (TestTsMedia first, then the classes the
+    # other files register with TSMEDIA_REGISTER_TEST). "-o file,format" writes all of them to one file.
     add_executable(tsmedia_tests
-        tests/tst_tsmedia.cpp
+        tests/testmain.h
+        tests/tst_tsmedia.cpp     # ts3::dataDir() is stubbed here for every test file
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp
         src/uiutil.cpp
-        src/settings.cpp # ts3::dataDir() is stubbed in the test
-        # 2.2 foundation: more test classes (tests/testmain.h runs them all) and the pure modules they test
-        tests/testmain.h
+        src/settings.cpp
+        src/serversettings.cpp    # 2.2 per-server settings (settings.cpp reads the server groups through it)
+        # 2.2 foundation: link schema, composer, logging, hashing, flood governor
         tests/tst_link22.cpp
         tests/tst_foundation.cpp
         src/logtext.cpp
@@ -189,14 +199,27 @@ if(TSMEDIA_BUILD_TESTS)
         src/accessgroupplan.cpp
         src/accessgroupjob.cpp
         src/accessgroupview.cpp
+        # 2.2 updater: manifest, signatures, schedule, PE checks, installer
+        tests/tst_updater.cpp
+        ${TSMEDIA_UPDATE_SOURCES}
+        src/update/updatesettings.cpp
+        # 2.2 audio: the audio card's geometry / hit tests / states and the audio auto-download rule
+        tests/tst_audio.cpp
+        src/audiocard.cpp
+        src/audioplayback.cpp
+        src/previewrenderer.cpp
+        # 2.2 drag-out and per-server settings: export names, server groups in settings.ini, data saver rules
+        tests/tst_dragout_servers.cpp
+        src/filenames.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
-    target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
+        TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update") # 2.2 updater: signed test vectors
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
-    target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test)
+    target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test bcrypt)
     get_target_property(_qmake Qt5::qmake IMPORTED_LOCATION)
     get_filename_component(_qtbin "${_qmake}" DIRECTORY)
     add_test(NAME tsmedia_tests COMMAND tsmedia_tests)
@@ -206,47 +229,6 @@ if(TSMEDIA_BUILD_TESTS)
     else()
         string(REPLACE ";" "\\;" _path "$ENV{PATH}")
         set_tests_properties(tsmedia_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
-    endif()
-
-    # 2.2 updater tests: manifest, signatures, schedule, PE checks, installer (own executable).
-    add_executable(tsmedia_update_tests tests/tst_updater.cpp ${TSMEDIA_UPDATE_SOURCES} src/update/updatesettings.cpp)
-    target_include_directories(tsmedia_update_tests PRIVATE src)
-    target_compile_definitions(tsmedia_update_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
-        TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update")
-    if(MSVC)
-        target_compile_options(tsmedia_update_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
-    endif()
-    target_link_libraries(tsmedia_update_tests PRIVATE Qt5::Core Qt5::Test bcrypt)
-    add_test(NAME tsmedia_update_tests COMMAND tsmedia_update_tests)
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
-        set_tests_properties(tsmedia_update_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
-    else()
-        set_tests_properties(tsmedia_update_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
-    endif()
-
-    # 2.2 audio: the audio card's geometry / hit tests / states and the audio auto-download rule.
-    add_executable(tsmedia_audio_tests
-        tests/tst_audio.cpp
-        src/audiocard.cpp
-        src/audioplayback.cpp
-        src/previewrenderer.cpp
-        src/medialink.cpp
-        src/blurhash.cpp
-        src/i18n.cpp
-        src/uiutil.cpp
-        src/settings.cpp # ts3::dataDir() is stubbed in the test
-    )
-    target_include_directories(tsmedia_audio_tests PRIVATE src third_party/ts3client-pluginsdk/include)
-    target_compile_definitions(tsmedia_audio_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
-    if(MSVC)
-        target_compile_options(tsmedia_audio_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
-    endif()
-    target_link_libraries(tsmedia_audio_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Test)
-    add_test(NAME tsmedia_audio_tests COMMAND tsmedia_audio_tests)
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
-        set_tests_properties(tsmedia_audio_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qtbin}")
-    else()
-        set_tests_properties(tsmedia_audio_tests PROPERTIES ENVIRONMENT "PATH=${_qtbin}\\;${_path}")
     endif()
 endif()
 
@@ -273,6 +255,7 @@ if(TSMEDIA_BUILD_TOOLS)
         tools/render_gallery.cpp
         src/previewrenderer.cpp
         src/audiocard.cpp # 2.2 audio
+        src/dragpixmap.cpp # 2.2 drag-out
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp

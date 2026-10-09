@@ -3,8 +3,9 @@
 // 2.2 foundation: one test executable, several test classes. A test file registers its class with
 // TSMEDIA_REGISTER_TEST(Class); tst_tsmedia.cpp's TSMEDIA_TEST_MAIN runs TestTsMedia first, then every
 // registered class. Test function names on the command line ("tsmedia_tests keyMatchesV1") run only in
-// the classes that have them.
+// the classes that have them. A QGuiApplication: some classes render text (the audio card tests).
 
+#include <QGuiApplication>
 #include <QtTest>
 
 #include <memory>
@@ -117,7 +118,7 @@ inline int run(QObject* first, int argc, char** argv)
 #define TSMEDIA_TEST_MAIN(Class)                          \
     int main(int argc, char* argv[])                      \
     {                                                     \
-        QCoreApplication app(argc, argv);                 \
+        QGuiApplication app(argc, argv);                  \
         app.setAttribute(Qt::AA_Use96Dpi, true);          \
         Class tc;                                         \
         QTEST_SET_MAIN_SOURCE_PATH                        \

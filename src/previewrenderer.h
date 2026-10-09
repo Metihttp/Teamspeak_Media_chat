@@ -92,3 +92,8 @@ struct PreviewColorPair {
 QVector<PreviewColorPair> previewColorPairs(bool dark);
 
 // displayFileName() and displayNameFor() are in medialink.h.
+
+// 2.2 drag-out: the attachment cards' file-type glyph (coloured page with the extension), drawn into
+// rect (32 x 40 on a card), for the mini card that follows the pointer (dragpixmap.cpp).
+class QPainter;
+void drawFileTypeGlyph(QPainter& p, const QRectF& rect, const MediaEntry& entry, const PreviewStyle& style);

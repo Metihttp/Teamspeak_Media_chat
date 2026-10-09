@@ -22,6 +22,7 @@
 
 #include "audiocard.h"
 #include "blurhash.h"
+#include "dragpixmap.h" // 2.2 drag-out
 #include "previewrenderer.h"
 #include "uiutil.h"
 
@@ -725,7 +726,59 @@ QList<Sample> buildSamples()
         o.positionMs      = 100000;
         return o;
     }(), [](const PreviewStyle& st) { return withChatFont(st, 11.0); });
+    // ---- 2.2 data saver and drag-out -------------------------------------------------------
+    {
+        MediaEntry held      = makeEntry(QStringLiteral("voice_note.mp3"), 2516582, 0, 0, 0, MediaState::Idle);
+        held.heldByDataSaver = true;
+        card(QStringLiteral("card_data_saver"), QStringLiteral("card held by data saver"), held);
+        styled(QStringLiteral("card_data_saver_hover"), QStringLiteral("card held by data saver, hover"), held, [](const PreviewStyle& st) { return hovered(st); });
+        MediaEntry heldPhoto      = makeEntry(QStringLiteral("holiday.jpg"), 2516582, 4000, 3000, 0, MediaState::Idle);
+        heldPhoto.heldByDataSaver = true; // looks exactly like any picture waiting for a click
+        add(QStringLiteral("image_data_saver"), QStringLiteral("picture held by data saver (preview)"), [=](const PreviewStyle& st, QSize* ls) {
+            return renderPreview(heldPhoto, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(heldPhoto, st)), st, ls);
+        });
+    }
+    auto dragSample = [&add](const QString& name, const QString& label, std::function<DragImage(const PreviewStyle&)> fn) {
+        add(name, label, [fn](const PreviewStyle& st, QSize* ls) {
+            const DragImage d = fn(st);
+            if (ls)
+                *ls = (QSizeF(d.image.size()) / d.image.devicePixelRatio()).toSize();
+            return d.image;
+        });
+    };
+    // Stills as Core gives them: device pixels fitted into 160 x 160 logical pixels.
+    auto dragStill = [](const QImage& source, const PreviewStyle& st) { return fitScaled(source, QSize(qRound(160 * st.dpr), qRound(160 * st.dpr))); };
+    dragSample(QStringLiteral("drag_photo_landscape"), QStringLiteral("drag: landscape photo"),
+               [=](const PreviewStyle& st) { return renderDragPicture(dragStill(photo, st), st.dpr, QPointF(0.3, 0.6)); });
+    dragSample(QStringLiteral("drag_photo_portrait"), QStringLiteral("drag: portrait photo"),
+               [=](const PreviewStyle& st) { return renderDragPicture(dragStill(cropToAspect(friendPic, 3.0 / 4.0), st), st.dpr, QPointF(0.5, 0.5)); });
+    dragSample(QStringLiteral("drag_video_poster"), QStringLiteral("drag: video poster"),
+               [=](const PreviewStyle& st) { return renderDragPicture(dragStill(poster, st), st.dpr, QPointF(0.9, 0.1)); });
+    dragSample(QStringLiteral("drag_card_zip"), QStringLiteral("drag: file card"),
+               [=](const PreviewStyle& st) { return renderDragCard(makeEntry(QStringLiteral("project_files.zip"), 24700, 0, 0, 0, MediaState::Ready), false, st.font, st.dpr); });
+    dragSample(QStringLiteral("drag_card_program"), QStringLiteral("drag: program card"),
+               [=](const PreviewStyle& st) { return renderDragCard(makeEntry(QStringLiteral("setup_tool.exe"), 2516582, 0, 0, 0, MediaState::Ready), true, st.font, st.dpr); });
+    dragSample(QStringLiteral("drag_card_persian"), QStringLiteral("drag: long Persian name"), [=](const PreviewStyle& st) {
+        MediaEntry e    = makeEntry(QStringLiteral("گزارش نهایی پروژه تابستان ۱۴۰۳ نسخه دوم_3f9a1c2e.pdf"), 1830000, 0, 0, 0, MediaState::Ready);
+        e.link.protocol = MediaLink::kProtocol;
+        return renderDragCard(e, false, st.font, st.dpr);
+    });
     return list;
+}
+
+// 2.2 drag-out: the mini card floats over other apps, always dark: both text colours need 4.5:1.
+int checkDragCardContrast()
+{
+    int failures = 0;
+    for (const QColor& text : {dragCardTitleColor(), dragCardDetailColor()}) {
+        const double ratio = ui::contrastRatio(text, dragCardBackground());
+        QTextStream(stdout) << "drag card " << text.name() << " on " << dragCardBackground().name() << "  " << QString::number(ratio, 'f', 2) << ":1\n";
+        if (ratio < 4.5) {
+            QTextStream(stderr) << "error: drag card text below 4.5:1\n";
+            ++failures;
+        }
+    }
+    return failures;
 }
 
 // Every text colour against what it is drawn on; the result is also saved to <outdir>/contrast.txt.
@@ -882,7 +935,8 @@ int main(int argc, char* argv[])
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
     const int contrastFailures = contrastReport(outDir);
+    const int dragCard         = checkDragCardContrast(); // 2.2 drag-out
     if (g_layoutFailures)
         QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
-    return contrastFailures == 0 && g_layoutFailures == 0 ? 0 : 1;
+    return contrastFailures == 0 && dragCard == 0 && g_layoutFailures == 0 ? 0 : 1;
 }

@@ -39,6 +39,8 @@ struct MediaEntry {
     bool       openWhenReady   = false;
     bool       tooLargeForAuto = false;
     bool       isOwnUpload     = false;
+    // 2.2 data saver: Idle because data saver held back its automatic download (it waits for a click).
+    bool       heldByDataSaver = false;
     int        revision        = 0; // bumped on every change (entryChanged)
 
     // Small preview / video poster (link.previewFile), downloaded automatically when present.
@@ -187,6 +189,23 @@ class Core : public QObject
     // Files in use (playing video, open viewer) are never evicted from the cache. Counted: every
     // setInUse(key, true) must be balanced by one setInUse(key, false).
     void setInUse(const QString& key, bool inUse);
+
+    // ---- 2.2 drag-out ----------------------------------------------------------------------
+    // A copy of a Ready file to hand to Explorer or another app (drag or "Copy file"): a hard link
+    // with a clean name (filenames::exportFileName) in <data dir>/export/<random>/, else a copy for
+    // files up to 64 MB, else the cache file itself. It carries the Windows Mark-of-the-Web
+    // (Zone.Identifier, ZoneId=3: programs get SmartScreen, documents open in Protected View).
+    // Empty if the file is not Ready (*error says why, for the log).
+    QString prepareExport(const QString& key, QString* error = nullptr);
+    // Removes export folders older than maxAgeMs (still locked ones are skipped). Never at shutdown:
+    // a copied file must still paste after TeamSpeak is closed.
+    void pruneExports(qint64 maxAgeMs);
+
+    // ---- 2.2 data saver --------------------------------------------------------------------
+    // After the data saver changed (globally or for a server): automatic downloads of servers that
+    // now save data stop (their items wait for a click), held items of servers that no longer do
+    // start again once they are shown. Downloads the user asked for are never touched.
+    void onDataSaverChanged();
 
     // ---- uploads -------------------------------------------------------------------------
     // 2.2: every send goes through send(). Each file is probed on a worker thread (size, duration,

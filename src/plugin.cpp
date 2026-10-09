@@ -17,6 +17,7 @@
 #include "accessgroup.h" // 2.2 servergroup
 #include "chatintegration.h"
 #include "core.h"
+#include "datasaver.h" // 2.2 per-server settings
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "ownedtimer.h"
@@ -42,14 +43,16 @@ QPointer<upd::Updater>    g_updater; // 2.2 updater
 QPointer<AccessGroup>     g_access;  // 2.2 servergroup
 bool                      g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
-// Explicit values: each feature owns its ids.
+// Explicit values: each feature owns its ids, and existing ones stay stable.
 enum MenuId {
-    MenuSend         = 1,
-    MenuSettings     = 2,
-    MenuCache        = 3,
-    MenuUpdate       = 4,  // 2.2 updater (official builds only)
-    MenuGiveAccess   = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
-    MenuRemoveAccess = 21, // 2.2 servergroup
+    MenuSend            = 1,
+    MenuSettings        = 2,
+    MenuCache           = 3,
+    MenuUpdate          = 4,  // 2.2 updater (official builds only)
+    MenuPauseDownloads  = 5,  // 2.2 data saver
+    MenuResumeDownloads = 6,  // 2.2 data saver
+    MenuGiveAccess      = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
+    MenuRemoveAccess    = 21, // 2.2 servergroup
 };
 
 template <typename Fn>
@@ -78,6 +81,8 @@ void copyText(char* dst, size_t size, const QString& text)
     dst[utf8.size()] = '\0';
 }
 
+void updateMenus();
+
 void showSettings(QWidget* parent)
 {
     if (!g_core)
@@ -91,10 +96,13 @@ void showSettings(QWidget* parent)
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
-        if (g_core)
-            g_core->applyCacheLimit(); // a lower limit counts now, not after the next download
+        if (g_core) {
+            g_core->applyCacheLimit();    // a lower limit counts now, not after the next download
+            g_core->onDataSaverChanged(); // 2.2 data saver: may stop or release automatic downloads
+        }
         if (g_chat)
             g_chat->refreshAll();
+        updateMenus(); // 2.2 data saver: the Pause / Resume pair
     });
     g_settings = dialog;
     dialog->show();
@@ -113,6 +121,7 @@ void printHelp(uint64 sch)
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",
         "[b]/tsmedia update[/b] — check for a new version", // 2.2 updater (official builds only)
+        "[b]/tsmedia datasaver[/b] on | off | default — pause or resume automatic downloads on this server", // 2.2 data saver
         "[b]/tsmedia help[/b] — show this list",
     };
     for (const char* line : commands) {
@@ -167,6 +176,17 @@ void updateMenus()
         return;
     const QByteArray id = ts3::pluginId.toUtf8();
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuSend, ts3::isConnected(ts3::currentConnection()) ? 1 : 0);
+    datasaver::updateMenu(MenuPauseDownloads, MenuResumeDownloads); // 2.2 data saver
+}
+
+// 2.2 per-server settings: after the Plugins menu or a command changed a server's data saver.
+void serverSettingsChanged()
+{
+    if (g_core)
+        g_core->onDataSaverChanged();
+    updateMenus();
+    if (g_settings)
+        g_settings->reloadServers(); // rows not edited in an open dialog show the new value
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -433,6 +453,13 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
                 ts3::printInfo(sch, i18n::t("Updates are turned off in versions you build yourself. Check "
                                             "github.com/Metihttp/Teamspeak_Media_chat/releases for new versions."));
         });
+    } else if (cmd == QLatin1String("datasaver") || cmd.startsWith(QLatin1String("datasaver "))) {
+        // 2.2 data saver: "/tsmedia datasaver [on|off|default]" (the argument is checked there).
+        const QString arguments = cmd.mid(9).trimmed().left(40);
+        onGuiThread([sch, arguments] {
+            if (datasaver::runCommand(sch, arguments))
+                serverSettingsChanged();
+        });
     } else if (cmd == QLatin1String("debug")) {
         onGuiThread([sch] {
             if (!g_chat)
@@ -472,6 +499,9 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
     };
     const Item items[] = {
         {MenuSend, i18n::t("Send files to chat…")},
+        // 2.2 data saver: an enable/disable pair (the SDK can't change a menu item's text or check mark).
+        {MenuPauseDownloads, i18n::t("Pause automatic downloads on this server")},
+        {MenuResumeDownloads, i18n::t("Resume automatic downloads on this server")},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
         {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
@@ -525,7 +555,18 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
     Q_UNUSED(type);
     if (AccessGroup::handleMenuItem(serverConnectionHandlerID, menuItemID, selectedItemID)) // 2.2 servergroup
         return;
+    Q_UNUSED(selectedItemID);
+    const uint64 sch = serverConnectionHandlerID; // the current server tab
     switch (menuItemID) {
+    case MenuPauseDownloads: // 2.2 data saver
+    case MenuResumeDownloads:
+        onGuiThread([sch, pause = menuItemID == MenuPauseDownloads] {
+            if (datasaver::setFromMenu(sch, pause))
+                serverSettingsChanged();
+            else
+                updateMenus(); // e.g. a stale pair after a reload
+        });
+        break;
     case MenuSend:
         onGuiThread([] {
             if (g_chat)
@@ -593,6 +634,15 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
 #endif
     onGuiThread([] { updateMenus(); });
     AccessGroup::handleConnectStatus(sch, newStatus); // 2.2 servergroup
+    if (newStatus == STATUS_CONNECTION_ESTABLISHED || newStatus == STATUS_DISCONNECTED) {
+        // 2.2 per-server settings: the server's stored name, the data saver notice, Settings → Servers.
+        onGuiThread([sch, newStatus] {
+            if (newStatus == STATUS_CONNECTION_ESTABLISHED)
+                datasaver::onConnectionEstablished(sch);
+            if (g_settings)
+                g_settings->reloadServers();
+        });
+    }
     if (newStatus != STATUS_DISCONNECTED)
         return;
     onGuiThread([sch] {

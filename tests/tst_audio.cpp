@@ -1,6 +1,6 @@
 // Unit tests for inline audio (2.2): the audio player card (audiocard.*: size, zones, seek mapping,
 // tooltips, every state renders at the same size) and the audio auto-download rule (audioplayback.*).
-// Built as target tsmedia_audio_tests (see CMakeLists.txt). Needs a QGuiApplication for fonts.
+// Runs inside tsmedia_tests (tests/testmain.h, which creates a QGuiApplication for the fonts).
 
 #include <QDir>
 #include <QtTest>
@@ -11,15 +11,11 @@
 #include "audioplayback.h"
 #include "medialink.h"
 #include "settings.h"
+#include "testmain.h"
 #include "uiutil.h"
 
-// settings.cpp keeps its ini file in the plugin's data folder; these tests never load or save it.
-namespace ts3 {
-QString dataDir()
-{
-    return QDir::tempPath();
-}
-} // namespace ts3
+// settings.cpp keeps its ini file in the plugin's data folder (ts3::dataDir() is stubbed in
+// tst_tsmedia.cpp); these tests never load or save it.
 
 namespace {
 
@@ -378,6 +374,6 @@ void TestAudio::contrast()
     }
 }
 
-QTEST_MAIN(TestAudio)
+TSMEDIA_REGISTER_TEST(TestAudio)
 
 #include "tst_audio.moc"

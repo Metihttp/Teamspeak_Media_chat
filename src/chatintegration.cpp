@@ -47,6 +47,7 @@
 #include <functional>
 
 #include "audiocard.h" // 2.2 audio
+#include "filedrag.h" // 2.2 drag-out
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
@@ -1228,6 +1229,9 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
         else if (!picture || e->state != MediaState::Ready || cannotPreview)
             detail = previewStatusText(*e, cannotPreview);
     }
+    // 2.2 data saver: why it waits for a click.
+    if (e->state == MediaState::Idle && e->heldByDataSaver && !e->tooLargeForAuto)
+        detail = i18n::t("Data saver is on for this server. Click to load.");
 
     // The name comes from someone else's chat link: shown as plain text (escaped, since a tool tip
     // would interpret markup), without bidi/control characters.
@@ -1499,6 +1503,12 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             const QString saved = m_core->saveAs(key, guard ? guard->window() : mainWindow());
             if (!saved.isEmpty())
                 showFeedback(viewport(), ui::savedToText(saved), false);
+        });
+        // 2.2 drag-out: the keyboard / single-pointer way to put the file into a folder or an app.
+        menu->addAction(i18n::t("Copy fil&e"), this, [this, key, viewport] {
+            QString    feedback;
+            const bool ok = filedrag::copyToClipboard(m_core, key, &feedback);
+            showFeedback(viewport(), feedback, !ok);
         });
     }
     if (ready && isPreviewableImage(e->kind)) {
@@ -1782,7 +1792,7 @@ constexpr quint64 kMaxThumbnailFileBytes  = 30ull * 1024 * 1024;
 
 bool ChatIntegration::acceptsDrop(const QMimeData* mime) const
 {
-    if (!mime)
+    if (!mime || filedrag::isOwn(mime)) // 2.2 drag-out: our own drags are never sent again
         return false;
     for (const QString& format : mime->formats()) {
         if (format.contains(QLatin1String("ts3"), Qt::CaseInsensitive))
@@ -1885,6 +1895,40 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             }
             m_seeking = false;
         }
+        // 2.2 drag-out: a press on a preview that moves far enough drags its file out of the chat (the
+        // pending click is canceled). Not from video controls that were visible at the press, nor from an
+        // audio card's play button or seek bar.
+        // Synchronous, like QAbstractItemView::startDrag: Windows' drag loop starts while the button
+        // is still down. Chat updates run inside it, so nothing from before is used afterwards.
+        if (!m_pressedKey.isEmpty() && (me->buttons() & Qt::LeftButton) && m_pressBrowser == browser
+            && (me->pos() - m_pressPos).manhattanLength() >= QApplication::startDragDistance()) {
+            const QString key   = m_pressedKey;
+            bool          drags = true;
+            const InlineMediaController::Mode pressMode = m_media->mode(key);
+            if (m_pressControlsVisible && pressMode == InlineMediaController::Mode::Video) {
+                const VideoZone zone = videoZoneAt(m_pressRect.size().toSize(), QPointF(m_pressPos) - m_pressRect.topLeft(), !m_media->overlay(key).playing);
+                drags                = zone == VideoZone::Body || zone == VideoZone::None;
+            } else if (pressMode == InlineMediaController::Mode::Audio) { // 2.2 audio
+                const MediaEntry* pressed = m_core->entry(key);
+                const VideoZone   zone    = pressed ? audioZoneAt(*pressed, m_media->overlay(key), styleFor(browser), m_pressRect.size().toSize(),
+                                                                  QPointF(m_pressPos) - m_pressRect.topLeft())
+                                                    : VideoZone::None;
+                drags                     = zone == VideoZone::Body || zone == VideoZone::None;
+            }
+            if (drags) {
+                m_pressedKey.clear();
+                repaintPointerState(browser, key, true);
+                const QSizeF  box = m_pressRect.size();
+                const QPointF fraction(box.width() > 0 ? (m_pressPos.x() - m_pressRect.left()) / box.width() : 0.5,
+                                       box.height() > 0 ? (m_pressPos.y() - m_pressRect.top()) / box.height() : 0.5);
+                const QPointer<QTextBrowser> guard(browser);
+                const filedrag::Result       result = filedrag::start(m_core, key, this, fraction, browser->devicePixelRatioF(), styleFor(browser).font);
+                // Not downloaded yet: the download started; "Drag it again when it's ready".
+                if (!result.message.isEmpty() && guard)
+                    QToolTip::showText(QCursor::pos(), result.message, guard->viewport(), QRect(), result.error ? qMax(4000, ui::notificationDurationMs()) : 2500);
+                return true;
+            }
+        }
         VideoZone zone = VideoZone::None;
         const Hit hit  = updateHoverAt(browser, me->localPos(), true, &zone);
         // The seek bar's tip shows the time under the pointer: keep it current while it is shown.
@@ -1938,6 +1982,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         m_pressedKey           = hit.key;
         m_pressBrowser         = browser;
         m_pressRect            = hit.rect;
+        m_pressPos             = me->pos(); // 2.2 drag-out
         m_lastBrowser          = browser;
         m_pressControlsVisible = audio || (video && m_media && m_media->overlay(hit.key).controlsVisible);
         if (audio) { // 2.2 audio: the card's seek bar is always there; a press on it seeks (and drags)
@@ -2033,6 +2078,14 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     case QEvent::DragEnter:
     case QEvent::DragMove: {
         auto* de = static_cast<QDragMoveEvent*>(event);
+        if (filedrag::isOwn(de->mimeData())) {
+            // 2.2 drag-out: a file dragged out of a chat is not dropped back (not even as a path in the
+            // input): the no-drop cursor shows, whatever the settings and modifier keys.
+            hideDropOverlay();
+            de->setDropAction(Qt::IgnoreAction);
+            de->ignore();
+            return true;
+        }
         if (!s.interceptDragDrop || (de->keyboardModifiers() & Qt::ShiftModifier) || !acceptsDrop(de->mimeData())) {
             hideDropOverlay(); // Shift: TeamSpeak's own drop
             break;
@@ -2055,6 +2108,11 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     case QEvent::Drop: {
         hideDropOverlay();
         auto* de = static_cast<QDropEvent*>(event);
+        if (filedrag::isOwn(de->mimeData())) { // 2.2 drag-out
+            de->setDropAction(Qt::IgnoreAction);
+            de->ignore();
+            return true;
+        }
         if (!s.interceptDragDrop || (de->keyboardModifiers() & Qt::ShiftModifier) || !acceptsDrop(de->mimeData()))
             break;
         auto*           widget = qobject_cast<QWidget*>(watched);
@@ -2327,7 +2385,7 @@ void ChatIntegration::confirmPaste(QWidget* input, const QStringList& files, con
     const qreal   dpr     = box->devicePixelRatioF();
     const QColor  frame   = box->palette().color(QPalette::Mid);
     const QString where   = describeTarget(target);
-    const int     limitMB = Settings::instance().uploadMaxMB;
+    const int     limitMB = Settings::instance().forServer(ts3::serverUid(target.sch)).uploadMaxMB; // 2.2 per-server settings
     const quint64 limit   = static_cast<quint64>(qMax(0, limitMB)) * 1024 * 1024;
 
     QString     question;

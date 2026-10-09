@@ -45,6 +45,7 @@
 #include <limits>
 
 #include "core.h"
+#include "filedrag.h" // 2.2 drag-out
 #include "i18n.h"
 #include "previewrenderer.h"
 #include "settings.h"
@@ -613,6 +614,7 @@ class VideoSurface : public QWidget
     std::function<void()> onClick;
     std::function<void()> onDoubleClick;
     std::function<void()> onActivity;
+    std::function<void(const QPoint&)> onDragOut; // 2.2 drag-out: a drag on the frame (no click then)
 
   protected:
     void paintEvent(QPaintEvent*) override
@@ -652,13 +654,17 @@ class VideoSurface : public QWidget
     void mousePressEvent(QMouseEvent* event) override
     {
         focusWindow(this);
-        if (event->button() == Qt::LeftButton)
+        if (event->button() == Qt::LeftButton) {
             m_pressPos = event->pos();
+            m_pressed  = true;
+        }
     }
 
     void mouseReleaseEvent(QMouseEvent* event) override
     {
-        if (event->button() != Qt::LeftButton || !rect().contains(event->pos()))
+        const bool pressed = m_pressed;
+        m_pressed          = false;
+        if (event->button() != Qt::LeftButton || !pressed || !rect().contains(event->pos()))
             return;
         if ((event->pos() - m_pressPos).manhattanLength() <= QApplication::startDragDistance() && onClick)
             onClick();
@@ -670,10 +676,16 @@ class VideoSurface : public QWidget
             onDoubleClick();
     }
 
-    void mouseMoveEvent(QMouseEvent*) override
+    void mouseMoveEvent(QMouseEvent* event) override
     {
         if (onActivity)
             onActivity();
+        // 2.2 drag-out: the press becomes a drag of the file (the release then plays / pauses nothing).
+        if (m_pressed && (event->buttons() & Qt::LeftButton) && onDragOut
+            && (event->pos() - m_pressPos).manhattanLength() >= QApplication::startDragDistance()) {
+            m_pressed = false;
+            onDragOut(m_pressPos);
+        }
     }
 
   private:
@@ -681,6 +693,7 @@ class VideoSurface : public QWidget
     QString m_audioTitle;
     Center  m_center = Center::None;
     QPoint  m_pressPos;
+    bool    m_pressed = false; // the left button went down here and no drag started from it
 };
 
 // Download progress ring, spinner, messages and the paused-GIF hint, drawn over the media.
@@ -1083,7 +1096,8 @@ class ShortcutSheet : public QWidget
                  {row("Space or K", "Play / pause"), row("Shift+← / →", "Back / forward 5 s"), row("Home", "Back to the start"),
                   row("↑ / ↓", "Volume"), row("M", "Mute"), row("L", "Loop")}},
                 {i18n::t("File"),
-                 {row("Ctrl+C", "Copy the picture or frame"), row("Ctrl+S", "Save as…"), row("Ctrl+O", "Open with default app"),
+                 {row("Ctrl+C", "Copy the picture or frame"), row("Ctrl+Shift+C", "Copy the file"), row("Ctrl+S", "Save as…"),
+                  row("Ctrl+O", "Open with default app"), row("Drag picture or name", "Copy the file to a folder or app"),
                   row("Enter", "Press the highlighted button")}},
             },
         };
@@ -1533,6 +1547,13 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent* event)
         return;
     if (!m_moved && (event->pos() - m_dragStart).manhattanLength() < QApplication::startDragDistance())
         return;
+    if (!m_moved && !canPan()) {
+        // 2.2 drag-out: nothing to pan, so the drag takes the file out of the viewer (no click).
+        m_dragging = false;
+        updateCursor();
+        emit dragOutRequested(m_dragStart);
+        return;
+    }
     m_moved  = true;
     m_offset = m_dragOffset + QPointF(event->pos() - m_dragStart);
     clampOffset();
@@ -1651,6 +1672,10 @@ struct MediaViewer::Private : public QObject {
     void copyCurrent();
     void saveCurrent();
     void openCurrent();
+    // 2.2 drag-out: drag the shown file out (pressFraction: where in the media the press was, 0..1),
+    // and Ctrl+Shift+C, its keyboard alternative.
+    void startDragOut(const QPointF& pressFraction);
+    void copyFileCurrent();
     void openStore();
     void activateDefault();
     void flash(const QString& text, std::optional<Glyph> glyph, int ms);
@@ -1702,6 +1727,8 @@ struct MediaViewer::Private : public QObject {
     QList<QPointer<QWidget>> fading;              // the widgets that fade (each with its own opacity effect meanwhile)
 
     QString        displayName; // displayNameFor() of the shown item (nameLabel shows it elided)
+    QPoint         namePressPos;        // 2.2 drag-out: the left button went down on the name here...
+    bool           namePressed = false; // ... and no drag started from it yet
     QWidget*       topBar       = nullptr;
     QLabel*        nameLabel    = nullptr;
     QLabel*        metaLabel    = nullptr;
@@ -1822,6 +1849,29 @@ bool MediaViewer::Private::eventFilter(QObject* watched, QEvent* event)
     case QEvent::MouseButtonPress:
         if (qobject_cast<QPushButton*>(watched))
             focusWindow(static_cast<QWidget*>(watched));
+        if ((watched == nameLabel || watched == fsName) && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            // 2.2 drag-out: the name can always be dragged, also while a zoomed picture pans.
+            namePressPos = static_cast<QMouseEvent*>(event)->pos();
+            namePressed  = true;
+            focusWindow(static_cast<QWidget*>(watched));
+            return true; // the label gets the moves that follow
+        }
+        break;
+    case QEvent::MouseMove:
+        if ((watched == nameLabel || watched == fsName) && namePressed) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (!(me->buttons() & Qt::LeftButton)) {
+                namePressed = false;
+            } else if ((me->pos() - namePressPos).manhattanLength() >= QApplication::startDragDistance()) {
+                namePressed = false;
+                startDragOut(QPointF(0.5, 0.5));
+                return true;
+            }
+        }
+        break;
+    case QEvent::MouseButtonRelease:
+        if (watched == nameLabel || watched == fsName)
+            namePressed = false;
         break;
     case QEvent::KeyPress: {
         // A focused button keeps Tab, Space and Enter; every other key is a viewer shortcut (the
@@ -2048,6 +2098,15 @@ void MediaViewer::Private::buildUi()
         if (q->isFullScreen())
             showControls(); // pictures auto-hide their controls in full screen only
     });
+    // 2.2 drag-out: from the picture when it fits (zoomed in, a drag pans), and from the video frame.
+    connect(canvas, &ImageCanvas::dragOutRequested, this, [this](const QPoint& pos) {
+        startDragOut(QPointF(canvas->width() > 0 ? static_cast<qreal>(pos.x()) / canvas->width() : 0.5,
+                             canvas->height() > 0 ? static_cast<qreal>(pos.y()) / canvas->height() : 0.5));
+    });
+    surface->onDragOut = [this](const QPoint& pos) {
+        startDragOut(QPointF(surface->width() > 0 ? static_cast<qreal>(pos.x()) / surface->width() : 0.5,
+                             surface->height() > 0 ? static_cast<qreal>(pos.y()) / surface->height() : 0.5));
+    };
     surface->onClick       = [this] { togglePlay(); };
     surface->onDoubleClick = [this] {
         togglePlay(); // undo the toggle of the first click of the double click
@@ -2553,9 +2612,10 @@ bool MediaViewer::Private::fetchesAutomatically() const
         return false;
     if (isPicture() || requested.contains(currentKey()))
         return true;
-    const Settings& s     = Settings::instance();
-    const quint64   limit = static_cast<quint64>(qMax(0, s.videoAutoDownloadMB)) * 1024 * 1024;
-    return s.inlinePreviews && limit > 0 && e->link.size > 0 && e->link.size <= limit && !e->tooLargeForAuto;
+    // 2.2 data saver: videos and audio of a server that saves data wait for Play.
+    const Settings s     = Settings::instance().forServer(e->link.serverUid);
+    const quint64  limit = static_cast<quint64>(qMax(0, s.videoAutoDownloadMB)) * 1024 * 1024;
+    return s.inlinePreviews && limit > 0 && e->link.size > 0 && e->link.size <= limit && !e->tooLargeForAuto && !s.dataSaver;
 }
 
 // A video / audio that is not downloaded and is not fetched automatically: it shows its poster with a
@@ -2607,7 +2667,9 @@ void MediaViewer::Private::updateTopBar()
     const QString name = displayNameFor(e->link);
     displayName        = name;
     q->setWindowTitle(QStringLiteral("%1 — " TSMEDIA_NAME).arg(name));
-    const QString tip = QStringLiteral("<p style='white-space:pre'>%1</p>").arg(name.toHtmlEscaped());
+    // 2.2 drag-out: the second line says the name can be dragged.
+    const QString tip = QStringLiteral("<p style='white-space:pre'>%1</p><p>%2</p>")
+                            .arg(name.toHtmlEscaped(), i18n::t("Drag the name to copy the file to a folder or app.").toHtmlEscaped());
     nameLabel->setToolTip(tip);
     fsName->setToolTip(tip);
     elideName();
@@ -3202,6 +3264,36 @@ void MediaViewer::Private::copyCurrent()
     flash(content == Content::Image ? i18n::t("Image copied") : i18n::t("Frame copied"), Glyph::Check, 2500);
 }
 
+// 2.2 drag-out
+void MediaViewer::Private::startDragOut(const QPointF& pressFraction)
+{
+    const MediaEntry* e = entry();
+    if (!core || !e)
+        return;
+    const QString key = currentKey();
+    if (e->state == MediaState::Idle)
+        requested.insert(key); // the drag downloads it (as Download would): show its progress, not "press play"
+    // The drag runs a nested event loop: the viewer may be closed meanwhile.
+    const QPointer<MediaViewer> guard(q);
+    const filedrag::Result      result = filedrag::start(core, key, q, pressFraction, q->devicePixelRatioF(), q->font());
+    if (guard && !result.message.isEmpty())
+        flash(result.message, Glyph::Info, result.error ? 4000 : 2500);
+}
+
+void MediaViewer::Private::copyFileCurrent()
+{
+    const MediaEntry* e = entry();
+    if (!core || !e)
+        return;
+    if (e->state != MediaState::Ready) {
+        flash(notReadyText(), Glyph::Info, 1500);
+        return;
+    }
+    QString    feedback;
+    const bool ok = filedrag::copyToClipboard(core, currentKey(), &feedback);
+    flash(feedback, ok ? Glyph::Check : Glyph::Info, ok ? 2500 : 4000);
+}
+
 void MediaViewer::Private::saveCurrent()
 {
     const MediaEntry* e = entry();
@@ -3393,7 +3485,10 @@ bool MediaViewer::Private::handleKey(QKeyEvent* event)
     case Qt::Key_C:
         if (!ctrl)
             return false;
-        copyCurrent();
+        if (shift) // 2.2 drag-out: the file itself, for Ctrl+V in a folder
+            copyFileCurrent();
+        else
+            copyCurrent();
         return true;
     case Qt::Key_S:
         if (!ctrl)
