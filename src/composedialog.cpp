@@ -1387,7 +1387,7 @@ void ComposeDialog::refreshTarget()
     updateState();
 }
 
-void ComposeDialog::restat()
+bool ComposeDialog::restat()
 {
     const qint64 limit   = static_cast<qint64>(qMax(0, m_limitMB)) * 1024 * 1024;
     bool         changed = false;
@@ -1409,6 +1409,7 @@ void ComposeDialog::restat()
     }
     if (changed)
         rebuildItems();
+    return changed;
 }
 
 void ComposeDialog::fitHeight()
@@ -1442,8 +1443,9 @@ void ComposeDialog::send()
     if (m_sending)
         return;
     refreshTarget();
-    restat(); // a file may have changed since it was added
-    if (!m_blocker.isEmpty() || compose::sendableCount(m_items) == 0 || !m_host.send)
+    // A file changed since it was added (gone, emptied, grown past the limit, locked): the window shows
+    // it first, and the next Send goes with what is left.
+    if (restat() || !m_blocker.isEmpty() || compose::sendableCount(m_items) == 0 || !m_host.send)
         return;
 
     SendRequest request;

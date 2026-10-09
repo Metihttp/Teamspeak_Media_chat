@@ -111,7 +111,7 @@ class ComposeDialog : public QDialog
     QWidget* buildSingle(const compose::Item& item);
     QWidget* buildList();
     void     refreshThumb(int id);
-    void     restat();          // files changed on disk meanwhile (size, gone)
+    bool     restat();          // files changed on disk meanwhile (size, gone); true: something changed
     void     refreshTarget();   // connected? partner still there?
     void     updateState();     // counts, labels, hints, Send
     void     updateCaption();   // counter, split hint
