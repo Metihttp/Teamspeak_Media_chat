@@ -28,6 +28,7 @@
 #include "audioplayback.h" // 2.2 audio
 #include "blurhash.h"
 #include "filenames.h" // 2.2 drag-out
+#include "hashing.h" // 2.2 sha
 #include "i18n.h"
 #include "ownedtimer.h"
 #include "settings.h"
@@ -70,6 +71,7 @@ constexpr int     kMaxResumeAttempts    = 3; // automatic restarts of a download
 constexpr int     kMaxUploadRenames     = 3; // new names after "file already exists"
 constexpr qint64  kExportMaxAgeMs       = 24LL * 3600 * 1000; // 2.2 drag-out: staged copies are kept this long
 constexpr qint64  kMaxExportCopyBytes   = 64LL * 1024 * 1024; // 2.2 drag-out: copied (when no hard link) only up to this
+constexpr int     kShowCheckMs          = 300; // 2.2 sha: "Checking file…" only for checks that take longer
 
 Core* g_instance = nullptr;
 
@@ -432,6 +434,16 @@ bool hasUnwrittenTail(const QString& path, const QString& fileName)
     return tail.size() == run && tail.count('\0') == run;
 }
 
+// 2.2 sha: a preview's bytes for its ph check (at most kMaxPreviewBytes are read; previews are never
+// larger, see finishPreviewDownload). Empty if it can't be read.
+QByteArray readPreview(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.read(static_cast<qint64>(kMaxPreviewBytes) + 1);
+}
+
 // Previews are staged next to (not inside) the main staging folder so names can never collide.
 QString previewStagingDir(const QString& stagingDir)
 {
@@ -468,10 +480,22 @@ Core::Core(QObject* parent)
     m_pool.setMaxThreadCount(kProbeThreads);
     m_stillPool.setMaxThreadCount(kStillThreads);
     m_clock.start();
+
+    // 2.2 sha: downloads whose link has a sha are checked on the verifier's own threads before they
+    // are cached. Its second pass waits while TeamSpeak still has the file open for writing.
+    fileverify::Environment check;
+    check.isBeingWritten = [](const QString& path) { return isOpenForWriting(path); };
+    m_verifier           = new fileverify::Verifier(check, this);
+    connect(m_verifier, &fileverify::Verifier::progressChanged, this, &Core::onCheckProgress);
+    connect(m_verifier, &fileverify::Verifier::finished, this, &Core::onCheckFinished);
 }
 
 Core::~Core()
 {
+    // 2.2 sha: running checks stop within one chunk read; nothing is reported any more.
+    if (m_verifier)
+        m_verifier->shutdown();
+
     // Workers only read files and post their result back; stop running staging copies, then join them.
     for (const auto& cancel : qAsConst(m_stagingCancel))
         cancel->store(true);
@@ -572,8 +596,11 @@ QString Core::cacheDir() const
 QString Core::cachePathFor(const MediaLink& link) const
 {
     const QString server = QString::fromLatin1(QCryptographicHash::hash(link.serverUid.toUtf8(), QCryptographicHash::Sha1).toHex().left(12));
-    return cacheDir() + QLatin1Char('/') + server + QLatin1Char('/') + QString::number(link.channelId) + QLatin1Char('/') + link.key().left(8) + QLatin1Char('_')
-           + localFileName(link.fileName);
+    // 2.2 sha: links with a sha use the whole key (80 bits). Only checked files are stored under it, and
+    // 8 hex digits would let a made-up hash be tuned to share the real file's cache name.
+    const int keyChars = link.isTsMedia() && link.sha256.size() == fileverify::kShaBytes ? 20 : 8;
+    return cacheDir() + QLatin1Char('/') + server + QLatin1Char('/') + QString::number(link.channelId) + QLatin1Char('/') + link.key().left(keyChars)
+           + QLatin1Char('_') + localFileName(link.fileName);
 }
 
 QString Core::partialDir(const QString& key, bool preview) const
@@ -619,6 +646,9 @@ void Core::ensure(const MediaLink& rawLink)
         } else {
             e.state    = MediaState::Ready;
             e.progress = 1.0;
+            // 2.2 sha: only files that matched are ever stored under a sha key, so this one did; it
+            // isn't hashed again.
+            e.check.verified = !link.sha256.isEmpty();
         }
     }
 
@@ -628,12 +658,13 @@ void Core::ensure(const MediaLink& rawLink)
         const QFileInfo pf(e.previewPath);
         if (pf.isFile() && hasUnwrittenTail(e.previewPath, e.previewPath))
             QFile::remove(e.previewPath);
-        else if (pf.isFile() && static_cast<quint64>(pf.size()) <= kMaxPreviewBytes)
+        else if (pf.isFile() && static_cast<quint64>(pf.size()) <= kMaxPreviewBytes && previewFileMatches(e.previewPath, link.previewSha)) // 2.2 sha: ph
             e.previewState = MediaState::Ready;
     }
 
     m_entries.insert(key, e);
     m_order.append(key);
+    refuseForgedHash(key); // 2.2 sha: a hash that contradicts this file's known one is refused at once
 
     if (!Settings::instance().inlinePreviews) {
         m_autoPending.insert(key);
@@ -730,7 +761,7 @@ void Core::download(const QString& key, bool openWhenReady)
         e.openWhenReady = e.openWhenReady || openWhenReady;
         return;
     case MediaState::Failed:
-        if (e.error == MediaError::NotFound)
+        if (e.error == MediaError::NotFound || e.error == MediaError::Mismatch) // 2.2 sha: the same bytes again
             return;
         break;
     case MediaState::Idle:
@@ -746,7 +777,7 @@ void Core::retry(const QString& key)
     auto it = m_entries.find(key);
     if (it == m_entries.end())
         return;
-    if (it->state == MediaState::Failed && it->error == MediaError::NotFound)
+    if (it->state == MediaState::Failed && (it->error == MediaError::NotFound || it->error == MediaError::Mismatch)) // 2.2 sha
         return;
 
     // A missing preview (failed, or removed from the cache) comes back too.
@@ -786,6 +817,9 @@ void Core::startDownload(const QString& key)
             return;
         }
     }
+    // 2.2 sha: the real digest of this file became known meanwhile and contradicts the link's.
+    if (refuseForgedHash(key))
+        return;
 
     const uint64 sch = ts3::connectionForServerUid(e.link.serverUid);
     if (!sch) {
@@ -845,7 +879,7 @@ void Core::startPreviewDownload(const QString& key)
     // Links that differ only in size (or messages sharing a preview) use the same preview file:
     // fetched once.
     const QFileInfo cached(e.previewPath);
-    if (cached.isFile() && cached.size() > 0 && static_cast<quint64>(cached.size()) <= kMaxPreviewBytes) {
+    if (cached.isFile() && cached.size() > 0 && static_cast<quint64>(cached.size()) <= kMaxPreviewBytes && previewFileMatches(e.previewPath, e.link.previewSha)) { // 2.2 sha: ph
         e.previewState = MediaState::Ready;
         invalidateStill(key, MediaStill::Preview);
         touch(e);
@@ -954,6 +988,24 @@ void Core::finishDownload(const QString& key)
         }
     }
 
+    // 2.2 sha: a link with a sha is cached only once the file matches it (checked off the GUI thread;
+    // onCheckFinished stores it). The transfer slot is free meanwhile.
+    if (!found.isEmpty() && startCheck(key, found)) {
+        pumpDownloadQueue();
+        return;
+    }
+    storeDownload(key, found);
+}
+
+// The tail of a finished download: moves the file from its partial folder into the cache.
+void Core::storeDownload(const QString& key, const QString& found)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end())
+        return;
+    MediaEntry&   e       = it.value();
+    const QString partial = partialDir(key, false);
+
     QString error;
     if (found.isEmpty()) {
         error = i18n::t("TeamSpeak finished the download, but the file is missing. Try again.");
@@ -1033,9 +1085,15 @@ void Core::finishPreviewDownload(const QString& key)
     } else if (static_cast<quint64>(QFileInfo(found).size()) > kMaxPreviewBytes) {
         // Finished before the progress timer could stop it; never decode it.
         error = QStringLiteral("the preview is larger than 5 MB");
+    } else if (!e.link.previewSha.isEmpty() && fileverify::previewDigest(readPreview(found)) != e.link.previewSha) {
+        // 2.2 sha: not the preview that was sent (ph). Never cached; the placeholder stays.
+        fileverify::count(fileverify::Counter::PreviewMismatched);
+        ts3::log(LogLevel_WARNING, m_previewSch.value(key), "Preview of %1 doesn't match its checksum; showing the placeholder instead", {ts3::file(e.link.remoteFile())});
+        error = QStringLiteral("the preview doesn't match its checksum");
     } else {
         QDir().mkpath(QFileInfo(e.previewPath).absolutePath());
         QFile::remove(e.previewPath);
+        m_previewDigests.remove(e.previewPath); // 2.2 sha: new bytes
         if (!QFile::rename(found, e.previewPath) && !QFile::copy(found, e.previewPath))
             error = QStringLiteral("could not write to the media cache");
     }
@@ -2016,6 +2074,17 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
             info = probeLocalMedia(staged, previews);
             jpeg = info.preview.isNull() ? QByteArray() : encodePreviewJpeg(info.preview);
         }
+        // 2.2 sha: the final staged bytes, hashed once, right before the preview and the file are
+        // uploaded (queued before onProbed, so it arrives first).
+        if (ok && !cancel->load()) {
+            const fileverify::StagedDigest digest = fileverify::finalizeStaged(staged, jpeg, cancel.get());
+            if (Core* core = self.data()) {
+                QMetaObject::invokeMethod(core, [self, id, digest] {
+                    if (self)
+                        self->onStagedFinalized(id, digest);
+                }, Qt::QueuedConnection);
+            }
+        }
         // ~Core waits for this pool, so the object is alive here; the queued call is dropped if it dies first.
         if (Core* core = self.data()) {
             QMetaObject::invokeMethod(core, [self, id, ok, size, info, jpeg] {
@@ -2367,7 +2436,21 @@ void Core::finishUpload(int id)
             link.waveform = item->waveform;
         }
     }
+    // 2.2 sha: what finalizeStaged measured. Without it (the staged file couldn't be read) the link goes
+    // out without one; receivers then show the file unchecked, as from 2.1.
+    if (const auto xt = m_uploadExtra.constFind(id); xt != m_uploadExtra.constEnd() && xt->hashed) {
+        link.sha256     = xt->digest.sha256;
+        link.previewSha = job.previewRemotePath.isEmpty() ? QByteArray() : xt->digest.previewSha;
+    }
     link = sanitized(link); // what receivers will see
+    if (!link.sha256.isEmpty()) {
+        m_knownDigests.note(remoteId(link), link.size, link.sha256); // our own bytes: the forged-hash guard's surest source
+        fileverify::count(fileverify::Counter::SentWithSha);
+    } else {
+        fileverify::count(fileverify::Counter::SentWithoutSha);
+        ts3::log(LogLevel_WARNING, job.target.sch, "Sending %1 without a checksum: the file couldn't be read for hashing",
+                 {ts3::file(joinRemote(job.remoteDir, job.remoteName))});
+    }
 
     // Seed the cache so the sender sees the media instantly.
     seedCache(job, link);
@@ -2729,8 +2812,9 @@ void Core::seedCache(const UploadJob& job, const MediaLink& link)
     if (!linkOrCopy(job.stagingDir + QLatin1Char('/') + job.remoteName, e.localPath))
         return; // the posted message registers it like any other link
     refreshFileTime(e.localPath);
-    e.state    = MediaState::Ready;
-    e.progress = 1.0;
+    e.state          = MediaState::Ready;
+    e.progress       = 1.0;
+    e.check.verified = !link.sha256.isEmpty(); // 2.2 sha: the very bytes that were hashed
 
     const MediaLink  preview = link.previewLink();
     const QByteArray jpeg    = m_uploadExtra.value(job.id).previewJpeg;
@@ -3107,6 +3191,180 @@ void Core::updateProgress()
 }
 
 // ============================================================================================
+// 2.2 sha: hashing what is sent, checking what is received (fileverify.h)
+// ============================================================================================
+
+void Core::onStagedFinalized(int id, const fileverify::StagedDigest& digest)
+{
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || (it->state != UploadState::Preparing && it->state != UploadState::Compressing))
+        return; // canceled or failed meanwhile
+    UploadExtra& extra = m_uploadExtra[id];
+    extra.digest       = digest;
+    extra.hashed       = true;
+    if (digest.sha256.isEmpty())
+        ts3::log(LogLevel_WARNING, it->target.sch, "Couldn't hash %1 (%2)", {ts3::file(it->remoteName), ts3::pub(digest.error)});
+}
+
+// Starts checking a finished download against its link's sha. The entry stays Downloading at 100%
+// until onCheckFinished.
+bool Core::startCheck(const QString& key, const QString& found)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || !m_verifier || it->link.sha256.size() != fileverify::kShaBytes)
+        return false;
+    MediaEntry& e   = it.value();
+    e.progress      = 1.0;
+    e.check         = ShaCheck();
+    e.check.running = true;
+    m_checks.insert(key, {floodClockMs(), found});
+    if (!m_checkTimer) {
+        // A member timer, never a functor singleShot: nothing of ours may be pending once the plugin is gone.
+        m_checkTimer = new QTimer(this);
+        m_checkTimer->setSingleShot(true);
+        connect(m_checkTimer, &QTimer::timeout, this, &Core::showSlowChecks);
+    }
+    if (!m_checkTimer->isActive())
+        m_checkTimer->start(kShowCheckMs);
+    m_verifier->start(key, found, e.link.sha256);
+    touch(e);
+    return true;
+}
+
+// Checks running for kShowCheckMs say so ("Checking file…"); quicker ones never do (no flashing).
+void Core::showSlowChecks()
+{
+    const qint64 now  = floodClockMs();
+    qint64       next = -1;
+    QStringList  shown;
+    for (auto it = m_checks.cbegin(); it != m_checks.cend(); ++it) {
+        auto e = m_entries.find(it.key());
+        if (e == m_entries.end() || !e->check.running || e->check.shown)
+            continue;
+        const qint64 due = it->startedAt + kShowCheckMs;
+        if (due > now) {
+            next = next < 0 ? due : qMin(next, due);
+            continue;
+        }
+        e->check.shown    = true;
+        e->check.progress = qMax(e->check.progress, m_verifier->progress(it.key()));
+        shown.append(it.key());
+    }
+    if (next >= 0 && m_checkTimer)
+        m_checkTimer->start(static_cast<int>(qMax<qint64>(1, next - now)));
+    for (const QString& key : qAsConst(shown)) {
+        auto e = m_entries.find(key);
+        if (e != m_entries.end())
+            touch(e.value());
+    }
+}
+
+void Core::onCheckProgress(const QString& key, double fraction, bool secondPass)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || !it->check.running)
+        return;
+    ShaCheck&    check  = it->check;
+    const bool   again  = check.again != secondPass;
+    const double before = check.progress;
+    check.again         = secondPass;
+    check.progress      = fraction;
+    // Repaint only for what a preview shows: whole percents of a shown check, or its second pass.
+    if (check.shown && (again || qRound(before * 100.0) != qRound(fraction * 100.0)))
+        touch(it.value());
+}
+
+void Core::onCheckFinished(const fileverify::Result& result)
+{
+    const QString      key   = result.key;
+    const RunningCheck check = m_checks.take(key);
+    auto               it    = m_entries.find(key);
+    if (it == m_entries.end() || !it->check.running || it->state != MediaState::Downloading)
+        return; // nothing waits for it any more
+    MediaEntry&   e       = it.value();
+    const QString remote  = e.link.remoteFile();
+    const QString partial = partialDir(key, false);
+    e.check               = ShaCheck();
+
+    switch (result.outcome) {
+    case fileverify::Outcome::Match:
+        e.check.verified = true;
+        m_knownDigests.note(remoteId(e.link), e.link.size, result.received);
+        if (result.rechecked)
+            ts3::log(LogLevel_WARNING, e.sch, "%1 matched its SHA-256 only on the second check: it was still being written", {ts3::file(remote)});
+        ts3::log(LogLevel_DEBUG, e.sch, "Checked %1 against its SHA-256 in %2 ms", {ts3::file(remote), ts3::pub(result.elapsedMs)});
+        storeDownload(key, QFileInfo::exists(check.path) ? check.path : findDownloaded(partial, e.link.fileName));
+        return;
+
+    case fileverify::Outcome::Mismatch:
+        // Final: a new download would get the same bytes. The file is never shown, cached or saved.
+        e.check.received = result.received;
+        if (result.stableMismatch())
+            m_knownDigests.note(remoteId(e.link), e.link.size, result.received); // later links with this made-up hash fail at once
+        ts3::log(LogLevel_WARNING, e.sch, "SHA-256 mismatch for %1: expected %2, got %3",
+                 {ts3::file(remote), ts3::pub(hashing::toHex(result.expected)), ts3::pub(hashing::toHex(result.received))});
+        if (result.rechecked && result.firstReceived != result.received)
+            ts3::log(LogLevel_WARNING, e.sch, "The first check of %1 got %2: the file changed between the checks",
+                     {ts3::file(remote), ts3::pub(result.firstReceived.isEmpty() ? QStringLiteral("nothing") : hashing::toHex(result.firstReceived))});
+        QDir(partial).removeRecursively();
+        e.state = MediaState::Idle; // finishDownload already let go of the transfer (failDownload's guard)
+        failDownload(key, MediaError::Mismatch, downloadErrorText(MediaError::Mismatch), false, true);
+        return;
+
+    case fileverify::Outcome::ReadError:
+        ts3::log(LogLevel_WARNING, e.sch, "Couldn't check %1 against its SHA-256: %2", {ts3::file(remote), ts3::pub(result.error)});
+        QDir(partial).removeRecursively();
+        e.state = MediaState::Idle;
+        failDownload(key, MediaError::Other, i18n::t("Couldn't check the downloaded file. Try again."), false, true);
+        return;
+    }
+}
+
+// A link whose sha contradicts the real digest of the same file (same server path and size) can only
+// be a made-up hash, or one for a file that was replaced: it fails as Mismatch without a download, so
+// links with ever new made-up hashes can't make everyone fetch the file again and again.
+bool Core::refuseForgedHash(const QString& key)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || it->link.sha256.isEmpty() || it->state == MediaState::Ready || it->state == MediaState::Failed
+        || it->state == MediaState::Downloading)
+        return false;
+    MediaEntry& e = it.value();
+    if (m_knownDigests.check(remoteId(e.link), e.link.size, e.link.sha256) != fileverify::KnownDigests::Verdict::Contradicts)
+        return false;
+    fileverify::count(fileverify::Counter::ForgedBlocked);
+    e.check          = ShaCheck();
+    e.check.received = m_knownDigests.known(remoteId(e.link), e.link.size);
+    ts3::log(LogLevel_WARNING, e.sch, "Not downloading %1: its link names another SHA-256 than the file has", {ts3::file(e.link.remoteFile())});
+    if (e.state == MediaState::Queued)
+        e.state = MediaState::Idle;
+    failDownload(key, MediaError::Mismatch, downloadErrorText(MediaError::Mismatch), false, true);
+    return true;
+}
+
+// A cached preview matches ph (true without one). Hashed once per file version: the result is kept
+// until the file's size or time changes.
+bool Core::previewFileMatches(const QString& path, const QByteArray& previewSha)
+{
+    if (previewSha.isEmpty())
+        return true;
+    const QFileInfo info(path);
+    const qint64    size     = info.size();
+    const qint64    modified = info.lastModified().toMSecsSinceEpoch();
+    auto            it       = m_previewDigests.find(path);
+    if (it == m_previewDigests.end() || it->size != size || it->modified != modified) {
+        PreviewDigest digest;
+        digest.size     = size;
+        digest.modified = modified;
+        digest.digest   = fileverify::previewDigest(readPreview(path));
+        it              = m_previewDigests.insert(path, digest);
+        if (it->digest != previewSha)
+            ts3::log(LogLevel_INFO, 0, "The cached preview %1 isn't the one a link names; that one is downloaded", {ts3::local(QFileInfo(path).fileName())});
+    }
+    return it->digest == previewSha;
+}
+
+// ============================================================================================
 // TeamSpeak events
 // ============================================================================================
 
@@ -3275,7 +3533,8 @@ void Core::onConnectionLost(uint64 sch)
     QStringList mains;
     QStringList previews;
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
-        if (it->sch == sch && (it->state == MediaState::Downloading || it->state == MediaState::Queued))
+        // 2.2 sha: a file being checked is complete already; the check goes on without the server.
+        if (it->sch == sch && (it->state == MediaState::Downloading || it->state == MediaState::Queued) && !it->check.running)
             mains.append(it.key());
         if ((it->previewState == MediaState::Downloading || it->previewState == MediaState::Queued) && m_previewSch.value(it.key()) == sch)
             previews.append(it.key());

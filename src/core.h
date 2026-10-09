@@ -15,6 +15,7 @@
 #include <atomic>
 #include <memory>
 
+#include "fileverify.h" // 2.2 sha
 #include "floodgovernor.h"
 #include "medialink.h"
 #include "mediaprobe.h"
@@ -25,6 +26,19 @@ class QWidget;
 
 enum class MediaState { Idle, Queued, Downloading, Ready, Failed };
 // MediaError and its texts (downloadErrorTitle / downloadErrorText) are in medialink.h.
+
+// 2.2 sha: the main file checked against link.sha256 (fileverify.h). While the check runs the entry
+// stays Downloading at progress 1.0, so every switch over MediaState keeps working. Previews say
+// "Checking file…" once it has taken a moment (shown), so small files don't flash it; see
+// previewrenderer.h (isCheckingShown, checkingText).
+struct ShaCheck {
+    bool       running  = false;
+    bool       shown    = false; // running for a moment now
+    bool       again    = false; // the second pass, after a first one that didn't match
+    double     progress = -1.0;  // of the current pass, 0..1; < 0 before its first report
+    bool       verified = false; // Ready and known to match link.sha256 (checked here, or our own upload)
+    QByteArray received;         // MediaError::Mismatch: what the downloaded file hashed to
+};
 
 struct MediaEntry {
     MediaLink  link;
@@ -47,6 +61,8 @@ struct MediaEntry {
     MediaState previewState      = MediaState::Idle;
     QString    previewPath; // exists when previewState == Ready
     anyID      previewTransferId = 0;
+
+    ShaCheck check; // 2.2 sha
 };
 
 // Where the chat message announcing an upload is posted.
@@ -294,6 +310,8 @@ class Core : public QObject
         int        renames           = 0;     // new names after "file already exists"
         bool       mainUploaded      = false; // the main file is complete on the server
         MediaLink  link;                      // the link to post, once uploaded
+        fileverify::StagedDigest digest;      // 2.2 sha: of the final staged bytes (finalizeStaged)
+        bool       hashed = false;            // 2.2 sha: digest is set (empty sha = couldn't be read)
     };
 
     // ---- 2.2 posting ----------------------------------------------------------------------
@@ -400,6 +418,19 @@ class Core : public QObject
     void updateProgress();
     void ensureProgressTimer();
 
+    // ---- 2.2 sha: hashing what is sent, checking what is received (fileverify.h) -----------------
+    // The digest of the final staged bytes. The staging worker computes it (fileverify::finalizeStaged)
+    // right after the probe; whatever changes the staged file later (2.4: a transcode, an export) must
+    // run finalizeStaged again on its worker and hand the result here before the upload starts.
+    void onStagedFinalized(int id, const fileverify::StagedDigest& digest);
+    void storeDownload(const QString& key, const QString& found); // a finished (and checked) download into the cache
+    bool startCheck(const QString& key, const QString& found);   // false: the link has no sha
+    void onCheckProgress(const QString& key, double fraction, bool secondPass);
+    void onCheckFinished(const fileverify::Result& result);
+    void showSlowChecks();
+    bool refuseForgedHash(const QString& key); // its sha contradicts the file's known one: failed at once
+    bool previewFileMatches(const QString& path, const QByteArray& previewSha);
+
     static MediaError mapError(unsigned int error);
     static QString    makeRemoteName(const QString& originalName);
     static QString    renamedRemoteName(const QString& remoteName);
@@ -459,4 +490,20 @@ class Core : public QObject
     QTimer*                     m_resumeTimer   = nullptr;
     QThreadPool                 m_pool;      // staging copies + probes; destroyed (and waited for) with Core
     QThreadPool                 m_stillPool; // expensive still decodes (untrusted files); waited for with Core
+
+    // 2.2 sha
+    struct RunningCheck {
+        qint64  startedAt = 0; // floodClockMs()
+        QString path;          // the downloaded file being checked (in its partial folder)
+    };
+    struct PreviewDigest {
+        qint64     size     = -1;
+        qint64     modified = 0;
+        QByteArray digest; // fileverify::previewDigest of the file
+    };
+    fileverify::Verifier*         m_verifier = nullptr;   // checks finished downloads; shut down first in ~Core
+    fileverify::KnownDigests      m_knownDigests;         // real digests of server files (forged-hash guard)
+    QHash<QString, RunningCheck>  m_checks;               // key -> its running check
+    QTimer*                       m_checkTimer = nullptr; // "Checking file…" for checks that take a moment
+    QHash<QString, PreviewDigest> m_previewDigests;       // cached preview path -> its digest, until the file changes
 };

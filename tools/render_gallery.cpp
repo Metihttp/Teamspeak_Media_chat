@@ -763,6 +763,57 @@ QList<Sample> buildSamples()
         e.link.protocol = MediaLink::kProtocol;
         return renderDragCard(e, false, st.font, st.dpr);
     });
+
+    // ---- 2.2 sha: checking the downloaded file, and a file that doesn't match --------------------
+    // Core shows "Checking file…" only once a check has taken a moment (check.shown); files over
+    // 256 MB show the check's own progress.
+    auto checking = [](MediaEntry e, double progress, bool again = false) {
+        e.state          = MediaState::Downloading;
+        e.progress       = 1.0;
+        e.check.running  = true;
+        e.check.shown    = true;
+        e.check.again    = again;
+        e.check.progress = progress;
+        return e;
+    };
+    add(QStringLiteral("sha_image_checking"), QStringLiteral("image downloaded, checking (small file)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = checking(photoReady, 0.5);
+        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("sha_image_mismatch"), QStringLiteral("image doesn't match what was sent (preview behind)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(photoReady, MediaError::Mismatch);
+        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("sha_image_mismatch_blurhash"), QStringLiteral("image mismatch over its blurhash, hover (inert)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(photoReady, MediaError::Mismatch);
+        return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), hovered(st), ls);
+    });
+    const MediaEntry bigClip = makeEntry(QStringLiteral("concert_full.mp4"), 536870912, 1280, 720, 5400000, MediaState::Idle);
+    add(QStringLiteral("sha_video_checking_512mb"), QStringLiteral("video 512 MB checking 42% (pressed play)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = checking(bigClip, 0.42);
+        PlaybackOverlay  o;
+        o.busy         = true;
+        o.busyProgress = shownDownloadProgress(e);
+        o.durationMs   = e.link.durationMs;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    });
+    add(QStringLiteral("sha_video_checking_auto"), QStringLiteral("video checking, not playing (small file)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = checking(clip, 0.3);
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
+    add(QStringLiteral("sha_video_mismatch"), QStringLiteral("video doesn't match what was sent"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = failed(clip, MediaError::Mismatch);
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
+    card(QStringLiteral("sha_card_checking"), QStringLiteral("card checking (small file)"), checking(zip, 0.5));
+    card(QStringLiteral("sha_card_checking_512mb"), QStringLiteral("card 512 MB checking 42%"),
+         checking(makeEntry(QStringLiteral("backup_2026.zip"), 536870912, 0, 0, 0, MediaState::Idle), 0.42));
+    card(QStringLiteral("sha_card_checking_again"), QStringLiteral("card 512 MB checking again 10%"),
+         checking(makeEntry(QStringLiteral("backup_2026.zip"), 536870912, 0, 0, 0, MediaState::Idle), 0.10, true));
+    card(QStringLiteral("sha_card_mismatch"), QStringLiteral("card doesn't match what was sent"), failed(zip, MediaError::Mismatch));
+    card(QStringLiteral("sha_card_mismatch_narrow"), QStringLiteral("card mismatch, narrow (240 px)"), failed(zip, MediaError::Mismatch), 240);
+    styled(QStringLiteral("sha_card_mismatch_hover"), QStringLiteral("card mismatch, hover (inert)"), failed(zip, MediaError::Mismatch),
+           [](const PreviewStyle& st) { return hovered(st); });
     return list;
 }
 

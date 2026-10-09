@@ -2646,7 +2646,7 @@ QString MediaViewer::Private::notReadyText() const
     case MediaState::Queued:
         return i18n::t("Waiting to download…");
     case MediaState::Downloading:
-        return i18n::t("Still downloading…");
+        return isCheckingShown(*e) ? checkingText(*e) : i18n::t("Still downloading…"); // 2.2 sha
     case MediaState::Failed:
         return downloadErrorTitle(e->error);
     case MediaState::Ready:
@@ -2668,8 +2668,10 @@ void MediaViewer::Private::updateTopBar()
     displayName        = name;
     q->setWindowTitle(QStringLiteral("%1 — " TSMEDIA_NAME).arg(name));
     // 2.2 drag-out: the second line says the name can be dragged.
-    const QString tip = QStringLiteral("<p style='white-space:pre'>%1</p><p>%2</p>")
-                            .arg(name.toHtmlEscaped(), i18n::t("Drag the name to copy the file to a folder or app.").toHtmlEscaped());
+    QString tip = QStringLiteral("<p style='white-space:pre'>%1</p><p>%2</p>")
+                      .arg(name.toHtmlEscaped(), i18n::t("Drag the name to copy the file to a folder or app.").toHtmlEscaped());
+    if (e->state == MediaState::Ready && e->check.verified) // 2.2 sha
+        tip += QStringLiteral("<p>%1</p>").arg(i18n::t("SHA-256 verified: this is the file that was sent.").toHtmlEscaped());
     nameLabel->setToolTip(tip);
     fsName->setToolTip(tip);
     elideName();
@@ -2757,13 +2759,16 @@ MediaViewer::Private::PanelButtons MediaViewer::Private::showStatus()
     if (e->state == MediaState::Failed) {
         const QString detail = e->errorText.isEmpty() ? downloadErrorText(e->error) : e->errorText;
         overlay->showMessage(Glyph::Error, downloadErrorTitle(e->error), detail, true);
-        // Retrying can't bring back a deleted file or get past a channel password (as in the chat).
+        // Retrying can't bring back a deleted file or get past a channel password (as in the chat), nor
+        // (2.2 sha) turn a file that doesn't match its link into the one that was sent.
         PanelButtons buttons;
-        buttons.retry = e->error != MediaError::NotFound && e->error != MediaError::Password;
+        buttons.retry = isRetryableDownload(*e);
         return buttons;
     }
 
     auto downloadText = [e] {
+        if (isCheckingShown(*e)) // 2.2 sha
+            return checkingText(*e);
         if (e->link.size == 0)
             return i18n::t("Downloading…");
         const quint64 done = static_cast<quint64>(qBound(0.0, e->progress, 1.0) * static_cast<double>(e->link.size));
@@ -2772,7 +2777,7 @@ MediaViewer::Private::PanelButtons MediaViewer::Private::showStatus()
 
     if (content == Content::File) {
         if (e->state == MediaState::Downloading) {
-            overlay->showProgress(e->progress, downloadText());
+            overlay->showProgress(shownDownloadProgress(*e), downloadText()); // 2.2 sha: the check's, when shown
             return {};
         }
         if (e->state == MediaState::Queued) {
@@ -2788,7 +2793,7 @@ MediaViewer::Private::PanelButtons MediaViewer::Private::showStatus()
 
     switch (e->state) {
     case MediaState::Downloading:
-        overlay->showProgress(e->progress, downloadText());
+        overlay->showProgress(shownDownloadProgress(*e), downloadText()); // 2.2 sha: the check's, when shown
         return {};
     case MediaState::Queued:
         overlay->showProgress(-1, i18n::t("Waiting to download…"));

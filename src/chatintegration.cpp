@@ -1178,6 +1178,8 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
     } else if (e->kind == MediaKind::Video && m_media) {
         const PlaybackOverlay o = m_media->overlay(hit.key);
         if (o.busy) {
+            if (isCheckingShown(*e)) // 2.2 sha
+                return i18n::t("%1 Click to cancel autoplay.").arg(checkingText(*e));
             if (e->state == MediaState::Downloading)
                 return i18n::t("Downloading… Click to cancel autoplay.");
             if (e->state == MediaState::Ready)
@@ -1524,6 +1526,15 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             showFeedback(viewport(), i18n::t("Link copied"), false);
         }
     });
+    // 2.2 sha: both checksums and the file, for whoever looks into it (the sender, a server admin).
+    if (e->state == MediaState::Failed && e->error == MediaError::Mismatch) {
+        menu->addAction(i18n::t("Copy &details"), this, [this, key, viewport] {
+            if (const MediaEntry* entry = m_core->entry(key)) {
+                QGuiApplication::clipboard()->setText(fileverify::mismatchDetails(entry->link.sha256, entry->check.received, entry->link.remoteFile()));
+                showFeedback(viewport(), i18n::t("Details copied"), false);
+            }
+        });
+    }
 
     if (primary)
         menu->setDefaultAction(primary);

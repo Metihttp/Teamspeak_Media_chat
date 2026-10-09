@@ -81,6 +81,21 @@ bool isPreviewActionable(const MediaEntry& entry);
 // Without the file size. cannotPreview: a Ready picture that can't be decoded.
 QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool revealOnly = false);
 
+// ---- 2.2 sha: a downloaded file being checked against its link's SHA-256 ---------------------------
+// True while a preview says "Checking file…": Core checks the downloaded file and it has taken a moment
+// (MediaEntry::check.shown; quicker checks never show, so small files don't flash it).
+bool isCheckingShown(const MediaEntry& entry);
+// The download progress previews draw: while a large file (over 256 MB) is checked, the check's own,
+// which starts at 0 again (checkingText says so with its percentage); while a smaller one is, 1.0;
+// otherwise entry.progress.
+double shownDownloadProgress(const MediaEntry& entry);
+// "Checking file…", "Checking file… 42%" (files over 256 MB), "Checking file again…" (the second pass
+// after a first one that didn't match).
+QString checkingText(const MediaEntry& entry);
+// What a failed preview says under its title: "Click to retry" where retrying can help, "Ask the sender
+// to send it again" for a file that doesn't match what was sent, else nothing.
+QString errorHint(const MediaEntry& entry);
+
 // Text colours with the background they are drawn on (translucent layers already flattened), and
 // the contrast each needs: tools/render_gallery prints them so a regression shows up.
 struct PreviewColorPair {

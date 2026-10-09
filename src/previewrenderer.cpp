@@ -519,6 +519,14 @@ QString retryHint()
     return i18n::t("Click to retry");
 }
 
+// 2.2 sha: files above this show the check's percentage (and their ring follows the check).
+constexpr quint64 kCheckPercentFromBytes = 256ull * 1024 * 1024;
+
+bool checkingPercent(const MediaEntry& e)
+{
+    return isCheckingShown(e) && e.link.size > kCheckPercentFromBytes && e.check.progress >= 0;
+}
+
 // A preview's status from most to least complete, without the file size: the card shows the first
 // one that fits (after "size · first"), the tooltip the first.
 QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly)
@@ -531,6 +539,8 @@ QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly
     case MediaState::Queued:
         return {i18n::t("Waiting to download…"), i18n::t("Waiting…")};
     case MediaState::Downloading: {
+        if (isCheckingShown(e)) // 2.2 sha
+            return {checkingText(e), i18n::t("Checking…")};
         const int     percent = qRound(qBound(0.0, e.progress, 1.0) * 100.0);
         const QString amounts = amountText(e);
         QStringList   texts;
@@ -546,6 +556,11 @@ QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly
             return {i18n::t("Click to show in folder"), i18n::t("Show in folder")};
         return {i18n::t("Click to open"), i18n::t("Open")};
     case MediaState::Failed:
+        if (e.error == MediaError::Mismatch) { // 2.2 sha: the cause and the way out, as much as fits
+            const QString again = i18n::t("Ask the sender again");
+            return {joinDot(errorTitle(e), errorHint(e)), joinDot(errorTitle(e), again), joinDot(i18n::t("Doesn't match"), again), errorTitle(e),
+                    i18n::t("Doesn't match")};
+        }
         return {errorTitle(e)};
     }
     return {};
@@ -806,6 +821,12 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
         drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::None, -1, {i18n::t("Waiting to download…"), i18n::t("Waiting…")}, pillFont);
         break;
     case MediaState::Downloading: {
+        if (isCheckingShown(e)) { // 2.2 sha: downloaded, being checked
+            const double shown = shownDownloadProgress(e);
+            drawProgressDisc(p, disc, shown, false, checkingPercent(e), style, hovered, pressed);
+            drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, shown, {checkingText(e), i18n::t("Checking…")}, pillFont);
+            break;
+        }
         // Same disc as the download button before, now with the percentage; the pill has the amounts.
         drawProgressDisc(p, disc, e.progress, false, true, style, hovered, pressed);
         const QString amounts = amountText(e);
@@ -826,7 +847,7 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
         break;
     }
     case MediaState::Failed:
-        drawCenterMessage(p, bounds, errorTitle(e), isRetryableDownload(e) ? retryHint() : QString(), true, !pixels.isNull(), style, hovered, pressed);
+        drawCenterMessage(p, bounds, errorTitle(e), errorHint(e), true, !pixels.isNull(), style, hovered, pressed);
         break;
     }
     if (animated && e.state != MediaState::Failed)
@@ -989,7 +1010,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
         drawWaitingGlyph(p, slot.center(), 8.5, 2.2, pal.track, hovered ? pal.title : pal.muted);
         break;
     case MediaState::Downloading:
-        drawRing(p, slot.center(), 8.5, 2.2, e.progress, pal.track, pal.progress, style.animate);
+        drawRing(p, slot.center(), 8.5, 2.2, shownDownloadProgress(e), pal.track, pal.progress, style.animate); // 2.2 sha: the check's, when shown
         break;
     case MediaState::Ready:
         // Programs and scripts are only shown in their folder (the status line says so).
@@ -1041,7 +1062,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
         p.setPen(Qt::NoPen);
         p.setBrush(pal.track);
         p.drawRoundedRect(track, 1.5, 1.5);
-        const qreal  filled = qMax(3.0, track.width() * qBound(0.0, e.progress, 1.0));
+        const qreal  filled = qMax(3.0, track.width() * qBound(0.0, shownDownloadProgress(e), 1.0)); // 2.2 sha
         const QRectF done(track.topLeft(), QSizeF(filled, track.height()));
         p.setBrush(pal.progress);
         p.drawRoundedRect(done, 1.5, 1.5);
@@ -1278,10 +1299,13 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
     const bool failed = entry.state == MediaState::Failed && !hasFrame && !overlay.busy;
     if (failed) {
         const bool retry = isRetryableDownload(entry);
-        drawCenterMessage(p, bounds, errorTitle(entry), retry ? retryHint() : QString(), true, true, style, retry && overlay.hover != VideoZone::None,
+        drawCenterMessage(p, bounds, errorTitle(entry), errorHint(entry), true, true, style, retry && overlay.hover != VideoZone::None,
                           retry && overlay.pressed != VideoZone::None);
     } else if (overlay.busy) {
-        drawProgressDisc(p, g.centerDisc, overlay.busyProgress, false, true, style, overlay.hover != VideoZone::None, overlay.pressed != VideoZone::None);
+        // 2.2 sha: while a smaller file is checked the ring stays full, without a "100%" that would
+        // contradict "Checking file…".
+        const bool label = !isCheckingShown(entry) || checkingPercent(entry);
+        drawProgressDisc(p, g.centerDisc, overlay.busyProgress, false, label, style, overlay.hover != VideoZone::None, overlay.pressed != VideoZone::None);
     } else if (!overlay.playing) {
         const QRectF disc = g.centerDisc;
         PressScale   scale(p, disc.center(), pressed);
@@ -1321,6 +1345,9 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
             const qreal leftMax = right.isValid() ? right.left() - 8.0 - bounds.left() - 8.0 : -1.0;
             if (overlay.externalOnly && !overlay.busy) {
                 drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Open, -1, {i18n::t("Opens in default app")}, pillFont, leftMax);
+            } else if (isCheckingShown(entry) && !started) { // 2.2 sha: downloaded, being checked
+                drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, shownDownloadProgress(entry), {checkingText(entry), i18n::t("Checking…")}, pillFont,
+                         leftMax);
             } else if (!overlay.busy && !started) {
                 switch (entry.state) {
                 case MediaState::Idle:
@@ -1400,7 +1427,40 @@ double seekFractionAt(const QSize& logicalSize, const QPointF& pos)
 
 bool isRetryableDownload(const MediaEntry& entry)
 {
-    return entry.state == MediaState::Failed && entry.error != MediaError::NotFound && entry.error != MediaError::Password;
+    // 2.2 sha: a file that doesn't match its link would come back with the same bytes.
+    return entry.state == MediaState::Failed && entry.error != MediaError::NotFound && entry.error != MediaError::Password && entry.error != MediaError::Mismatch;
+}
+
+// ---- 2.2 sha ------------------------------------------------------------------------------------
+
+bool isCheckingShown(const MediaEntry& entry)
+{
+    return entry.state == MediaState::Downloading && entry.check.running && entry.check.shown;
+}
+
+double shownDownloadProgress(const MediaEntry& entry)
+{
+    if (!isCheckingShown(entry))
+        return entry.progress;
+    return checkingPercent(entry) ? qBound(0.0, entry.check.progress, 1.0) : 1.0;
+}
+
+QString checkingText(const MediaEntry& entry)
+{
+    const bool percent = checkingPercent(entry);
+    const int  value   = qRound(qBound(0.0, entry.check.progress, 1.0) * 100.0);
+    if (entry.check.again)
+        return percent ? i18n::t("Checking file again… %1%").arg(value) : i18n::t("Checking file again…");
+    return percent ? i18n::t("Checking file… %1%").arg(value) : i18n::t("Checking file…");
+}
+
+QString errorHint(const MediaEntry& entry)
+{
+    if (entry.state != MediaState::Failed)
+        return {};
+    if (entry.error == MediaError::Mismatch)
+        return i18n::t("Ask the sender to send it again");
+    return isRetryableDownload(entry) ? retryHint() : QString();
 }
 
 bool isPreviewActionable(const MediaEntry& entry)
