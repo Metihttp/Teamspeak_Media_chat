@@ -343,7 +343,7 @@ class Core : public QObject
     bool    waitsForEarlierPosts(const UploadJob& job) const;
     QString heldText(const UploadJob& job) const; // why an uploaded file's message waits
     void    pumpPostUnits();                      // composes the units whose turn has come
-    void    composeUnit(int batch, PostUnit& unit);
+    void    composeUnit(int batch, int index);
     void    pumpPosts();                          // sends queued messages as their governors allow
     bool    sendPost(PostItem& item);             // false: refused at once (already reported)
     void    finishPost(const QString& returnCode, unsigned int error, const QString& message, bool permissionError);

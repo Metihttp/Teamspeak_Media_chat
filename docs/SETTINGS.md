@@ -10,6 +10,7 @@ Every option of TS Media chat, with its default and its range.
 
 Open the settings with **Plugins → TS Media chat → Settings…**, by typing `/tsmedia settings` in the chat, or with the plugin's Settings button in **Tools → Options → Addons**.
 
+- The options are on tabs: **General** (media cache), **Sending** (sending, and the note for people without the plugin) and **Receiving & playback**. <kbd>Ctrl</kbd>+<kbd>Tab</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> switch tabs, and the dialog opens on the tab you used last.
 - **OK** saves and closes, **Apply** saves and keeps the dialog open, **Cancel** closes without saving.
 - **Restore defaults** only fills in the default of every option; nothing is saved until you click **OK** or **Apply**.
 - Only the options you changed are saved. The volume you set in the gallery viewer is kept, and the dialog follows it.

@@ -68,7 +68,7 @@ Windows N editions (for example Windows 11 Pro N) need the **Media Feature Pack*
 
 ### GIFs only play when I point at them
 
-Either *Play GIFs automatically* is off in **Settings → Receiving**, or Windows animations are turned off (**Settings → Accessibility → Visual effects → Animation effects**). The plugin follows that Windows setting: GIFs then play only while the pointer is over them, and loading indicators stand still.
+Either *Play GIFs automatically* is off in **Settings → Receiving & playback**, or Windows animations are turned off (**Settings → Accessibility → Visual effects → Animation effects**). The plugin follows that Windows setting: GIFs then play only while the pointer is over them, and loading indicators stand still.
 
 ### Pictures look smaller at 100% in the viewer
 
@@ -127,7 +127,7 @@ No, the plugin is Windows only.
 
 ### The cache takes too much space
 
-Lower the *Size limit* or click **Clear cache** in **Settings → Media cache**. Media still in the chat is downloaded again when needed.
+Lower the *Size limit* or click **Clear cache** in **Settings → General → Media cache**. Media still in the chat is downloaded again when needed.
 
 ### Where are my settings and the cache?
 

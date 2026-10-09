@@ -2238,23 +2238,28 @@ void Core::pumpPostUnits()
     std::sort(batches.begin(), batches.end());
     for (int batch : qAsConst(batches)) {
         bool earlierPending = false;
-        for (int u = 0; u < m_batches[batch].units.size(); ++u) {
-            PostUnit& unit = m_batches[batch].units[u];
+        // Looked up again on every step and copied: state changes emit signals, and whatever reacts
+        // to them may change the batches.
+        for (int u = 0;; ++u) {
+            const auto b = m_batches.constFind(batch);
+            if (b == m_batches.constEnd() || u >= b->units.size())
+                break;
+            const PostUnit unit = b->units.at(u);
             if (unit.composed)
                 continue;
             bool settled = true;
-            for (int id : qAsConst(unit.jobs)) {
+            for (int id : unit.jobs) {
                 const UploadJob* job = upload(id);
                 if (job && isPreparing(job->state))
                     settled = false;
             }
             if (!earlierPending && settled) {
-                composeUnit(batch, m_batches[batch].units[u]); // may change the hashes: no references kept
+                composeUnit(batch, u);
                 continue;
             }
             // Held: say what it waits for (only when that changed: every update runs the queue again).
             const QString text = !earlierPending && unit.album ? i18n::t("Waiting for the rest of the album…") : i18n::t("Waiting for earlier files…");
-            for (int id : m_batches[batch].units[u].jobs) {
+            for (int id : unit.jobs) {
                 auto job = m_uploads.find(id);
                 if (job != m_uploads.end() && job->state == UploadState::Posting && job->waiting && job->message != text)
                     setUploadState(job.value(), UploadState::Posting, text, true);
@@ -2265,9 +2270,15 @@ void Core::pumpPostUnits()
     pumpPosts();
 }
 
-void Core::composeUnit(int batch, PostUnit& unit)
+void Core::composeUnit(int batch, int index)
 {
-    unit.composed = true;
+    auto b = m_batches.find(batch);
+    if (b == m_batches.end() || index < 0 || index >= b->units.size() || b->units.at(index).composed)
+        return;
+    b->units[index].composed = true;
+    const PostUnit unit      = b->units.at(index);
+    // The caption goes with the first unit that posts something (marked as done below).
+    const QString    caption = b->captionDone ? QString() : b->caption;
     QVector<int>     ids;
     QList<MediaLink> links;
     for (int id : qAsConst(unit.jobs)) {
@@ -2305,10 +2316,11 @@ void Core::composeUnit(int batch, PostUnit& unit)
     ComposeOptions  options;
     options.includeNotice = s.addRequiredNotice;
     options.downloadUrl   = s.pluginDownloadUrl;
-    BatchInfo& info       = m_batches[batch];
-    if (!info.captionDone && !info.caption.isEmpty()) {
-        options.caption  = info.caption;
-        info.captionDone = true;
+    options.caption       = caption;
+    if (!caption.isEmpty()) {
+        auto info = m_batches.find(batch);
+        if (info != m_batches.end())
+            info->captionDone = true;
     }
 
     const UploadJob first = *upload(ids.first());
@@ -2318,8 +2330,8 @@ void Core::composeUnit(int batch, PostUnit& unit)
         post.target    = first.target;
         post.channelId = first.channelId;
         post.text      = message.text.toUtf8();
-        for (int index : message.links)
-            post.jobs.append(ids.at(index));
+        for (int link : message.links)
+            post.jobs.append(ids.at(link));
         if (!message.dropped.isEmpty() || message.tooLong) {
             const UploadJob* job = post.jobs.isEmpty() ? nullptr : upload(post.jobs.first());
             const QString    file = job ? joinRemote(job->remoteDir, job->remoteName) : QString();
