@@ -71,6 +71,10 @@ add_library(tsmedia SHARED
     src/composemodel.cpp      src/composemodel.h
     src/composedialog.cpp     src/composedialog.h
     src/composesettings.cpp   src/composesettings.h
+    # 2.4 compress: video compression before upload
+    src/videocompress.cpp     src/videocompress.h
+    src/video/mftranscode.cpp src/video/mftranscode.h
+    src/compresssettings.cpp  src/compresssettings.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -121,6 +125,9 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_compose.cpp
         src/composemodel.cpp
         src/composehooks.cpp
+        # 2.4 compress: the compression planner
+        tests/tst_videocompress.cpp
+        src/videocompress.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -182,6 +189,26 @@ if(TSMEDIA_BUILD_TOOLS)
     endif()
     target_link_libraries(mfvideo_smoketest PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
     tsmedia_delay_load_media_foundation(mfvideo_smoketest) # exercises the same loading path as the plugin
+
+    # 2.4 compress: mftranscode_smoketest <video> <outdir> [options]: plans and transcodes a video like the
+    # plugin does and prints the encoder, realtime factor, CPU time, peak memory and size vs. estimate.
+    add_executable(mftranscode_smoketest
+        tools/mftranscode_smoketest.cpp
+        src/video/mftranscode.cpp
+        src/video/mfvideo.cpp
+        src/video/mfcommon.cpp
+        src/videocompress.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+    )
+    target_include_directories(mftranscode_smoketest PRIVATE src)
+    target_compile_definitions(mftranscode_smoketest PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(mftranscode_smoketest PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(mftranscode_smoketest PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(mftranscode_smoketest)
 
     # render_gallery <outdir>: renders every preview/card/player state (light + dark) to PNG files.
     add_executable(render_gallery

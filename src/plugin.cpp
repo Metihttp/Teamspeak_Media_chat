@@ -15,6 +15,7 @@
 
 #include "chatintegration.h"
 #include "composesettings.h" // 2.2 compose
+#include "compresssettings.h" // 2.4 compress
 #include "core.h"
 #include "i18n.h"
 #include "inlinemedia.h"
@@ -77,6 +78,7 @@ void showSettings(QWidget* parent)
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
+    dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, g_core)); // 2.4 compress
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_core)
             g_core->applyCacheLimit(); // a lower limit counts now, not after the next download

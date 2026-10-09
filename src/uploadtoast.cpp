@@ -596,6 +596,14 @@ UploadToast::Row& UploadToast::rowFor(int id)
             updateJob(id);
     });
 
+    // 2.4 compress: stop compressing and send the file as it is (only when it fits the upload limit).
+    row.original = textButton(i18n::t("Send original"), row.widget);
+    row.original->hide();
+    connect(row.original, &QToolButton::clicked, this, [this, id] {
+        if (m_core)
+            m_core->sendOriginal(id);
+    });
+
     row.close = new GlyphButton(row.widget);
     row.close->setColors(c.muted, c.text);
     QSizePolicy keep = row.close->sizePolicy();
@@ -638,6 +646,7 @@ UploadToast::Row& UploadToast::rowFor(int id)
     grid->addWidget(row.title, 0, 0);
     grid->addWidget(row.percent, 0, 1);
     grid->addWidget(row.retry, 0, 2);
+    grid->addWidget(row.original, 0, 2); // 2.4 compress: never shown together with Retry
     grid->addWidget(row.close, 0, 3);
     grid->addWidget(row.bar, 1, 0, 1, 4);
     auto* statusLine = new QHBoxLayout;
@@ -709,8 +718,9 @@ void UploadToast::updateJob(int id)
         }
     }
     Tally& tally = m_tally[id];
-    tally.size   = job->size;
-    tally.state  = job->state;
+    // 2.4 compress: a video being compressed counts with its expected size until it has its real one.
+    tally.size  = job->state == UploadState::Compressing && job->estimatedSize > 0 ? job->estimatedSize : job->size;
+    tally.state = job->state;
     if (job->state == UploadState::Uploading)
         tally.sent = static_cast<quint64>(qBound(0.0, job->progress, 1.0) * static_cast<double>(job->size));
     else if (job->uploaded || job->state == UploadState::Posting || job->state == UploadState::Done)
@@ -740,6 +750,7 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
 
     QString status;  // what the line shows (shortened to fit)
     QString spoken;  // the full status: tooltip and accessible name
+    QString detail;  // 2.4 compress: a second tooltip paragraph (the encoder, why the original was sent)
     QString state;   // style: "", "done" or "error"
     bool    percent    = false;
     int     spokenStep = -1; // quarters of an upload
@@ -752,15 +763,47 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
         else
             row.bar->setBusy();
         row.speed.reset();
+        detail = job.compression == CompressOutcome::Fallback ? job.compressNote : QString(); // 2.4 compress
         break;
-    case UploadState::Compressing: // 2.2 foundation (2.4 fills in its texts and progress)
-        status = !job.message.isEmpty() ? job.message : i18n::t("Compressing…");
-        if (job.progress > 0.0)
-            row.bar->setProgress(qBound(0.0, job.progress, 1.0));
-        else
+    case UploadState::Compressing: { // 2.4 compress
+        // Queued behind another video (a still bar), then the share converted with the sizes and the time
+        // left ("Compressing · 240 MB → about 18 MB · 1 min left"), then a busy bar while it is finished.
+        const QString sizes  = i18n::t("%1 → about %2").arg(formatSize(job.originalSize), formatSize(job.estimatedSize));
+        const QString spokenSizes = i18n::t("%1 to about %2").arg(formatSize(job.originalSize), formatSize(job.estimatedSize));
+        if (job.waiting) {
+            status = i18n::t("Waiting to compress…");
+            row.bar->setProgress(0.0);
+            row.speed.reset();
+        } else if (job.compressFinishing) {
+            status = i18n::t("Finishing compression…");
             row.bar->setBusy();
-        row.speed.reset();
+            row.speed.reset();
+        } else {
+            const double progress = qBound(0.0, job.progress, 1.0);
+            const int    value    = qBound(0, static_cast<int>(std::floor(progress * 100.0)), 99);
+            row.bar->setProgress(progress);
+            row.percent->setText(i18n::t("%1%").arg(value));
+            percent    = true;
+            spokenStep = value / 25;
+            // The time left from the per-mille progress, once a little is done.
+            constexpr double kUnits = 1.0e6;
+            row.speed.sample(now, progress * kUnits);
+            const qint64 left = progress >= 0.03 ? row.speed.timeLeftMs(now, (1.0 - progress) * kUnits) : -1;
+            QStringList  parts{i18n::t("Compressing"), sizes};
+            if (left >= 0)
+                parts << formatTimeLeft(left);
+            status = parts.join(dot());
+            spoken = i18n::t("Compressing… %1%").arg(value) + dot() + spokenSizes + (left >= 0 ? dot() + formatTimeLeft(left) : QString());
+        }
+        if (spoken.isEmpty())
+            spoken = status + dot() + spokenSizes;
+        // Which encoder runs, once known.
+        const QString label = job.compressLabel.isEmpty() ? i18n::t("MP4") : i18n::t("%1 MP4").arg(job.compressLabel);
+        detail              = job.compressEncoder == 2   ? i18n::t("Converting to %1 with the graphics card.").arg(label)
+                              : job.compressEncoder == 1 ? i18n::t("Converting to %1 with the processor.").arg(label)
+                                                         : i18n::t("Converting to %1.").arg(label);
         break;
+    }
     case UploadState::Uploading: {
         // The bar and the percentage say "uploading"; the line has the rest in the shared order:
         // rate, amounts, time left ("1.2 MB/s · 4.5 MB of 10.0 MB · 2 min left").
@@ -790,8 +833,16 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
         row.bar->setProgress(1.0);
         break;
     case UploadState::Done:
-        status = i18n::t("Sent");
-        state  = QString::fromLatin1("done");
+        // 2.4 compress: what compressing saved, or that the original went.
+        if (job.compression == CompressOutcome::Compressed)
+            status = i18n::t("Sent · %1 → %2").arg(formatSize(job.originalSize), formatSize(job.size));
+        else if (job.compression == CompressOutcome::SentOriginal || job.compression == CompressOutcome::Fallback)
+            status = i18n::t("Sent the original");
+        else
+            status = i18n::t("Sent");
+        if (job.compression == CompressOutcome::Fallback)
+            detail = job.compressNote;
+        state = QString::fromLatin1("done");
         row.bar->setProgress(1.0);
         break;
     case UploadState::Failed:
@@ -808,7 +859,7 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
 
     const bool failed = job.state == UploadState::Failed;
     row.status->setFullText(status, failed);
-    row.status->setToolTip(plainToolTip(spoken, false));
+    row.status->setToolTip(plainToolTip(spoken, false) + plainToolTip(detail, false));
     // Screen readers hear about new steps and each quarter of an upload, not about every percent
     // (setAccessibleName announces the change itself).
     if (changed || spokenStep != row.spokenStep) {
@@ -827,6 +878,13 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
     const bool running  = isRunning(job.state);
     const bool canRetry = failed && m_core && m_core->canRetryUpload(id);
     row.retry->setVisible(canRetry);
+    // 2.4 compress: "Send original" while compressing, when the original fits the upload limit.
+    const bool canSkip = !canRetry && job.state == UploadState::Compressing && m_core && m_core->canSendOriginal(id);
+    row.original->setVisible(canSkip);
+    if (canSkip) {
+        row.original->setToolTip(i18n::t("Stop compressing and send the original file (%1).").arg(formatSize(job.originalSize)));
+        row.original->setAccessibleName(i18n::t("Send the original of “%1”").arg(name));
+    }
     row.close->setVisible(job.state != UploadState::Posting); // a chat message can't be called back
     row.close->setToolTip(running ? i18n::t("Cancel upload") : i18n::t("Dismiss"));
 
@@ -855,7 +913,7 @@ void UploadToast::fillRow(int id, Row& row, const UploadJob& job)
 
 void UploadToast::updateHeader()
 {
-    int     count = 0, done = 0, running = 0;
+    int     count = 0, done = 0, running = 0, compressing = 0, uploading = 0;
     bool    active = false;
     quint64 total = 0, sent = 0, transferred = 0;
     for (const Tally& t : qAsConst(m_tally)) {
@@ -865,6 +923,8 @@ void UploadToast::updateHeader()
         ++count;
         done += t.state == UploadState::Done ? 1 : 0;
         running += isRunning(t.state) ? 1 : 0;
+        compressing += t.state == UploadState::Compressing ? 1 : 0; // 2.4 compress
+        uploading += t.state == UploadState::Uploading ? 1 : 0;
         active = active || isActive(t.state);
         if (t.state == UploadState::Failed)
             continue;
@@ -888,8 +948,13 @@ void UploadToast::updateHeader()
     m_headerTitle->setFullText(title);
     QStringList parts{i18n::t("%1%").arg(percent), i18n::t("%1 of %2 sent").arg(done).arg(count)};
     const qint64 left = m_totalSpeed.timeLeftMs(now, static_cast<double>(total - sent));
-    if (left >= 0)
+    if (uploading == 0 && compressing > 0) {
+        // 2.4 compress: nothing moves over the network while videos are compressed.
+        parts = QStringList{compressing == 1 ? i18n::t("Compressing a video…") : i18n::t("Compressing %1 videos…").arg(compressing),
+                            i18n::t("%1 of %2 sent").arg(done).arg(count)};
+    } else if (left >= 0) {
         parts << formatTimeLeft(left);
+    }
     m_headerStatus->setFullText(parts.join(dot()));
     const QString spoken = title + dot() + parts.at(1); // changes when a file is done, not every percent
     if (m_headerStatus->accessibleName() != spoken)
@@ -913,7 +978,7 @@ void UploadToast::relayout()
         const Row& r = m_rows[id];
         if (r.state == UploadState::Failed)
             return 0;
-        if (r.state == UploadState::Preparing && r.waiting)
+        if ((r.state == UploadState::Preparing || r.state == UploadState::Compressing) && r.waiting) // 2.4 compress: queued videos too
             return 2;
         return 1;
     };
@@ -941,7 +1006,7 @@ void UploadToast::relayout()
         r.widget->setVisible(visible);
         if (!visible) {
             ++hidden;
-            onlyWaiting = onlyWaiting && r.state == UploadState::Preparing && r.waiting;
+            onlyWaiting = onlyWaiting && (r.state == UploadState::Preparing || r.state == UploadState::Compressing) && r.waiting;
         }
     }
     if (m_expanded && order.size() > rowLimit(false)) {

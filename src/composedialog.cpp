@@ -42,6 +42,13 @@
 #include "uiutil.h"
 #include "video/mfvideo.h"
 
+#include <QAbstractItemView>  // 2.4 compress: the Quality combo
+#include <QComboBox>
+#include <QSignalBlocker>
+#include <QStandardItemModel>
+
+#include "video/mftranscode.h" // 2.4 compress: mf::measuredFrameRate
+
 using compose::Item;
 using compose::Problem;
 
@@ -60,6 +67,7 @@ constexpr int kPreviewWidth  = 472; // the large preview of a single picture or 
 constexpr int kPreviewHeight = 280;
 constexpr int kMinPreview    = 64;
 constexpr int kTargetCheckMs = 1000; // connected? partner still there?
+constexpr int kQualityWidth  = 150;  // 2.4 compress: a list row's Quality combo ("720p · about 18 MB")
 
 // Virtual keys for shortcuts on non-Latin keyboard layouts (as in the viewer).
 constexpr quint32 kVkO = 0x4F;
@@ -259,9 +267,11 @@ struct ProbeData {
     QSize  pixels;
     qint64 durationMs = 0;
     QImage thumb;
+    bool                      hasFacts = false; // 2.4 compress: the planner's facts of a video
+    videocompress::VideoFacts facts;
 };
 
-ProbeData probeFile(const QString& path, MediaKind kind, const QSize& maxBox, int minSide, const std::atomic_bool& closing)
+ProbeData probeFile(const QString& path, MediaKind kind, const QSize& maxBox, int minSide, const std::atomic_bool& closing, bool videoFacts)
 {
     ProbeData data;
     {
@@ -286,8 +296,26 @@ ProbeData probeFile(const QString& path, MediaKind kind, const QSize& maxBox, in
         const QSize target = decodeSize(data.pixels, maxBox, minSide);
         reader.setScaledSize(rotated ? target.transposed() : target); // applied before the rotation
         data.thumb = reader.read();
-    } else if (kind == MediaKind::Video || kind == MediaKind::Audio) {
+    } else if (kind == MediaKind::Video || kind == MediaKind::Audio || videoFacts) {
         const mf::ProbeResult probe = mf::probe(path, qMax(maxBox.width(), maxBox.height()));
+        if (videoFacts) {
+            // 2.4 compress: what Core's planner will see (the same rules, so the combo matches the send).
+            data.hasFacts                  = true;
+            videocompress::VideoFacts& f   = data.facts;
+            f.bytes                        = static_cast<quint64>(qMax<qint64>(0, QFileInfo(path).size()));
+            f.durationMs                   = qMax<qint64>(0, probe.durationMs);
+            f.display                      = probe.size;
+            const double measured          = probe.ok && probe.hasVideo && !closing.load() ? mf::measuredFrameRate(path) : 0.0;
+            f.fps                          = measured > 0.0 ? measured : probe.frameRate;
+            f.probed                       = probe.ok;
+            f.hasVideo                     = probe.hasVideo;
+            f.decodable                    = !probe.poster.isNull();
+            f.undecodableText              = probe.error;
+            f.hasAudio                     = probe.hasAudio;
+            f.audioChannels                = probe.audioChannels;
+            f.videoCodec                   = videocompress::codecId(probe.videoCodec);
+            f.extension                    = QFileInfo(path).suffix().toLower();
+        }
         if (!probe.ok)
             return data;
         data.durationMs = qMax<qint64>(0, probe.durationMs);
@@ -299,6 +327,63 @@ ProbeData probeFile(const QString& path, MediaKind kind, const QSize& maxBox, in
         }
     }
     return data;
+}
+
+// 2.4 compress: the entry of an item's Quality combo that is in effect (picked, or the planner's default).
+int effectiveQuality(const Item& item)
+{
+    if (item.quality >= 0 && item.quality < item.choices.size() && item.choices.at(item.quality).enabled)
+        return item.quality;
+    for (int i = 0; i < item.choices.size(); ++i) {
+        if (item.choices.at(i).selected)
+            return i;
+    }
+    return -1;
+}
+
+// Fills a Quality combo from the planner's entries: "720p · about 18 MB" (longLabels: "Balanced (720p) ·
+// about 18 MB"). The Original entry over the limit is listed but can't be picked. "Checking video…" until
+// the probe answered.
+void fillQualityCombo(QComboBox* combo, const Item& item, bool longLabels)
+{
+    const QSignalBlocker block(combo);
+    combo->clear();
+    if (!item.factsKnown) {
+        combo->addItem(i18n::t("Checking video…"));
+        combo->setEnabled(false);
+        return;
+    }
+    auto* model = qobject_cast<QStandardItemModel*>(combo->model());
+    int   widest = 0;
+    for (int i = 0; i < item.choices.size(); ++i) {
+        const videocompress::Choice& choice = item.choices.at(i);
+        const QString                text   = longLabels ? choice.longLabel : choice.label;
+        combo->addItem(text);
+        widest = qMax(widest, combo->fontMetrics().horizontalAdvance(text));
+        if (!choice.enabled && model) {
+            if (QStandardItem* entry = model->item(i))
+                entry->setEnabled(false);
+        }
+    }
+    combo->view()->setMinimumWidth(widest + 32); // the list shows whole entries even when the box is narrow
+    combo->setCurrentIndex(effectiveQuality(item));
+    combo->setEnabled(effectiveQuality(item) >= 0);
+}
+
+SendQuality sendQualityFor(videocompress::Request request)
+{
+    switch (request) {
+    case videocompress::Request::Original:
+        return SendQuality::Original;
+    case videocompress::Request::P1080:
+        return SendQuality::P1080;
+    case videocompress::Request::P720:
+        return SendQuality::P720;
+    case videocompress::Request::P480:
+        return SendQuality::P480;
+    default:
+        return SendQuality::Auto;
+    }
 }
 
 QString samePathKey(const QString& path)
@@ -538,6 +623,14 @@ class ComposeDialog::Row : public QFrame
         layout->setSpacing(kSpacing);
         layout->addWidget(thumb);
         layout->addLayout(texts, 1);
+        if (item.compressible) {
+            // 2.4 compress: the video's Quality, from the planner.
+            quality = new QComboBox(this);
+            quality->setFixedWidth(kQualityWidth);
+            quality->setFocusPolicy(Qt::StrongFocus);
+            layout->addWidget(quality, 0, Qt::AlignVCenter);
+            QObject::connect(quality, QOverload<int>::of(&QComboBox::activated), m_dialog, [d = m_dialog, id = m_id](int index) { d->setQuality(id, index); });
+        }
         auto* buttons = new QHBoxLayout;
         buttons->setSpacing(8);
         if (compose::spoilerAllowed(item.kind)) {
@@ -559,6 +652,15 @@ class ComposeDialog::Row : public QFrame
         QString problem = compose::problemText(item.problem, limitMB);
         if (item.problem == Problem::TooLarge)
             problem += QStringLiteral(" · ") + formatSize(static_cast<quint64>(qMax<qint64>(0, item.size)));
+        if (!item.compressProblem.isEmpty() && item.problem == Problem::TooLarge)
+            problem = item.compressProblem; // 2.4 compress: why compressing can't help
+        if (quality) {
+            const bool shown = !item.factsKnown || !item.choices.isEmpty();
+            quality->setVisible(shown && item.canSend());
+            fillQualityCombo(quality, item, false);
+            quality->setAccessibleName(i18n::t("Quality of %1").arg(name));
+            quality->setToolTip(i18n::t("Compressed on this computer to an MP4 that plays everywhere. Smaller downloads faster."));
+        }
         m_meta->setFullText(problem.isEmpty() ? compose::metaText(item) : problem);
         setRole(m_meta, problem.isEmpty() ? "hint" : "error", colors);
         m_alert->setVisible(!problem.isEmpty());
@@ -586,6 +688,7 @@ class ComposeDialog::Row : public QFrame
     Thumb*       thumb   = nullptr;
     GlyphButton* spoiler = nullptr;
     GlyphButton* remove  = nullptr;
+    QComboBox*   quality = nullptr; // 2.4 compress: videos only
 
   protected:
     void keyPressEvent(QKeyEvent* event) override
@@ -869,6 +972,10 @@ void ComposeDialog::addFiles(const QStringList& paths)
         item.kind     = kindForFileName(item.fileName);
         item.size     = fi.size();
         item.problem  = compose::checkFile(fi.exists(), fi.isFile(), item.size, limit);
+        // 2.4 compress: a video over the limit may still go, made smaller; the probe tells.
+        item.compressible = m_host.compressOptions && videocompress::isCompressibleVideoName(item.fileName) && m_host.compressOptions().mediaFoundation;
+        if (item.compressible && item.problem == Problem::TooLarge)
+            item.problem = Problem::None;
         m_items.append(item);
         if (item.problem != Problem::Missing && item.problem != Problem::Empty)
             startProbe(item);
@@ -922,20 +1029,25 @@ void ComposeDialog::startProbe(const Item& item)
     const QString path   = item.path;
     const QImage  pasted = item.image;
     const MediaKind kind = item.kind;
+    const bool    facts  = item.compressible; // 2.4 compress
     const auto    closing = m_closing;
     ComposeDialog* self   = this; // waits for this pool in its destructor
-    m_pool.start([self, id, path, pasted, kind, maxBox, minSide, closing] {
+    m_pool.start([self, id, path, pasted, kind, maxBox, minSide, closing, facts] {
         ProbeData data;
         if (!pasted.isNull()) {
             data.pixels       = pasted.size();
             const QSize target = decodeSize(pasted.size(), maxBox, minSide);
             data.thumb         = target == pasted.size() ? pasted : pasted.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         } else {
-            data = probeFile(path, kind, maxBox, minSide, *closing);
+            data = probeFile(path, kind, maxBox, minSide, *closing, facts);
         }
         if (closing->load())
             return;
-        QMetaObject::invokeMethod(self, [self, id, data] { self->onProbed(id, data.readable, data.pixels, data.durationMs, data.thumb); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(self, [self, id, data] {
+            if (data.hasFacts)
+                self->setVideoFacts(id, data.facts); // 2.4 compress: before onProbed, which shows them
+            self->onProbed(id, data.readable, data.pixels, data.durationMs, data.thumb);
+        }, Qt::QueuedConnection);
     });
 }
 
@@ -968,6 +1080,88 @@ void ComposeDialog::onProbed(int id, bool readable, const QSize& pixels, qint64 
         return;
     }
     updateState();
+}
+
+// ---- 2.4 compress: the Quality combo ---------------------------------------------------------------
+
+void ComposeDialog::setVideoFacts(int id, const videocompress::VideoFacts& facts)
+{
+    const int index = indexOf(id);
+    if (index < 0)
+        return;
+    Item& item      = m_items[index];
+    item.facts      = facts;
+    item.factsKnown = true;
+    planQuality(item);
+}
+
+// The planner's entries for the item at the window's limit, and what that means for sending it: over the
+// limit it goes only when an entry that fits is in effect.
+void ComposeDialog::planQuality(Item& item)
+{
+    if (!item.compressible || !item.factsKnown || !m_host.compressOptions)
+        return;
+    videocompress::Options options = m_host.compressOptions();
+    options.limitBytes             = static_cast<quint64>(qMax(0, m_limitMB)) * 1024 * 1024;
+    item.facts.bytes               = static_cast<quint64>(qMax<qint64>(0, item.size));
+    item.choices                   = videocompress::choices(item.facts, options);
+    if (item.quality >= item.choices.size())
+        item.quality = -1;
+    item.compressProblem.clear();
+    const bool over = item.facts.bytes > options.limitBytes;
+    if (item.problem != Problem::None && item.problem != Problem::TooLarge)
+        return; // missing, empty, unreadable: that says it
+    if (!over) {
+        if (item.problem == Problem::TooLarge)
+            item.problem = Problem::None;
+        return;
+    }
+    if (effectiveQuality(item) >= 0) {
+        item.problem = Problem::None;
+        return;
+    }
+    // Over the limit and nothing fits: the planner says why.
+    options.request                = videocompress::Request::Auto;
+    const videocompress::Plan plan = videocompress::planCompression(item.facts, options);
+    item.problem                   = Problem::TooLarge;
+    if (plan.decision == videocompress::Decision::Fail)
+        item.compressProblem = videocompress::failureText(plan, m_limitMB);
+    else
+        item.compressProblem = videocompress::failureText(videocompress::Plan{videocompress::Decision::Fail, videocompress::Reason::CannotFit}, m_limitMB);
+}
+
+void ComposeDialog::setQuality(int id, int quality)
+{
+    const int index = indexOf(id);
+    if (index < 0)
+        return;
+    Item& item = m_items[index];
+    if (quality < 0 || quality >= item.choices.size() || !item.choices.at(quality).enabled || quality == effectiveQuality(item))
+        return;
+    item.quality = quality;
+    if (isVisible())
+        m_changed = true;
+    if (Row* row = m_rows.value(id))
+        row->setItem(item, m_limitMB, colorsFor(palette()), devicePixelRatioF());
+    updateState();
+}
+
+bool ComposeDialog::fitsCompressed(const Item& item) const
+{
+    const int quality = effectiveQuality(item);
+    return item.compressible && item.factsKnown && quality >= 0
+           && (item.choices.at(quality).request != videocompress::Request::Original || item.size <= static_cast<qint64>(qMax(0, m_limitMB)) * 1024 * 1024);
+}
+
+void ComposeDialog::setQualityIndex(int index, int quality)
+{
+    if (index >= 0 && index < m_items.size())
+        setQuality(m_items.at(index).id, quality);
+}
+
+QVector<videocompress::Choice> ComposeDialog::qualityChoices(int index) const
+{
+    return index >= 0 && index < m_items.size() ? m_items.at(index).choices : QVector<videocompress::Choice>();
 }
 
 int ComposeDialog::indexOf(int id) const
@@ -1041,6 +1235,7 @@ void ComposeDialog::rebuildItems(int focusIndex)
     m_scroll        = nullptr;
     m_singleThumb   = nullptr;
     m_singleSpoiler = nullptr;
+    m_singleQuality = nullptr; // 2.4 compress
     m_singleId      = -1;
     m_spoilerHint   = nullptr;
 
@@ -1072,10 +1267,12 @@ void ComposeDialog::rebuildItems(int focusIndex)
     };
     for (const Item& item : qAsConst(m_items)) {
         if (Row* row = m_rows.value(item.id)) {
+            chain(row->quality); // 2.4 compress
             chain(row->spoiler);
             chain(row->remove);
         }
     }
+    chain(m_singleQuality); // 2.4 compress
     chain(m_singleSpoiler);
     chain(m_addFiles);
     chain(m_album);
@@ -1174,6 +1371,48 @@ QWidget* ComposeDialog::buildSingle(const Item& itemIn)
     }
     refreshThumb(item.id);
 
+    // 2.4 compress: the video's Quality, from the planner, with what it means.
+    m_singleQuality = nullptr;
+    if (item.compressible && item.canSend() && (!item.factsKnown || !item.choices.isEmpty())) {
+        auto* combo = new QComboBox(view);
+        fillQualityCombo(combo, item, true);
+        combo->setFocusPolicy(Qt::StrongFocus);
+        combo->setAccessibleName(i18n::t("Quality"));
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        auto* label = new QLabel(i18n::t("&Quality"), view);
+        label->setBuddy(combo);
+        auto* qualityRow = new QHBoxLayout;
+        qualityRow->setSpacing(8);
+        qualityRow->addWidget(label);
+        qualityRow->addWidget(combo);
+        qualityRow->addStretch(1);
+        const int     current = effectiveQuality(item);
+        const bool    over    = item.size > static_cast<qint64>(qMax(0, m_limitMB)) * 1024 * 1024;
+        QString       note;
+        if (!item.factsKnown)
+            note = QString();
+        else if (over && current >= 0)
+            note = i18n::t("It's over your %1 MB upload limit as it is, so a smaller quality that fits was picked.").arg(m_limitMB);
+        else if (current >= 0 && item.choices.at(current).request != videocompress::Request::Original)
+            note = item.choices.at(current).plan.reason == videocompress::Reason::Convert
+                       ? i18n::t("Converted on this computer to an MP4 that plays for everyone.")
+                       : i18n::t("Made smaller on this computer before it's sent: an MP4 that plays everywhere.");
+        auto* hintLabel = roleLabel(note, "hint", view);
+        hintLabel->setVisible(!note.isEmpty());
+        combo->setAccessibleDescription(note);
+        connect(combo, QOverload<int>::of(&QComboBox::activated), this, [this, id = item.id](int index) {
+            setQuality(id, index);
+            // The single view shows what the choice means: rebuilt, with the focus kept on the combo.
+            rebuildItems();
+            if (m_singleQuality)
+                m_singleQuality->setFocus(Qt::OtherFocusReason);
+        });
+        layout->addSpacing(4);
+        layout->addLayout(qualityRow);
+        layout->addWidget(hintLabel);
+        m_singleQuality = combo;
+    }
+
     if (!item.canSend()) {
         auto* problemRow = new QHBoxLayout;
         problemRow->setSpacing(8);
@@ -1181,7 +1420,9 @@ QWidget* ComposeDialog::buildSingle(const Item& itemIn)
         icon->setFixedSize(16, 16);
         icon->setPixmap(alertPixmap(16, devicePixelRatioF(), colors.error, colors.window));
         QString problem = compose::problemText(item.problem, m_limitMB);
-        if (item.problem == Problem::TooLarge)
+        if (item.problem == Problem::TooLarge && !item.compressProblem.isEmpty())
+            problem = item.compressProblem; // 2.4 compress: cause and fix from the planner
+        else if (item.problem == Problem::TooLarge)
             problem += QStringLiteral(". ") + i18n::t("You can raise the limit in Settings → Sending.");
         else if (item.problem == Problem::Empty)
             problem += QLatin1Char('.');
@@ -1396,6 +1637,13 @@ bool ComposeDialog::restat()
             continue;
         const QFileInfo fi(item.path);
         Problem         problem = compose::checkFile(fi.exists(), fi.isFile(), fi.size(), limit);
+        // 2.4 compress: over the limit is fine while the quality in effect fits (re-planned if it grew).
+        if (problem == Problem::TooLarge && item.compressible) {
+            Item resized = item;
+            resized.size = fi.size();
+            planQuality(resized);
+            problem = !resized.factsKnown || fitsCompressed(resized) ? Problem::None : Problem::TooLarge;
+        }
         if (problem == Problem::None) {
             QFile file(item.path);
             if (!file.open(QIODevice::ReadOnly))
@@ -1404,6 +1652,7 @@ bool ComposeDialog::restat()
         if (problem != item.problem || fi.size() != item.size) {
             item.problem = problem;
             item.size    = fi.size();
+            planQuality(item); // 2.4 compress: estimates for the new size
             changed      = true;
         }
     }
@@ -1474,6 +1723,9 @@ void ComposeDialog::send()
             sendItem.path = item.path;
         }
         sendItem.spoiler = item.spoiler && compose::spoilerAllowed(item.kind);
+        // 2.4 compress: the Quality picked (Auto when it is what the settings would do anyway).
+        if (item.compressible && item.factsKnown && !item.choices.isEmpty())
+            sendItem.quality = sendQualityFor(videocompress::requestFor(item.choices, effectiveQuality(item)));
         request.items.append(sendItem);
     }
 
@@ -1543,7 +1795,7 @@ void ComposeDialog::addFromPicker()
     const QPointer<ComposeDialog> guard(this);
     const QStringList             files = QFileDialog::getOpenFileNames(
         this, i18n::t("Add files to send"), dir,
-        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v)"));
+        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v *.3gp *.mts *.m2ts *.mpg)"));
     if (!guard || files.isEmpty())
         return;
     m_changed = true;

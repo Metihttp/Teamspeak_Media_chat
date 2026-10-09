@@ -29,6 +29,10 @@
 #include "blurhash.h"
 #include "i18n.h"
 #include "settings.h"
+#include "video/mftranscode.h" // 2.4 compress
+#include "video/mfvideo.h"     // 2.4 compress: mf::available()
+
+#include <QStorageInfo> // 2.4 compress: free space for the compressed copy
 
 #include <windows.h>
 #undef PostMessage // clashes with OpType::PostMessage
@@ -409,12 +413,19 @@ QString previewStagingDir(const QString& stagingDir)
     return stagingDir + QStringLiteral(".pv");
 }
 
+// 2.4 compress: where a video's compressed copy is written, next to its staging folder.
+QString compressDirFor(const QString& stagingDir)
+{
+    return stagingDir + QStringLiteral(".cz");
+}
+
 void removeStaging(const QString& stagingDir)
 {
     if (stagingDir.isEmpty())
         return;
     QDir(stagingDir).removeRecursively();
     QDir(previewStagingDir(stagingDir)).removeRecursively();
+    QDir(compressDirFor(stagingDir)).removeRecursively(); // 2.4 compress
 }
 
 void removeEmptyDirectories(const QString& root)
@@ -438,11 +449,24 @@ Core::Core(QObject* parent)
     g_instance = this;
     m_pool.setMaxThreadCount(kProbeThreads);
     m_stillPool.setMaxThreadCount(kStillThreads);
+    m_transcodePool.setMaxThreadCount(1); // 2.4 compress: one video at a time, in the order sent
     m_clock.start();
 }
 
 Core::~Core()
 {
+    // 2.4 compress: a running transcode stops within about a frame (no Finalize), a queued one returns at
+    // once; joined first, its Media Foundation objects released on its own thread.
+    for (const CompressTask& task : qAsConst(m_compressing)) {
+        if (task.control)
+            task.control->cancel.store(true);
+    }
+    m_transcodePool.clear();
+    m_transcodePool.waitForDone();
+    for (const CompressTask& task : qAsConst(m_compressing))
+        QDir(task.outDir).removeRecursively();
+    m_compressing.clear();
+
     // Workers only read files and post their result back; stop running staging copies, then join them.
     for (const auto& cancel : qAsConst(m_stagingCancel))
         cancel->store(true);
@@ -1772,7 +1796,14 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
 
     UploadJob&    j     = m_uploads[id];
     const quint64 limit = megabytes(s.uploadMaxMB);
-    if (j.size > limit) {
+    // 2.4 compress: a video that may be compressed is planned on the worker; its size against the limit
+    // is the planner's business (it may be made small enough).
+    const videocompress::Options compress  = compressOptions(item.quality);
+    const bool                   candidate = !item.voice && !item.pasted && videocompress::isCompressibleVideoName(remoteName)
+                                           && item.quality != SendQuality::Original && compress.mediaFoundation
+                                           && (item.quality != SendQuality::Auto || compress.compressLarge || compress.convertUnplayable);
+    j.originalSize = j.size;
+    if (j.size > limit && !candidate) {
         failUpload(id, uploadLimitText(s.uploadMaxMB));
         return id;
     }
@@ -1814,7 +1845,8 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
     QPointer<Core> self(this);
     m_probing.insert(id, j.stagingDir);
     m_stagingCancel.insert(id, cancel);
-    m_pool.start([self, id, copyFrom, staged, nested, previews, cancel] {
+    const quint64 originalSize = j.size;
+    m_pool.start([self, id, copyFrom, staged, nested, previews, cancel, candidate, compress, originalSize] {
         // Jobs wait in the pool's queue until a worker is free; tell the toast this one has started.
         if (Core* core = self.data()) {
             QMetaObject::invokeMethod(core, [self, id] {
@@ -1822,15 +1854,54 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
                     self->markProbeStarted(id);
             }, Qt::QueuedConnection);
         }
+        LocalMediaInfo info;
+        QByteArray     jpeg;
+        bool           probed = false;
+        // 2.4 compress: a video that may be compressed is probed and planned where it is: no staging copy
+        // of a file that is about to be replaced by a smaller one.
+        if (candidate && !cancel->load()) {
+            const QString source = copyFrom.isEmpty() ? staged : copyFrom;
+            info                 = probeLocalVideo(source, previews);
+            jpeg                 = info.preview.isNull() ? QByteArray() : encodePreviewJpeg(info.preview);
+            videocompress::VideoFacts facts;
+            facts.bytes           = originalSize;
+            facts.durationMs      = info.durationMs;
+            facts.display         = QSize(info.width, info.height);
+            const double measured = info.probed && info.hasVideo ? mf::measuredFrameRate(source) : 0.0;
+            facts.fps             = measured > 0.0 ? measured : info.frameRate;
+            facts.probed          = info.probed;
+            facts.hasVideo        = info.hasVideo;
+            facts.decodable       = info.decodable;
+            facts.undecodableText = info.probeError;
+            facts.hasAudio        = info.hasAudio;
+            facts.audioChannels   = info.audioChannels;
+            facts.videoCodec      = videocompress::codecId(info.videoCodec);
+            facts.extension       = QFileInfo(staged).suffix().toLower();
+            const videocompress::Plan plan = videocompress::planCompression(facts, compress);
+            if (plan.decision != videocompress::Decision::SendOriginal) {
+                if (Core* core = self.data()) {
+                    QMetaObject::invokeMethod(core, [self, id, info, jpeg, plan] {
+                        if (self)
+                            self->onCompressPlanned(id, info, jpeg, plan);
+                    }, Qt::QueuedConnection);
+                }
+                return;
+            }
+            // Sent as it is: the probe is reused, unless the name isn't a video's (a camcorder .mts goes as a
+            // plain file, as before).
+            probed = kindForFileName(staged) == MediaKind::Video;
+            if (!probed) {
+                info = LocalMediaInfo();
+                jpeg.clear();
+            }
+        }
         bool ok = copyFrom.isEmpty() || copyForStaging(copyFrom, staged, cancel.get());
         if (ok && !nested.isEmpty()) {
             QDir().mkpath(QFileInfo(nested).absolutePath());
             ok = linkOrCopy(staged, nested);
         }
-        const quint64  size = ok ? static_cast<quint64>(QFileInfo(staged).size()) : 0;
-        LocalMediaInfo info;
-        QByteArray     jpeg;
-        if (ok && !cancel->load()) {
+        const quint64 size = ok ? static_cast<quint64>(QFileInfo(staged).size()) : 0;
+        if (ok && !cancel->load() && !probed) {
             info = probeLocalMedia(staged, previews);
             jpeg = info.preview.isNull() ? QByteArray() : encodePreviewJpeg(info.preview);
         }
@@ -2714,9 +2785,16 @@ void Core::cleanupUpload(UploadJob& job)
     // While the worker copies or probes the staged file it cannot be deleted: the copy is stopped
     // and onProbed() removes it (and a pasted source it was still reading) once the worker is done.
     const bool working = m_probing.contains(job.id);
+    // 2.4 compress: a compression stops; its output folder goes once the transcoder let go (onCompressed).
+    const auto compressing = m_compressing.constFind(job.id);
+    if (compressing != m_compressing.constEnd() && compressing->control)
+        compressing->control->cancel.store(true);
     if (working) {
         if (const auto cancel = m_stagingCancel.value(job.id))
             cancel->store(true);
+    } else if (compressing != m_compressing.constEnd()) {
+        QDir(job.stagingDir).removeRecursively();
+        QDir(previewStagingDir(job.stagingDir)).removeRecursively();
     } else {
         removeStaging(job.stagingDir);
     }
@@ -2740,6 +2818,450 @@ void Core::deleteRemoteFile(uint64 sch, uint64 channelId, const QString& path)
         forgetOp(rc);
         ts3::log(QStringLiteral("Could not remove %1 from the file browser: %2").arg(path, ts3::errorText(err)), LogLevel_WARNING, sch);
     }
+}
+
+// ============================================================================================
+// 2.4 compress: videos made smaller before they are sent
+// ============================================================================================
+
+videocompress::Options Core::compressOptions(SendQuality quality)
+{
+    const Settings&        s = Settings::instance();
+    videocompress::Options options;
+    options.mediaFoundation   = mf::available();
+    options.compressLarge     = s.compressVideos;
+    options.thresholdBytes    = megabytes(s.compressVideosOverMB);
+    options.shortSide         = Settings::normalizeVideoQuality(s.compressVideoQuality);
+    options.convertUnplayable = s.convertUnplayableVideos;
+    options.limitBytes        = megabytes(s.uploadMaxMB);
+    switch (quality) {
+    case SendQuality::Auto:
+        options.request = videocompress::Request::Auto;
+        break;
+    case SendQuality::Original:
+        options.request = videocompress::Request::Original;
+        break;
+    case SendQuality::P1080:
+        options.request = videocompress::Request::P1080;
+        break;
+    case SendQuality::P720:
+        options.request = videocompress::Request::P720;
+        break;
+    case SendQuality::P480:
+        options.request = videocompress::Request::P480;
+        break;
+    }
+    return options;
+}
+
+void Core::queryEncoders()
+{
+    if (m_encodersAsked)
+        return;
+    m_encodersAsked = true;
+    QPointer<Core> self(this);
+    m_pool.start([self] {
+        const mf::EncoderList list = mf::h264Encoders();
+        if (Core* core = self.data()) {
+            QMetaObject::invokeMethod(core, [self, list] {
+                if (!self)
+                    return;
+                self->m_encodersQueried  = list.queried;
+                self->m_hardwareEncoders = list.hardware;
+                self->m_softwareEncoders = list.software;
+                ts3::log(LogLevel_INFO, 0, "H.264 encoders: %1 (graphics card); %2 (processor)",
+                         {ts3::pub(list.hardware.isEmpty() ? QStringLiteral("none") : list.hardware.join(QStringLiteral(", "))),
+                          ts3::pub(list.software.isEmpty() ? QStringLiteral("none") : list.software.join(QStringLiteral(", ")))});
+                emit self->encodersKnown();
+            }, Qt::QueuedConnection);
+        }
+    });
+}
+
+// The worker planned a compression (or a failure): the original was not copied.
+void Core::onCompressPlanned(int id, const LocalMediaInfo& info, const QByteArray& previewJpeg, const videocompress::Plan& plan)
+{
+    const QString staging = m_probing.take(id);
+    m_stagingCancel.remove(id);
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || it->state != UploadState::Preparing) {
+        removeStaging(staging);
+        return;
+    }
+    UploadJob&      job = it.value();
+    const Settings& s   = Settings::instance();
+    if (plan.decision == videocompress::Decision::Fail) {
+        ts3::log(LogLevel_INFO, job.target.sch, "Not sending %1: %2", {ts3::file(job.remoteName), ts3::pub(videocompress::failureText(plan, s.uploadMaxMB))});
+        failUpload(id, videocompress::failureText(plan, s.uploadMaxMB));
+        return;
+    }
+    job.info      = info;
+    job.info.kind = MediaKind::Video; // the result is an MP4 video, whatever the original's name said
+    m_uploadExtra[id].previewJpeg = previewJpeg;
+
+    CompressTask task;
+    task.plan  = plan;
+    task.limit = megabytes(s.uploadMaxMB);
+    task.gpu   = s.compressUseGpu;
+    // The size guard: the fit target when made to fit, the limit (and for a shrink, the original's size)
+    // otherwise. The final file must be within the limit either way.
+    if (plan.reason == videocompress::Reason::FitToLimit)
+        task.abortAbove = static_cast<quint64>(static_cast<double>(task.limit) * videocompress::kFitTarget);
+    else if (plan.reason == videocompress::Reason::Shrink)
+        task.abortAbove = qMin(task.limit, job.originalSize);
+    else
+        task.abortAbove = task.limit;
+    task.outDir = compressDirFor(job.stagingDir);
+    m_compressing.insert(id, task);
+    startCompression(id);
+}
+
+void Core::startCompression(int id)
+{
+    auto it   = m_uploads.find(id);
+    auto task = m_compressing.find(id);
+    if (it == m_uploads.end() || task == m_compressing.end() || it->state != UploadState::Preparing)
+        return;
+    UploadJob& job = it.value();
+    // The compressed copy needs room next to the original (and the cache link afterwards).
+    const quint64      needed  = task->plan.estimatedBytes + task->plan.estimatedBytes / 4 + 64ull * 1024 * 1024;
+    const QStorageInfo storage(ts3::dataDir());
+    if (storage.isValid() && storage.bytesAvailable() >= 0 && static_cast<quint64>(storage.bytesAvailable()) < needed) {
+        const QString text = videocompress::diskSpaceText(needed);
+        m_compressing.erase(task);
+        ts3::log(LogLevel_WARNING, job.target.sch, "Not compressing %1: %2", {ts3::file(job.remoteName), ts3::pub(text)});
+        if (job.originalSize <= megabytes(Settings::instance().uploadMaxMB))
+            stageOriginal(id, CompressOutcome::Fallback, text);
+        else
+            failUpload(id, text);
+        return;
+    }
+    QDir(task->outDir).removeRecursively();
+    QDir().mkpath(task->outDir);
+    job.estimatedSize     = task->plan.estimatedBytes;
+    job.compressLabel     = videocompress::resolutionLabel(task->plan.frameSize);
+    job.compressFinishing = false;
+    job.compressEncoder   = 0;
+    job.progress          = 0.0;
+    ts3::log(LogLevel_INFO, job.target.sch, "Compressing %1: %2 to %3 %4 fps, %5 kbps video + %6 kbps sound (about %7)",
+             {ts3::file(job.remoteName), ts3::pub(formatSize(job.originalSize)), ts3::pub(job.compressLabel), ts3::pub(task->plan.fps),
+              ts3::pub(task->plan.videoKbps), ts3::pub(task->plan.audioKbps), ts3::pub(formatSize(task->plan.estimatedBytes))});
+    setUploadState(job, UploadState::Compressing, i18n::t("Waiting to compress…"), true);
+    runTranscode(id);
+    ensureProgressTimer();
+}
+
+// Queues one run of the transcoder for the job's current plan (a fresh control each time, so answers
+// of an older run are told apart).
+void Core::runTranscode(int id)
+{
+    auto task = m_compressing.find(id);
+    auto it   = m_uploads.constFind(id);
+    if (task == m_compressing.end() || it == m_uploads.constEnd())
+        return;
+    const auto control = std::make_shared<mf::TranscodeControl>();
+    task->control      = control;
+    task->started      = false;
+    mf::TranscodeRequest request;
+    request.source          = it->sourcePath;
+    request.target          = task->outDir + QStringLiteral("/out.mp4");
+    request.frameSize       = task->plan.frameSize;
+    request.fps             = task->plan.fpsCap > 0 ? task->plan.fpsCap : task->plan.fps;
+    request.videoKbps       = task->plan.videoKbps;
+    request.audioKbps       = task->plan.audioKbps;
+    request.audioChannels   = task->plan.audioChannels;
+    request.allowHardware   = task->gpu;
+    request.abortAboveBytes = task->abortAbove;
+    request.durationMs      = it->info.durationMs;
+    const QString  outDir   = task->outDir;
+    QPointer<Core> self(this);
+    m_transcodePool.start([self, id, request, control, outDir] {
+        if (Core* core = self.data()) {
+            QMetaObject::invokeMethod(core, [self, id, control] {
+                if (self)
+                    self->markCompressStarted(id, control);
+            }, Qt::QueuedConnection);
+        }
+        mf::TranscodeResult result;
+        if (control->cancel.load())
+            result.canceled = true; // canceled (or sent as it is) while it waited
+        else
+            result = mf::transcodeToMp4(request, control.get());
+        // 2.2 sha hook: the result has been verified here and is the file that will be uploaded (moved, not
+        // changed, into the staging folder by onCompressed). This is where the SHA feature's
+        // fileverify::finalizeStaged(request.target, previewJpeg, &control->cancel) must run, on this
+        // worker, with its result posted (Core::onStagedFinalized) before onCompressed: the link's sha must
+        // describe the compressed bytes, never the original's.
+        if (Core* core = self.data()) {
+            QMetaObject::invokeMethod(core, [self, id, control, outDir, result] {
+                if (self)
+                    self->onCompressed(id, control, outDir, result);
+            }, Qt::QueuedConnection);
+        }
+    });
+}
+
+void Core::markCompressStarted(int id, const std::shared_ptr<mf::TranscodeControl>& control)
+{
+    auto task = m_compressing.find(id);
+    auto it   = m_uploads.find(id);
+    if (task == m_compressing.end() || task->control != control || it == m_uploads.end() || it->state != UploadState::Compressing)
+        return;
+    task->started = true;
+    setUploadState(it.value(), UploadState::Compressing, i18n::t("Compressing…"));
+}
+
+bool Core::canSendOriginal(int id) const
+{
+    const UploadJob* job = upload(id);
+    return job && job->state == UploadState::Compressing && !job->compressFinishing && m_compressing.contains(id)
+           && job->originalSize <= megabytes(Settings::instance().uploadMaxMB) && QFileInfo(job->sourcePath).isFile();
+}
+
+void Core::sendOriginal(int id)
+{
+    if (!canSendOriginal(id))
+        return;
+    auto task = m_compressing.find(id);
+    if (task->control)
+        task->control->cancel.store(true);
+    if (!task->started) {
+        // Still queued behind another video: the original goes now; the queued run returns at once.
+        const QString outDir = task->outDir;
+        m_compressing.erase(task);
+        QDir(outDir).removeRecursively();
+        stageOriginal(id, CompressOutcome::SentOriginal, QString());
+        return;
+    }
+    task->skip = true; // the transcoder stops within about a frame; onCompressed sends the original
+}
+
+void Core::onCompressed(int id, const std::shared_ptr<mf::TranscodeControl>& control, const QString& outDir, const mf::TranscodeResult& result)
+{
+    auto task = m_compressing.find(id);
+    if (task == m_compressing.end() || task->control != control) {
+        QDir(outDir).removeRecursively(); // a run nobody waits for any more
+        return;
+    }
+    const CompressTask done = task.value();
+    m_compressing.erase(task);
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || it->state != UploadState::Compressing) {
+        QDir(done.outDir).removeRecursively(); // canceled, failed or disconnected meanwhile
+        return;
+    }
+    UploadJob&    job      = it.value();
+    const int     limitMB  = static_cast<int>(done.limit / (1024 * 1024));
+    const QString encoder  = result.hardware ? QStringLiteral("graphics card") : QStringLiteral("processor");
+    const double  seconds  = static_cast<double>(result.elapsedMs) / 1000.0;
+    const double  realtime = seconds > 0.0 ? static_cast<double>(job.info.durationMs) / 1000.0 / seconds : 0.0;
+    if (result.gpuFailed)
+        ts3::log(LogLevel_WARNING, job.target.sch, "The graphics card couldn't compress %1 (%2); the processor took over", {ts3::file(job.remoteName), ts3::pub(result.gpuError)});
+
+    if (done.skip) {
+        ts3::log(LogLevel_INFO, job.target.sch, "Compressing %1 stopped: sending the original", {ts3::file(job.remoteName)});
+        QDir(done.outDir).removeRecursively();
+        stageOriginal(id, CompressOutcome::SentOriginal, QString());
+        return;
+    }
+    if (result.exceeded && done.attempt == 0 && result.projectedBytes > 0) {
+        // The encoder missed its rate: once more, with the bitrate scaled to land at 95% of the guard.
+        CompressTask again   = done;
+        const double scale   = static_cast<double>(done.abortAbove) * 0.95 / static_cast<double>(result.projectedBytes);
+        again.attempt        = 1;
+        again.plan.videoKbps = qMax(videocompress::kMinVideoKbps, static_cast<int>(again.plan.videoKbps * scale));
+        again.plan.estimatedBytes = videocompress::estimateBytes(again.plan.videoKbps, again.plan.audioKbps, job.info.durationMs);
+        ts3::log(LogLevel_INFO, job.target.sch, "Compressing %1 would end at %2, over %3: once more at %4 kbps",
+                 {ts3::file(job.remoteName), ts3::pub(formatSize(result.projectedBytes)), ts3::pub(formatSize(done.abortAbove)), ts3::pub(again.plan.videoKbps)});
+        QDir(done.outDir).removeRecursively();
+        QDir().mkpath(done.outDir);
+        m_compressing.insert(id, again);
+        job.estimatedSize = again.plan.estimatedBytes;
+        job.progress      = 0.0;
+        setUploadState(job, UploadState::Compressing, i18n::t("Compressing…"));
+        runTranscode(id);
+        return;
+    }
+
+    const bool smaller = result.bytes < job.originalSize || done.plan.reason == videocompress::Reason::Convert;
+    if (result.ok && result.bytes > 0 && result.bytes <= done.limit && smaller) {
+        // The verified MP4 becomes the staged file, with the same random part in its name (the preview
+        // keeps its name too).
+        const QString name   = QFileInfo(job.remoteName).completeBaseName() + QStringLiteral(".mp4");
+        const QString staged = job.stagingDir + QLatin1Char('/') + name;
+        QDir(job.stagingDir).removeRecursively();
+        QDir().mkpath(job.stagingDir);
+        bool ok = QFile::rename(done.outDir + QStringLiteral("/out.mp4"), staged);
+        if (ok && job.remoteDir != QLatin1String("/")) {
+            const QString nested = job.stagingDir + job.remoteDir + QLatin1Char('/') + name;
+            QDir().mkpath(QFileInfo(nested).absolutePath());
+            ok = linkOrCopy(staged, nested);
+        }
+        QDir(done.outDir).removeRecursively();
+        if (ok) {
+            m_lastCompression = QStringLiteral("%1, %2, %3 s, %4x realtime, %5 to %6")
+                                    .arg(job.compressLabel, encoder)
+                                    .arg(seconds, 0, 'f', 1)
+                                    .arg(realtime, 0, 'f', 1)
+                                    .arg(formatSize(job.originalSize), formatSize(result.bytes));
+            ts3::log(LogLevel_INFO, job.target.sch, "Compressed %1 in %2 s (%3x realtime) on the %4 (%5): %6 to %7",
+                     {ts3::file(job.remoteName), ts3::pub(QString::number(seconds, 'f', 1)), ts3::pub(QString::number(realtime, 'f', 1)), ts3::pub(encoder),
+                      ts3::pub(result.encoderName), ts3::pub(formatSize(job.originalSize)), ts3::pub(formatSize(result.bytes))});
+            job.remoteName        = name;
+            job.size              = result.bytes;
+            job.info.width        = result.frameSize.width();
+            job.info.height       = result.frameSize.height();
+            job.info.durationMs   = result.durationMs;
+            job.compression       = CompressOutcome::Compressed;
+            job.compressFinishing = false;
+            job.progress          = 0.0;
+            setUploadState(job, UploadState::Preparing, i18n::t("Preparing…"));
+            continueUpload(id);
+            return;
+        }
+        ts3::log(LogLevel_WARNING, job.target.sch, "Could not move the compressed copy of %1 into place", {ts3::file(job.remoteName)});
+    }
+    QDir(done.outDir).removeRecursively();
+
+    // Didn't work out: the cause in a few words for the log, the toast's tooltip and the error.
+    QString cause;
+    if (result.ok && result.bytes > done.limit)
+        cause = i18n::t("the result was still larger than your limit");
+    else if (result.ok)
+        cause = i18n::t("the result wasn't smaller");
+    else if (result.exceeded)
+        cause = i18n::t("the result would have been too large");
+    else if (result.stage == mf::TranscodeResult::Stage::Disk)
+        cause = i18n::t("the disk is full");
+    else if (result.stage == mf::TranscodeResult::Stage::Stall)
+        cause = i18n::t("it stopped responding");
+    else if (result.stage == mf::TranscodeResult::Stage::Verify)
+        cause = result.shorter ? i18n::t("the video ends early, it may be damaged") : i18n::t("the result didn't check out");
+    else
+        cause = i18n::t("error %1").arg(QStringLiteral("0x") + QString::number(result.hr, 16).toUpper().rightJustified(8, QLatin1Char('0')));
+    const QString stage = QString::fromLatin1(mf::stageName(result.stage));
+    m_lastCompression   = QStringLiteral("%1, %2: %3 (%4)").arg(job.compressLabel, encoder, stage, result.detail);
+    const bool sourceOk = QFileInfo(job.sourcePath).isFile();
+    const bool fits     = job.originalSize <= done.limit && sourceOk;
+    ts3::log(LogLevel_WARNING, job.target.sch, "Could not compress %1 (%2, %3: %4); %5",
+             {ts3::file(job.remoteName), ts3::pub(stage), ts3::pub(cause), ts3::pub(result.detail),
+              ts3::pub(fits ? QStringLiteral("sending the original") : QStringLiteral("not sending it"))});
+    if (fits)
+        stageOriginal(id, CompressOutcome::Fallback, videocompress::compressFailedNote(cause));
+    else if (!sourceOk)
+        failUpload(id, i18n::t("Couldn't read the file. It may be open in another program or no longer exist."));
+    else
+        failUpload(id, videocompress::compressFailedText(cause, limitMB));
+}
+
+// The original goes after all: copied into staging on a worker as any file (onOriginalStaged).
+void Core::stageOriginal(int id, CompressOutcome outcome, const QString& note)
+{
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || (it->state != UploadState::Compressing && it->state != UploadState::Preparing))
+        return;
+    UploadJob& job        = it.value();
+    job.compression       = outcome;
+    job.compressNote      = note;
+    job.compressFinishing = false;
+    job.progress          = 0.0;
+    job.size              = job.originalSize;
+    // A file that isn't a video by name (a camcorder .mts) goes as a plain file, without picture details.
+    if (kindForFileName(job.remoteName) != MediaKind::Video) {
+        job.info = LocalMediaInfo();
+        job.info.kind = kindForFileName(job.remoteName);
+        m_uploadExtra[id].previewJpeg.clear();
+    }
+    setUploadState(job, UploadState::Preparing, outcome == CompressOutcome::SentOriginal ? i18n::t("Sending the original…") : i18n::t("Couldn't compress. Sending the original…"));
+
+    removeStaging(job.stagingDir);
+    QDir().mkpath(job.stagingDir);
+    const QString  staged = job.stagingDir + QLatin1Char('/') + job.remoteName;
+    const QString  nested = job.remoteDir == QLatin1String("/") ? QString() : job.stagingDir + job.remoteDir + QLatin1Char('/') + job.remoteName;
+    const QString  source = job.sourcePath;
+    const auto     cancel = std::make_shared<std::atomic<bool>>(false);
+    QPointer<Core> self(this);
+    m_probing.insert(id, job.stagingDir);
+    m_stagingCancel.insert(id, cancel);
+    m_pool.start([self, id, source, staged, nested, cancel] {
+        bool ok = copyForStaging(source, staged, cancel.get());
+        if (ok && !nested.isEmpty()) {
+            QDir().mkpath(QFileInfo(nested).absolutePath());
+            ok = linkOrCopy(staged, nested);
+        }
+        const quint64 size = ok ? static_cast<quint64>(QFileInfo(staged).size()) : 0;
+        // 2.2 sha hook: the staged original is final here (fileverify::finalizeStaged on this worker).
+        if (Core* core = self.data()) {
+            QMetaObject::invokeMethod(core, [self, id, ok, size] {
+                if (self)
+                    self->onOriginalStaged(id, ok, size);
+            }, Qt::QueuedConnection);
+        }
+    });
+}
+
+void Core::onOriginalStaged(int id, bool ok, quint64 size)
+{
+    const QString staging = m_probing.take(id);
+    m_stagingCancel.remove(id);
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || it->state != UploadState::Preparing) {
+        removeStaging(staging);
+        return;
+    }
+    const Settings& s = Settings::instance();
+    if (!ok) {
+        failUpload(id, i18n::t("Couldn't read the file. It may be open in another program or no longer exist."));
+        return;
+    }
+    if (size == 0) {
+        failUpload(id, i18n::t("This file is empty."));
+        return;
+    }
+    if (size > megabytes(s.uploadMaxMB)) {
+        failUpload(id, uploadLimitText(s.uploadMaxMB));
+        return;
+    }
+    it->size = size;
+    continueUpload(id);
+}
+
+void Core::continueUpload(int id)
+{
+    auto it = m_uploads.find(id);
+    if (it == m_uploads.end() || it->state != UploadState::Preparing)
+        return;
+    it->waiting = false;
+    if (it->remoteDir == QLatin1String("/"))
+        onDirectoryReady(id, false, true);
+    else
+        createRemoteDirectory(id, false);
+}
+
+// Reads the running compressions' progress into their jobs (the 250 ms progress timer). A change of half
+// a percent or of a flag is reported.
+bool Core::pollCompressions()
+{
+    QList<int> changed;
+    for (auto task = m_compressing.cbegin(); task != m_compressing.cend(); ++task) {
+        auto it = m_uploads.find(task.key());
+        if (!task->control || !task->started || it == m_uploads.end() || it->state != UploadState::Compressing)
+            continue;
+        const double progress  = qBound(0.0, task->control->permille.load() / 1000.0, 1.0);
+        const bool   finishing = task->control->finishing.load();
+        const int    encoder   = task->control->encoder.load();
+        if (progress - it->progress >= 0.005 || finishing != it->compressFinishing || encoder != it->compressEncoder) {
+            it->progress          = qMax(it->progress, progress);
+            it->compressFinishing = finishing;
+            it->compressEncoder   = encoder;
+            if (finishing)
+                it->message = i18n::t("Finishing compression…");
+            changed.append(it->id);
+        }
+    }
+    for (int id : qAsConst(changed))
+        emit uploadChanged(id);
+    return !m_compressing.isEmpty();
 }
 
 // ============================================================================================
@@ -2820,8 +3342,9 @@ void Core::updateProgress()
     }
     for (int id : qAsConst(uploads))
         emit uploadChanged(id);
+    const bool compressing = pollCompressions(); // 2.4 compress
 
-    if (m_progressTimer && m_downloadsByTransfer.isEmpty() && m_previewsByTransfer.isEmpty() && m_uploadsByTransfer.isEmpty())
+    if (m_progressTimer && m_downloadsByTransfer.isEmpty() && m_previewsByTransfer.isEmpty() && m_uploadsByTransfer.isEmpty() && !compressing)
         m_progressTimer->stop();
 }
 

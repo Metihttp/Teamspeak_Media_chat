@@ -102,6 +102,15 @@ void probeImage(const QString& path, qint64 fileBytes, bool generatePreviews, Lo
 void probeVideo(const QString& path, bool generatePreviews, LocalMediaInfo& info)
 {
     const mf::ProbeResult probe = mf::probe(path, kPosterMaxSide);
+    // 2.4 compress: the planner's facts.
+    info.probed        = probe.ok;
+    info.hasVideo      = probe.hasVideo;
+    info.decodable     = !probe.poster.isNull();
+    info.frameRate     = probe.frameRate;
+    info.hasAudio      = probe.hasAudio;
+    info.audioChannels = probe.audioChannels;
+    info.videoCodec    = probe.videoCodec;
+    info.probeError    = probe.error;
     if (!probe.ok)
         return;
     info.durationMs = std::max<qint64>(0, probe.durationMs);
@@ -156,6 +165,19 @@ LocalMediaInfo probeLocalMedia(const QString& path, bool generatePreviews)
         }
     } catch (...) {
         // Metadata is optional: the file is still uploaded and posted without it.
+    }
+    return info;
+}
+
+LocalMediaInfo probeLocalVideo(const QString& path, bool generatePreviews) // 2.4 compress
+{
+    LocalMediaInfo info;
+    info.kind = MediaKind::Video;
+    try {
+        if (QFileInfo(path).isFile())
+            probeVideo(path, generatePreviews, info);
+    } catch (...) {
+        // As probeLocalMedia: metadata is optional.
     }
     return info;
 }

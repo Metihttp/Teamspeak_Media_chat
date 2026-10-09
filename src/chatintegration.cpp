@@ -2315,6 +2315,7 @@ void ChatIntegration::openCompose(QWidget* source, const QStringList& files, con
         }
     };
     host.albumDefault = Settings::instance().sendAsAlbum;
+    host.compressOptions = [] { return Core::compressOptions(SendQuality::Auto); }; // 2.4 compress: the Quality combo
 
     QWidget* parent = mainWindow();
     if (!parent && source)
@@ -2389,7 +2390,7 @@ void ChatIntegration::pickAndSendFiles()
     const QPointer<QWidget>         from(source);
     const QStringList               files = QFileDialog::getOpenFileNames(
         mainWindow(), i18n::t("Send files to %1").arg(describeTarget(target)), lastDir,
-        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v)"));
+        i18n::t("All files (*.*);;Images (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v *.3gp *.mts *.m2ts *.mpg)"));
     if (!guard || files.isEmpty())
         return;
     lastDir = QFileInfo(files.first()).absolutePath();

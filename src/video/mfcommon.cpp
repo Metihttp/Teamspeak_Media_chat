@@ -222,6 +222,12 @@ GUID videoSubtypeOf(const QString& path)
     return subtype;
 }
 
+QString videoCodecName(const GUID& subtype) // 2.4 compress
+{
+    const char* storeApp = nullptr;
+    return codecName(subtype, &storeApp);
+}
+
 QSize applyPixelAspect(const QSize& size, UINT32 num, UINT32 den)
 {
     if (num == 0 || den == 0 || num == den || size.isEmpty())

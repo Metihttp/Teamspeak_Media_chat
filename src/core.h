@@ -19,9 +19,15 @@
 #include "medialink.h"
 #include "mediaprobe.h"
 #include "ts3api.h"
+#include "videocompress.h" // 2.4 compress
 
 class QTimer;
 class QWidget;
+
+namespace mf { // 2.4 compress (src/video/mftranscode.h)
+struct TranscodeControl;
+struct TranscodeResult;
+} // namespace mf
 
 enum class MediaState { Idle, Queued, Downloading, Ready, Failed };
 // MediaError and its texts (downloadErrorTitle / downloadErrorText) are in medialink.h.
@@ -62,8 +68,17 @@ enum class UploadState { Preparing, Compressing, Uploading, Posting, Done, Faile
 
 // ---- 2.2: one way to send ------------------------------------------------------------------------
 
-// Video quality for the compression planner (2.4); until then every video is sent as it is.
+// Video quality for the compression planner (2.4 compress, src/videocompress.h): Auto lets the settings
+// decide, Original never compresses, the others ask for that preset.
 enum class SendQuality { Auto, Original, P1080, P720, P480 };
+
+// 2.4 compress: what became of a video that was to be compressed.
+enum class CompressOutcome {
+    None,        // not compressed (not a video, small enough, ...)
+    Compressed,  // the compressed MP4 was sent
+    SentOriginal, // the user chose "Send original"
+    Fallback,    // compressing failed, the original was sent (UploadJob::compressNote says why)
+};
 
 struct SendItem {
     QString     path;              // the file to send
@@ -114,6 +129,16 @@ struct UploadJob {
     // Filled by the probe step (worker thread) before uploading.
     LocalMediaInfo info;
     QString        previewRemotePath; // set once the preview/poster upload succeeded
+
+    // 2.4 compress. While Compressing, progress is the compression's (0..1) and waiting means queued
+    // behind another video (one is compressed at a time).
+    quint64         originalSize      = 0;     // the original's size (size becomes the result's)
+    quint64         estimatedSize     = 0;     // the planner's estimate of the result
+    QString         compressLabel;             // "720p"
+    bool            compressFinishing = false; // writing the file's index and checking the result
+    int             compressEncoder   = 0;     // 0 not known yet, 1 the processor, 2 the graphics card
+    CompressOutcome compression       = CompressOutcome::None;
+    QString         compressNote;              // Fallback: why the original was sent instead
 };
 
 // The title of an upload in the toast and in chat warnings: its SendItem::displayName, "Pasted image"
@@ -208,6 +233,24 @@ class Core : public QObject
     // job's id, or 0 if it cannot be retried (also when not connected: the job then stays).
     int  retryUpload(int id);
 
+    // ---- 2.4 compress ------------------------------------------------------------------------
+    // Videos are planned by videocompress::planCompression (settings snapshot at send time) and, when it
+    // says so, converted to an MP4 on m_transcodePool (one at a time, below normal priority) before the
+    // usual preview + upload. If that fails and the original fits the upload limit, the original is sent.
+    // "Send original": while Compressing (not finishing) and the original fits the limit.
+    bool canSendOriginal(int id) const;
+    void sendOriginal(int id); // stops compressing (within about a frame) and sends the original instead
+    // The settings as the planner takes them, for a send with this quality (the send window uses it too).
+    static videocompress::Options compressOptions(SendQuality quality);
+    // The H.264 encoders of this computer (looked up once on a worker: encodersKnown() then); empty
+    // lists until then. GUI thread.
+    QStringList hardwareEncoders() const { return m_hardwareEncoders; }
+    QStringList softwareEncoders() const { return m_softwareEncoders; }
+    bool        encodersQueried() const { return m_encodersQueried; }
+    void        queryEncoders(); // no-op once asked
+    // "720p, graphics card, 9.8 s, 6.3x realtime" / "encoder 0xC00D36B4": the last compression (diagnostics).
+    QString lastCompression() const { return m_lastCompression; }
+
     // ---- cache ---------------------------------------------------------------------------
     QString cacheDir() const;
     quint64 cacheSize() const;
@@ -237,6 +280,7 @@ class Core : public QObject
     void entryChanged(const QString& key);
     void uploadChanged(int id); // state, progress or waiting changed, or the job was removed
     void openRequested(const QString& key); // a download started with openWhenReady finished
+    void encodersKnown(); // 2.4 compress: hardwareEncoders()/softwareEncoders() are filled in
     // The posts of sch are all out (or a flood pause ended): plugin commands may go again.
     void floodGovernorChanged(uint64 sch);
 
@@ -362,6 +406,28 @@ class Core : public QObject
     QString previewDirFor(const UploadJob& job) const;
     QString previewRemoteFor(const UploadJob& job, bool inFolder) const;
 
+    // ---- 2.4 compress ----------------------------------------------------------------------
+    struct CompressTask {
+        std::shared_ptr<mf::TranscodeControl> control; // of the current run (a new one per run)
+        videocompress::Plan                   plan;
+        QString                               outDir;  // <staging>.cz: the transcoder's output
+        quint64                               limit      = 0;     // the upload limit at send time
+        quint64                               abortAbove = 0;     // the size guard of the run
+        bool                                  gpu        = true;  // Settings::compressUseGpu at send time
+        bool                                  started    = false; // the current run has begun
+        bool                                  skip       = false; // "Send original" while it ran
+        int                                   attempt    = 0;     // 1: the re-run after an overshoot
+    };
+    void onCompressPlanned(int id, const LocalMediaInfo& info, const QByteArray& previewJpeg, const videocompress::Plan& plan);
+    void startCompression(int id);
+    void runTranscode(int id);
+    void markCompressStarted(int id, const std::shared_ptr<mf::TranscodeControl>& control);
+    void onCompressed(int id, const std::shared_ptr<mf::TranscodeControl>& control, const QString& outDir, const mf::TranscodeResult& result);
+    void stageOriginal(int id, CompressOutcome outcome, const QString& note);
+    void onOriginalStaged(int id, bool ok, quint64 size);
+    void continueUpload(int id); // the remote folder, then the preview, then the file
+    bool pollCompressions();     // progress of running compressions; true while any is left
+
     void updateProgress();
     void ensureProgressTimer();
 
@@ -422,4 +488,13 @@ class Core : public QObject
     QTimer*                     m_resumeTimer   = nullptr;
     QThreadPool                 m_pool;      // staging copies + probes; destroyed (and waited for) with Core
     QThreadPool                 m_stillPool; // expensive still decodes (untrusted files); waited for with Core
+
+    // 2.4 compress
+    QHash<int, CompressTask> m_compressing;    // upload id -> its compression, until onCompressed
+    QThreadPool              m_transcodePool;  // one transcode at a time; canceled and waited for in ~Core
+    QStringList              m_hardwareEncoders;
+    QStringList              m_softwareEncoders;
+    bool                     m_encodersQueried = false;
+    bool                     m_encodersAsked   = false;
+    QString                  m_lastCompression;
 };

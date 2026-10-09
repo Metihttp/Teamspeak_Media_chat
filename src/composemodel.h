@@ -10,6 +10,7 @@
 #include <QVector>
 
 #include "medialink.h"
+#include "videocompress.h" // 2.4 compress
 
 namespace compose {
 
@@ -37,6 +38,15 @@ struct Item {
     bool      probed     = false; // the worker has looked at it (thumbnail, size, readable)
     Problem   problem    = Problem::None;
     bool      spoiler    = false;
+
+    // 2.4 compress: a video that may be compressed. Its facts come from the window's probe; choices are the
+    // planner's Quality entries (empty: nothing to choose); quality is the picked entry (-1: the default).
+    bool                            compressible = false;
+    bool                            factsKnown   = false;
+    videocompress::VideoFacts       facts;
+    QVector<videocompress::Choice>  choices;
+    int                             quality = -1;
+    QString                         compressProblem; // why it can't be sent even compressed (the planner's text)
 
     bool isPasted() const { return path.isEmpty(); }
     bool canSend() const { return problem == Problem::None; }

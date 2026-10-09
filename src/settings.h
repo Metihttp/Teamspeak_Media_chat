@@ -49,6 +49,13 @@ struct Settings {
     // 2.2 compose: a drop opens the send window (Ctrl held: sends right away); false: the other way round.
     bool dropOpensSendWindow = true;
     bool sendAsAlbum         = true; // the send window's "Send as an album", as last chosen
+    // 2.4 compress: videos are made smaller (an MP4 that plays everywhere) before they are sent.
+    static constexpr Range compressVideosOverMBRange = {1, 4096};
+    bool compressVideos          = true; // videos larger than compressVideosOverMB
+    int  compressVideosOverMB    = 25;
+    int  compressVideoQuality    = 720;  // the short side: 480 | 720 | 1080 (anything else reads as 720)
+    bool convertUnplayableVideos = true; // HEVC, AV1, VP9, camcorder .mts ... of any size, when this PC can decode them
+    bool compressUseGpu          = true; // the graphics card's encoder when there is one
 
     // Media cache
     int cacheLimitMB = 1024; // the least recently used media is deleted beyond this
@@ -59,6 +66,8 @@ struct Settings {
 
     // " a\b/ " -> "/a/b"; empty -> defaultUploadDirectory.
     static QString normalizeUploadDirectory(const QString& dir);
+    // 2.4 compress: 480 and 1080 stay, anything else is 720.
+    static int normalizeVideoQuality(int shortSide);
 
     // Why a link for the note can't be used (SettingsDialog shows a message for each).
     enum class DownloadUrlProblem { None, NotWebAddress, Scheme, Brackets, TooLong };
