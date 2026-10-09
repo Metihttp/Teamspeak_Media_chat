@@ -507,16 +507,15 @@ void ChatIntegration::indexAlbums(View& view) const
 
 void ChatIntegration::refreshAlbumsOf(QTextBrowser* browser, const QString& key, bool pixelsOnly)
 {
+    Q_UNUSED(pixelsOnly); // a grid's size never depends on its items: their changes only redraw it
     View* view = viewFor(browser);
     if (!view)
         return;
+    // Coalesced: GIF frames and download progress of several items give one redraw (~30 per second at
+    // most, and only while the grid is on screen; one off screen is redrawn when it comes back).
     const QStringList ids = view->albumsByKey.value(key);
-    for (const QString& id : ids) {
-        if (pixelsOnly)
-            scheduleAlbumRefresh(browser, id); // GIF frames: one redraw for all of the grid's tiles
-        else
-            refreshPreview(browser, id, false);
-    }
+    for (const QString& id : ids)
+        scheduleAlbumRefresh(browser, id);
 }
 
 void ChatIntegration::scheduleAlbumRefresh(QTextBrowser* browser, const QString& id)
