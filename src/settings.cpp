@@ -48,6 +48,20 @@ int readInt(const QSettings& s, const char* name, int fallback, Settings::Range 
 
 } // namespace
 
+// 2.2 voice: an endpoint id is printable ASCII ("{0.0.1.00000000}.{guid}"); anything else (edited by
+// hand, too long) means "the microphone TeamSpeak uses".
+QString Settings::validVoiceMicrophone(const QString& value)
+{
+    const QString v = value.trimmed();
+    if (v.size() > maxVoiceMicrophoneLength)
+        return {};
+    for (const QChar c : v) {
+        if (c.unicode() < 0x20 || c.unicode() > 0x7e)
+            return {};
+    }
+    return ownedCopy(v);
+}
+
 QString Settings::normalizeUploadDirectory(const QString& input)
 {
     QString dir = input.trimmed();
@@ -158,6 +172,11 @@ void Settings::load(const QString& file)
     // 2.2 protocol
     showReactions = readBool(s, "showReactions", d.showReactions);
     sharePresence = readBool(s, "sharePresence", d.sharePresence);
+    // 2.2 voice
+    voiceMicrophone       = validVoiceMicrophone(s.value(key("voiceMicrophone")).toString());
+    voiceMuteTeamSpeakMic = readBool(s, "voiceMuteTeamSpeakMic", d.voiceMuteTeamSpeakMic);
+    voiceReview           = readBool(s, "voiceReview", d.voiceReview);
+    voiceSounds           = readBool(s, "voiceSounds", d.voiceSounds);
 }
 
 void Settings::save() const
@@ -212,6 +231,11 @@ void Settings::save(const QString& file) const
     // 2.2 protocol
     s.setValue(key("showReactions"), showReactions);
     s.setValue(key("sharePresence"), sharePresence);
+    // 2.2 voice
+    s.setValue(key("voiceMicrophone"), ownedCopy(validVoiceMicrophone(voiceMicrophone)));
+    s.setValue(key("voiceMuteTeamSpeakMic"), voiceMuteTeamSpeakMic);
+    s.setValue(key("voiceReview"), voiceReview);
+    s.setValue(key("voiceSounds"), voiceSounds);
     s.sync();
 }
 

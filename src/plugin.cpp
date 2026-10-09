@@ -38,6 +38,8 @@
 #include "update/updater.h"         // 2.2 updater
 #include "version.h"
 #include "video/mfvideo.h"
+#include "voicecontroller.h" // 2.2 voice
+#include "voicesection.h"    // 2.2 voice
 
 #define PLUGIN_API_VERSION 26
 #define TS3_EXPORT extern "C" __declspec(dllexport)
@@ -61,6 +63,7 @@ enum MenuId {
     MenuUpdate          = 4,  // 2.2 updater (official builds only)
     MenuPauseDownloads  = 5,  // 2.2 data saver
     MenuResumeDownloads = 6,  // 2.2 data saver
+    MenuVoice           = 7,  // 2.2 voice: Record voice message… (enabled while connected)
     MenuGiveAccess      = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
     MenuRemoveAccess    = 21, // 2.2 servergroup
 };
@@ -109,6 +112,7 @@ void showSettings(QWidget* parent)
     dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
     dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
     dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, g_core)); // 2.4 compress
+    dialog->addSection(SettingsDialog::Tab::General, new VoiceSection(dialog)); // 2.2 voice (General has the room: Sending is full)
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_peers)
             g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
@@ -158,6 +162,8 @@ void printHelp(uint64 sch)
     ts3::printInfo(sch, i18n::t(TSMEDIA_VERSION " — commands:"));
     const char* const commands[] = {
         "[b]/tsmedia send[/b] — choose files to send to this chat (opens the send window)",
+        "[b]/tsmedia send[/b] — choose files to send to this chat",
+        "[b]/tsmedia voice[/b] — record a voice message for this chat", // 2.2 voice
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",
@@ -222,6 +228,7 @@ void updateMenus()
         return;
     const QByteArray id = ts3::pluginId.toUtf8();
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuSend, ts3::isConnected(ts3::currentConnection()) ? 1 : 0);
+    ts3::funcs.setPluginMenuEnabled(id.constData(), MenuVoice, ts3::isConnected(ts3::currentConnection()) ? 1 : 0); // 2.2 voice
     datasaver::updateMenu(MenuPauseDownloads, MenuResumeDownloads); // 2.2 data saver
 }
 
@@ -233,6 +240,17 @@ void serverSettingsChanged()
     updateMenus();
     if (g_settings)
         g_settings->reloadServers(); // rows not edited in an open dialog show the new value
+}
+
+// 2.2 voice: the recorder for the visible chat (menu, command, hotkey).
+void recordVoice(VoiceController::Origin origin)
+{
+    if (!g_chat || !g_chat->voice())
+        return;
+    if (origin == VoiceController::Origin::Hotkey)
+        g_chat->voice()->hotkey();
+    else
+        g_chat->voice()->start(origin);
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -302,6 +320,24 @@ void selfTestPlay(uint64 sch, int attempt)
     }
     ts3::log(QStringLiteral("[test] self-test play: waiting for a video (attempt %1)").arg(attempt + 1));
     singleShotOwned(2000, g_core.data(), [sch, attempt] { selfTestPlay(sch, attempt + 1); });
+}
+
+// 2.2 voice: <data dir>/selftest_voice.txt ("<ms>[;send][;silence][;unplug@<ms>]") records a voice
+// message from generated sound (FakeCapture, never the microphone) in the visible chat.
+void selfTestVoice(uint64 sch)
+{
+    QString content;
+    if (!takeTrigger(QStringLiteral("selftest_voice.txt"), &content))
+        return;
+    if (!isLocalServer(sch)) {
+        ts3::log("[test] self-test voice skipped: not a localhost server");
+        return;
+    }
+    QFile fake(ts3::dataDir() + QStringLiteral("/voice_fake.txt"));
+    if (fake.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        fake.write(content.trimmed().toUtf8());
+    fake.close();
+    recordVoice(VoiceController::Origin::Command);
 }
 #endif
 
@@ -411,6 +447,8 @@ TS3_EXPORT int ts3plugin_init()
             return hub ? diag::Section{PeerHub::diagnosticsTitle(), hub->diagnosticLines()} : diag::Section();
         });
         chat->start();
+        if (chat->voice()) // 2.2 voice: "Open TS Media settings" in the recorder's errors
+            QObject::connect(chat->voice(), &VoiceController::settingsRequested, chat, [] { showSettings(nullptr); });
         updateMenus();
         // 2.2 updater: this start counts as successful (started marker, applied -> done), then the
         // consent window / daily check are scheduled. Deleted first in ts3plugin_shutdown.
@@ -511,6 +549,8 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
             if (g_chat)
                 g_chat->pickAndSendFiles();
         });
+    } else if (cmd == QLatin1String("voice")) { // 2.2 voice
+        onGuiThread([] { recordVoice(VoiceController::Origin::Command); });
     } else if (cmd == QLatin1String("settings")) {
         onGuiThread([] { showSettings(nullptr); });
     } else if (cmd == QLatin1String("cache")) {
@@ -579,6 +619,7 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
         // 2.2 data saver: an enable/disable pair (the SDK can't change a menu item's text or check mark).
         {MenuPauseDownloads, i18n::t("Pause automatic downloads on this server")},
         {MenuResumeDownloads, i18n::t("Resume automatic downloads on this server")},
+        {MenuVoice, i18n::t("Record voice message…")}, // 2.2 voice
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
         {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
@@ -614,6 +655,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
     const Hotkey keys[] = {
         {"tsmedia_send", i18n::t("Send files to the current chat")},
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
+        {VoiceSection::kHotkeyKeyword, i18n::t("Record a voice message (press to start, press again to stop)")}, // 2.2 voice
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
 
@@ -668,6 +710,9 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
                 g_updater->checkNow(upd::Updater::Origin::Settings);
         });
         break;
+    case MenuVoice: // 2.2 voice
+        onGuiThread([] { recordVoice(VoiceController::Origin::Menu); });
+        break;
     default:
         break;
     }
@@ -683,6 +728,8 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
         });
     } else if (key == QLatin1String("tsmedia_cancel")) {
         onGuiThread([] { cancelUploads(0); });
+    } else if (key == QLatin1String(VoiceSection::kHotkeyKeyword)) { // 2.2 voice
+        onGuiThread([] { recordVoice(VoiceController::Origin::Hotkey); });
     }
 }
 
@@ -698,7 +745,10 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
     // Test builds only, and only against localhost servers (checked when the hooks fire).
     if (newStatus == STATUS_CONNECTION_ESTABLISHED) {
         onGuiThread([sch] {
-            singleShotOwned(3000, g_core.data(), [sch] { selfTestUpload(sch); });
+            singleShotOwned(3000, g_core.data(), [sch] {
+                selfTestUpload(sch);
+                selfTestVoice(sch); // 2.2 voice
+            });
             singleShotOwned(6000, g_core.data(), [sch] {
                 if (!takeTrigger(QStringLiteral("selftest_play.txt"), nullptr))
                     return;

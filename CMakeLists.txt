@@ -143,6 +143,20 @@ add_library(tsmedia SHARED
     src/imageeditmodel.cpp    src/imageeditmodel.h
     src/imageeditor.cpp       src/imageeditor.h
     src/imageeditorcanvas.cpp src/imageeditor_p.h
+    # 2.2 voice
+    src/audio/capture.h
+    src/audio/waveform.cpp      src/audio/waveform.h
+    src/audio/capturedevice.cpp src/audio/capturedevice.h
+    src/audio/wasapicapture.cpp src/audio/wasapicapture.h
+    src/audio/fakecapture.cpp   src/audio/fakecapture.h
+    src/audio/aacwriter.cpp     src/audio/aacwriter.h
+    src/audio/voicerecorder.cpp src/audio/voicerecorder.h
+    src/audio/micguard.cpp      src/audio/micguard.h
+    src/audio/cues.cpp          src/audio/cues.h
+    src/voicecard.cpp           src/voicecard.h
+    src/voicepanel.cpp          src/voicepanel.h
+    src/voicecontroller.cpp     src/voicecontroller.h
+    src/voicesection.cpp        src/voicesection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -291,6 +305,20 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 editor
         tests/tst_imageedit.cpp
         src/imageeditmodel.cpp
+        # 2.2 voice: waveform, MicGuard (fake TeamSpeak), microphone mapping, cues
+        tests/tst_voice.cpp
+        src/audio/waveform.cpp
+        src/audio/micguard.cpp
+        src/audio/capturedevice.cpp
+        src/audio/cues.cpp
+        # 2.2 voice: the encoder (generated sound -> .m4a -> probe), the recorder with FakeCapture (never a
+        # real microphone) and the voice card (audiocard.cpp hands voice messages over to it)
+        tests/tst_voicemedia.cpp
+        src/audio/aacwriter.cpp
+        src/audio/voicerecorder.cpp
+        src/audio/fakecapture.cpp
+        src/audio/wasapicapture.cpp # only lists endpoints in the tests; never opens one
+        src/voicecard.cpp
     )
     target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
@@ -357,6 +385,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/previewrenderer.cpp
         src/audiocard.cpp # 2.2 audio
         src/dragpixmap.cpp # 2.2 drag-out
+        src/voicecard.cpp src/audio/waveform.cpp # 2.2 voice
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp

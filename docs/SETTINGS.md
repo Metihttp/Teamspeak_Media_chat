@@ -23,7 +23,7 @@ Settings are stored in `%APPDATA%\TS3Client\plugins\tsmedia\settings.ini` (a por
 | Setting | Default | Range and notes |
 | --- | --- | --- |
 | Show images, videos and file cards in the chat | on | The other Receiving options only apply while this is on. |
-| Download images and GIFs automatically up to | on, 15 MB | 1–500 MB. Larger images and GIFs load when clicked. |
+| Download images, GIFs and voice messages automatically up to | on, 15 MB | 1–500 MB. Larger images and GIFs load when clicked. Voice messages download up to this size, but never above 16 MB; larger ones load when played. |
 | Play GIFs automatically | on | When off, a GIF plays while the pointer is over it. |
 | Download videos automatically | Off (download when played) | 0–4096 MB, in steps of 10 MB. Videos up to this size download automatically. |
 | Maximum preview size | 400 × 300 px | Width 120–1200 px, height 80–1200 px. |
@@ -52,6 +52,19 @@ Changing the volume in the gallery viewer updates this setting too.
 - The space in use is shown under the limit, in the same unit (*700 MB of 1024 MB used (68%)*), with **Open folder** and **Clear cache** buttons.
 - **Clear cache** asks first and says how much it will delete. Files on the server aren't affected: media still in the chat downloads again when you view it. Media that is playing or open in the viewer is kept.
 - The cache lives in `%APPDATA%\TS3Client\plugins\tsmedia\cache`.
+
+## Voice messages
+
+On the **General** tab. See [Voice messages](USAGE.md#voice-messages) for how recording works.
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Microphone | Same as TeamSpeak (recommended) | Or one of Windows' microphones by name. When the plugin can't tell which microphone TeamSpeak uses, it records from Windows' default communications microphone and the recording window says so. A microphone picked here that is unplugged shows as *not connected*; until it is back, the TeamSpeak one is used. |
+| Mute my TeamSpeak microphone while recording | on | So people in your channel don't hear you live (voice activation). Others see your microphone as muted until you finish. It is always unmuted again when recording stops, unless you unmuted it yourself meanwhile. |
+| Let me listen before sending (hotkey) | on | Off: the hotkey's second press sends right away instead of stopping for a listen. |
+| Play a sound when recording starts and stops | on | A short beep through TeamSpeak's playback device; only you hear it. |
+
+The line under the options shows the record hotkey (*Record hotkey: F9*, or *not set*); **Set up hotkeys…** opens TeamSpeak's hotkey setup, where it is listed under TS Media chat as *Record a voice message*.
 
 ## Sending
 

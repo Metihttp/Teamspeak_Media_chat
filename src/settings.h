@@ -81,6 +81,14 @@ struct Settings {
     // 2.2 protocol: Privacy (both global, never per server)
     bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
     bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
+    // 2.2 voice: voice messages
+    static constexpr int maxVoiceMicrophoneLength = 512;
+    QString voiceMicrophone;               // Windows endpoint id of the microphone; empty = the one TeamSpeak uses
+    bool    voiceMuteTeamSpeakMic = true;  // mute the TeamSpeak microphone while recording (always given back)
+    bool    voiceReview           = true;  // the hotkey's second press stops for a listen; off: it sends
+    bool    voiceSounds           = true;  // a short sound when recording starts and stops
+    // A stored microphone id as load() keeps it: printable ASCII up to maxVoiceMicrophoneLength, else empty.
+    static QString validVoiceMicrophone(const QString& value);
 
     static Settings& instance();
     void             load();

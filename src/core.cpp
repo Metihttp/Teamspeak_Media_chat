@@ -1332,7 +1332,7 @@ void Core::resumeInterrupted()
 quint64 Core::autoDownloadLimit(const MediaEntry& e) const
 {
     const Settings& s = Settings::instance();
-    if (e.kind == MediaKind::Audio) // 2.2 audio
+    if (e.kind == MediaKind::Audio) // 2.2 audio; 2.2 voice: voice messages have their own limit
         return audioplayback::autoDownloadLimit(s, e.link.voice);
     return e.kind == MediaKind::Video ? megabytes(s.videoAutoDownloadMB) : megabytes(s.autoDownloadMaxMB);
 }
@@ -1626,8 +1626,9 @@ QString Core::saveAs(const QString& key, QWidget* parent) const
     // The dialog runs an event loop: copy what is needed, the entry may change meanwhile.
     const QString   localPath = e->localPath;
     const MediaKind kind      = e->kind;
-    // Without the cache prefix and the random part. 2.2: also safe from device names ("CON.txt").
-    const QString   name      = filenames::safeLocalFileName(displayNameFor(e->link));
+    // Without the cache prefix and the random part. 2.2: also safe from device names ("CON.txt");
+    // 2.2 voice: "Voice message 2026-10-09 18-02.m4a".
+    const QString   name      = filenames::safeLocalFileName(e->link.voice ? voiceSaveName(e->link) : displayNameFor(e->link));
 
     static QString lastDir;
     QString        dir = lastDir;
@@ -3458,8 +3459,8 @@ void Core::cleanupUpload(UploadJob& job)
         removeStaging(job.stagingDir);
     }
     job.stagingDir.clear();
-    // A failed file of our own (a pasted image; 2.2 editor: an edited copy) stays for a retry until its
-    // job is dismissed (forgetUpload).
+    // A failed file of our own (ownTemp: a pasted image; 2.2 editor: an edited copy; 2.2 voice: a
+    // recording, which exists nowhere else) stays for a retry until its job is dismissed (forgetUpload).
     if (job.state != UploadState::Failed)
         releaseSource(job);
 }

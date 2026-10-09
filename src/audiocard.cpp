@@ -7,6 +7,7 @@
 #include "i18n.h"
 #include "previewpaint.h"
 #include "uiutil.h"
+#include "voicecard.h" // 2.2 voice: voice messages are audio entries drawn as the voice card
 
 namespace pp = previewpaint;
 
@@ -277,6 +278,8 @@ QSize audioCardSize(const MediaEntry& entry, const PreviewStyle& style)
 
 QImage renderAudioCard(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, QSize* logicalSize)
 {
+    if (isVoiceCard(entry)) // 2.2 voice
+        return renderVoiceCard(entry, overlay, style, logicalSize);
     const pp::Palette pal  = pp::palette(style.dark);
     const QSize       size = audioCardSize(entry, style);
     if (logicalSize)
@@ -343,6 +346,8 @@ QImage renderAudioCard(const MediaEntry& entry, const PlaybackOverlay& overlay, 
 
 VideoZone audioZoneAt(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, const QSize& logicalSize, const QPointF& pos)
 {
+    if (isVoiceCard(entry)) // 2.2 voice
+        return voiceZoneAt(entry, overlay, style, logicalSize, pos);
     const QRectF bounds(QPointF(0, 0), QSizeF(logicalSize));
     if (logicalSize.isEmpty() || !bounds.contains(pos))
         return VideoZone::None;
@@ -356,6 +361,8 @@ VideoZone audioZoneAt(const MediaEntry& entry, const PlaybackOverlay& overlay, c
 
 QRectF audioZoneRect(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, const QSize& logicalSize, const QPointF& pos)
 {
+    if (isVoiceCard(entry)) // 2.2 voice
+        return voiceZoneRect(entry, overlay, style, logicalSize, pos);
     const QRectF        bounds(QPointF(0, 0), QSizeF(logicalSize));
     const AudioGeometry g = audioGeometry(bounds.size(), style, durationOf(entry, overlay));
     switch (audioZoneAt(entry, overlay, style, logicalSize, pos)) {
@@ -375,6 +382,8 @@ QRectF audioZoneRect(const MediaEntry& entry, const PlaybackOverlay& overlay, co
 
 double audioSeekFractionAt(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, const QSize& logicalSize, const QPointF& pos)
 {
+    if (isVoiceCard(entry)) // 2.2 voice
+        return voiceSeekFractionAt(entry, overlay, style, logicalSize, pos);
     const AudioGeometry g = audioGeometry(QSizeF(logicalSize), style, durationOf(entry, overlay));
     if (g.track.width() <= 0.0)
         return 0.0;
@@ -383,6 +392,8 @@ double audioSeekFractionAt(const MediaEntry& entry, const PlaybackOverlay& overl
 
 QString audioZoneToolTip(const MediaEntry& entry, const PlaybackOverlay& overlay, VideoZone zone, double seekFraction)
 {
+    if (isVoiceCard(entry)) // 2.2 voice
+        return voiceZoneToolTip(entry, overlay, zone, seekFraction);
     if (overlay.busy) {
         if (entry.state == MediaState::Downloading && isCheckingShown(entry)) // 2.2 sha
             return i18n::t("%1 Click to cancel autoplay.").arg(checkingText(entry));
@@ -416,6 +427,8 @@ QString audioZoneToolTip(const MediaEntry& entry, const PlaybackOverlay& overlay
 
 QString audioToolTipDetail(const MediaEntry& entry, const PlaybackOverlay& overlay)
 {
+    if (isVoiceCard(entry)) // 2.2 voice
+        return voiceToolTipDetail(entry, overlay);
     if (overlay.externalOnly)
         return i18n::t("Windows can't play this file here, so it opens in your default app.");
     if (entry.state == MediaState::Failed) {

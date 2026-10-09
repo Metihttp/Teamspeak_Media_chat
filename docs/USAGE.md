@@ -106,6 +106,21 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - When something goes wrong, the reason is written on the preview or card. Failed cards have a **Retry** button, and clicking a failed picture tries again. Deleted files and files in password-protected channels can't be retried: their previews show the normal pointer and do nothing when clicked. The [FAQ](FAQ.md#what-do-the-messages-on-a-preview-mean) explains every message.
 - With Windows animations turned off (**Settings → Accessibility → Visual effects → Animation effects**), GIFs play only while the pointer is over them, and loading indicators stand still.
 
+## Voice messages
+
+Record a short message and send it to the chat you are looking at, like in Discord or Telegram.
+
+- **Start:** **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice`, or the hotkey *Record a voice message* (set it up in **Tools → Options → Hotkeys**, under TS Media chat; the plugin's settings have a **Set up hotkeys…** button).
+- **While recording** a small *Voice message* window shows a red dot and *Recording*, who the message goes to, a live waveform of the last 3 seconds, and the time out of 5:00. A short sound plays when recording starts and stops (TeamSpeak plays it on your own speakers or headset; others don't hear it). The window stays on screen for as long as the microphone is in use; closing it cancels the recording.
+- **Your TeamSpeak microphone is muted** while you record, so people in your channel don't hear you live (others see you as muted until you finish). It is unmuted again as soon as recording stops, however it stops. If you unmute it yourself meanwhile, the plugin leaves it alone.
+- **Stop** (<kbd>Space</kbd>) lets you listen first: play it back, then **Send** (<kbd>Enter</kbd>), **Re-record** or **Discard** (<kbd>Esc</kbd>). **Send** while recording sends it straight away. Discarding 3 seconds or more asks first.
+- **With the hotkey:** the first press starts, the second stops so you can listen (or sends, if *Let me listen before sending* is off in the settings), the third sends. Opened by the hotkey, the window doesn't take the focus away from a game.
+- **Limits:** at 4:30 the time turns red and the window says *30 seconds left*; at 5:00 recording stops and you get the review. Under half a second, nothing is sent.
+- **The microphone** is the one TeamSpeak uses when the plugin can tell which one that is; otherwise Windows' default communications microphone, and the window says so. You can pick a microphone in the settings.
+- **Sent as** an `.m4a` file (AAC, about 0.73 MB a minute) through the normal upload, with the upload panel showing *Voice message*. People without the plugin get a *Voice message (0:12)* link that downloads a file any player can play.
+- **Receiving:** a voice message is a compact card with a play button, its waveform and its length. It downloads by itself while *Download images, GIFs and voice messages automatically* is on (up to that limit, at most 16 MB), so it plays at once. Click the waveform to jump to a point; starting it pauses any other video or audio. **Save as…** suggests *Voice message 2026-10-09 18-02.m4a*.
+- The FAQ lists the messages the window can show (*Microphone access is blocked*, *No microphone found*, *The microphone is busy*, …) with their fixes.
+
 ## Right-click menu
 
 Right-click any preview or card. The item in bold is what a click on the preview does.
@@ -171,6 +186,7 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 | Command | What it does |
 | --- | --- |
 | `/tsmedia send` | pick files and send them to the current chat |
+| `/tsmedia voice` | record a voice message for the current chat |
 | `/tsmedia cancel` | cancel all running uploads |
 | `/tsmedia settings` | open the settings |
 | `/tsmedia cache` | open the media cache folder |
