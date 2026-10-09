@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "accessgroupbox.h" // 2.2 servergroup
 #include "core.h"
 #include "i18n.h"
 #include "medialink.h"
@@ -419,6 +420,13 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     auto* right = new QVBoxLayout;
     right->addWidget(send);
     right->addWidget(note);
+    // 2.2 servergroup: Server access, a self-contained box (its actions act on the server right away).
+    auto* serverAccess = new AccessGroupBox(this);
+    connect(serverAccess, &AccessGroupBox::contentsChanged, this, [this] {
+        if (isVisible())
+            QTimer::singleShot(0, this, [this] { fitToContents(); }); // once the layouts have taken in the new text
+    });
+    right->addWidget(serverAccess);
     right->addStretch(1);
     auto* columns = new QHBoxLayout;
     columns->setSpacing(12);

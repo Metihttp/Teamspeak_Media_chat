@@ -12,6 +12,7 @@
 #include "blurhash.h"
 #include "medialink.h"
 #include "settings.h"
+#include "testregistry.h" // 2.2: test classes in other files
 #include "uiutil.h"
 
 // settings.cpp keeps its ini file in the plugin's data folder; these tests never load or save it.
@@ -1194,6 +1195,15 @@ void TestTsMedia::normalizeUploadDirectory()
     QCOMPARE(Settings::normalizeUploadDirectory(input), folder);
 }
 
-QTEST_GUILESS_MAIN(TestTsMedia)
+// 2.2: test classes in other files (tests/testregistry.h) run after this one; QTEST_GUILESS_MAIN otherwise.
+int main(int argc, char** argv)
+{
+    QCoreApplication app(argc, argv);
+    app.setAttribute(Qt::AA_Use96Dpi, true);
+    TestTsMedia test;
+    int failed = QTest::qExec(&test, argc, argv); // first: the operands of + are evaluated in any order
+    failed += tsmedia_tests::runRegistered(argc, argv);
+    return failed;
+}
 
 #include "tst_tsmedia.moc"
