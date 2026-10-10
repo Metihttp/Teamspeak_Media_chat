@@ -49,7 +49,9 @@
 #include "audiocard.h" // 2.2 audio
 #include "filedrag.h" // 2.2 drag-out
 #include "albums.h" // 2.2 album
+#include "chatemoji.h"     // 2.2 emoji
 #include "chatreactions.h" // 2.2 reactions
+#include "chatreplies.h"   // 2.2 reply
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
@@ -260,6 +262,11 @@ ChatIntegration::~ChatIntegration()
     // 2.2 album: the chats stay with TeamSpeak: messages we hid are shown and collapsed album links
     // given back (the grids stay, like single previews). m_mutating stays set: no rescan is queued now.
     m_mutating = true;
+    // 2.2 reply: quote lines given back, the reply bar out of TeamSpeak's layout, our menu items gone.
+    delete m_replies;
+    m_replies = nullptr;
+    delete m_emoji; // 2.2 emoji: the chats get their text and emoticons back, the inputs their space
+    m_emoji = nullptr;
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         if (it->browser && it->document == it->browser->document())
             restoreAlbums(it->browser);
@@ -312,6 +319,11 @@ void ChatIntegration::start()
     connect(m_reveals, &RevealFades::changed, this, &ChatIntegration::onFrameChanged);
     m_reactions = new ChatReactions(this, m_core); // 2.2 reactions
     m_voice = new VoiceController(this, m_core, this); // 2.2 voice
+    m_replies   = new ChatReplies(this, m_core);   // 2.2 reply
+    m_emoji     = new ChatEmoji(this);             // 2.2 emoji
+    // 2.2 integration: HD emoji move positions inside a chat's blocks without a rescan; the replies'
+    // index of that chat is read again.
+    connect(m_emoji, &ChatEmoji::documentEdited, m_replies, &ChatReplies::documentEdited);
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -376,6 +388,8 @@ void ChatIntegration::discover()
             v.stale.clear();
             watchDocument(v.browser, v.document);
             scheduleScan(v.browser);
+            if (m_emoji) // 2.2 emoji
+                m_emoji->documentSwapped(v.browser);
         }
     }
 
@@ -410,6 +424,8 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
     browser->viewport()->setAcceptDrops(true);
     browser->viewport()->setMouseTracking(true);
     scheduleScan(browser);
+    if (m_emoji) // 2.2 emoji (its event filter goes before ours: it only takes events on its own emoji)
+        m_emoji->attach(browser);
 }
 
 void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* document)
@@ -418,7 +434,7 @@ void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* docume
         auto it = m_views.find(browser);
         if (it != m_views.end())
             it->positionsValid = false;
-        if (!m_mutating)
+        if (!m_mutating && !ChatEmoji::isMutating()) // 2.2 emoji: its own edits need no rescan
             scheduleScan(browser);
     });
 }
@@ -432,6 +448,8 @@ void ChatIntegration::attachInput(QWidget* input)
         area->viewport()->installEventFilter(this);
         area->viewport()->setAcceptDrops(true);
     }
+    if (auto* edit = qobject_cast<QTextEdit*>(input); edit && m_emoji) // 2.2 emoji: the emoji button, Ctrl+E
+        m_emoji->attachInput(edit);
 }
 
 ChatIntegration::View* ChatIntegration::viewFor(QTextBrowser* browser)
@@ -638,6 +656,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
         applyAlbums(browser, albumPlan); // 2.2 album
         if (!present.isEmpty())
             browser->viewport()->update();
+        if (m_replies) // 2.2 reply: quote lines become reply lines
+            m_replies->afterScan(browser);
         return;
     }
 
@@ -672,6 +692,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
 #endif
         requestSnapshot(browser, QStringLiteral("notes hidden"));
     }
+    if (m_replies) // 2.2 reply: quote lines become reply lines
+        m_replies->afterScan(browser);
     scheduleVisibilityUpdate();
 }
 
@@ -904,6 +926,8 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
 
 void ChatIntegration::refreshAll()
 {
+    if (m_emoji) // 2.2 emoji
+        m_emoji->settingsChanged();
     const bool previewsOn = Settings::instance().inlinePreviews;
     if (m_media) {
         m_media->settingsChanged();
@@ -1624,6 +1648,8 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
     addHideSpoilerAction(menu, key); // 2.2 spoiler
     if (m_reactions) // 2.2 reactions: "Add reaction", the way without hover (an album's tile: the album's)
         m_reactions->addMenu(menu, browser, albumTile ? album : key);
+    if (m_replies) // 2.2 reply: "Reply" / "View N replies" for the message the preview is in, at the top
+        m_replies->addPreviewMenu(menu, browser);
 
     if (primary)
         menu->setDefaultAction(primary);
@@ -1816,10 +1842,17 @@ bool ChatIntegration::acceptsDrop(const QMimeData* mime) const
 void ChatIntegration::sendMime(const QMimeData* mime, const ChatTarget& target)
 {
     if (mime->hasUrls()) {
-        QStringList paths;
-        for (const QUrl& url : mime->urls())
-            paths.append(url.toLocalFile());
-        m_core->uploadFiles(paths, target);
+        // 2.2 reply: files dropped while a reply is being written go out as that reply.
+        SendRequest request;
+        request.target    = target;
+        request.replyLead = m_replies ? m_replies->leadFor(target) : QString();
+        for (const QUrl& url : mime->urls()) {
+            SendItem item;
+            item.path = url.toLocalFile();
+            request.items.append(item);
+        }
+        if (m_core->send(request) != 0 && m_replies && !request.replyLead.isEmpty())
+            m_replies->sentWithFiles(target);
     } else if (mime->hasImage()) {
         m_core->uploadImage(qvariant_cast<QImage>(mime->imageData()), target);
     }
@@ -1881,6 +1914,9 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
 bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
 {
     const Settings& s = Settings::instance();
+    // 2.2 reply: first, so it sees every context menu (it only notes where, the menus open as before).
+    if (m_replies && m_replies->filterEvent(watched, event))
+        return true;
     if (m_reactions && m_reactions->filterEvent(watched, event)) // 2.2 reactions: pills, add button
         return true;
     // 2.2 audio: the seek position under the pointer, on a video player or an audio card.
@@ -2562,7 +2598,20 @@ void ChatIntegration::openCompose(QWidget* source, const QStringList& files, con
     host.savePastedImage = [](const QImage& picture) {
         return compose::savePastedImage(picture, ts3::dataDir() + QStringLiteral("/paste"), Settings::instance().convertLargePngToJpeg);
     };
-    host.send          = [self](const SendRequest& request) { return self && self->m_core ? self->m_core->send(request) : 0; };
+    // 2.2 reply: while a reply to this chat is being written, the files go out as it (its quote line
+    // before the caption); the window shows "Replying to …" (its x sends them without the reply).
+    host.send = [self](const SendRequest& request) {
+        if (!self || !self->m_core)
+            return 0;
+        SendRequest reply = request;
+        if (self->m_replies)
+            reply.replyLead = self->m_replies->leadFor(request.target);
+        const int batch = self->m_core->send(reply);
+        if (batch != 0 && self->m_replies && !reply.replyLead.isEmpty())
+            self->m_replies->sentWithFiles(request.target);
+        return batch;
+    };
+    host.replyLine = [self](QWidget* parent, const ChatTarget& t) { return self && self->m_replies ? self->m_replies->composeLine(parent, t) : nullptr; };
     host.rememberAlbum = [](bool album) {
         Settings& s = Settings::instance();
         if (s.sendAsAlbum != album) {
@@ -2849,4 +2898,14 @@ bool ChatIntegration::isFileAnchor(const QTextCharFormat& format)
 bool ChatIntegration::atBottom(QTextBrowser* browser)
 {
     return isAtBottom(browser);
+}
+
+// ============================================================================================
+// 2.2 reply
+// ============================================================================================
+
+void ChatIntegration::replyToLatest()
+{
+    if (m_replies)
+        m_replies->replyToLatest();
 }

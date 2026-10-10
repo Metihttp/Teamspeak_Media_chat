@@ -8,6 +8,8 @@
 
 #include <cmath>
 
+#include "emojidata.h"   // 2.2 emoji
+#include "emojirender.h" // 2.2 emoji
 #include "i18n.h"
 #include "uiutil.h"
 
@@ -303,9 +305,9 @@ QColor shade(const QColor& color, qreal amount, bool lighter)
 
 } // namespace
 
-QString reactionName(int index)
+QString reactionName(int reaction)
 {
-    switch (index) {
+    switch (proto::legacyReactionIndex(reaction)) {
     case proto::ThumbsUp:
         return i18n::t("Thumbs up");
     case proto::Heart:
@@ -319,11 +321,40 @@ QString reactionName(int index)
     case proto::Fire:
         return i18n::t("Fire");
     default:
-        return {};
+        break;
+    }
+    // 2.2 emoji: "face with tears of joy" -> "Face with tears of joy"
+    QString name = emoji::name(reaction);
+    if (!name.isEmpty())
+        name[0] = name.at(0).toUpper();
+    return name;
+}
+
+void drawReaction(QPainter& p, const QRectF& box, int reaction)
+{
+    // 2.2 emoji: the colour picture at the pixel size it ends up with on the device.
+    if (emoji::hasColor() && emoji::isValid(reaction) && box.width() > 0) {
+        const QTransform t     = p.deviceTransform();
+        const qreal      scale = qMax(0.5, std::hypot(t.m11(), t.m12()));
+        const QImage     image = emoji::render(reaction, qMax(1, qCeil(box.width())), scale);
+        if (!image.isNull()) {
+            p.save();
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            p.drawImage(box, image);
+            p.restore();
+            return;
+        }
+    }
+    const int classic = proto::legacyReactionIndex(reaction);
+    if (classic >= 0) {
+        drawClassicReaction(p, box, classic);
+    } else if (emoji::isValid(reaction)) {
+        const QTransform t = p.deviceTransform();
+        p.drawImage(box, emoji::render(reaction, qMax(1, qCeil(box.width())), qMax(0.5, std::hypot(t.m11(), t.m12()))));
     }
 }
 
-void drawReaction(QPainter& p, const QRectF& box, int index)
+void drawClassicReaction(QPainter& p, const QRectF& box, int index)
 {
     GridScope grid(p, box);
     switch (index) {
@@ -427,9 +458,9 @@ RowLayout layoutRow(const ReactionView& view, int pictureWidth, int maxWidth, co
 {
     RowLayout row;
     QVector<QPair<int, qreal>> pills; // reaction, width
-    for (int i = 0; i < proto::kReactionCount; ++i) {
-        if (view.per[i].count > 0)
-            pills.append({i, pillWidth(view.per[i], measure)});
+    for (const ReactionView::Entry& entry : view.entries) {
+        if (entry.count > 0)
+            pills.append({entry.reaction, pillWidth(entry, measure)});
     }
     if (pills.isEmpty() && !keep)
         return row;
@@ -554,8 +585,8 @@ void drawRow(QPainter& p, const QPointF& origin, const RowLayout& row, const Rea
     const QFont bold   = countFont(chatFont, true);
 
     for (int i = 0; i < row.pills.size(); ++i) {
-        const int                  reaction = row.reactions.at(i);
-        const ReactionView::Entry& entry    = view.per[reaction];
+        const int                 reaction = row.reactions.at(i);
+        const ReactionView::Entry entry    = view.entry(reaction);
         const bool                 mine     = entry.mine;
         const bool                 pressed  = paint.pressedReaction == reaction;
         const bool                 hovered  = paint.hoverReaction == reaction;

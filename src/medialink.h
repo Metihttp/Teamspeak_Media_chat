@@ -132,6 +132,9 @@ struct ComposeOptions {
     int     maxBytes       = kMaxMessageBytes; // escapedMessageSize() of each message is at most this
     bool    friendlyLabels = true;  // linkLabel(); false: the remote file name, like 2.1
     bool    legacySize     = false; // 2.1's rule instead: UTF-8 bytes, strictly below maxBytes (composeChatMessage)
+    // 2.2 reply: BBCode put as is in front of the caption (a reply's quote line, replies::quoteLine), on a
+    // line of its own; it goes wherever the caption goes, also when there is no caption.
+    QString lead;
 };
 
 struct ComposedMessage {

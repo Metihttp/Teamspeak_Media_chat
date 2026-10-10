@@ -58,6 +58,10 @@ struct ComposeHost {
     bool                                                   convertLargePngToJpeg = true;
     imageedit::Prefs                                       editorPrefs;
     std::function<void(const imageedit::Prefs&)>           rememberEditorPrefs;
+
+    // 2.2 reply: "Replying to Alice" under the header while the files would go out as a reply (send()
+    // adds the quote line); nullptr: not a reply. The widget deletes itself when the user drops the reply.
+    std::function<QWidget*(QWidget*, const ChatTarget&)> replyLine;
 };
 
 class ComposeDialog : public QDialog

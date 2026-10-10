@@ -2,7 +2,7 @@
 
 # TS Media chat
 
-**Discord-style images, GIFs, videos and files in the TeamSpeak 3 chat**
+**Discord-style images, GIFs, videos, voice messages, replies and HD emoji in the TeamSpeak 3 chat**
 
 [![Download TS Media chat](https://img.shields.io/github/v/release/Metihttp/Teamspeak_Media_chat?style=for-the-badge&label=Download&color=5865F2)](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
 
@@ -15,25 +15,27 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 [![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-005a9e)](#install)
 [![License: proprietary](https://img.shields.io/badge/license-proprietary-555555)](#license-and-credits)
 
-[Install](#install) · [Server admins](#server-admin-guide) · [FAQ](docs/FAQ.md) · [Changelog](CHANGELOG.md)
+[Install](#install) · [User guide](docs/USAGE.md) · [Server admins](#server-admin-guide) · [FAQ](docs/FAQ.md) · [Changelog](CHANGELOG.md)
 
 </div>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat: an inline video player, a photo, an animated GIF and a PDF file card">
+  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat: a photo album shown as a grid under its caption, an inline video player, a voice message and reactions under a picture">
 </picture>
 
-**TS Media chat** is a plugin for the TeamSpeak 3 client on Windows. Drop a file on the chat or paste a screenshot, and everyone with the plugin sees it right in the chat.
+**TS Media chat** is a plugin for the TeamSpeak 3 client on Windows. Drop a file on the chat, paste a screenshot or record a voice message, and everyone with the plugin sees it right in the chat.
 
 ## Why TS Media chat
 
-- **Send anything.** Drag & drop files, paste a screenshot with Ctrl+V, or pick files from a menu.
-- **See it inline.** Photos and animated GIFs appear in the chat, sized before they load.
-- **Watch without leaving the chat.** Videos play inline with play/pause, a seek bar and mute.
+- **Send anything.** Drag & drop, paste with Ctrl+V or pick files, with a caption, spoilers or as an album.
+- **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
+- **Reply and react.** Reply to any message, Discord-style, and react to media with any emoji.
+- **HD emoji.** Sharp Windows 11 emoji in the chat, an emoji picker, and big emoji for messages of only emoji.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
 - **Works for everyone.** People without the plugin get a normal TeamSpeak download link.
 - **Stays on your server.** Files go to the channel's file browser, never to a cloud service.
+- **Keeps itself up to date.** If you agree, signed updates from GitHub install with one click.
 
 ## Install
 
@@ -46,11 +48,11 @@ If nothing happens, enable the plugin in **Tools → Options → Addons**.
 **Requirements:** TeamSpeak 3 Client 3.6.x on Windows 10 or 11; TeamSpeak 5 and 6 are not supported. The package contains a 64-bit and a 32-bit DLL; the 32-bit one is untested. Your server group needs file transfer permissions ([server admin guide](#server-admin-guide)). H.264 videos (most .mp4 files) play out of the box; other formats may need a video extension from the Microsoft Store ([FAQ](docs/FAQ.md#a-video-doesnt-play)).
 
 <details>
-<summary><b>Update, uninstall and portable installs</b></summary>
+<summary><b>Updates, uninstall and portable installs</b></summary>
 
-- **Update:** download the new `.ts3_plugin`, close TeamSpeak completely (the old DLL is locked while TeamSpeak runs), double-click the new file and start TeamSpeak again. Your settings and the cache are kept.
-- **Disable or uninstall:** use **Tools → Options → Addons**. To do it by hand, close TeamSpeak and delete `tsmedia_win64.dll` and `tsmedia_win32.dll` from `%APPDATA%\TS3Client\plugins`. To remove the settings and the cache too, delete `%APPDATA%\TS3Client\plugins\tsmedia`. Files you have sent stay on the TeamSpeak servers; delete them in the channel's file browser if needed.
-- **Portable TeamSpeak:** a portable installation uses the `config` folder inside the TeamSpeak folder instead of `%APPDATA%\TS3Client`.
+- **Updates:** from 2.2.0 on, the plugin asks once whether to check GitHub for updates, then asks before installing each one ([how updates work](docs/UPDATES.md)). From 2.1 or older, install 2.2.0 by hand once: close TeamSpeak, double-click the new `.ts3_plugin`. Settings and the cache are kept.
+- **Uninstall:** use **Tools → Options → Addons**, or close TeamSpeak and delete `tsmedia_win64.dll` and `tsmedia_win32.dll` from `%APPDATA%\TS3Client\plugins`; delete the `tsmedia` folder there to remove the settings, cache and log too. Sent files stay on the servers.
+- **Portable TeamSpeak:** uses the `config` folder inside the TeamSpeak folder instead of `%APPDATA%\TS3Client`.
 
 </details>
 
@@ -63,7 +65,7 @@ flowchart LR
     server --> without["Everyone else<br>gets a download link"]
 ```
 
-The file is uploaded with TeamSpeak's own file transfer into the channel you are in, and an ordinary TeamSpeak file link is posted. People with the plugin see the media in its place. People without it see the link and a short grey note, *TS Media chat plugin required to view this in chat*, that links to this page; clicking the link downloads the file as usual.
+The file is uploaded with TeamSpeak's own file transfer into the channel you are in, and an ordinary TeamSpeak file link is posted. People with the plugin see the media in its place. People without it see the link and a short grey note, *TS Media chat plugin required to view this in chat*, that links to this page.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/with-without-dark.png">
@@ -72,45 +74,74 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 
 ## Send files
 
-- **Drag & drop** files onto the chat. While you drag, the chat shows where the files will go (or why they can't be sent there). A drop opens the send window; hold <kbd>Ctrl</kbd> to send right away, or <kbd>Shift</kbd> to get TeamSpeak's normal behaviour.
-- **Paste** a screenshot or copied files into the chat input with <kbd>Ctrl</kbd>+<kbd>V</kbd>. The send window shows what will be sent and where, with a preview or thumbnails, a caption field and *Mark as spoiler*. Nothing is sent until you click **Send**.
-- **Crop and draw** before sending: **Edit…** in the send window crops and rotates a picture, adds arrows, frames, lines and text, and pixelates or blacks out what others shouldn't see. The edited copy is sent without its photo metadata (no location); unedited photos are sent as they are. See [Editing a picture](docs/USAGE.md#editing-a-picture).
-- **Menu:** **Plugins → TS Media chat → Send files to chat…** (available while you are connected).
-- **Hotkeys:** assign *Send files to the current chat* and *Cancel all uploads* in **Tools → Options → Hotkeys**.
-- **Commands:** type `/tsmedia send`, or `/tsmedia cancel` to stop running uploads. `/tsmedia help` lists the commands.
+Drop files on the chat, press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input, or use **Plugins → TS Media chat → Send files to chat…** (also `/tsmedia send` and a hotkey). The send window opens; nothing is sent until you click **Send**. Hold <kbd>Ctrl</kbd> while dropping to send right away, or <kbd>Shift</kbd> for TeamSpeak's own drop.
 
-The message goes to the chat tab you are looking at; the file is stored in the channel you are in. A panel at the bottom of the chat shows the progress, and a failed upload can be retried from there. More in the [usage guide](docs/USAGE.md#sending-files).
+<p align="center">
+  <img src="docs/images/compose.png" width="560" alt="The Send to chat window with three photos: a list with thumbnails and spoiler and edit buttons, Send as an album ticked, a caption field, the line 3 of 5 people here will see it in the chat, and a Send 3 images button">
+</p>
+
+- **Caption** (up to 300 characters), **Mark as spoiler** per item, and **Send as an album** for 2 to 10 pictures and videos.
+- **Edit…** crops a picture, draws on it and pixelates or blacks out details. Edited copies are sent without photo metadata; unedited photos are sent as they are.
+- **Quality:** videos over 25 MB become a 720p MP4 on your computer before the upload. *Original* sends the file as it is.
+- **Who will see it:** *3 of 5 people here will see it in the chat. The others get a download link.*
+
+The file is stored in the channel you are in; the message goes to the chat tab you are looking at. More in the [user guide](docs/USAGE.md#sending-files).
 
 ## View media
 
-- **Photos and GIFs** up to 15 MB load automatically (the limit is a setting). Larger ones load when you click them.
-- **Videos** show a poster with their duration. Press play to download the video and play it right in the chat. A video Windows can't play inside the chat says *Opens in default app*.
-- **Other files** appear as cards. Click one to download it and open it with its default app. Point at a card to see the full name, size and status.
-- **The gallery viewer** opens when you click a photo or GIF, or a video's expand button: every media item of the chat, with zoom and full screen.
+- **Photos and GIFs** up to 15 MB load automatically; larger ones when you click them.
+- **Albums** show as one grid. **Spoilers** stay blurred until clicked.
+- **Videos and audio files** play inline. Other files appear as cards that open in their default app.
+- **Reactions with any emoji:** click the round button on a picture, or right-click → **Add reaction**; **+** opens the emoji picker.
+- **Checked downloads:** a file that differs from the one that was sent is blocked (*File doesn't match what was sent*).
 
-<p align="center">
-  <img src="docs/images/viewer.png" width="100%" alt="The TS Media chat gallery viewer showing a photo, with the action bar along the bottom and an item counter">
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/album-dark.png">
+  <img src="docs/images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat, shown as a grid under the sender's caption, with a row of reactions below it">
+</picture>
 
-Right-click any preview for Open, Save as…, Copy image, Copy link, Show in folder and more. See the [right-click menu and viewer shortcuts](docs/USAGE.md#right-click-menu).
+Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as…, Copy file and more, or drag it out into a folder ([right-click menu and shortcuts](docs/USAGE.md#right-click-menu)).
+
+## Voice messages
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/voice-dark.png">
+  <img src="docs/images/voice-light.png" width="100%" alt="A voice message card in the chat with a play button, its waveform and length, next to the Voice message window while recording: a red dot, a live waveform, 0:07 of 5:00, and Cancel, Stop and Send buttons">
+</picture>
+
+Use **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice` or a hotkey. Record up to 5 minutes, listen, then send. Your TeamSpeak microphone is muted while you record, so voice activation doesn't send you live (a setting). [More about voice messages](docs/USAGE.md#voice-messages).
+
+## Replies and emoji
+
+- **Reply:** right-click a message → **Reply**, or press <kbd>Alt</kbd>+<kbd>↑</kbd> in the chat input (again for older messages). A bar above the input shows what you are replying to; <kbd>Enter</kbd> sends, <kbd>Esc</kbd> cancels.
+- With the plugin, a reply shows a small reply line above it; click it to jump to the original. Right-click the original → **View 2 replies** lists the answers.
+- Without the plugin (or on 2.1), people see an italic quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by the reply.
+- **HD emoji:** emoji and TeamSpeak's smileys show as sharp, colorful pictures, also in reply lines; a message of only emoji shows them large. Open the picker with the smiley at the right of the chat input or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
+
+More in the user guide: [replies](docs/USAGE.md#replies) and [emoji](docs/USAGE.md#emoji).
 
 ## Settings
 
 <p align="center">
-  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings dialog with its Receiving, Playback, Media cache, Sending and Note for people without the plugin sections">
+  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates">
 </p>
 
-Open the settings with **Plugins → TS Media chat → Settings…**, `/tsmedia settings`, or the plugin's Settings button in **Tools → Options → Addons**. The options people change most:
+Open them with **Plugins → TS Media chat → Settings…** or `/tsmedia settings`. Most changed:
 
-- **Download images and GIFs automatically up to** (15 MB). Videos only download when you press play, unless you set *Download videos automatically*.
-- **Send files dropped on the chat** and **Send screenshots and files pasted into the chat input (Ctrl+V)** (both on). Turn them off if a drop or paste should never send anything.
-- **Add a note after files you send** (on): the grey note after your link, under *Note for people without the plugin*.
+- **Download images, GIFs and voice messages automatically up to** (15 MB). Videos and audio download when played.
+- **Data saver:** pause automatic downloads everywhere, or on one server.
+- **When you drop files on the chat:** *Open the send window* or *Send right away*.
+- **Compress videos larger than** (on, 25 MB).
 
-All options, defaults and ranges: [settings reference](docs/SETTINGS.md).
+All options: [settings reference](docs/SETTINGS.md).
 
 ## Server admin guide
 
-The plugin uses TeamSpeak's own file transfer. **If a user can upload and download files in a channel with the file browser, the plugin works for them.** Nothing has to be installed or configured on the server, only permissions:
+The plugin uses TeamSpeak's own file transfer. **If a user can upload and download files in a channel with the file browser, the plugin works for them.** Nothing has to be installed on the server, only permissions.
+
+**One-click group:** as a server admin, open **Settings → Servers → Server access** and click **Create TS Media chat group**. It creates a `tsmediachat` server group with an icon and the file permissions. Then right-click a user → **TS Media chat → Give TS Media chat access**.
+
+**By hand**, grant these in **Permissions → Server Groups → File Transfer**:
 
 | Permission | Needed for | Rule |
 | --- | --- | --- |
@@ -119,19 +150,22 @@ The plugin uses TeamSpeak's own file transfer. **If a user can upload and downlo
 | `i_ft_directory_create_power` | creating `/tsmedia` and `/tsmedia/previews` | at least the channel's `i_ft_needed_directory_create_power`; without it, files go to the channel root |
 
 > [!WARNING]
-> On a default TeamSpeak server, the **Guest** server group cannot upload. New users can't send anything until you grant `i_ft_file_upload_power` to Guest or to the group your members are in.
+> On a default TeamSpeak server, the **Guest** server group cannot upload. New users can't send anything until they get the `tsmediachat` group or `i_ft_file_upload_power`.
 
-Grant them in **Permissions → Server Groups → File Transfer**. Uploading to password-protected channels is not supported, and clients must reach the server's file transfer port (TCP 30033 by default). The [full server admin guide](docs/SERVER-ADMIN.md) covers step-by-step setup, ServerQuery, quotas and housekeeping.
+Password-protected channels are not supported, and clients must reach the file transfer port (TCP 30033 by default). The [full server admin guide](docs/SERVER-ADMIN.md) covers the group's permissions, ServerQuery, quotas and housekeeping.
 
 ## Privacy & security
 
-- **Your files stay on your TeamSpeak server.** No cloud, no web requests, no telemetry.
-- **Channel members can open what you send.** Anyone with download permission in that channel can; files stay until someone deletes them.
-- **Nothing is sent by accident.** Ctrl+V and drops open the send window first; hold Shift while dropping to get TeamSpeak's normal behaviour.
-- **Received programs are never run.** `.exe` files, scripts and other runnable files are only shown in Explorer.
-- **Chat links are treated as untrusted.** Sizes, previews and names are checked, and huge images are never decoded.
+- **Your files stay on your TeamSpeak server.** No cloud, no telemetry.
+- **The only web request is the update check**, to GitHub, and only after you turn it on.
+- **Your channel sees that you have TS Media** (and its version), and your reactions. Both go through TeamSpeak only and can be turned off in **Settings → Privacy & updates**.
+- **A reply quotes the original:** its author's name and the start of the message, readable by everyone in that chat.
+- **The microphone is only on** while the *Voice message* window shows *Recording*.
+- **Channel members can open what you send.** Files stay until someone deletes them.
+- **Received programs are never run**, only shown in Explorer.
+- **Chat links are treated as untrusted.** Sizes, previews, names and checksums are checked.
 
-The DLL is not code-signed. If you prefer, [build it yourself](docs/BUILDING.md). All details: [privacy & security](docs/PRIVACY-SECURITY.md).
+The DLL is not code-signed; updates are checked against the author's own signature. All details: [privacy & security](docs/PRIVACY-SECURITY.md).
 
 ## Troubleshooting
 
@@ -143,23 +177,16 @@ Windows considers the plugin DLL damaged, usually by an antivirus product or an 
 </details>
 
 <details>
+<summary><b>Dropping files opens a window instead of sending</b></summary>
+
+That is the send window, new in 2.2. Hold <kbd>Ctrl</kbd> while dropping to send right away, or choose *Send right away* in **Settings → Sending → When you drop files on the chat**.
+
+</details>
+
+<details>
 <summary><b>A video doesn't play</b></summary>
 
 H.264 (most .mp4 files) works out of the box. HEVC, VP9 and AV1 need the matching extension from the Microsoft Store, and Windows N editions need the Media Feature Pack. [Details in the FAQ](docs/FAQ.md#a-video-doesnt-play).
-
-</details>
-
-<details>
-<summary><b>Other people don't see my images in the chat</b></summary>
-
-They need the plugin too, and download permission in that channel. Without the plugin they see the link and the note.
-
-</details>
-
-<details>
-<summary><b>A preview says "No permission to download"</b></summary>
-
-Your server group lacks the file transfer permissions. Show the [server admin guide](#server-admin-guide) to your server admin.
 
 </details>
 
@@ -167,11 +194,13 @@ More answers in the [FAQ](docs/FAQ.md).
 
 ## Build from source
 
-You need Visual Studio 2022 Build Tools, Qt 5.15.2, Git and Python 3; one script builds the package. See [building from source](docs/BUILDING.md) and the [architecture overview](docs/ARCHITECTURE.md).
+You need Visual Studio 2022 Build Tools, Qt 5.15.2, Git and Python 3; one script builds the package. Copies you build yourself never update themselves. See [building from source](docs/BUILDING.md) and the [architecture overview](docs/ARCHITECTURE.md).
 
-## Support
+## Support and feedback
 
-Found a bug? Check the [FAQ](docs/FAQ.md), then [open a bug report](https://github.com/Metihttp/Teamspeak_Media_chat/issues/new?template=bug_report.yml) with what happened. Type `/tsmedia diag` in the chat and press *Copy* to get the versions, settings and recent plugin messages for the report's *Diagnostic info* box (file names are hidden unless you include them).
+Found a bug? Check the [FAQ](docs/FAQ.md), then [open a bug report](https://github.com/Metihttp/Teamspeak_Media_chat/issues/new?template=bug_report.yml). Type `/tsmedia diag` in the chat and press *Copy* to get the versions, settings and recent plugin messages for its *Diagnostic info* box (file names are left out unless you include them).
+
+Ideas, suggestions or questions? Message me on Telegram: [@metii](https://t.me/metii).
 
 ## License and credits
 
@@ -179,8 +208,8 @@ Copyright (c) 2026 MehdiHttp. All rights reserved.
 
 This project is **not open source** and comes with no open-source license. The source code is published for transparency and reference. You are welcome to install and use the official releases, but copying, modifying or redistributing the code or the built files requires the author's permission (apart from what GitHub's Terms of Service allow, such as viewing and forking on GitHub).
 
-- Author: **MehdiHttp** (GitHub [@Metihttp](https://github.com/Metihttp)).
+- Author: **MehdiHttp** (GitHub [@Metihttp](https://github.com/Metihttp), Telegram [@metii](https://t.me/metii))
 - [BlurHash](https://github.com/woltapp/blurhash) by Wolt (MIT License), ported in `src/blurhash.cpp`.
 - [TeamSpeak 3 Client Plugin SDK](https://github.com/teamspeak/ts3client-pluginsdk), copyright TeamSpeak Systems GmbH, included as a git submodule and not covered by this project's copyright.
-- Qt 5.15 (The Qt Company), loaded from the TeamSpeak installation at runtime; Windows Media Foundation (Microsoft) for video.
+- Qt 5.15 (The Qt Company), loaded from the TeamSpeak installation at runtime; Windows Media Foundation (Microsoft) for video, audio and voice messages.
 - TeamSpeak is a trademark of TeamSpeak Systems GmbH; Discord is a trademark of Discord Inc. This project is not affiliated with or endorsed by either of them.

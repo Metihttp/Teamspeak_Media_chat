@@ -8,7 +8,7 @@ The plugin uses TeamSpeak's own file transfer. **If a user can upload and downlo
 
 ## One-click TS Media chat group
 
-Since version 2.2, the plugin can set this up for you. Open **Plugins → TS Media chat → Settings…** while connected to the server and use the **Server access** box:
+Since version 2.2, the plugin can set this up for you. Open **Plugins → TS Media chat → Settings…** while connected to the server and use the **Server access** box on the **Servers** tab:
 
 1. Click **Create TS Media chat group**. The plugin creates a regular server group named `tsmediachat` with the TS Media chat picture icon. It shows each step and prints a line in the server's chat when it's done.
 2. To let someone send files, right-click them and choose **Server Groups → tsmediachat** (TeamSpeak's own menu), or **TS Media chat → Give TS Media chat access**. **Remove TS Media chat access** takes it away again.
@@ -65,16 +65,24 @@ Repeat it for `i_ft_file_download_power` and `i_ft_directory_create_power` if ne
 
 - Transfer volume can be limited per client with `i_ft_quota_mb_upload_per_client` and `i_ft_quota_mb_download_per_client`, and for the whole virtual server with its upload and download quotas.
 - When a download quota is used up, previews and cards show *Server transfer limit reached*. When an upload quota or the server's storage is full, sending fails with a message that asks the user to contact a server admin.
-- Each user also has their own *Upload size limit* setting (100 MB by default). Server quotas apply on top of it.
+- Each user also has their own *Upload size limit* setting (100 MB by default), which they can set differently for your server in **Settings → Servers**. Server quotas apply on top of it.
+- Since 2.2, videos over 25 MB are compressed to a 720p MP4 on the sender's computer before the upload (on by default), so large clips take far less space. A voice message takes about 0.73 MB per minute, at most about 3.7 MB (5 minutes).
 
 ## Folders and housekeeping
 
-- `/tsmedia` is created automatically in each channel the first time someone sends a file there, and `/tsmedia/previews` the first time a preview is uploaded. Each user can change the folder name in their own settings.
-- Previews are small JPEG files stored next to the media (in `/tsmedia/previews`, or as `<name>.preview.jpg` next to the file when the previews folder can't be created).
-- The plugin never deletes sent files. It only removes the preview of an upload that was canceled or failed. Cleaning up old files is up to the server admins, in the channel's file browser.
+- `/tsmedia` is created automatically in each channel the first time someone sends a file there, and `/tsmedia/previews` the first time a preview is uploaded. Each user can change the folder name in their own settings, also for your server only.
+- Previews are small JPEG files named like the media's random part (`/tsmedia/previews/<8 hex>.jpg`, or `<8 hex>.preview.jpg` next to the file when the previews folder can't be created).
+- Voice messages are stored as `voice_message_<8 hex>.m4a`; compressed videos keep the original name with `.mp4`.
+- The plugin never deletes sent files. It only removes the preview of an upload that was canceled or failed, and an uploaded file whose message was canceled before it was posted. Cleaning up old files is up to the server admins, in the channel's file browser.
+- Clients check every download against the SHA-256 in its link (2.2 senders). If you replace a sent file on the server, people with the plugin get *File doesn't match what was sent* instead of the new content.
+
+## Presence and reactions
+
+TS Media chat 2.2 tells the people in a channel that it is installed (and its version), so the send window can count who will see a file in the chat, and it sends emoji reactions. Both use TeamSpeak's plugin commands to the channel or to a private-chat partner: nothing is stored on the server, nothing goes to the whole server, and the plugin paces them with the same flood protection as its chat messages. If your server refuses plugin commands, presence and reactions simply stay off there; sending and viewing files is not affected. Each user can turn both off in **Settings → Privacy & updates**.
 
 ## Limitations
 
-- Uploading to **password-protected channels** is not supported; the plugin refuses with a message. Downloading a file stored in a password-protected channel fails with *Channel is password protected*.
+- Uploading to **password-protected channels** is not supported, voice messages included; the plugin refuses with a message. Downloading a file stored in a password-protected channel fails with *Channel is password protected*.
 - Clients must be able to reach the server's file transfer port (TCP 30033 by default). If TeamSpeak's own file browser doesn't work, the plugin can't work either.
 - Everyone who wants to see media inline needs the plugin. Everyone else still gets a normal TeamSpeak download link, which needs the same download permission.
+- Reactions are not available in the server chat.

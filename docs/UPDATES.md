@@ -7,10 +7,13 @@ update goes wrong.
 
 ## For users
 
+- **First install by hand.** 2.2.0 is the first version with automatic updates. Coming from 2.1 or older,
+  install it by hand once (double-click the `.ts3_plugin` with TeamSpeak closed); later versions can then
+  arrive through the update check.
 - **Off until you agree.** About 45 seconds after the first start of a version with the updater, a small
   window asks *Keep TS Media chat up to date?* Nothing is sent before you click **Turn on**. Closing the
   window asks again at the next start (twice at most). You can change it any time in
-  **Settings → Updates**.
+  **Settings → Privacy & updates → Updates**.
 - **About once a day** (first 3 to 8 minutes after TeamSpeak starts) the plugin asks GitHub whether
   there is a new version. If there is, it shows *Update to X?* with what's new, and waits until you
   click **Update**, **Later** (asks again after 20 hours) or **Skip this version**.
@@ -19,7 +22,7 @@ update goes wrong.
   (reopens TeamSpeak; your auto-connect bookmarks reconnect as usual) or **Restart later**.
 - **Check now** in Settings, *Check for updates…* in the plugin menu and `/tsmedia update` check once,
   also with automatic checks off.
-- Versions you build yourself never update themselves (Settings → Updates says so).
+- Versions you build yourself never update themselves (the Updates group in Settings says so).
 
 ### What is sent
 
@@ -84,9 +87,9 @@ embedded executable.
 Outer file at most 64 KiB; strict, canonical base64; payload at most 48 KiB. Payload:
 
 ```json
-{"format":1,"product":"tsmedia","version":"2.2.0","tag":"v2.2.0","published":"2026-11-02",
- "minFromVersion":"2.1.1",
- "package":{"name":"TSMedia-2.2.0.ts3_plugin","size":1203456,"sha256":"<64 lowercase hex>"},
+{"format":1,"product":"tsmedia","version":"2.2.1","tag":"v2.2.1","published":"2026-11-02",
+ "minFromVersion":"2.2.0",
+ "package":{"name":"TSMedia-2.2.1.ts3_plugin","size":1203456,"sha256":"<64 lowercase hex>"},
  "files":{"plugins/tsmedia_win64.dll":{"size":1030656,"sha256":"...","machine":"x64"},
           "plugins/tsmedia_win32.dll":{"size":982528,"sha256":"...","machine":"x86"},
           "helper/tsmedia_update_helper_win64.exe":{"size":209408,"sha256":"...","machine":"x64"},
@@ -145,15 +148,34 @@ It refuses DLLs with imports outside an allowlist, and checks every imported Qt 
 `reference\ts-exports\<arch>.txt` (capture once per TeamSpeak version with
 `build.ps1 -CaptureReference "C:\Program Files\TeamSpeak 3 Client"`).
 
+### Keys
+
+- The private keys and the key tool (`tsmedia-keys.ps1`) live in the signing folder, never in the
+  repository (`*.dpapi`, `*.pkey` and `*.backup` are in `.gitignore`). The plugin contains only the
+  public keys in `src/update/updatekeys.h`.
+- **Key 1** signs every release. Protect it with a passphrase (`tsmedia-keys.ps1 Protect -KeyId 1`;
+  `build.ps1` then asks for it, or reads `$env:TSMEDIA_SIGNING_PASSPHRASE` for one PowerShell session)
+  and keep an encrypted offline backup (`Backup`).
+- **Key 2** is the recovery key and lives offline only. If key 1 is lost or leaked, sign the next
+  release with `build.ps1 -KeyId 2 -RevokeKeys 1` and put a new daily key into `updatekeys.h` in that
+  release; installed plugins store the revocation for good.
+- **Never regenerate key 1 or 2** once a release with the updater is out: installed copies trust exactly
+  the keys they were built with. 2.2.0 is that first release. If both keys are lost, every user has to
+  install the next version by hand once.
+
 ### Release checklist
 
-1. `build.ps1` (signed). Check the import check passed for both architectures.
-2. Install the `.ts3_plugin` with `package_inst.exe -silent` and compare the installed DLL hashes.
-3. Update from the previous release on the local test server, once with *Restart now* and once with
-   *Restart later*.
-4. `gh release create vX --draft ...` with every asset, then `gh release edit vX --draft=false --latest`
+1. Finish `docs/release-notes/vX.md` first: the first five bullets under `### Highlights` (plain text,
+   at most 160 characters each) become the update dialog's *What's new* and are signed into the
+   manifest, so a later edit of the notes needs a new build.
+2. `build.ps1` (signed). Check the import check passed for both architectures, and put the package's
+   SHA-256 into the release notes' last line.
+3. Install the `.ts3_plugin` with `package_inst.exe -silent` and compare the installed DLL hashes.
+4. Update from the previous release on the local test server, once with *Restart now* and once with
+   *Restart later* (not possible for 2.2.0, the first release with the updater).
+5. `gh release create vX --draft ...` with every asset, then `gh release edit vX --draft=false --latest`
    (backports: `--latest=false`), so "latest" never lacks a manifest.
-5. `build.ps1 -VerifyPublished`.
+6. `build.ps1 -VerifyPublished`.
 
 ### Testing without GitHub
 

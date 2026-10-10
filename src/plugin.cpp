@@ -22,6 +22,10 @@
 #include "datasaver.h" // 2.2 per-server settings
 #include "diagnosticscollect.h" // 2.2 diagnostics
 #include "diagnosticsdialog.h"  // 2.2 diagnostics
+#include "emojidata.h"          // 2.2 emoji
+#include "emojiprefs.h"         // 2.2 emoji
+#include "emojirender.h"        // 2.2 emoji
+#include "emojisection.h"       // 2.2 emoji
 #include "fileverify.h"         // 2.2 sha: its diagnostics section
 #include "i18n.h"
 #include "inlinemedia.h"
@@ -118,6 +122,7 @@ void showSettings(QWidget* parent)
     dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
     dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, g_core)); // 2.4 compress
     dialog->addSection(SettingsDialog::Tab::General, new VoiceSection(dialog)); // 2.2 voice (General has the room: Sending is full)
+    dialog->addSection(SettingsDialog::Tab::General, new EmojiSection(dialog));         // 2.2 emoji
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_peers)
             g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
@@ -182,6 +187,7 @@ void printHelp(uint64 sch)
         ts3::print(sch, i18n::t(line));
     }
     ts3::print(sch, i18n::t("Tip: drop files on the chat to send them (hold Shift to skip), or copy files or a screenshot and press Ctrl+V in the chat input."));
+    ts3::print(sch, i18n::t("Tip: right-click a message and choose Reply, or press Alt+Up in the chat input to reply to the last one.")); // 2.2 reply
 }
 
 // "/tsmedia cancel" and its hotkey: the keyboard way to stop sending (the toast never takes the focus).
@@ -483,6 +489,18 @@ TS3_EXPORT int ts3plugin_init()
             VoiceController* voice = g_chat ? g_chat->voice() : nullptr;
             return voice ? diag::Section{VoiceController::diagnosticsTitle(), voice->diagnosticLines()} : diag::Section();
         });
+        // 2.2 emoji: the picker's recently used emoji and skin tone; the renderer in the diagnostic info.
+        emoji::prefs::setFile(ts3::dataDir() + QLatin1String("/emoji.ini"));
+        diag::addSectionProvider([]() -> diag::Section {
+            const Settings&        s     = Settings::instance();
+            const emoji::CacheInfo cache = emoji::cacheInfo();
+            return diag::Section{i18n::t("Emoji"),
+                                 {i18n::t("Renderer: %1").arg(emoji::engineDescription()), i18n::t("Emoji in the table: %1").arg(emoji::count()),
+                                  i18n::t("HD emoji in the chat: %1; jumbo: %2; button: %3")
+                                      .arg(s.hdEmoji ? i18n::t("on") : i18n::t("off"), s.jumboEmoji ? i18n::t("on") : i18n::t("off"),
+                                           s.emojiButton ? i18n::t("on") : i18n::t("off")),
+                                  i18n::t("Pictures cached: %1 (%2 KB), waiting: %3").arg(cache.entries).arg(cache.bytes / 1024).arg(cache.pending)}};
+        });
         chat->start();
         if (chat->voice()) // 2.2 voice: "Open TS Media settings" in the recorder's errors
             QObject::connect(chat->voice(), &VoiceController::settingsRequested, chat, [] { showSettings(nullptr); });
@@ -558,6 +576,9 @@ TS3_EXPORT void ts3plugin_shutdown()
         delete g_peers.data(); // 2.2 protocol: the store, the presence directory, the transport
 
         delete g_core.data(); // waits for probe workers
+
+        // 2.2 emoji: joins the renderer's worker, releases its DirectWrite / Direct2D objects and pictures.
+        emoji::shutdown();
 
         // Every mf::VideoPlayer is gone now (viewer windows, inline players).
         if (g_mediaFoundation) {
@@ -722,6 +743,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
         {"tsmedia_send", i18n::t("Send files to the current chat")},
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
         {VoiceSection::kHotkeyKeyword, i18n::t("Record a voice message (press to start, press again to stop)")}, // 2.2 voice
+        {"tsmedia_reply", i18n::t("Reply to the last message in the current chat")}, // 2.2 reply
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
 
@@ -799,6 +821,11 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
         onGuiThread([] { cancelUploads(0); });
     } else if (key == QLatin1String(VoiceSection::kHotkeyKeyword)) { // 2.2 voice
         onGuiThread([] { recordVoice(VoiceController::Origin::Hotkey); });
+    } else if (key == QLatin1String("tsmedia_reply")) { // 2.2 reply
+        onGuiThread([] {
+            if (g_chat)
+                g_chat->replyToLatest();
+        });
     }
 }
 

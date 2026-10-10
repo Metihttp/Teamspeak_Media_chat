@@ -66,6 +66,10 @@ class VoiceRecorder : public QObject
     // After stop: the link's waveform (MediaLink::kWaveformLevels levels of 0..15).
     QByteArray waveformLevels() const;
 
+    // Encoding, and after it until the next start or encode: how much of the sound the encoder has
+    // written, in ms (it stops where it was when canceled).
+    qint64 encodedMs() const { return m_encodedMs.load(); }
+
     // Encoded / EncodeFailed.
     QString   encodedPath() const;
     qint64    encodedBytes() const;
@@ -92,6 +96,7 @@ class VoiceRecorder : public QObject
 
     std::atomic<State>  m_state{State::Idle};
     std::atomic<qint64> m_elapsedMs{0};
+    std::atomic<qint64> m_encodedMs{0};
     std::atomic<float>  m_levelDb{-96.0f};
     std::atomic<float>  m_loudestDb{-96.0f};
     std::atomic<bool>   m_limitReached{false};

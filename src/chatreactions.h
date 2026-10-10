@@ -82,8 +82,9 @@ class ChatReactions : public QObject
     void    refreshLater(QTextBrowser* browser, const QString& key);
     void    refreshKey(const QString& key);
     void    collapseKept(const QString& stillOn);
-    void    toggle(QTextBrowser* browser, const QString& key, int reaction);
+    void    toggle(QTextBrowser* browser, const QString& key, int reaction); // 2.2 emoji: an emoji id
     void    openPicker(QTextBrowser* browser, const QString& key, const QRect& anchor);
+    void    openFullPicker(QTextBrowser* browser, const QString& key, const QRect& anchor); // 2.2 emoji: any emoji
     QString pillToolTip(const QString& key, int reaction) const;
     QString addToolTip() const;
     QString blockedText(QTextBrowser* browser) const; // why you can't react in this chat now; empty: you can
@@ -101,4 +102,5 @@ class ChatReactions : public QObject
     QString                                        m_objectKey; // preview object under the pointer (picture or row)
     QSet<QString>                                  m_keep;      // rows kept under the pointer after the last reaction went
     QPointer<ReactionPicker>                       m_picker;
+    QPointer<QWidget>                              m_fullPicker; // 2.2 emoji
 };

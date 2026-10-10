@@ -11,6 +11,8 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <algorithm>
+
 #include "floodgovernor.h"
 #include "peerprotocol.h"
 #include "peers.h"
@@ -191,13 +193,25 @@ qreal fakeMeasure(const QString& text, bool bold)
     return text.size() * (bold ? 8.0 : 7.0);
 }
 
+// 2.2 emoji: the emoji of a v1 reaction.
+int E(int index)
+{
+    return proto::legacyReactionEmoji(index);
+}
+
+// A view of v1 reactions (index, count) in their display order.
 ReactionView viewWith(std::initializer_list<std::pair<int, int>> counts, int mine = -1)
 {
+    QVector<std::pair<int, int>> sorted(counts.begin(), counts.end());
+    std::sort(sorted.begin(), sorted.end());
     ReactionView v;
-    for (const auto& c : counts)
-        v.per[c.first].count = c.second;
-    if (mine >= 0)
-        v.per[mine].mine = true;
+    for (const auto& c : sorted) {
+        ReactionView::Entry e;
+        e.reaction = E(c.first);
+        e.count    = c.second;
+        e.mine     = c.first == mine;
+        v.entries.append(e);
+    }
     return v;
 }
 
@@ -1307,7 +1321,7 @@ void TestProtocol::storeMergeRules()
     QCOMPARE(store.view(kKeyB, kUidMe).ownMask(), 0x01);
     // Names are cleaned up and capped.
     store.applyRemote(QString(), kKeyB, kUidReza, QStringLiteral("Re\nza") + QString(100, QLatin1Char('z')), 0x01, now);
-    const QString name = store.view(kKeyB, kUidMe).per[0].others.first();
+    const QString name = store.view(kKeyB, kUidMe).entry(E(0)).others.first();
     QVERIFY(name.startsWith(QStringLiteral("Reza")));
     QCOMPARE(name.size(), 64);
 }
@@ -1364,12 +1378,12 @@ void TestProtocol::storeViewAndSync()
     store.applyRemote(QString(), kKeyA, kUidSara, QStringLiteral("Sara"), 1 << proto::ThumbsUp, 1000000);
     store.setOwn(kKeyA, kUidMe, QStringLiteral("Me"), 1 << proto::ThumbsUp, 3000000);
     const ReactionView v = store.view(kKeyA, kUidMe);
-    QCOMPARE(v.per[proto::ThumbsUp].count, 3);
-    QVERIFY(v.per[proto::ThumbsUp].mine);
-    QCOMPARE(v.per[proto::ThumbsUp].others, (QStringList{QStringLiteral("Sara"), QStringLiteral("Reza")})); // earliest first
-    QCOMPARE(v.per[proto::Fire].count, 1);
-    QVERIFY(!v.per[proto::Fire].mine);
-    QCOMPARE(v.per[proto::Heart].count, 0);
+    QCOMPARE(v.entry(E(proto::ThumbsUp)).count, 3);
+    QVERIFY(v.entry(E(proto::ThumbsUp)).mine);
+    QCOMPARE(v.entry(E(proto::ThumbsUp)).others, (QStringList{QStringLiteral("Sara"), QStringLiteral("Reza")})); // earliest first
+    QCOMPARE(v.entry(E(proto::Fire)).count, 1);
+    QVERIFY(!v.entry(E(proto::Fire)).mine);
+    QCOMPARE(v.entry(E(proto::Heart)).count, 0);
     QVERIFY(!v.isEmpty());
     QVERIFY(store.view(kKeyC, kUidMe).isEmpty());
 
@@ -1402,7 +1416,7 @@ void TestProtocol::storePersistence()
     QCOMPARE(loaded.maskOf(kKeyA, kUidSara), quint8(0x03));
     QCOMPARE(loaded.maskOf(kKeyA, kUidMe), quint8(0x20));
     QCOMPARE(loaded.maskOf(kKeyB, kUidReza), quint8(0x01));
-    QCOMPARE(loaded.view(kKeyA, kUidMe).per[0].others, QStringList{QStringLiteral("Sara")});
+    QCOMPARE(loaded.view(kKeyA, kUidMe).entry(E(0)).others, QStringList{QStringLiteral("Sara")});
 
     // 31 days later everything is too old.
     ReactionStore later;
@@ -1525,9 +1539,9 @@ void TestProtocol::rowLayout()
     const ReactionView v = viewWith({{proto::Fire, 3}, {proto::ThumbsUp, 120}, {proto::Sad, 1}}, proto::Sad);
     rx::RowLayout      row = rx::layoutRow(v, 300, 400, fakeMeasure);
     QCOMPARE(row.reactions.size(), 3);
-    QCOMPARE(row.reactions.at(0), int(proto::ThumbsUp));
-    QCOMPARE(row.reactions.at(1), int(proto::Sad));
-    QCOMPARE(row.reactions.at(2), int(proto::Fire));
+    QCOMPARE(row.reactions.at(0), E(proto::ThumbsUp));
+    QCOMPARE(row.reactions.at(1), E(proto::Sad));
+    QCOMPARE(row.reactions.at(2), E(proto::Fire));
     QCOMPARE(row.size, QSize(300, rx::kRowTopMargin + rx::kPillHeight));
     for (const QRectF& r : row.pills) {
         QCOMPARE(r.top(), qreal(rx::kRowTopMargin));
@@ -1573,8 +1587,8 @@ void TestProtocol::rowZones()
     QCOMPARE(rx::zoneAt(picture, row, false, button.center()).zone, Zone::Picture); // not shown: the picture
     const rx::ZoneHit heart = rx::zoneAt(picture, row, true, row.pills.at(0).center() + QPointF(0, 200));
     QCOMPARE(heart.zone, Zone::Pill);
-    QCOMPARE(heart.index, int(proto::Heart));
-    QCOMPARE(rx::zoneAt(picture, row, true, row.pills.at(1).center() + QPointF(0, 200)).index, int(proto::Fire));
+    QCOMPARE(heart.index, E(proto::Heart));
+    QCOMPARE(rx::zoneAt(picture, row, true, row.pills.at(1).center() + QPointF(0, 200)).index, E(proto::Fire));
     QCOMPARE(rx::zoneAt(picture, row, true, row.addPill.center() + QPointF(0, 200)).zone, Zone::AddPill);
     QCOMPARE(rx::zoneAt(picture, row, true, QPointF(290, 200 + 15)).zone, Zone::Row);  // between and beside the pills
     QCOMPARE(rx::zoneAt(picture, row, true, QPointF(10, 200 + 2)).zone, Zone::Row);    // the top margin

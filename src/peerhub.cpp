@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "composehooks.h"
+#include "emojidata.h" // 2.2 emoji
 #include "floodgovernor.h"
 #include "i18n.h"
 #include "pluginlink.h"
@@ -278,7 +279,7 @@ void PeerHub::prepareShutdown()
     // Toggles that never reached anyone are not kept as if they had.
     for (auto it = m_pending.begin(); it != m_pending.end(); ++it) {
         const QString uid = ownUid(it->sch);
-        if (ReactionStore::isClientUid(uid) && m_store->maskOf(it.key(), uid) != it->committed) {
+        if (ReactionStore::isClientUid(uid) && !proto::sameSet(m_store->setOf(it.key(), uid), it->committed)) {
             m_store->setOwn(it.key(), uid, ownName(it->sch), it->committed, wallMs());
             m_dirty = true;
         }
@@ -349,7 +350,7 @@ void PeerHub::receiveReact(quint64 sch, quint16 from, const QString& uid, const 
     const qint64  now    = wallMs();
     bool          orphan = false;
     for (const proto::ReactItem& item : qAsConst(items))
-        orphan = m_store->applyRemote(server, item.key, uid, name, item.mask, now) == ReactionStore::Apply::Orphaned || orphan;
+        orphan = m_store->applyRemote(server, item.key, uid, name, item.reactions(), now) == ReactionStore::Apply::Orphaned || orphan;
     if (orphan && !m_orphanTimer->isActive())
         m_orphanTimer->start();
 }
@@ -438,7 +439,7 @@ PeerHub::ReactError PeerHub::reactBlock(const ChatTarget& target) const
 
 PeerHub::ReactError PeerHub::toggle(const QString& key, int reaction, const ChatTarget& target)
 {
-    if (m_shuttingDown || reaction < 0 || reaction >= proto::kReactionCount || !proto::isMediaKey(key))
+    if (m_shuttingDown || !emoji::isValid(reaction) || !proto::isMediaKey(key))
         return ReactError::Unknown;
     const ReactError block = reactBlock(target);
     if (block != ReactError::None)
@@ -447,15 +448,24 @@ PeerHub::ReactError PeerHub::toggle(const QString& key, int reaction, const Chat
     if (!ReactionStore::isClientUid(uid))
         return ReactError::NotConnected;
 
+    // 2.2 emoji: added at the end of your set, or taken out of it.
+    proto::ReactionSet set = m_store->setOf(key, uid);
+    if (set.contains(reaction)) {
+        set.removeAll(reaction);
+    } else {
+        const bool newOnMedia = !m_store->view(key, uid).entry(reaction).count;
+        if (!proto::canAdd(set, reaction) || (newOnMedia && m_store->distinctCount(key) >= proto::kMaxDistinctReactions))
+            return ReactError::TooMany;
+        set.append(reaction);
+    }
     auto it = m_pending.find(key);
     if (it == m_pending.end()) {
         it            = m_pending.insert(key, Pending());
-        it->committed = m_store->maskOf(key, uid);
+        it->committed = m_store->setOf(key, uid);
     }
-    it->sch           = target.sch;
-    it->target        = target;
-    const quint8 mask = static_cast<quint8>(m_store->maskOf(key, uid) ^ (1u << reaction));
-    m_store->setOwn(key, uid, ownName(target.sch), mask, wallMs()); // shown at once
+    it->sch    = target.sch;
+    it->target = target;
+    m_store->setOwn(key, uid, ownName(target.sch), set, wallMs()); // shown at once
     it->dueMs = nowMs() + kDebounceMs;                              // sent once the clicking stops
     scheduleTimers();
     return ReactError::None;
@@ -473,30 +483,30 @@ void PeerHub::flushPending()
         auto it = m_pending.find(key);
         if (it == m_pending.end())
             continue;
-        Pending& p         = it.value();
-        p.dueMs            = -1;
-        const QString uid  = ownUid(p.sch);
-        const quint8  mask = m_store->maskOf(key, uid);
-        if (mask == p.committed && !p.inFlight) {
+        Pending& p                 = it.value();
+        p.dueMs                    = -1;
+        const QString            uid = ownUid(p.sch);
+        const proto::ReactionSet set = m_store->setOf(key, uid);
+        if (proto::sameSet(set, p.committed) && !p.inFlight) {
             m_pending.erase(it); // clicked back to where it was: nothing to tell anyone
             continue;
         }
         const bool                    privateChat = p.target.mode == TextMessageTarget_CLIENT;
         const proto::Scope            scope       = privateChat ? proto::Scope::Private : proto::Scope::Channel;
-        const QVector<proto::Message> messages    = proto::makeReacts(scope, false, {{key, mask}});
+        const QVector<proto::Message> messages    = proto::makeReacts(scope, false, {{key, proto::legacyMask(set), set}});
         if (messages.isEmpty())
             continue;
         const peers::Target target = privateChat ? peers::Target::toClients({p.target.clientId}) : peers::Target::toChannel();
         const quint64       gen    = ++p.generation;
-        p.sent                     = mask;
+        p.sent                     = set;
         p.inFlight                 = true;
         const quint64     sch      = p.sch;
         const QString     coalesce = QStringLiteral("R/%1/%2/%3").arg(sch).arg(privateChat ? p.target.clientId : 0).arg(key);
         QPointer<PeerHub> guard(this);
         m_link->sendWith(sch, messages.first(), target, PluginLink::Priority::Reaction,
-                         [guard, sch, key, gen, mask](peers::SendResult result) {
+                         [guard, sch, key, gen, set](peers::SendResult result) {
                              if (guard)
-                                 guard->reactionSent(sch, key, gen, mask, result);
+                                 guard->reactionSent(sch, key, gen, set, result);
                          },
                          coalesce);
     }
@@ -517,10 +527,14 @@ void PeerHub::flushPending()
     }
 }
 
-void PeerHub::reactionSent(quint64 sch, const QString& key, quint64 generation, quint8 mask, peers::SendResult result)
+void PeerHub::reactionSent(quint64 sch, const QString& key, quint64 generation, const proto::ReactionSet& mask, peers::SendResult result)
 {
 #ifdef TSMEDIA_TESTHOOKS
-    ts3::log(QString::fromLatin1("[test] peer reaction sent sch %1 key %2 mask %3 result %4").arg(sch).arg(key.left(16)).arg(mask).arg(static_cast<int>(result)));
+    ts3::log(QString::fromLatin1("[test] peer reaction sent sch %1 key %2 set [%3] result %4")
+                 .arg(sch)
+                 .arg(key.left(16))
+                 .arg(QString::fromLatin1(proto::setToEmojiCodes(mask)))
+                 .arg(static_cast<int>(result)));
 #endif
     if (result == peers::SendResult::Superseded)
         return; // a newer state of the same reaction replaced it before it went out
@@ -533,7 +547,7 @@ void PeerHub::reactionSent(quint64 sch, const QString& key, quint64 generation, 
         }
         // It was undone here when it seemed lost: show what everyone else sees again.
         const QString uid = ownUid(sch);
-        if (m_shuttingDown || !ReactionStore::isClientUid(uid) || m_store->maskOf(key, uid) == mask)
+        if (m_shuttingDown || !ReactionStore::isClientUid(uid) || proto::sameSet(m_store->setOf(key, uid), mask))
             return;
         m_store->setOwn(key, uid, ownName(sch), mask, wallMs());
         ts3::log(LogLevel_INFO, sch, "A reaction that seemed lost arrived after all; it is shown again", {});
@@ -558,8 +572,8 @@ void PeerHub::reactionSent(quint64 sch, const QString& key, quint64 generation, 
     if (p.dueMs >= 0)
         return; // a newer click is about to be sent anyway
     // Back to what the others have, and say why where it happened.
-    const quint64 on        = p.sch;
-    const quint8  committed = p.committed;
+    const quint64            on        = p.sch;
+    const proto::ReactionSet committed = p.committed;
     m_pending.erase(it);
     const QString uid = ownUid(on);
     if (ReactionStore::isClientUid(uid))
@@ -639,7 +653,7 @@ QString PeerHub::ownUidFor(const QString& key) const
     const uint64 current = ts3::currentConnection();
     QString      fallback;
     for (auto it = m_ownUids.constBegin(); it != m_ownUids.constEnd(); ++it) {
-        if (m_store->maskOf(key, it.value()) != 0)
+        if (!m_store->setOf(key, it.value()).isEmpty())
             return it.value();
         if (fallback.isEmpty() || it.key() == current)
             fallback = it.value();
@@ -660,6 +674,8 @@ QString PeerHub::errorText(ReactError error)
         return i18n::t("This server doesn't allow plugin messages, so reactions can't be sent here.");
     case ReactError::PartnerOffline:
         return i18n::t("The person you're chatting with is offline, so your reaction can't be delivered.");
+    case ReactError::TooMany: // 2.2 emoji
+        return i18n::t("There's no room for another reaction here. Remove one of yours first.");
     case ReactError::Unknown:
         return i18n::t("Your reaction wasn't sent.");
     case ReactError::None:

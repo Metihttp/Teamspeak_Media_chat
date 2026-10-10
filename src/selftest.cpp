@@ -21,8 +21,9 @@
 //   say {text}                      a raw channel message (no flood governor)
 //   quit                            TeamSpeak's own Quit action (Ctrl+Q), queued
 // Part 2 of the 2.2 live test:
-//   react {name, reaction, times, gapMs}   toggles a reaction of the newest entry named so (PeerHub::toggle)
-//   reactmany {count, reaction}     one toggle on each of the newest <count> media of this server, at once
+//   react {name, reaction, emoji, times, gapMs}   toggles a reaction of the newest entry named so (PeerHub::toggle);
+//                                   reaction: a v1 index 0..5, or emoji: any emoji (text or wire code)
+//   reactmany {count, reaction, emoji} one toggle on each of the newest <count> media of this server, at once
 //   reactions {name}                logs the reaction view of an entry
 //   peers                           logs the presence summary of the visible chat and PeerHub's diagnostics
 //   selfvar {var, value}  vars      sets / logs our client variables (CLIENT_INPUT_MUTED = 6, ...)
@@ -77,6 +78,7 @@
 #include "chatintegration.h"
 #include "composedialog.h"
 #include "core.h"
+#include "emojidata.h" // 2.2 emoji: reactions with any emoji
 #include "inlinemedia.h"
 #include "peerhub.h"
 #include "settings.h"
@@ -122,6 +124,25 @@ bool isLocal(uint64 sch)
 void say(const QString& text)
 {
     ts3::log(QString::fromLatin1("[test] script: ") + text);
+}
+
+// 2.2 emoji: a command's reaction as an emoji id. "emoji" is the emoji's text or wire code ("1f525");
+// otherwise "reaction" is a v1 index (0 thumbs up .. 5 fire), as the part-2 scripts were written.
+int reactionOf(const QJsonObject& c)
+{
+    const QString text = c.value(QString::fromLatin1("emoji")).toString();
+    if (!text.isEmpty()) {
+        const int byText = emoji::find(text);
+        return byText >= 0 ? byText : emoji::fromWireCode(text.toLatin1());
+    }
+    return proto::legacyReactionEmoji(c.value(QString::fromLatin1("reaction")).toInt(0));
+}
+
+QString reactionName(int reaction)
+{
+    const int legacy = proto::legacyReactionIndex(reaction);
+    const QString code = QString::fromLatin1(emoji::wireCode(reaction));
+    return legacy >= 0 ? QString::fromLatin1("%1/%2").arg(legacy).arg(code) : code;
 }
 
 QString stateName(UploadState s)
@@ -1012,14 +1033,14 @@ void SelfTest::reactStep(const QString& key, int reaction, int left, int gapMs)
         next(0);
         return;
     }
-    const PeerHub::ReactError error = hub->toggle(key, reaction, m_chat->currentTarget());
-    const ReactionView        view  = hub->view(key);
+    const PeerHub::ReactError  error = hub->toggle(key, reaction, m_chat->currentTarget());
+    const ReactionView::Entry  entry = hub->view(key).entry(reaction);
     say(QString::fromLatin1("react: %1 reaction %2 -> error %3, count %4 mine %5 (left %6)")
             .arg(key.left(24))
-            .arg(reaction)
+            .arg(reactionName(reaction))
             .arg(static_cast<int>(error))
-            .arg(view.per[qBound(0, reaction, proto::kReactionCount - 1)].count)
-            .arg(view.per[qBound(0, reaction, proto::kReactionCount - 1)].mine ? 1 : 0)
+            .arg(entry.count)
+            .arg(entry.mine ? 1 : 0)
             .arg(left - 1));
     if (left <= 1) {
         next(0);
@@ -1047,13 +1068,13 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
             say(QString::fromLatin1("react: no entry or no hub for ") + name("name", ""));
             return true;
         }
-        reactStep(key, c.value(QString::fromLatin1("reaction")).toInt(0), qMax(1, c.value(QString::fromLatin1("times")).toInt(1)),
+        reactStep(key, reactionOf(c), qMax(1, c.value(QString::fromLatin1("times")).toInt(1)),
                   qMax(0, c.value(QString::fromLatin1("gapMs")).toInt(600)));
         return false;
     }
     if (cmd == QLatin1String("reactmany")) {
         const int     count    = qMax(1, c.value(QString::fromLatin1("count")).toInt(40));
-        const int     reaction = c.value(QString::fromLatin1("reaction")).toInt(0);
+        const int     reaction = reactionOf(c);
         const QString server   = ts3::serverUid(sch);
         const QStringList keys = m_core->keys();
         int done = 0, ok = 0;
@@ -1076,9 +1097,9 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
         }
         const ReactionView view = hub->view(key);
         QStringList        parts;
-        for (int r = 0; r < proto::kReactionCount; ++r) {
-            if (view.per[r].count > 0 || view.per[r].mine)
-                parts << QString::fromLatin1("%1:%2%3[%4]").arg(r).arg(view.per[r].count).arg(view.per[r].mine ? QString::fromLatin1("*") : QString()).arg(view.per[r].others.join(QLatin1Char(',')));
+        for (const ReactionView::Entry& e : view.entries) { // row order
+            if (e.count > 0 || e.mine)
+                parts << QString::fromLatin1("%1:%2%3[%4]").arg(reactionName(e.reaction)).arg(e.count).arg(e.mine ? QString::fromLatin1("*") : QString()).arg(e.others.join(QLatin1Char(',')));
         }
         say(QString::fromLatin1("reactions: %1 %2 -> %3").arg(m_core->entry(key)->link.fileName, key.left(24), parts.isEmpty() ? QString::fromLatin1("none") : parts.join(QLatin1Char(' '))));
         return true;

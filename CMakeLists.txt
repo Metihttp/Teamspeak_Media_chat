@@ -157,6 +157,23 @@ add_library(tsmedia SHARED
     src/voicepanel.cpp          src/voicepanel.h
     src/voicecontroller.cpp     src/voicecontroller.h
     src/voicesection.cpp        src/voicesection.h
+    # 2.2 reply
+    src/replies.cpp           src/replies.h
+    src/replydoc.cpp          src/replydoc.h
+    src/replyart.cpp          src/replyart.h
+    src/replybar.cpp          src/replybar.h
+    src/repliespopup.cpp      src/repliespopup.h
+    src/chatreplies.cpp       src/chatreplies.h
+    # 2.2 emoji: the table, the colour renderer, the picker, HD emoji in the chat
+    src/emojidata.cpp         src/emojidata.h       src/emojitable.inc
+    src/emojisegment.cpp      src/emojisegment.h
+    src/emojirender.cpp       src/emojirender.h     src/emojicache.h
+    src/emojiprefs.cpp        src/emojiprefs.h
+    src/emojipicker.cpp       src/emojipicker.h
+    src/emojiinput.cpp        src/emojiinput.h
+    src/chatemoji.cpp         src/chatemoji.h       src/emojiformat.h
+    src/emojitext.cpp         src/emojitext.h
+    src/emojisection.cpp      src/emojisection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -291,6 +308,24 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlink.cpp
         src/reactions.cpp
         src/reactionart.cpp
+        # 2.2 reply: the format, matching, TeamSpeak-like chat documents, the reply line's size
+        tests/tst_replies.cpp
+        src/replies.cpp
+        src/replydoc.cpp
+        src/replyart.cpp
+        # 2.2 emoji: table, segmentation, picture cache, renderer
+        tests/tst_emoji.cpp
+        tests/tst_emojireact.cpp  # any-emoji reactions, preferences, the chat document
+        tests/tst_emojireview.cpp # review regressions: TeamSpeak-like chat widgets, picker keys, worker queue
+        src/emojidata.cpp
+        src/emojisegment.cpp
+        src/emojirender.cpp
+        src/emojiprefs.cpp
+        src/chatemoji.cpp         # the document part (QTextDocument only in the tests)
+        src/emojiinput.cpp
+        src/emojipicker.cpp
+        src/emojitext.cpp         # HD emoji in the reply line, bar and popup
+        tests/tst_replyemoji.cpp  # 2.2 integration: replies and HD emoji in the same chat
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
@@ -402,6 +437,12 @@ if(TSMEDIA_BUILD_TOOLS)
         src/reactionart.cpp
         src/reactions.cpp
         src/peerprotocol.cpp
+        src/replyart.cpp # 2.2 reply: reply lines
+        # 2.2 emoji: HD reaction pictures, HD emoji in reply lines
+        src/emojirender.cpp
+        src/emojidata.cpp
+        src/emojisegment.cpp
+        src/emojitext.cpp
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -409,4 +450,17 @@ if(TSMEDIA_BUILD_TOOLS)
         target_compile_options(render_gallery PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
     target_link_libraries(render_gallery PRIVATE Qt5::Core Qt5::Gui)
+
+    # 2.2 emoji: emoji_probe <candidates> <probe> asks DirectWrite which emoji Segoe UI Emoji draws in colour
+    # (tools/emoji/gen_emoji.py builds src/emojitable.inc from the answer); --sheet draws them all.
+    add_executable(emoji_probe
+        tools/emoji_probe.cpp
+        src/emojirender.cpp src/emojidata.cpp src/i18n.cpp
+    )
+    target_include_directories(emoji_probe PRIVATE src)
+    target_compile_definitions(emoji_probe PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(emoji_probe PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(emoji_probe PRIVATE Qt5::Core Qt5::Gui)
 endif()

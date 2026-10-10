@@ -61,7 +61,8 @@ HRESULT audioType(const GUID& subtype, UINT32 rate, IMFMediaType** out)
     return hr;
 }
 
-AacResult encode(const QString& path, const int16_t* samples, qint64 frames, int sampleRate, double gain, const std::atomic<bool>* cancel)
+AacResult encode(const QString& path, const int16_t* samples, qint64 frames, int sampleRate, double gain, const std::atomic<bool>* cancel,
+                 std::atomic<qint64>* writtenMs)
 {
     namespace detail = mf::detail;
     if (!detail::mediaFoundationPresent()) {
@@ -133,6 +134,8 @@ AacResult encode(const QString& path, const int16_t* samples, qint64 frames, int
             hr = writer->WriteSample(stream, sample.Get());
         if (FAILED(hr))
             return failed(hr, "WriteSample");
+        if (writtenMs)
+            writtenMs->store((at + count) * 1000 / rate);
     }
     hr = writer->Finalize();
     if (FAILED(hr))
@@ -144,7 +147,8 @@ AacResult encode(const QString& path, const int16_t* samples, qint64 frames, int
 
 } // namespace
 
-AacResult writeAac(const QString& path, const int16_t* samples, qint64 frames, int sampleRate, double gain, const std::atomic<bool>* cancel)
+AacResult writeAac(const QString& path, const int16_t* samples, qint64 frames, int sampleRate, double gain, const std::atomic<bool>* cancel,
+                   std::atomic<qint64>* writtenMs)
 {
     AacResult r;
     if (!samples || frames <= 0 || (sampleRate != 44100 && sampleRate != 48000)) {
@@ -152,7 +156,7 @@ AacResult writeAac(const QString& path, const int16_t* samples, qint64 frames, i
         return r;
     }
     QFile::remove(path);
-    r = encode(path, samples, frames, sampleRate, gain, cancel);
+    r = encode(path, samples, frames, sampleRate, gain, cancel, writtenMs);
     if (!r.ok)
         QFile::remove(path); // the writer is gone (released in encode): the partial file can go
     return r;

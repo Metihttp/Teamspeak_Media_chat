@@ -87,6 +87,7 @@ void VoiceRecorder::start(BackendFactory factory, qint64 maxMs)
         m_encodeCode   = 0;
     }
     m_elapsedMs    = 0;
+    m_encodedMs    = 0;
     m_levelDb      = waveform::kSilenceDb;
     m_loudestDb    = waveform::kSilenceDb;
     m_limitReached = false;
@@ -125,7 +126,8 @@ void VoiceRecorder::encode(const QString& path)
         m_encodeError.clear();
         m_encodeCode = 0;
     }
-    m_cancel = false;
+    m_cancel    = false;
+    m_encodedMs = 0;
     setState(State::Encoding);
     m_reported   = State::Encoding;
     m_workerDone = false;
@@ -381,7 +383,7 @@ void VoiceRecorder::encodeRun(QString path)
     const qint64 frames = static_cast<qint64>(m_pcm.size());
     const float  peak   = waveform::peakDb(m_pcm.data(), static_cast<int>(qMin<qint64>(frames, std::numeric_limits<int>::max())));
     const double gain   = waveform::normalizeGain(peak);
-    const AacResult r   = writeAac(path, m_pcm.data(), frames, rate, gain, &m_cancel);
+    const AacResult r   = writeAac(path, m_pcm.data(), frames, rate, gain, &m_cancel, &m_encodedMs);
     const bool      canceled = m_cancel.load() || r.canceled;
     if (r.ok && canceled)
         QFile::remove(path); // canceled while the writer finalized: the finished file goes too

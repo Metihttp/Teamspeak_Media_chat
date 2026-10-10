@@ -3,8 +3,10 @@
 // 2.2 foundation: one test executable, several test classes. A test file registers its class with
 // TSMEDIA_REGISTER_TEST(Class); tst_tsmedia.cpp's TSMEDIA_TEST_MAIN runs TestTsMedia first, then every
 // registered class. Test function names on the command line ("tsmedia_tests keyMatchesV1") run only in
-// the classes that have them. A QGuiApplication: some classes render text (the audio card tests).
+// the classes that have them. A QApplication: some classes render text (the audio card tests), and the
+// emoji tests use widgets.
 
+#include <QApplication>
 #include <QGuiApplication>
 #include <QtTest>
 
@@ -115,10 +117,12 @@ inline int run(QObject* first, int argc, char** argv)
 
 #define TSMEDIA_REGISTER_TEST(Class) static const testmain::Registration tsmediaRegister##Class([]() -> QObject* { return new Class; });
 
+// 2.2 emoji: a QApplication (a QGuiApplication too), so tests can use TeamSpeak-like widgets (a chat
+// browser and its input).
 #define TSMEDIA_TEST_MAIN(Class)                          \
     int main(int argc, char* argv[])                      \
     {                                                     \
-        QGuiApplication app(argc, argv);                  \
+        QApplication app(argc, argv);                     \
         app.setAttribute(Qt::AA_Use96Dpi, true);          \
         Class tc;                                         \
         QTEST_SET_MAIN_SOURCE_PATH                        \

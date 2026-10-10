@@ -13,6 +13,8 @@
 
 class ComposeDialog; // 2.2 compose
 class ChatReactions; // 2.2 reactions
+class ChatReplies;   // 2.2 reply
+class ChatEmoji;     // 2.2 emoji
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -61,6 +63,9 @@ class ChatIntegration : public QObject
 
     InlineMediaController* media() const { return m_media; }
 
+    // 2.2 reply: the "Reply to the last message" hotkey (chatreplies.h).
+    void replyToLatest();
+
     // 2.2 diagnostics: how many of TeamSpeak's chat views and input lines are hooked (counts only).
     int hookedChatViews() const { return m_views.size(); }
     int hookedInputs() const
@@ -92,6 +97,7 @@ class ChatIntegration : public QObject
     // ---- implementation (owned by chatintegration.cpp; may be reorganised freely) --------------
   private:
     friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
+    friend class ChatReplies;   // 2.2 reply: reply lines, the reply bar and menu items (chatreplies.cpp)
 #ifdef TSMEDIA_TESTHOOKS
     friend class SelfTest; // test builds: the scripted live-test driver (selftest.cpp)
 #endif
@@ -314,4 +320,6 @@ class ChatIntegration : public QObject
     QTimer*                                 m_albumTimer  = nullptr; // redraws albums with new GIF frames, ~30 per second
     QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
     ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
+    ChatReplies*                            m_replies   = nullptr; // 2.2 reply
+    ChatEmoji*                              m_emoji     = nullptr; // 2.2 emoji: HD emoji in the chats, the input's emoji button
 };

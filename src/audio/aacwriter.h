@@ -23,7 +23,9 @@ struct AacResult {
 
 // Encodes `frames` 16-bit mono samples at sampleRate (44100 or 48000) to path (replaced if it exists),
 // each sample multiplied by gain (waveform::normalizeGain; 1 = as recorded). cancel (optional) is
-// checked between 100 ms samples; a canceled or failed run deletes the partial file.
-AacResult writeAac(const QString& path, const int16_t* samples, qint64 frames, int sampleRate, double gain, const std::atomic<bool>* cancel = nullptr);
+// checked between 100 ms samples; a canceled or failed run deletes the partial file. writtenMs
+// (optional) is set to how much of the sound has been handed to the writer after each sample.
+AacResult writeAac(const QString& path, const int16_t* samples, qint64 frames, int sampleRate, double gain, const std::atomic<bool>* cancel = nullptr,
+                   std::atomic<qint64>* writtenMs = nullptr);
 
 } // namespace voice

@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtTest>
 
 #include <QSet>
@@ -19,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -331,22 +333,61 @@ class TestVoiceMedia : public QObject
         voice::VoiceRecorder rec;
         rec.start(fake(o), 300000);
         QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Captured, 20000);
-        const QString path = m_dir.filePath(QStringLiteral("canceled_encode.m4a"));
-        rec.encode(path);
-        // Once the sink writer has made the file, the encoder checks the flag between 100 ms samples. The
-        // writer's setup and its Finalize can't be interrupted: in the full suite they took up to 640 ms,
-        // about as long as encoding all 5 minutes (750 ms here), so the bound only catches a hang.
-        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(path), 5000);
-        const bool    during = rec.state() == State::Encoding; // a fast run may already be done
+        const qint64  total = rec.elapsedMs();
+        const QString path  = m_dir.filePath(QStringLiteral("canceled_encode.m4a"));
+        QVERIFY(total > 60000);
+        // The sink writer's setup and its Finalize can't be interrupted: under full-suite load they took up
+        // to 640 ms, about as long as encoding all 5 minutes (750 ms here). So the cancel goes in once the
+        // encoder is between its samples, where it checks the flag every 100 ms of sound, and the test
+        // looks at how far the encode got, which load doesn't change. (The worker only writes atomics:
+        // the state and encodedMs() are watched without the event loop.)
+        const auto encodeUntil = [&rec](const std::function<bool()>& reached) {
+            QElapsedTimer wait;
+            wait.start();
+            while (rec.state() == State::Encoding && !reached() && wait.elapsed() < 20000)
+                QThread::yieldCurrentThread();
+            return rec.state() == State::Encoding && reached();
+        };
+        bool inLoop = false;
+        for (int attempt = 0; attempt < 3 && !inLoop; ++attempt) { // the GUI thread may miss the loop once
+            rec.encode(path);
+            inLoop = encodeUntil([&rec] { return rec.encodedMs() > 0; });
+            if (!inLoop) {
+                QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Encoded, 20000);
+                QFile::remove(path);
+            }
+        }
+        QVERIFY2(inLoop, "never saw the encode between its first and last sample");
+        const qint64  canceledAt = rec.encodedMs();
         QElapsedTimer clock;
         clock.start();
-        rec.cancel(); // during the encode
-        QVERIFY2(clock.elapsed() < 2000, qPrintable(QString::number(clock.elapsed())));
+        rec.cancel();
+        const qint64 took    = clock.elapsed();
+        const qint64 stopped = rec.encodedMs();
+        qInfo("canceled at %lld of %lld ms of sound, stopped at %lld, in %lld ms", canceledAt, total, stopped, took);
+        // It stopped where it was. An encoder that ignored the flag would have written all of it first.
+        QVERIFY2(stopped < total, qPrintable(QStringLiteral("encoded %1 of %2 ms").arg(stopped).arg(total)));
+        // Only the sample being written and releasing the writer are left: the bound only catches a hang.
+        QVERIFY2(took < 2000, qPrintable(QString::number(took)));
         QCOMPARE(rec.state(), State::Idle);
-        if (during)
-            QVERIFY(!QFile::exists(path)); // also when it was canceled while finalizing
-        else
+        QVERIFY(!QFile::exists(path));
+
+        // Canceled while the writer finalizes (everything was written, so it can't stop any more): the
+        // finished file goes too. A fast Finalize can be over before the GUI thread sees it.
+        rec.start(fake(o), 300000);
+        QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Captured, 20000);
+        const qint64 again = rec.elapsedMs();
+        rec.encode(path);
+        if (encodeUntil([&rec, again] { return rec.encodedMs() >= again; })) {
+            rec.cancel();
+            QCOMPARE(rec.state(), State::Idle);
+            QVERIFY(!QFile::exists(path));
+        } else {
+            QTRY_VERIFY_WITH_TIMEOUT(rec.state() != State::Encoding, 20000);
+            qInfo("the Finalize was over before it could be canceled");
+            rec.cancel();
             QFile::remove(path);
+        }
 
         // Cancel while recording (and destruction while recording) returns at once too.
         voice::FakeCapture::Options live;

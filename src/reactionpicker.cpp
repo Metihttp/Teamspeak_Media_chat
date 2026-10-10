@@ -24,17 +24,18 @@ const QColor kAccentOnDark(0x79, 0x84, 0xf5); // 3:1 against the dark popup too
 class ReactionButton : public QAbstractButton
 {
   public:
+    // reaction: an emoji id, or -1 for "+" (more reactions).
     ReactionButton(int reaction, bool dark, bool* keyboardUsed, QWidget* parent)
         : QAbstractButton(parent)
         , m_reaction(reaction)
         , m_dark(dark)
         , m_keyboardUsed(keyboardUsed)
     {
-        setCheckable(true); // "checked" = one of your reactions, also for screen readers
+        setCheckable(reaction >= 0); // "checked" = one of your reactions, also for screen readers
         setFocusPolicy(Qt::StrongFocus);
         setCursor(Qt::PointingHandCursor);
         setFixedSize(kButton, kButton);
-        const QString name = rx::reactionName(reaction);
+        const QString name = reaction >= 0 ? rx::reactionName(reaction) : i18n::t("More reactions");
         setAccessibleName(name);
         setToolTip(name);
         setAttribute(Qt::WA_Hover);
@@ -67,8 +68,12 @@ class ReactionButton : public QAbstractButton
             p.setBrush(Qt::NoBrush);
             p.drawRoundedRect(QRectF(rect()).adjusted(2, 2, -2, -2), 5, 5);
         }
-        const qreal offset = isDown() ? 1.0 : 0.0;
-        rx::drawReaction(p, QRectF((width() - kIcon) / 2.0, (height() - kIcon) / 2.0 + offset, kIcon, kIcon), m_reaction);
+        const qreal  offset = isDown() ? 1.0 : 0.0;
+        const QRectF icon((width() - kIcon) / 2.0, (height() - kIcon) / 2.0 + offset, kIcon, kIcon);
+        if (m_reaction >= 0)
+            rx::drawReaction(p, icon, m_reaction);
+        else
+            rx::drawAddReactionGlyph(p, icon.adjusted(3, 3, -3, -3), m_dark ? QColor(0xb5, 0xba, 0xc1) : QColor(0x4e, 0x50, 0x58));
     }
 
     // "Checked" shows a reaction you already have; a click picks it (the picker closes) instead of
@@ -85,35 +90,45 @@ bool g_keyboardUsed = false; // per open picker (only one at a time)
 
 } // namespace
 
-ReactionPicker::ReactionPicker(bool dark, const QColor& base, int ownMask, QWidget* parent)
+ReactionPicker::ReactionPicker(bool dark, const QColor& base, const QVector<int>& quick, const QSet<int>& own, QWidget* parent)
     : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
     , m_dark(dark)
     , m_base(base)
+    , m_quick(quick.mid(0, 8))
 {
     setObjectName(QString::fromLatin1("tsmediaReactionPicker"));
     setAttribute(Qt::WA_DeleteOnClose);
     setAttribute(Qt::WA_TranslucentBackground);
     setAccessibleName(i18n::t("Reactions"));
     setLayoutDirection(Qt::LeftToRight);
-    setFixedSize(fixedSize());
+    setFixedSize(fixedSize(m_quick.size()));
     g_keyboardUsed = false;
-    for (int i = 0; i < proto::kReactionCount; ++i) {
-        auto* button = new ReactionButton(i, dark, &g_keyboardUsed, this);
-        button->move(kPadding + i * (kButton + kGap), kPadding);
-        button->setChecked(ownMask & (1 << i));
+    for (int i = 0; i <= m_quick.size(); ++i) {
+        const int reaction = i < m_quick.size() ? m_quick.at(i) : -1;
+        auto*     button   = new ReactionButton(reaction, dark, &g_keyboardUsed, this);
+        // A thin gap before "+".
+        button->move(kPadding + i * (kButton + kGap) + (i == m_quick.size() ? kGap : 0), kPadding);
+        if (reaction >= 0)
+            button->setChecked(own.contains(reaction));
         connect(button, &QAbstractButton::clicked, this, [this, i] { choose(i); });
         m_buttons.append(button);
     }
 }
 
-QSize ReactionPicker::fixedSize()
+QSize ReactionPicker::fixedSize(int quickCount)
 {
-    return QSize(2 * kPadding + proto::kReactionCount * kButton + (proto::kReactionCount - 1) * kGap, 2 * kPadding + kButton);
+    const int buttons = quickCount + 1;
+    return QSize(2 * kPadding + buttons * kButton + (buttons - 1) * kGap + kGap, 2 * kPadding + kButton);
+}
+
+QSize ReactionPicker::sizeForCount() const
+{
+    return fixedSize(m_quick.size());
 }
 
 void ReactionPicker::openAt(const QRect& anchor)
 {
-    const QSize size = fixedSize();
+    const QSize size = this->size();
     QPoint      at(anchor.right() - size.width() + 1, anchor.bottom() + 4);
     QScreen*    screen = QGuiApplication::screenAt(anchor.center());
     if (!screen)
@@ -144,6 +159,12 @@ void ReactionPicker::paintEvent(QPaintEvent*)
     p.setPen(QPen(border, 1.0));
     p.setBrush(background);
     p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+    // The divider before "+".
+    if (m_buttons.size() > 1) {
+        const qreal x = m_buttons.last()->x() - kGap - 0.5;
+        p.setPen(QPen(m_dark ? QColor(255, 255, 255, 30) : QColor(0, 0, 0, 25), 1.0));
+        p.drawLine(QPointF(x, kPadding + 8), QPointF(x, height() - kPadding - 8));
+    }
 }
 
 void ReactionPicker::keyPressEvent(QKeyEvent* event)
@@ -158,11 +179,15 @@ void ReactionPicker::keyPressEvent(QKeyEvent* event)
     if (firstKey && current >= 0)
         m_buttons.at(current)->update(); // the focus ring appears with the first key
     const int key = event->key();
-    if (key >= Qt::Key_1 && key < Qt::Key_1 + proto::kReactionCount) {
+    if (key >= Qt::Key_1 && key < Qt::Key_1 + m_quick.size()) {
         choose(key - Qt::Key_1);
         return;
     }
     switch (key) {
+    case Qt::Key_Plus:
+    case Qt::Key_Equal:
+        choose(m_quick.size());
+        return;
     case Qt::Key_Left:
         moveFocus(current <= 0 ? m_buttons.size() - 1 : current - 1);
         return;
@@ -196,8 +221,11 @@ void ReactionPicker::moveFocus(int index)
         m_buttons.at(index)->setFocus(Qt::TabFocusReason);
 }
 
-void ReactionPicker::choose(int reaction)
+void ReactionPicker::choose(int index)
 {
-    emit picked(reaction);
+    if (index >= 0 && index < m_quick.size())
+        emit picked(m_quick.at(index));
+    else if (index == m_quick.size())
+        emit more();
     close();
 }
