@@ -520,8 +520,9 @@ void ImageEditor::rotate()
         return;
     m_canvas->commitText();
     m_model.rotateClockwise();
-    // A shaped crop turns with the picture: 16:9 becomes 9:16.
-    if (m_aspect == Aspect::FourThree || m_aspect == Aspect::SixteenNine || m_aspect == Aspect::Original)
+    // A shaped crop turns with the picture: 16:9 becomes 9:16. Not Original: aspectValue() takes it from
+    // the rotated size, which has turned already.
+    if (m_aspect == Aspect::FourThree || m_aspect == Aspect::SixteenNine)
         m_portrait = !m_portrait;
     m_canvas->fit();
     modelChanged();

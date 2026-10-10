@@ -603,13 +603,11 @@ void VoiceController::rerecord()
 {
     if (m_phase != Phase::Review && m_phase != Phase::Error)
         return;
+    // No connection check: recording doesn't need one (the window says "Not connected", and Send checks
+    // it). Returning here after the recording was deleted would leave a Review without a recording.
     closePreview();
     removeRecording();
     m_recorder->cancel();
-    if (!m_chat || !ts3::isConnected(m_target.sch)) {
-        refresh();
-        return;
-    }
     beginRecording();
 }
 
@@ -618,8 +616,10 @@ void VoiceController::fix()
     const VoicePanel::Fix fix = m_errorView.fix;
     switch (fix) {
     case VoicePanel::Fix::TryAgain:
-        if (m_recorder->state() == voice::VoiceRecorder::State::EncodeFailed) {
-            // The recording is still in memory: encode it again.
+        if (m_recorder->state() == voice::VoiceRecorder::State::EncodeFailed || m_recorder->state() == voice::VoiceRecorder::State::Encoded) {
+            // The recording is still in memory (saving failed, or the saved file went missing before
+            // Send): encode it again.
+            removeRecording();
             m_path = newRecordingPath();
             m_recorder->encode(m_path);
             m_phase       = Phase::Saving;
@@ -952,7 +952,9 @@ void VoiceController::refresh()
             problems << i18n::t("30 seconds left");
         if (m_playbackPaused)
             notes << i18n::t("Playback was paused while you record.");
-        if (m_device && m_device->settingMissing)
+        if (m_device && m_device->settingMissing && m_device->source == voice::DeviceChoice::Source::TeamSpeak)
+            notes << i18n::t("The microphone chosen in TS Media settings isn't connected. Recording from TeamSpeak's microphone.");
+        else if (m_device && m_device->settingMissing)
             notes << i18n::t("The microphone chosen in TS Media settings isn't connected. Recording from Windows' default communications microphone.");
         else if (m_device && m_device->source == voice::DeviceChoice::Source::DefaultCommunications)
             notes << i18n::t("Recording from Windows' default communications microphone.");

@@ -31,6 +31,7 @@ class FakeMic : public voice::MicEnvironment
         int  muted      = 0;
         bool readable   = true; // false: disconnected (reads fail)
         int  failSets   = 0;    // the next n sets fail
+        int  failFlushes = 0;   // the next n sets change the flag but report failure (the flush to the server failed)
         int  sets       = 0;
     };
     QHash<quint64, Conn> conns;
@@ -67,6 +68,10 @@ class FakeMic : public voice::MicEnvironment
             return false;
         }
         it->muted = muted ? 1 : 0;
+        if (it->failFlushes > 0) {
+            --it->failFlushes;
+            return false;
+        }
         return true;
     }
 };
@@ -322,6 +327,25 @@ class TestVoice : public QObject
         QCOMPARE(env.conns[1].muted, 0);
         QCOMPARE(env.conns[1].sets, 3);
         QCOMPARE(env.conns[2].muted, 0);
+    }
+
+    void micGuardKeepsMuteWhoseFlushFailed()
+    {
+        // The flag was set but sending it to the server failed: the microphone is muted all the same,
+        // so the guard remembers it, says so, and gives it back.
+        FakeMic env;
+        env.add(1, 1, 0);
+        env.conns[1].failFlushes = 1;
+        voice::MicGuard guard(env);
+        QCOMPARE(guard.engage(), 1);
+        QCOMPARE(guard.mutedConnections(), QList<quint64>{1});
+        QCOMPARE(env.conns[1].muted, 1);
+        env.conns[1].failFlushes = 2; // both unmute tries reach the client, not the server
+        const voice::MicGuard::Released r = guard.release();
+        QCOMPARE(r.restored, 1);
+        QCOMPARE(r.kept, 0);
+        QCOMPARE(env.conns[1].muted, 0);
+        QCOMPARE(env.conns[1].sets, 3);
     }
 
     void micGuardDestructorReleases()

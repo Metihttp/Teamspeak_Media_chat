@@ -4,7 +4,8 @@
 // voice activation aren't heard live in the channel, and always gives it back.
 //
 // engage(): every connection whose capture device is open (CLIENT_INPUT_HARDWARE) and whose microphone
-// is on (CLIENT_INPUT_MUTED == MUTEINPUT_NONE) is muted, and remembered. release(): those connections
+// is on (CLIENT_INPUT_MUTED == MUTEINPUT_NONE) is muted, and remembered (also when only sending the
+// change to the server failed: the flag reads muted then, so it is given back). release(): those connections
 // are unmuted again, but only where the microphone is still muted: if the user unmuted it by hand in
 // the meantime, nothing changes. A connection whose state can't be read (disconnected) is left as it is:
 // it fails closed (muted), never open. CLIENT_INPUT_DEACTIVATED (push-to-talk) is never touched.

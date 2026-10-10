@@ -34,6 +34,7 @@ struct TranscodeControl {
     std::atomic<int>  permille{0};      // 0..1000 of the source's length written
     std::atomic<bool> finishing{false}; // writing the index and checking the result
     std::atomic<int>  encoder{0};       // 0 not known yet, 1 processor, 2 graphics card
+    std::atomic<int>  attempts{0};      // attempts started (2: the processor took over); each starts at permille 0
 };
 
 struct TranscodeResult {

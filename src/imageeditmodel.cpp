@@ -496,15 +496,21 @@ void drawShape(QPainter& p, const Shape& shape)
         if (shape.text.isEmpty() || shape.fontPx <= 0)
             break;
         // Not QStringLiteral: Qt's font caches keep the family name after the plugin is unloaded.
+        // The outline is made at a fixed size and scaled to fontPx: a pixel size is whole pixels, and
+        // fontPx is a fraction of a picture pixel at high zoom (3.5 drawn as 4 would be 14% larger than
+        // the text typed on screen).
+        constexpr qreal kReferencePx = 100.0;
         QFont font(QString::fromLatin1("Segoe UI"));
         font.setWeight(QFont::DemiBold);
-        font.setPixelSize(qMax(1, qRound(shape.fontPx)));
+        font.setPixelSize(static_cast<int>(kReferencePx));
         const QFontMetricsF fm(font);
         QPainterPath        path;
         path.addText(QPointF(0, fm.ascent()), font, shape.text);
+        const qreal scale = shape.fontPx / kReferencePx;
         p.translate(shape.rect.topLeft());
         p.rotate(-shape.textRotation);
-        p.setPen(QPen(outlineFor(shape.color), shape.fontPx / 8.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.scale(scale, scale);
+        p.setPen(QPen(outlineFor(shape.color), kReferencePx / 8.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)); // fontPx / 8
         p.setBrush(Qt::NoBrush);
         p.drawPath(path);
         p.setPen(Qt::NoPen);

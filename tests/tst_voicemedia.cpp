@@ -17,7 +17,10 @@
 #include <objbase.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <memory>
+#include <thread>
 #include <vector>
 
 #include "audio/aacwriter.h"
@@ -228,6 +231,53 @@ class TestVoiceMedia : public QObject
         QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Captured, 2000);
         QVERIFY2(rec.elapsedMs() >= 250 && rec.elapsedMs() <= 1200, qPrintable(QString::number(rec.elapsedMs())));
         QVERIFY(ticks.count() >= 3); // the window's 33 ms updates while recording
+    }
+
+    void recorderNeverOpensWhenStoppedFirst()
+    {
+        // Canceled or stopped while the microphone is still being chosen (the factory runs on the
+        // worker): it is never opened.
+        class Counting : public voice::FakeCapture
+        {
+          public:
+            Counting(const Options& options, std::atomic<int>* opens)
+                : FakeCapture(options)
+                , m_opens(opens)
+            {
+            }
+            voice::CaptureResult open(voice::CaptureFormat* format, QString* deviceName) override
+            {
+                ++*m_opens;
+                return FakeCapture::open(format, deviceName);
+            }
+
+          private:
+            std::atomic<int>* m_opens;
+        };
+        const auto opens = std::make_shared<std::atomic<int>>(0);
+        const voice::VoiceRecorder::BackendFactory slow = [opens]() -> std::unique_ptr<voice::CaptureBackend> {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150)); // listing the microphones
+            return std::make_unique<Counting>(voice::FakeCapture::Options(), opens.get());
+        };
+        {
+            voice::VoiceRecorder rec;
+            rec.start(slow, 300000);
+            rec.cancel(); // Esc, or the window deleted
+            QCOMPARE(rec.state(), State::Idle);
+            QCOMPARE(opens->load(), 0);
+        }
+        voice::VoiceRecorder rec;
+        rec.start(slow, 300000);
+        rec.stop();
+        QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Captured, 5000); // nothing recorded: "Too short"
+        QCOMPARE(rec.elapsedMs(), qint64(0));
+        QCOMPARE(opens->load(), 0);
+        rec.cancel();
+        // Not stopped: it opens as before.
+        rec.start(slow, 300000);
+        QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Recording, 5000);
+        QCOMPARE(opens->load(), 1);
+        rec.cancel();
     }
 
     void recorderSilence()

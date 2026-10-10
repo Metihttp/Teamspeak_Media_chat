@@ -9,9 +9,53 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <QPointer>
+
+#include <windows.h>
+
 #include "audio/wasapicapture.h"
 #include "i18n.h"
 #include "ts3api.h"
+
+namespace {
+
+constexpr DWORD kPinGraceMs = 5000;
+
+// Drops the pin on our DLL from a thread of its own once the GUI thread has long left our frames.
+DWORD WINAPI releasePinLater(void* module)
+{
+    Sleep(kPinGraceMs);
+    FreeLibraryAndExitThread(static_cast<HMODULE>(module), 0);
+}
+
+// TeamSpeak's hotkey setup is its Options window, which may run a modal loop inside this call. From
+// there the user can disable or reload this plugin (Options → Addons): ts3plugin_shutdown deletes the
+// settings window with this section, and TeamSpeak unloads the DLL while this call still has to return
+// into it. A pin on the DLL (GetModuleHandleEx, like the updater's threads) keeps it mapped until then.
+// Normally it is dropped right away; when the section went meanwhile (plugin shutdown), the frames
+// below still return into the DLL, so a short thread drops it a few seconds later. Nothing of the
+// section is touched after the call.
+void openHotkeySetup(QWidget* section)
+{
+    if (!ts3::funcs.showHotkeySetup)
+        return;
+    HMODULE pin = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&releasePinLater), &pin))
+        pin = nullptr;
+    const QPointer<QWidget> alive(section);
+    ts3::funcs.showHotkeySetup();
+    if (!pin)
+        return;
+    if (alive) {
+        FreeLibrary(pin); // TeamSpeak still holds its own reference
+        return;
+    }
+    if (HANDLE thread = CreateThread(nullptr, 0, &releasePinLater, pin, 0, nullptr))
+        CloseHandle(thread);
+    // No thread: the pin stays and the DLL stays mapped until TeamSpeak exits (never unloaded under us).
+}
+
+} // namespace
 
 VoiceSection::VoiceSection(QWidget* parent)
     : SettingsSection(parent)
@@ -60,10 +104,7 @@ VoiceSection::VoiceSection(QWidget* parent)
     connect(m_microphone, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SettingsSection::changed);
     for (QCheckBox* box : {m_mute, m_review, m_sounds})
         connect(box, &QCheckBox::toggled, this, &SettingsSection::changed);
-    connect(setup, &QPushButton::clicked, this, [] {
-        if (ts3::funcs.showHotkeySetup)
-            ts3::funcs.showHotkeySetup();
-    });
+    connect(setup, &QPushButton::clicked, this, [this] { openHotkeySetup(this); });
     updateHotkey();
 }
 

@@ -300,7 +300,8 @@ class Core : public QObject
 
     // ---- 2.4 compress ------------------------------------------------------------------------
     // Videos are planned by videocompress::planCompression (settings snapshot at send time) and, when it
-    // says so, converted to an MP4 on m_transcodePool (one at a time, below normal priority) before the
+    // says so, converted to an MP4 on m_transcodePool (one at a time; the pool thread below normal
+    // priority, Media Foundation's own threads at normal, the software encoder on half the cores) before the
     // usual preview + upload. If that fails and the original fits the upload limit, the original is sent.
     // "Send original": while Compressing (not finishing) and the original fits the limit.
     bool canSendOriginal(int id) const;
@@ -539,6 +540,7 @@ class Core : public QObject
         bool                                  started    = false; // the current run has begun
         bool                                  skip       = false; // "Send original" while it ran
         int                                   attempt    = 0;     // 1: the re-run after an overshoot
+        int                                   seenAttempts = 0;   // control->attempts at the last progress poll
     };
     void onCompressPlanned(int id, const LocalMediaInfo& info, const QByteArray& previewJpeg, const videocompress::Plan& plan);
     void startCompression(int id);

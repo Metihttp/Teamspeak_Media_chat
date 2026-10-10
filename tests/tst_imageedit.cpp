@@ -1,7 +1,8 @@
 // Unit tests for the 2.2 picture editor's model (imageeditmodel): rotation and crop math, undo/redo,
 // export sizes and exactness at full resolution, pixelate and black box, the crop helpers, the export
 // format rules (PNG/JPEG, no EXIF) and opening pictures (EXIF orientation, animated, too large).
-// Text shapes need fonts (a QGuiApplication); the render harness covers them.
+// Text shapes need fonts (testmain's QGuiApplication): their size is checked here, their look in the
+// render harness.
 
 #include <QBuffer>
 #include <QDir>
@@ -163,6 +164,7 @@ class TestImageEdit : public QObject
     void viewDoesNotChangeExport();
     void hiDpiScreenMatchesExport();
     void strokeWidthFromScreen();
+    void textSizeIsNotRounded();
     void shapesOrderPixelateCoversEarlier();
     void pixelBlockRule();
     void pixelateIsBlockyQuantizedAndFixed();
@@ -465,6 +467,45 @@ void TestImageEdit::strokeWidthFromScreen()
     for (int y = 0; y < out.height(); ++y)
         dark += qBlue(out.pixel(200, y)) > 200 && qRed(out.pixel(200, y)) < 60 ? 1 : 0;
     QVERIFY2(std::abs(dark - 40) <= 2, qPrintable(QString::number(dark)));
+}
+
+void TestImageEdit::textSizeIsNotRounded()
+{
+    // At 8x zoom, Medium text is 3.5 picture pixels: drawn at that size, not at 4 (14% larger than typed).
+    const auto inkHeight = [](qreal fontPx) {
+        ImageEditModel model;
+        QImage         white(60, 20, QImage::Format_RGB32);
+        white.fill(Qt::white);
+        model.setBase(white);
+        Shape text;
+        text.type   = ShapeType::Text;
+        text.text   = QStringLiteral("HHH");
+        text.color  = Qt::black;
+        text.fontPx = fontPx;
+        text.rect   = QRectF(QPointF(4, 4), QSizeF());
+        model.addShape(text);
+        QImage screen(480, 160, QImage::Format_ARGB32_Premultiplied);
+        screen.fill(Qt::white);
+        model.render(screen, QTransform::fromScale(8, 8));
+        int top = -1;
+        int bottom = -1;
+        for (int y = 0; y < screen.height(); ++y) {
+            for (int x = 0; x < screen.width(); ++x) {
+                if (qRed(screen.pixel(x, y)) < 100) {
+                    if (top < 0)
+                        top = y;
+                    bottom = y;
+                    break;
+                }
+            }
+        }
+        return top < 0 ? 0 : bottom - top + 1;
+    };
+    const int small = inkHeight(3.5);
+    const int large = inkHeight(4.0);
+    QVERIFY2(small > 0 && large > 0, qPrintable(QStringLiteral("%1 %2").arg(small).arg(large)));
+    const double ratio = static_cast<double>(small) / large;
+    QVERIFY2(ratio > 0.80 && ratio < 0.95, qPrintable(QStringLiteral("%1 / %2").arg(small).arg(large)));
 }
 
 void TestImageEdit::shapesOrderPixelateCoversEarlier()

@@ -57,8 +57,11 @@ Stage classify(HRESULT hr, Stage fallback)
     return fallback;
 }
 
-// Below normal while transcoding, so TeamSpeak's own threads (voice) come first. Pool threads are reused:
-// the old priority comes back afterwards.
+// The calling (pump) thread runs below normal while transcoding. Pool threads are reused: the old
+// priority comes back afterwards. This covers only this thread: the threads Media Foundation creates
+// for the decoders, the software H.264 encoder (CODECAPI_AVEncNumWorkerThreads) and its work queues run
+// at normal priority, as Windows threads don't inherit their creator's priority. What keeps cores free
+// for TeamSpeak is the encoder's thread count (half the cores at most, defaultEncoderThreads).
 class ThreadPriority
 {
   public:
@@ -1009,6 +1012,7 @@ TranscodeResult transcodeToMp4(const TranscodeRequest& request, TranscodeControl
             control->permille.store(0);
             control->finishing.store(false);
             control->encoder.store(0);
+            control->attempts.fetch_add(1); // after the reset: whoever sees the new count reads the new progress
         }
         Attempt         run(request, control, hardware, measuredFps);
         TranscodeResult r = run.run();

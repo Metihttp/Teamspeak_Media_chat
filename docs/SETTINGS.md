@@ -100,7 +100,7 @@ The line under the options shows the record hotkey (*Record hotkey: F9*, or *not
 | Quality | Balanced (720p) | Smaller (480p, up to 30 fps), Balanced (720p, up to 60 fps) or High (1080p, up to 60 fps). |
 | Use the graphics card when possible | on | Off when no graphics card video encoder was found; the processor is used then. |
 
-- Compressing happens on your computer only; nothing is sent anywhere else. One video is compressed at a time, at a lower priority than TeamSpeak's own work.
+- Compressing happens on your computer only; nothing is sent anywhere else. One video is compressed at a time, and on the processor the encoder uses at most half of its cores.
 - A video is only compressed when that makes it at least 30% smaller. A video larger than your **upload size limit** is made small enough to fit when possible (a lower bitrate first, then a smaller picture); the send window then picks that quality by itself.
 - The send window has a **Quality** list for each video, with the size each choice is expected to have; *Original* sends the file as it is.
 - If compressing fails and the original fits your upload limit, the original is sent and the upload panel says so.

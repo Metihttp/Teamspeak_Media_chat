@@ -290,6 +290,7 @@ Plan planCompression(const VideoFacts& facts, const Options& options)
 
     Plan plan;
     plan.decision = Decision::Compress;
+    plan.mayGrow  = unplayable; // converting: H.264 may need more bits than the original's format
     setAudio(plan, facts);
     const int  presetSide = presetShortSide(options.request, options.shortSide);
     const Step& preset    = stepFor(presetSide);
@@ -308,6 +309,12 @@ Plan planCompression(const VideoFacts& facts, const Options& options)
     plan.videoKbps      = qBound(kMinVideoKbps, plan.videoKbps, kMaxVideoKbps);
     plan.estimatedBytes = estimateBytes(plan.videoKbps, plan.audioKbps, facts.durationMs);
 
+    // Auto, a video that fits the limit and plays everywhere: not worth the wait when it saves little.
+    // Before the fit below, which is for videos over the limit (or being converted): a long, low-bitrate
+    // video that fits must not be failed or made smaller in picture but larger in bytes.
+    if (!chosen && !over && !unplayable && static_cast<double>(plan.estimatedBytes) > kWorthItRatio * static_cast<double>(facts.bytes))
+        return sendOriginal(Reason::NotWorthIt);
+
     const double fitBytes = static_cast<double>(options.limitBytes) * kFitTarget;
     if (static_cast<double>(plan.estimatedBytes) > fitBytes) {
         // Over the limit at this quality: a lower bitrate, then (Auto only) smaller sizes until it fits.
@@ -321,7 +328,9 @@ Plan planCompression(const VideoFacts& facts, const Options& options)
             const int   fps   = outputFps(facts.fps, step.fpsCap);
             const int   kbps  = qMin(stepKbps(step, frame, fps), plan.videoKbps);
             const int   fit   = static_cast<int>(std::floor(qMin<double>(kbps, budget)));
-            if (fit >= floorKbps(frame) && fit >= kMinVideoKbps) {
+            // Never a "smaller" file that isn't smaller (unless the format needs converting anyway).
+            const bool  grows = !unplayable && estimateBytes(fit, plan.audioKbps, facts.durationMs) >= facts.bytes;
+            if (fit >= floorKbps(frame) && fit >= kMinVideoKbps && !grows) {
                 plan.frameSize      = frame;
                 plan.fps            = fps;
                 plan.fpsCap         = step.fpsCap;
@@ -331,7 +340,7 @@ Plan planCompression(const VideoFacts& facts, const Options& options)
                 return plan;
             }
         }
-        return fail(Reason::CannotFit);
+        return originalOrFail(over, Reason::CannotFit); // an original that fits goes as it is
     }
 
     if (chosen) {
@@ -339,10 +348,7 @@ Plan planCompression(const VideoFacts& facts, const Options& options)
         return plan;
     }
     if (shrink || over) {
-        plan.reason = Reason::Shrink;
-        // Not worth the wait when it saves little (unless the format needs converting anyway).
-        if (!over && !unplayable && static_cast<double>(plan.estimatedBytes) > kWorthItRatio * static_cast<double>(facts.bytes))
-            return sendOriginal(Reason::NotWorthIt);
+        plan.reason = Reason::Shrink; // worth it (checked above)
         return plan;
     }
     plan.reason = Reason::Convert;

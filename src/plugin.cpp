@@ -162,7 +162,6 @@ void printHelp(uint64 sch)
     ts3::printInfo(sch, i18n::t(TSMEDIA_VERSION " — commands:"));
     const char* const commands[] = {
         "[b]/tsmedia send[/b] — choose files to send to this chat (opens the send window)",
-        "[b]/tsmedia send[/b] — choose files to send to this chat",
         "[b]/tsmedia voice[/b] — record a voice message for this chat", // 2.2 voice
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",

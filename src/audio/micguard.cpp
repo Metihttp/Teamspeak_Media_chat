@@ -29,7 +29,14 @@ int MicGuard::engage()
             continue; // no capture device open: nobody hears this connection's mic anyway
         if (!m_env.readVariable(sch, MicEnvironment::Variable::InputMuted, &muted) || muted != kMuteNone)
             continue; // already muted by the user: theirs to keep
-        if (m_env.setInputMuted(sch, true))
+        if (m_env.setInputMuted(sch, true)) {
+            m_muted.append(sch);
+            continue;
+        }
+        // The flag can be set even though sending it to the server failed (flushClientSelfUpdates): the
+        // microphone is muted all the same, so it is ours to give back.
+        int now = kMuteNone;
+        if (m_env.readVariable(sch, MicEnvironment::Variable::InputMuted, &now) && now == kMuteMuted)
             m_muted.append(sch);
     }
     return m_muted.size();
@@ -50,7 +57,13 @@ MicGuard::Released MicGuard::release()
             continue;
         }
         // One more try on failure: staying muted is safe, but it is not what the user expects.
-        if (m_env.setInputMuted(sch, false) || m_env.setInputMuted(sch, false))
+        if (m_env.setInputMuted(sch, false) || m_env.setInputMuted(sch, false)) {
+            ++result.restored;
+            continue;
+        }
+        // Unmuted here although the server wasn't told (the flush failed): given back all the same.
+        int now = kMuteMuted;
+        if (m_env.readVariable(sch, MicEnvironment::Variable::InputMuted, &now) && now == kMuteNone)
             ++result.restored;
         else
             ++result.kept;

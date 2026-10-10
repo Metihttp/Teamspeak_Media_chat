@@ -146,6 +146,57 @@ class TestVideoCompress : public QObject
         QVERIFY(plan.videoKbps <= static_cast<int>((60.0 * kMB * 8 / 240.0 / 1000.0 - 128) * kSourceBitrateCap) + 1);
     }
 
+    void lowBitrateVideoThatFitsGoesAsItIs()
+    {
+        // 60 min of 640 x 360 H.264 at 95 MB, 100 MB limit: even the bitrate floor would be about 172 MB.
+        // It fits, so it goes as it is (not "too long to fit").
+        const VideoFacts lecture = video(95 * kMB, 60 * 60 * 1000, QSize(640, 360));
+        Plan             plan    = planCompression(lecture, defaults());
+        QCOMPARE(plan.decision, Decision::SendOriginal);
+        QCOMPARE(plan.reason, Reason::NotWorthIt);
+        // 25 min of 720p at 90 MB: 360p would fit the limit but be larger than the original.
+        const VideoFacts talk = video(90 * kMB, 25 * 60 * 1000, QSize(1280, 720));
+        plan                  = planCompression(talk, defaults());
+        QCOMPARE(plan.decision, Decision::SendOriginal);
+        QCOMPARE(plan.reason, Reason::NotWorthIt);
+        // The send window: Original, the default; no entry that isn't smaller.
+        for (const VideoFacts& facts : {lecture, talk}) {
+            const QVector<Choice> list = choices(facts, defaults());
+            QVERIFY(!list.isEmpty());
+            QVERIFY(list.at(0).selected);
+            QVERIFY(list.at(0).automatic);
+            for (const Choice& choice : list) {
+                if (choice.request != Request::Original)
+                    QVERIFY2(choice.plan.estimatedBytes < facts.bytes, qPrintable(choice.label));
+            }
+        }
+        // A picked preset that can't fit, for an original that fits: the original, not a failure.
+        Options asked = defaults();
+        asked.request = Request::P720;
+        plan          = planCompression(talk, asked);
+        QCOMPARE(plan.decision, Decision::SendOriginal);
+        QVERIFY(!plan.mayGrow);
+    }
+
+    void convertingMayGrow()
+    {
+        // 5 min of 720p VP9 at 50 MB, 100 MB limit: converted to H.264, made to fit at about 92 MB. Core
+        // takes the larger result (mayGrow) instead of sending the VP9 after all.
+        const Plan plan = planCompression(video(50 * kMB, 5 * 60 * 1000, QSize(1280, 720), 30.0, "vp9", "webm"), defaults());
+        QCOMPARE(plan.decision, Decision::Compress);
+        QCOMPARE(plan.reason, Reason::FitToLimit);
+        QVERIFY(plan.mayGrow);
+        QVERIFY(plan.estimatedBytes > 50 * kMB);
+        QVERIFY(plan.estimatedBytes <= static_cast<quint64>(100 * kMB * kFitTarget));
+        // 3 min at 30 MB (over the 25 MB threshold): 2500 kbps, about 60 MB.
+        const Plan shrink = planCompression(video(30 * kMB, 3 * 60 * 1000, QSize(1280, 720), 30.0, "vp9", "webm"), defaults());
+        QCOMPARE(shrink.reason, Reason::Shrink);
+        QVERIFY(shrink.mayGrow);
+        QVERIFY(shrink.estimatedBytes > 30 * kMB);
+        // H.264 never grows.
+        QVERIFY(!planCompression(video(240 * kMB, 62000, QSize(1080, 1920)), defaults()).mayGrow);
+    }
+
     void longVideoFitsTheLimit()
     {
         // 20 min of 1080p, 1.5 GB, 100 MB limit: 720p can't get its floor, 480p at about 508 kbps can.

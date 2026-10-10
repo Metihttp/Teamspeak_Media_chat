@@ -235,6 +235,21 @@ void VoiceRecorder::captureLoop(BackendFactory factory, qint64 maxMs)
 {
     ComThread                       com;
     std::shared_ptr<CaptureBackend> backend(factory ? factory().release() : nullptr);
+    // Stopped or canceled while the microphone was being chosen (there was nothing to interrupt yet):
+    // it is never opened. Checked again right before open().
+    const auto stoppedEarly = [this] {
+        if (!m_stop.load() && !m_cancel.load())
+            return false;
+        {
+            QMutexLocker lock(&m_mutex);
+            m_backend.reset();
+        }
+        setState(m_cancel.load() ? State::Idle : State::Captured); // Captured with nothing: "Too short"
+        m_workerDone = true;
+        return true;
+    };
+    if (stoppedEarly())
+        return;
     if (!backend) {
         QMutexLocker lock(&m_mutex);
         m_captureError        = CaptureResult();
@@ -248,6 +263,9 @@ void VoiceRecorder::captureLoop(BackendFactory factory, qint64 maxMs)
         QMutexLocker lock(&m_mutex);
         m_backend = backend;
     }
+    // A stop from here on also reaches the backend (interrupt()).
+    if (stoppedEarly())
+        return;
 
     CaptureFormat       fmt;
     QString             name;

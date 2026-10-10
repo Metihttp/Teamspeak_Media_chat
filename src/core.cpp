@@ -3622,11 +3622,12 @@ void Core::onCompressPlanned(int id, const LocalMediaInfo& info, const QByteArra
     task.plan  = plan;
     task.limit = megabytes(s.uploadMaxMB);
     task.gpu   = s.compressUseGpu;
-    // The size guard: the fit target when made to fit, the limit (and for a shrink, the original's size)
-    // otherwise. The final file must be within the limit either way.
-    if (plan.reason == videocompress::Reason::FitToLimit)
+    // The size guard: the fit target when made to fit or when the original is over the limit (the
+    // transcoder only stops 3% above its guard, and a run that ends over the limit can't be sent), for
+    // a shrink of a video that may not grow the original's size, the limit otherwise.
+    if (plan.reason == videocompress::Reason::FitToLimit || job.originalSize > task.limit)
         task.abortAbove = static_cast<quint64>(static_cast<double>(task.limit) * videocompress::kFitTarget);
-    else if (plan.reason == videocompress::Reason::Shrink)
+    else if (plan.reason == videocompress::Reason::Shrink && !plan.mayGrow)
         task.abortAbove = qMin(task.limit, job.originalSize);
     else
         task.abortAbove = task.limit;
@@ -3682,6 +3683,7 @@ void Core::runTranscode(int id)
     const auto control = std::make_shared<mf::TranscodeControl>();
     task->control      = control;
     task->started      = false;
+    task->seenAttempts = 0;
     mf::TranscodeRequest request;
     // The original where it is; a file of ours (ownTemp) may have been moved into staging already.
     const QString staged    = it->stagingDir + QLatin1Char('/') + it->remoteName;
@@ -3799,26 +3801,39 @@ void Core::onCompressed(int id, const std::shared_ptr<mf::TranscodeControl>& con
         stageOriginal(id, CompressOutcome::SentOriginal, QString());
         return;
     }
-    if (result.exceeded && done.attempt == 0 && result.projectedBytes > 0) {
-        // The encoder missed its rate: once more, with the bitrate scaled to land at 95% of the guard.
-        CompressTask again   = done;
-        const double scale   = static_cast<double>(done.abortAbove) * 0.95 / static_cast<double>(result.projectedBytes);
-        again.attempt        = 1;
-        again.plan.videoKbps = qMax(videocompress::kMinVideoKbps, static_cast<int>(again.plan.videoKbps * scale));
+    // The encoder missed its rate: the run was stopped (exceeded), or it finished over the upload limit
+    // (the transcoder only stops 3% above its guard, and its projection runs a little low). Once more,
+    // with the bitrate scaled to land at 95% of the guard.
+    const bool overLimit = result.ok && result.bytes > done.limit;
+    if (done.attempt == 0 && ((result.exceeded && result.projectedBytes > 0) || overLimit)) {
+        const quint64 reached = result.exceeded ? result.projectedBytes : result.bytes;
+        CompressTask  again   = done;
+        const double  scale   = static_cast<double>(done.abortAbove) * 0.95 / static_cast<double>(reached);
+        again.attempt         = 1;
+        again.plan.videoKbps  = qMax(videocompress::kMinVideoKbps, static_cast<int>(again.plan.videoKbps * scale));
         again.plan.estimatedBytes = videocompress::estimateBytes(again.plan.videoKbps, again.plan.audioKbps, job.info.durationMs);
-        ts3::log(LogLevel_INFO, job.target.sch, "Compressing %1 would end at %2, over %3: once more at %4 kbps",
-                 {ts3::file(job.remoteName), ts3::pub(formatSize(result.projectedBytes)), ts3::pub(formatSize(done.abortAbove)), ts3::pub(again.plan.videoKbps)});
+        if (result.exceeded)
+            ts3::log(LogLevel_INFO, job.target.sch, "Compressing %1 would end at %2, over %3: once more at %4 kbps",
+                     {ts3::file(job.remoteName), ts3::pub(formatSize(reached)), ts3::pub(formatSize(done.abortAbove)), ts3::pub(again.plan.videoKbps)});
+        else
+            ts3::log(LogLevel_INFO, job.target.sch, "Compressing %1 ended at %2, over the %3 upload limit: once more at %4 kbps",
+                     {ts3::file(job.remoteName), ts3::pub(formatSize(reached)), ts3::pub(formatSize(done.limit)), ts3::pub(again.plan.videoKbps)});
         QDir(done.outDir).removeRecursively();
         QDir().mkpath(done.outDir);
         m_compressing.insert(id, again);
-        job.estimatedSize = again.plan.estimatedBytes;
-        job.progress      = 0.0;
-        setUploadState(job, UploadState::Compressing, i18n::t("Compressing…"));
+        job.estimatedSize     = again.plan.estimatedBytes;
+        job.progress          = 0.0;
+        job.compressFinishing = false;
+        job.compressEncoder   = 0;
+        // Queued behind earlier videos maybe: "Waiting" until the worker starts it (markCompressStarted).
+        setUploadState(job, UploadState::Compressing, i18n::t("Waiting to compress…"), true);
         runTranscode(id);
         return;
     }
 
-    const bool smaller = result.bytes < job.originalSize || done.plan.reason == videocompress::Reason::Convert;
+    // Converting a format that may not play for others may give a larger file (the planner allows it).
+    const bool smaller = result.bytes < job.originalSize || done.plan.mayGrow || done.plan.reason == videocompress::Reason::Convert;
+    bool       moveFailed = false;
     if (result.ok && result.bytes > 0 && result.bytes <= done.limit && smaller) {
         // The verified MP4 becomes the staged file, with the same random part in its name (the preview
         // keeps its name too).
@@ -3826,9 +3841,11 @@ void Core::onCompressed(int id, const std::shared_ptr<mf::TranscodeControl>& con
         const QString staged = job.stagingDir + QLatin1Char('/') + name;
         QDir(job.stagingDir).removeRecursively();
         QDir().mkpath(job.stagingDir);
-        bool ok = QFile::rename(done.outDir + QStringLiteral("/out.mp4"), staged);
-        if (ok && job.remoteDir != QLatin1String("/")) {
-            const QString nested = job.stagingDir + job.remoteDir + QLatin1Char('/') + name;
+        const bool moved = QFile::rename(done.outDir + QStringLiteral("/out.mp4"), staged);
+        bool       ok    = moved;
+        QString    nested;
+        if (moved && job.remoteDir != QLatin1String("/")) {
+            nested = job.stagingDir + job.remoteDir + QLatin1Char('/') + name;
             QDir().mkpath(QFileInfo(nested).absolutePath());
             ok = linkOrCopy(staged, nested);
         }
@@ -3854,13 +3871,22 @@ void Core::onCompressed(int id, const std::shared_ptr<mf::TranscodeControl>& con
             continueUpload(id);
             return;
         }
+        // Nothing of the compressed copy may stay where stageOriginal would take it for the original (the
+        // same name when the original is an .mp4).
+        if (moved)
+            QFile::remove(staged);
+        if (!nested.isEmpty())
+            QFile::remove(nested);
+        moveFailed = true;
         ts3::log(LogLevel_WARNING, job.target.sch, "Could not move the compressed copy of %1 into place", {ts3::file(job.remoteName)});
     }
     QDir(done.outDir).removeRecursively();
 
     // Didn't work out: the cause in a few words for the log, the toast's tooltip and the error.
     QString cause;
-    if (result.ok && result.bytes > done.limit)
+    if (moveFailed)
+        cause = i18n::t("the compressed copy couldn't be moved into place");
+    else if (result.ok && result.bytes > done.limit)
         cause = i18n::t("the result was still larger than your limit");
     else if (result.ok)
         cause = i18n::t("the result wasn't smaller");
@@ -4045,15 +4071,20 @@ QStringList Core::compressionDiagnostics()
 bool Core::pollCompressions()
 {
     QList<int> changed;
-    for (auto task = m_compressing.cbegin(); task != m_compressing.cend(); ++task) {
+    for (auto task = m_compressing.begin(); task != m_compressing.end(); ++task) {
         auto it = m_uploads.find(task.key());
         if (!task->control || !task->started || it == m_uploads.end() || it->state != UploadState::Compressing)
             continue;
+        // A new attempt (the processor after the graphics card failed) starts at 0 again: its progress is
+        // shown as it is, not held at what the failed attempt reached. Read before the progress.
+        const int    attempts  = task->control->attempts.load();
+        const bool   restarted = attempts != task->seenAttempts;
+        task->seenAttempts     = attempts;
         const double progress  = qBound(0.0, task->control->permille.load() / 1000.0, 1.0);
         const bool   finishing = task->control->finishing.load();
         const int    encoder   = task->control->encoder.load();
-        if (progress - it->progress >= 0.005 || finishing != it->compressFinishing || encoder != it->compressEncoder) {
-            it->progress          = qMax(it->progress, progress);
+        if (restarted || progress - it->progress >= 0.005 || finishing != it->compressFinishing || encoder != it->compressEncoder) {
+            it->progress          = restarted ? progress : qMax(it->progress, progress);
             it->compressFinishing = finishing;
             it->compressEncoder   = encoder;
             if (finishing)

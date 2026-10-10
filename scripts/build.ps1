@@ -273,6 +273,9 @@ if ($sign) {
     # Up to 5 "- " bullets under "### Highlights" in docs\release-notes\v<version>.md, markdown removed.
     $notesFile = Join-Path $root "docs\release-notes\v$version.md"
     if (-not (Test-Path $notesFile)) { throw "Missing ${notesFile}: the update dialog shows its Highlights." }
+    # A draft must never become the update dialog's "What's new" (the template's DRAFT comment is deleted
+    # when the notes are final).
+    if ((Get-Content -Raw -Encoding UTF8 $notesFile) -match '<!--\s*DRAFT') { throw "$notesFile is still a DRAFT: finish the release notes (and delete the DRAFT comment) before a signed release build." }
     $notes = New-Object System.Collections.Generic.List[string]
     $inHighlights = $false
     foreach ($line in Get-Content -Encoding UTF8 $notesFile) {

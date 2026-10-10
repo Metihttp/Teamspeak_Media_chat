@@ -55,7 +55,7 @@ enum class Reason {
     OriginalAsked,     // Request::Original
     Disabled,          // compression is off (and the video fits)
     SmallEnough,       // under the threshold and plays everywhere
-    NotWorthIt,        // the result would save less than 30%
+    NotWorthIt,        // the result would save less than 30% (Auto, a video that fits and plays everywhere)
     UnknownLength,     // duration unreadable
     Undecodable,       // no decoder on this computer
     TooLarge32Bit,     // above 2560 x 1600 in 32-bit TeamSpeak
@@ -64,7 +64,7 @@ enum class Reason {
     Convert,           // Compress: a format that may not play for others
     FitToLimit,        // Compress: over the upload limit, made to fit
     Chosen,            // Compress: the sender picked this preset
-    CannotFit,         // Fail: even the lowest quality is over the limit
+    CannotFit,         // Fail: even the lowest quality is over the limit (SendOriginal when the original fits)
     DisabledOverLimit, // Fail: compression is off and the video is over the limit
 };
 
@@ -79,6 +79,10 @@ struct Plan {
     int      audioChannels  = 0; // 0 | 1 | 2
     quint64  estimatedBytes = 0; // Compress: the expected output size
     QString  detail;             // Fail(Undecodable): the decoder text from the probe
+    // Compress: the result may be larger than the original (a format that may not play for others is
+    // converted, and H.264 may use up to twice its rate). Core then accepts any verified result within
+    // the upload limit instead of only a smaller one, and doesn't stop the run at the original's size.
+    bool     mayGrow        = false;
 };
 
 // Limits the transcoder and the planner share.
