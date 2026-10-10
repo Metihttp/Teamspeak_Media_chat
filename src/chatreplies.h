@@ -5,10 +5,11 @@
 // the chat input), in the plugin's own preview menu, from the send window and from a file drop.
 //
 //  * Starting a reply: right-click any message -> "Reply" (added at the top of TeamSpeak's own chat menu,
-//    or of the plugin's preview menu; when TeamSpeak shows no menu, a small one of ours), Alt+Up in the
-//    chat input (Alt+Up / Alt+Down move to older / newer messages), or the "Reply to the last message"
-//    hotkey. 2.2 emoji: the same injection carries ChatEmoji's items (an HD emoji's name, "Copy emoji",
-//    "Use in the chat input"; "Copy text" for the message), so there is one chat menu, never two.
+//    or of the plugin's preview menu; when TeamSpeak shows no menu, a small one of ours, which a menu
+//    TeamSpeak still opens shortly after replaces), Alt+Up in the chat input (Alt+Up / Alt+Down move
+//    to older / newer messages), or the "Reply to the last message" hotkey. 2.2 emoji: the same
+//    injection carries ChatEmoji's items (an HD emoji's name, "Copy emoji", "Use in the chat input";
+//    "Copy text" for the message), so there is one chat menu, never two.
 //  * Reply mode: ReplyBar above TeamSpeak's chat input. Enter sends the input as a reply to the same chat
 //    (TeamSpeak commands "/..." and empty input are left to TeamSpeak), Esc cancels. Files sent through
 //    the send window or dropped meanwhile go out as the reply (the quote line before the caption).
@@ -206,6 +207,7 @@ class ChatReplies : public QObject
     QTimer*                  m_styleCheck = nullptr;
     QTimer*                  m_watch      = nullptr;
     QTimer*                  m_reindex    = nullptr; // 2.2 emoji: stale views are read again once ChatEmoji pauses
+    QTimer*                  m_lateMenu   = nullptr; // our small menu is shown: a late menu of TeamSpeak's takes its items over
 
     QPointer<QTextBrowser> m_hoverIn;
     QString                m_hoverObject;

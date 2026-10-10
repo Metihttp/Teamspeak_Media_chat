@@ -52,6 +52,7 @@ constexpr int   kMaxRendered  = 48; // reply line pictures kept per chat before 
 constexpr int   kWatchMs      = 300;
 constexpr int   kScrollMs     = 260;
 constexpr int   kFlashMs      = 1700;
+constexpr int   kLateMenuMs   = 1500; // after our small menu showed: TeamSpeak's own may still come (built late)
 constexpr qreal kFlashAlpha   = 0.20;
 
 // The same chat: server tab, kind and (for a private chat) the same person.
@@ -164,7 +165,8 @@ class ReplyMenuCatcher : public QObject
         const QEvent::Type type = event->type();
         if (type == QEvent::Polish || type == QEvent::Show) {
             if (auto* menu = qobject_cast<QMenu*>(watched)) {
-                if (!menu->objectName().startsWith(QLatin1String("tsmedia")))
+                // Not ours, and not a submenu: one TeamSpeak polishes before its menu would get the items.
+                if (!menu->objectName().startsWith(QLatin1String("tsmedia")) && !qobject_cast<QMenu*>(menu->parentWidget()))
                     m_owner->inject(menu);
             }
         }
@@ -231,6 +233,12 @@ ChatReplies::ChatReplies(ChatIntegration* chat, Core* core)
     });
 
     m_catcher = new ReplyMenuCatcher(this);
+    // While our small menu is shown for a right-click TeamSpeak had no menu for (yet): a menu of TeamSpeak's that
+    // still comes takes our items over (inject). After this, a menu is someone else's.
+    m_lateMenu = new QTimer(this);
+    m_lateMenu->setSingleShot(true);
+    m_lateMenu->setInterval(kLateMenuMs);
+    connect(m_lateMenu, &QTimer::timeout, this, &ChatReplies::disarm);
 
     // Emoji in names and snippets that are new to this PC (about 3 ms each on Windows 11): a few are
     // drawn at once, the others by the emoji worker; lines drawn without some are drawn again when the
@@ -959,6 +967,7 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
 
 void ChatReplies::prepareMenu(QTextBrowser* browser, const QPoint& pos, const QPoint& globalPos)
 {
+    m_lateMenu->stop(); // a new right-click: the last one's menu is done
     m_menu             = MenuContext();
     const int  message = messageAt(browser, pos);
     const bool onEmoji = m_chat->m_emoji && m_chat->m_emoji->emojiUnder(browser, pos) >= 0; // 2.2 emoji
@@ -981,9 +990,16 @@ void ChatReplies::prepareMenu(QTextBrowser* browser, const QPoint& pos, const QP
         QTimer::singleShot(0, this, [this, serial] {
             if (serial != m_menuSerial)
                 return;
-            disarm();
-            if (!m_menu.handled && m_menu.browser && (m_menu.block >= 0 || m_menu.onEmoji) && !QApplication::activePopupWidget())
+            if (!m_menu.handled && m_menu.browser && (m_menu.block >= 0 || m_menu.onEmoji) && !QApplication::activePopupWidget()) {
                 showFallbackMenu();
+                // Still armed for a moment: TeamSpeak may build its menu late (its own event loop first, as seen on
+                // a nickname). That menu then gets the items and ours closes, never two menus at once.
+                if (m_fallback) {
+                    m_lateMenu->start();
+                    return;
+                }
+            }
+            disarm();
         });
     });
 }
@@ -998,6 +1014,7 @@ void ChatReplies::arm()
 
 void ChatReplies::disarm()
 {
+    m_lateMenu->stop();
     if (!m_armed)
         return;
     m_armed = false;
@@ -1006,9 +1023,23 @@ void ChatReplies::disarm()
 
 void ChatReplies::inject(QMenu* menu)
 {
+    // TeamSpeak's menu came after our small one (it was built late): it takes the items over, ours closes.
+    const bool late = m_menu.handled && m_fallback && m_fallback.data() != menu && m_lateMenu->isActive();
     disarm();
+    if (late) {
+        m_fallback->close(); // WA_DeleteOnClose: its items go with it
+        m_fallback.clear();
+        m_menu.handled = false;
+    }
     if (m_menu.handled || !m_menu.browser || (m_menu.block < 0 && !m_menu.onEmoji))
         return;
+#ifdef TSMEDIA_TESTHOOKS
+    ts3::log(QString::fromLatin1("[test] reply menu: into %1#%2 \"%3\" (%4 actions, visible %5, parent %6)")
+                 .arg(QString::fromLatin1(menu->metaObject()->className()), menu->objectName(), menu->title())
+                 .arg(menu->actions().size())
+                 .arg(menu->isVisible() ? 1 : 0)
+                 .arg(menu->parentWidget() ? QString::fromLatin1(menu->parentWidget()->metaObject()->className()) : QString::fromLatin1("none")));
+#endif
     m_menu.handled              = true;
     const QList<QAction*> ours  = actionsFor(menu, true);
     if (ours.isEmpty())
