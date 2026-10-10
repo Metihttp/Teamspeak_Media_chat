@@ -658,7 +658,7 @@ UpdateDialog* Updater::dialog(bool create)
         connect(d, &UpdateDialog::laterClicked, this, [this] {
             StateFile(m_layout.stateFile()).setTime(kCheck, "remindAfterUtc", QDateTime::currentDateTimeUtc().addSecs(kRemindAfterSec));
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
         });
         connect(d, &UpdateDialog::skipClicked, this, [this] {
             if (m_haveManifest) {
@@ -669,7 +669,7 @@ UpdateDialog* Updater::dialog(bool create)
             if (m_phase == Phase::Available)
                 setPhase(restartPending(m_layout, m_current) ? Phase::RestartPending : Phase::Idle);
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
             emit statusChanged();
         });
         connect(d, &UpdateDialog::updateClicked, this, [this] { startDownload(); });
@@ -679,14 +679,14 @@ UpdateDialog* Updater::dialog(bool create)
             if (m_phase == Phase::Downloading && m_link)
                 m_link->cancel = true;
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
         });
         connect(d, &UpdateDialog::restartNowClicked, this, [this] { restartNow(); });
         connect(d, &UpdateDialog::restartLaterClicked, this, [this] {
             const Version pending = effectiveInstalled(m_layout, m_current);
             queueNotice(i18n::t("TS Media chat %1 is installed and starts the next time you open TeamSpeak.").arg(pending.toString()), false);
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
         });
         connect(d, &UpdateDialog::tryAgainClicked, this, [this] {
             if (m_haveManifest && m_phase == Phase::Available)
@@ -697,16 +697,16 @@ UpdateDialog* Updater::dialog(bool create)
         connect(d, &UpdateDialog::openDownloadPageClicked, this, [this] {
             QDesktopServices::openUrl(latestReleaseUrl());
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
         });
         connect(d, &UpdateDialog::showFolderClicked, this, [this] {
             QDesktopServices::openUrl(QUrl::fromLocalFile(m_folderToShow.isEmpty() ? m_layout.pluginsDir : m_folderToShow));
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
         });
         connect(d, &UpdateDialog::closeClicked, this, [this] {
             if (m_dialog)
-                m_dialog->close();
+                m_dialog->dismiss();
         });
     }
     return m_dialog.data();
@@ -812,7 +812,7 @@ void Updater::onPrepareDone(const PrepareOutcome& outcome)
     case F::Canceled:
         log(latin("download canceled"));
         if (m_dialog)
-            m_dialog->close();
+            m_dialog->dismiss();
         return;
     case F::Network: {
         log(latin("download failed: ") + http::errorCode(outcome.httpError) + latin(" (error ") + QString::number(outcome.winError) + latin(")"));

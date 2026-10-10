@@ -654,6 +654,13 @@ void UpdateDialog::showError(const Error& error)
     }
 }
 
+void UpdateDialog::dismiss()
+{
+    // Hides at once and (WA_DeleteOnClose) deletes the window later; no QCloseEvent, no reject(). Inside a
+    // closeEvent the window is hidden by then, so QDialog::closeEvent accepts the close.
+    QDialog::done(QDialog::Rejected);
+}
+
 void UpdateDialog::reject()
 {
     switch (m_page) {

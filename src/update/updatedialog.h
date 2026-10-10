@@ -70,6 +70,11 @@ class UpdateDialog : public QDialog
     void showWorking(const QString& version, const QString& status); // "Checking the signature…", "Installing…"
     void showInstalled(const QString& version, int connectedServers, int runningUploads);
     void showError(const Error& error);
+    // Closes the window for good: the Updater's answer to a button, Esc or the title bar's X. Never
+    // close() for that: QDialog::closeEvent calls reject(), which asks the Updater again, so a close()
+    // from inside that answer was ignored and the window stayed open (live test 2.2: "Restart later"
+    // printed its notice twice and the window stayed).
+    void dismiss();
 
     enum class Page { Available, Downloading, Working, Installed, Error };
     Page page() const { return m_page; }
