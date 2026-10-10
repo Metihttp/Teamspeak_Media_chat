@@ -5,6 +5,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.2.0] - 2026-10-10
+
+### Added
+
+- **Send window** for drops, <kbd>Ctrl</kbd>+<kbd>V</kbd> and the file picker: it shows what will be sent and where, marks what can't be sent, and says how many people here will see it in the chat.
+- Captions of up to 300 characters, shown above the file. A caption too long for the file's message is sent as its own message right above it.
+- Spoilers: pictures, GIFs and videos marked in the send window stay blurred in the chat and the viewer until clicked. *Show spoilers without blurring* turns this off.
+- Albums: 2 to 10 pictures and videos sent together appear as one grid (up to six tiles, *+N* on the last).
+- Picture editor in the send window (**Edit…**): crop, rotate, pen, arrow, rectangle, text, pixelate or black box, undo and redo. Edited copies are sent without photo metadata.
+- Video compression: videos over 25 MB, and iPhone (HEVC), AV1, VP9 and camcorder videos, become an MP4 before the upload. Each video has a *Quality* list, and the upload panel offers **Send original**.
+- Voice messages of up to 5 minutes: **Record voice message…**, `/tsmedia voice` and a hotkey. Listen before sending; your TeamSpeak microphone is muted while you record (a setting).
+- Audio files and voice messages play in the chat, with a seek bar; only one video or audio plays at a time.
+- Reactions (thumbs up, heart, laughing, surprised, sad, fire) under pictures, GIFs, videos, albums and audio, seen by people with TS Media who are online in the same chat.
+- Downloads are checked against the SHA-256 in the link. A file that was replaced on the server is blocked: *File doesn't match what was sent*, with **Copy details**.
+- Drag pictures, videos and files out of the chat or the viewer to a folder or another app, or use **Copy file** (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> in the viewer). The copies carry Windows' "downloaded from the internet" mark.
+- Data saver: pause automatic downloads for all servers or for one (Plugins menu, `/tsmedia datasaver`).
+- Settings per server (**Settings → Servers**): automatic downloads, upload folder, upload size limit and the note for people without the plugin.
+- Server access for admins: create or repair the `tsmediachat` server group with one click, and **Give / Remove TS Media chat access** in a client's right-click menu.
+- Automatic updates from GitHub, after you agree once: a daily check, signed downloads, **Restart TeamSpeak now**. Also **Check for updates…** and `/tsmedia update`.
+- **Diagnostic info** to copy into a bug report (`/tsmedia diag`, **Settings → General**); file names are left out unless you include them.
+- **Settings → Privacy & updates**: *Show reactions on media* and *Tell people in your channel that you have TS Media*.
+- The plugin keeps its own log, `%APPDATA%\TS3Client\plugins\tsmedia\logs\tsmedia.log`.
+
+### Changed
+
+- Dropping files opens the send window. Hold <kbd>Ctrl</kbd> to send right away, or choose *Send right away* in **Settings → Sending**.
+- Text already typed in the chat input becomes the caption when you press <kbd>Ctrl</kbd>+<kbd>V</kbd>.
+- Video compression is on by default (*Compress videos larger than 25 MB*, *Balanced (720p)*).
+- A video over your upload limit gets a smaller quality that fits, instead of being skipped.
+- Your TS Media version is shared with your channel so the send window can count who has the plugin; turn it off in **Settings → Privacy & updates**.
+- The settings are on tabs: General, Sending, Receiving & playback, Servers, Privacy & updates.
+- *Download videos automatically* is now *Download videos and audio automatically*; voice messages download like images (at most 16 MB).
+- Files sent together can share one chat message, and messages wait for TeamSpeak's flood protection instead of being lost.
+- Chat links read *Spoiler (image)* for spoilers and *Voice message (0:12)* for voice messages.
+- Bug report form: a new *Diagnostic info* field; the plugin load line is only needed when the plugin doesn't load.
+
+### Fixed
+
+- A chat message TeamSpeak never confirmed counted as sent: now it is reported, and **Retry** posts it again without a second upload.
+- Seeking a video after it ended started it again by itself.
+
 ## [2.1.0] - 2026-10-09
 
 ### Added
@@ -124,6 +165,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.2.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.1.0
 [2.0.7]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.0.7
 [2.0.6]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.0.6
