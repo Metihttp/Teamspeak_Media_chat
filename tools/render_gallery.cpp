@@ -944,7 +944,7 @@ QList<Sample> buildSamples()
     {
         // Right-to-left name keeps its own direction; the card stays left-to-right.
         MediaEntry e    = songReady;
-        e.link.fileName = QString::fromUtf8("آهنگ تابستانی_3f9a1c2e.ogg");
+        e.link.fileName = QString::fromUtf8("\u0622\u0647\u0646\u06af \u062a\u0627\u0628\u0633\u062a\u0627\u0646\u06cc_3f9a1c2e.ogg");
         e.kind          = kindForFileName(e.link.fileName);
         PlaybackOverlay o = audioOverlay(e);
         o.positionMs      = 12000;
@@ -989,7 +989,7 @@ QList<Sample> buildSamples()
     dragSample(QStringLiteral("drag_card_program"), QStringLiteral("drag: program card"),
                [=](const PreviewStyle& st) { return renderDragCard(makeEntry(QStringLiteral("setup_tool.exe"), 2516582, 0, 0, 0, MediaState::Ready), true, st.font, st.dpr); });
     dragSample(QStringLiteral("drag_card_persian"), QStringLiteral("drag: long Persian name"), [=](const PreviewStyle& st) {
-        MediaEntry e    = makeEntry(QStringLiteral("گزارش نهایی پروژه تابستان ۱۴۰۳ نسخه دوم_3f9a1c2e.pdf"), 1830000, 0, 0, 0, MediaState::Ready);
+        MediaEntry e    = makeEntry(QStringLiteral("\u06af\u0632\u0627\u0631\u0634 \u0646\u0647\u0627\u06cc\u06cc \u067e\u0631\u0648\u0698\u0647 \u062a\u0627\u0628\u0633\u062a\u0627\u0646 \u06f1\u06f4\u06f0\u06f3 \u0646\u0633\u062e\u0647 \u062f\u0648\u0645_3f9a1c2e.pdf"), 1830000, 0, 0, 0, MediaState::Ready);
         e.link.protocol = MediaLink::kProtocol;
         return renderDragCard(e, false, st.font, st.dpr);
     });
@@ -1409,9 +1409,9 @@ QList<Sample> buildSamples()
         add(QStringLiteral("reply_line_file"), QStringLiteral("reply line: to a file"), replyLine(QStringLiteral("Reza"), QStringLiteral("alpine-lake.jpg"), true, true, false, blue), 520);
         add(QStringLiteral("reply_line_narrow"), QStringLiteral("reply line: narrow chat, long name"),
             replyLine(QStringLiteral("A very long nickname indeed"), text, false, true, false, QColor(0x00, 0x2f, 0x5d)), 220);
-        add(QStringLiteral("reply_line_persian"), QStringLiteral("reply line: Persian"), replyLine(QStringLiteral("مهدی"), QStringLiteral("سلام، امشب بازی داریم؟"), false, true, false, blue), 520);
+        add(QStringLiteral("reply_line_persian"), QStringLiteral("reply line: Persian"), replyLine(QStringLiteral("\u0645\u0647\u062f\u06cc"), QStringLiteral("\u0633\u0644\u0627\u0645\u060c \u0627\u0645\u0634\u0628 \u0628\u0627\u0632\u06cc \u062f\u0627\u0631\u06cc\u0645\u061f"), false, true, false, blue), 520);
         add(QStringLiteral("reply_line_mixed"), QStringLiteral("reply line: Persian and English mixed"),
-            replyLine(QStringLiteral("Ali"), QStringLiteral("سلام دنیا and hello"), false, true, false, blue), 520);
+            replyLine(QStringLiteral("Ali"), QStringLiteral("\u0633\u0644\u0627\u0645 \u062f\u0646\u06cc\u0627 and hello"), false, true, false, blue), 520);
         // 2.2 integration: HD emoji in the snippet and the name (where their glyphs would be).
         add(QStringLiteral("reply_line_emoji"), QStringLiteral("reply line: emoji in the snippet (HD)"),
             replyLine(QStringLiteral("Alice"), QStringLiteral("Pizza 🍕 tonight? Bring snacks 🎉 :)"), false, true, false, blue), 520);

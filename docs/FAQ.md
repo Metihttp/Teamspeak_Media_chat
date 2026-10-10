@@ -8,6 +8,7 @@ Answers to common questions, grouped by topic. Each question has its own link, s
 - [Sending](#sending)
 - [Viewing and playback](#viewing-and-playback)
 - [Reactions and presence](#reactions-and-presence)
+- [Replies and emoji](#replies-and-emoji)
 - [Voice messages](#voice-messages)
 - [Permissions](#permissions)
 - [Compatibility](#compatibility)
@@ -167,6 +168,16 @@ Reactions are only for channel and private chats. In the server chat there are n
 ### Can I hide that I use TS Media chat?
 
 Yes: turn off **Settings → Privacy & updates → Tell people in your channel that you have TS Media**. The plugin then says goodbye to the people it told, and your send window no longer counts who will see your media. You still see media and can send it as before.
+
+## Replies and emoji
+
+### There are two smiley buttons in the chat input
+
+One is TeamSpeak's own emoticon button, the other is the TS Media chat emoji picker (HD emoji, search, recently used). To keep only TeamSpeak's, turn off **Settings → General → Emoji → Show the emoji button in the chat input**; <kbd>Ctrl</kbd>+<kbd>E</kbd> in the chat input still opens the picker.
+
+### A smiley like `:)` shows as text in a reply line
+
+In the message itself, TeamSpeak's smileys (`:)`, `;)`, `:D` …) show as HD emoji. In the reply line above a reply, the reply bar, the send window's *Replying to* line and *View replies*, they stay text for now. Real emoji show in HD there too.
 
 ## Voice messages
 

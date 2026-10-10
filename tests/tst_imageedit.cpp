@@ -734,7 +734,7 @@ void TestImageEdit::exportNames()
     QCOMPARE(imageedit::exportName(QStringLiteral("scan.bmp"), QStringLiteral("png")), QStringLiteral("scan.png"));
     QCOMPARE(imageedit::exportName(QStringLiteral("my.trip.webp"), QStringLiteral("jpg")), QStringLiteral("my.trip.jpg"));
     QCOMPARE(imageedit::exportName(QStringLiteral(".png"), QStringLiteral("png")), QStringLiteral("image.png"));
-    QCOMPARE(imageedit::exportName(QString::fromUtf8("عکس.png"), QStringLiteral("jpg")), QString::fromUtf8("عکس.jpg"));
+    QCOMPARE(imageedit::exportName(QString::fromUtf8("\u0639\u06a9\u0633.png"), QStringLiteral("jpg")), QString::fromUtf8("\u0639\u06a9\u0633.jpg"));
 }
 
 void TestImageEdit::writeEditedFailsCleanly()

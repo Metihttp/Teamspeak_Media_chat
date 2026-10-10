@@ -525,7 +525,7 @@ void TestLink22::v21LinksAreByteIdentical_data()
     QTest::newRow("photo") << QStringLiteral("sunset_3f9a1c2e.jpg") << true;
     QTest::newRow("plain TeamSpeak link") << QStringLiteral("report final.pdf") << false;
     QTest::newRow("brackets and percent") << QStringLiteral("[draft] 100% (v2)_3f9a1c2e.png") << true;
-    QTest::newRow("persian") << QStringLiteral("عکس تعطیلات_3f9a1c2e.jpg") << true;
+    QTest::newRow("persian") << QStringLiteral("\u0639\u06a9\u0633 \u062a\u0639\u0637\u06cc\u0644\u0627\u062a_3f9a1c2e.jpg") << true;
     QTest::newRow("long") << QString(700, QLatin1Char('x')) + QStringLiteral(".mp4") << true;
 }
 
@@ -985,7 +985,7 @@ void TestLink22::composeCaptionSplit()
 {
     // A long caption next to a long name doesn't fit in one message: it goes first, on its own, and
     // the media message keeps everything, the note included.
-    const MediaLink link = photo(QStringLiteral("فایل_خیلی_طولانی_برای_آزمایش_اندازه_پیام_3f9a1c2e.jpg"));
+    const MediaLink link = photo(QStringLiteral("\u0641\u0627\u06cc\u0644_\u062e\u06cc\u0644\u06cc_\u0637\u0648\u0644\u0627\u0646\u06cc_\u0628\u0631\u0627\u06cc_\u0622\u0632\u0645\u0627\u06cc\u0634_\u0627\u0646\u062f\u0627\u0632\u0647_\u067e\u06cc\u0627\u0645_3f9a1c2e.jpg"));
     ComposeOptions  options;
     options.downloadUrl = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat");
     // The media message alone fits with room to spare, but not with the caption next to it.
@@ -1301,7 +1301,7 @@ void TestLink22::sanitizeCaptionTexts_data()
     QTest::newRow("line separators") << QStringLiteral("a\u2028b\u2029c\u0085d") << QStringLiteral("a b c d");
     QTest::newRow("controls") << QStringLiteral("a\u0001b\u007fc\u009fd") << QStringLiteral("abcd");
     QTest::newRow("bidi") << QStringLiteral("\u202Egpj.exe\u202C \u2066x\u2069 \u200Fy\u200E") << QStringLiteral("gpj.exe x y");
-    QTest::newRow("persian") << QStringLiteral("غروب آفتاب کنار دریاچه") << QStringLiteral("غروب آفتاب کنار دریاچه");
+    QTest::newRow("persian") << QStringLiteral("\u063a\u0631\u0648\u0628 \u0622\u0641\u062a\u0627\u0628 \u06a9\u0646\u0627\u0631 \u062f\u0631\u06cc\u0627\u0686\u0647") << QStringLiteral("\u063a\u0631\u0648\u0628 \u0622\u0641\u062a\u0627\u0628 \u06a9\u0646\u0627\u0631 \u062f\u0631\u06cc\u0627\u0686\u0647");
     QTest::newRow("zwj emoji kept") << QString::fromUtf8("👨\u200D👩\u200D👧 family") << QString::fromUtf8("👨\u200D👩\u200D👧 family");
     QTest::newRow("only spaces") << QStringLiteral(" \n\t ") << QString();
     QTest::newRow("long") << QString(400, QLatin1Char('a')) << QString(300, QLatin1Char('a'));
@@ -1340,7 +1340,7 @@ void TestLink22::captionToBBCodeTexts_data()
     QTest::newRow("quote") << QStringLiteral("https://a.b/\"x") << QStringLiteral("https://a.b/\"x");
     QTest::newRow("backslash") << QStringLiteral("a\\b \\[x") << QStringLiteral("a\\b \\\\[x");
     QTest::newRow("invisible") << QString::fromUtf8("[\u200BURL=x]") << QString::fromUtf8("\\[\u200BURL=x\\]");
-    QTest::newRow("persian") << QStringLiteral("سلام [دنیا]") << QStringLiteral("سلام \\[دنیا\\]");
+    QTest::newRow("persian") << QStringLiteral("\u0633\u0644\u0627\u0645 [\u062f\u0646\u06cc\u0627]") << QStringLiteral("\u0633\u0644\u0627\u0645 \\[\u062f\u0646\u06cc\u0627\\]");
     QTest::newRow("draft") << QStringLiteral("[draft] a[1]") << QStringLiteral("\\[draft\\] a\\[1\\]");
 }
 

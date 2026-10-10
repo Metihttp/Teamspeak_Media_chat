@@ -617,8 +617,8 @@ void TestAlbums::headerFromFragments_data()
     QTest::newRow("no time") << icon << QStringLiteral("\"TesterB\"") << href << QStringLiteral(": x") << true << "TesterB" << uid << 12;
     QTest::newRow("12 h time") << icon + QStringLiteral("<9:05:01 PM> ") << QStringLiteral("\"Ali: \"x\"\"") << QStringLiteral("client://3/abc=~Ali") << QStringLiteral(":")
                                << true << "Ali: \"x\"" << "abc=" << 25;
-    QTest::newRow("RTL nick") << icon + QStringLiteral("<21:14:05> ") << QStringLiteral("\"مهدی\"") << QStringLiteral("client://5/xyz=~x") << QStringLiteral(": سلام") << true
-                              << "مهدی" << "xyz=" << 20;
+    QTest::newRow("RTL nick") << icon + QStringLiteral("<21:14:05> ") << QStringLiteral("\"\u0645\u0647\u062f\u06cc\"") << QStringLiteral("client://5/xyz=~x") << QStringLiteral(": \u0633\u0644\u0627\u0645") << true
+                              << "\u0645\u0647\u062f\u06cc" << "xyz=" << 20;
     QTest::newRow("text in front") << QStringLiteral("hi ") << QStringLiteral("\"TesterB\"") << href << QStringLiteral(": x") << false << "" << "" << 0;
     QTest::newRow("no colon") << icon << QStringLiteral("\"TesterB\"") << href << QStringLiteral(" says") << false << "" << "" << 0;
     QTest::newRow("not a client link") << icon << QStringLiteral("\"TesterB\"") << QStringLiteral("https://x/~a") << QStringLiteral(": x") << false << "" << "" << 0;
@@ -792,7 +792,7 @@ void TestAlbums::composedAlbumIsOneMessage_data()
     QTest::newRow("5 photos, caption") << 5 << QStringLiteral("IMG_2041") << QStringLiteral("Road trip! day 2");
     QTest::newRow("10 photos, caption") << 10 << QStringLiteral("IMG_2041") << QString(300, QLatin1Char('x'));
     // The worst case S0 measured: 48-character Persian names.
-    QTest::newRow("10 long Persian names") << 10 << QString::fromUtf8("عکس_سفر_شمال_").repeated(4).left(48) << QStringLiteral("سفر");
+    QTest::newRow("10 long Persian names") << 10 << QString::fromUtf8("\u0639\u06a9\u0633_\u0633\u0641\u0631_\u0634\u0645\u0627\u0644_").repeated(4).left(48) << QStringLiteral("\u0633\u0641\u0631");
 }
 
 void TestAlbums::composedAlbumIsOneMessage()

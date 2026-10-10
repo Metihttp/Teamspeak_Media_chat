@@ -5,7 +5,7 @@ project(tsmedia VERSION 2.2.0 LANGUAGES CXX RC)
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
 # Shown in TeamSpeak's Addons list; scripts/build.ps1 reads it from here for the package's installer text.
-set(PLUGIN_DESCRIPTION "Discord-style images, GIFs, videos and files in the TeamSpeak chat. Drop or paste files into the chat; everyone with the plugin sees and plays them inline.")
+set(PLUGIN_DESCRIPTION "Discord-style images, GIFs, videos, albums, voice messages, replies, reactions and HD emoji in the TeamSpeak chat. Drop or paste files into the chat; everyone with the plugin sees and plays them inline.")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

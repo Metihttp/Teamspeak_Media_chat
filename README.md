@@ -21,7 +21,7 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat: a photo album shown as a grid under its caption, an inline video player, a voice message and reactions under a picture">
+  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat: a photo album shown as a grid under its caption with reactions, an inline video player, a voice message, and a reply with an emoji">
 </picture>
 
 **TS Media chat** is a plugin for the TeamSpeak 3 client on Windows. Drop a file on the chat, paste a screenshot or record a voice message, and everyone with the plugin sees it right in the chat.
@@ -97,7 +97,7 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/album-dark.png">
-  <img src="docs/images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat, shown as a grid under the sender's caption, with a row of reactions below it">
+  <img src="docs/images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat under the sender's caption, one of them covered as a spoiler, with a row of reactions below it; next to it an MP3 playing inline with its own reactions, a PDF file card, and a reply to the album">
 </picture>
 
 Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as…, Copy file and more, or drag it out into a folder ([right-click menu and shortcuts](docs/USAGE.md#right-click-menu)).
@@ -116,14 +116,19 @@ Use **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice` 
 - **Reply:** right-click a message → **Reply**, or press <kbd>Alt</kbd>+<kbd>↑</kbd> in the chat input (again for older messages). A bar above the input shows what you are replying to; <kbd>Enter</kbd> sends, <kbd>Esc</kbd> cancels.
 - With the plugin, a reply shows a small reply line above it; click it to jump to the original. Right-click the original → **View 2 replies** lists the answers.
 - Without the plugin (or on 2.1), people see an italic quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by the reply.
-- **HD emoji:** emoji and TeamSpeak's smileys show as sharp, colorful pictures, also in reply lines; a message of only emoji shows them large. Open the picker with the smiley at the right of the chat input or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
+- **HD emoji:** emoji and TeamSpeak's smileys in messages show as sharp, colorful pictures, and emoji in reply lines too; a message of only emoji shows them large. Open the picker with the smiley at the right of the chat input or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/replies-emoji-dark.png">
+  <img src="docs/images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat with HD emoji in the messages, two replies with a reply line above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input, and the emoji picker open above the input's emoji button with a search for heart">
+</picture>
 
 More in the user guide: [replies](docs/USAGE.md#replies) and [emoji](docs/USAGE.md#emoji).
 
 ## Settings
 
 <p align="center">
-  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates">
+  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates, showing the Sending tab">
 </p>
 
 Open them with **Plugins → TS Media chat → Settings…** or `/tsmedia settings`. Most changed:

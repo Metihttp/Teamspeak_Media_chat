@@ -128,7 +128,7 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/album-dark.png">
-  <img src="images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat, shown as a grid under the sender's caption, with a row of reactions below it">
+  <img src="images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat under the sender's caption, one of them covered as a spoiler, with a row of reactions below it; next to it an MP3 playing inline with its own reactions, a PDF file card, and a reply to the album">
 </picture>
 
 - Pictures, GIFs and videos sent as an album appear as one grid below the sender's line: 2 side by side, 3 as one large tile with two stacked, 4 as 2 × 2, 5 as 2 + 3, and 6 or more as 3 + 3 with *+N* on the sixth tile. In a narrow chat the grid has two columns and four tiles. It is as wide as your *Maximum preview size* and keeps its size while the pictures load.
@@ -156,7 +156,6 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - Pictures, GIFs, videos, albums, audio files and voice messages (spoilers too, which stay covered) can get reactions with any emoji, drawn as HD pictures.
 - Point at a picture without reactions and click the round button at its top right, or the **+** pill at the end of an existing row, or right-click → **Add reaction**. The quick row offers eight: 👍 ❤️ 😂 😮 😢 🔥 and your two most recent other emoji. Its **+** opens the [emoji picker](#emoji) for any other one; there, a pick adds or removes that reaction, and your reactions are marked. The quick row works with the keyboard too: arrows, <kbd>Home</kbd> / <kbd>End</kbd>, <kbd>1</kbd>–<kbd>8</kbd>, <kbd>+</kbd> for the picker, <kbd>Enter</kbd> or <kbd>Space</kbd>, <kbd>Esc</kbd>. The right-click menu's **Add reaction** lists the quick ones, your others and **More reactions…**.
 - The row under the media shows each reaction with its count, in the order they first appeared; yours are highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Sara and Reza*). Everyone can add up to 10 reactions to one item, and an item shows up to 20 different ones.
-- People on an older 2.2 build see only the six classic reactions (👍 ❤️ 😂 😮 😢 🔥).
 - Reactions go through TeamSpeak, never to the server's files: people with TS Media 2.2 or later who are online in the same channel or private chat see them right away. Someone who comes in later sees the reactions of the people who are still there. They aren't available in the server chat.
 - If a reaction can't be sent (not connected, TeamSpeak limiting messages, plugin commands blocked on the server), it is taken back and the tooltip says why.
 - Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions on media* (Privacy & updates) turns reactions off: none are shown or sent.
@@ -238,13 +237,18 @@ When TeamSpeak shows no menu of its own there, a small menu with the same items 
 
 ## Replies
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/replies-emoji-dark.png">
+  <img src="images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat with HD emoji in the messages, two replies with a reply line above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input, and the emoji picker open above the input's emoji button with a search for heart">
+</picture>
+
 Reply to any message in a channel, server or private chat, yours or someone else's, with or without the plugin on their side.
 
 - **Start a reply:** right-click the message and choose **Reply** (it's at the top of TeamSpeak's own chat menu, and of the menu of a picture or file). Or press <kbd>Alt</kbd>+<kbd>↑</kbd> in the chat input: that picks the newest message, and pressing it again goes further back (<kbd>Alt</kbd>+<kbd>↓</kbd> goes forward again). TeamSpeak's hotkey settings also offer *Reply to the last message in the current chat*.
 - A bar above the chat input says *Replying to Alice* with the start of her message. Click it to see that message again. Type your reply and press <kbd>Enter</kbd>. <kbd>Esc</kbd> or the **×** cancels it. TeamSpeak commands (`/…`) are sent as usual and don't end the reply. Switching to another chat tab hides the bar; it's back when you return.
 - **Files as a reply:** while the bar is shown, files you paste, drop or pick go out as the reply. The send window says *Replying to …*; its **×** sends them without the reply.
 - **What others see:** the reply starts with a quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by your text, so people without the plugin (and people on 2.1) can follow too: they see that italic line as text. With the plugin, the quote line becomes a small reply line above the message, with the author in their chat colour. Click it to scroll to the original message, which lights up for a moment. If the original isn't in the chat any more (an old message, another session), the line stays grey and its tooltip says so.
-- Emoji in the quoted text keep their place: the reply line, the bar and *View replies* show them as HD emoji, and people without the plugin see them in TeamSpeak's own way. A reply of nothing but emoji shows them large, like any message of only emoji.
+- Emoji in the quoted text keep their place: the reply line, the bar and *View replies* show them as HD emoji, and people without the plugin see them in TeamSpeak's own way. TeamSpeak's smileys (`:)`, `;)` …) stay text there for now. A reply of nothing but emoji shows them large, like any message of only emoji.
 - **View replies:** right-click a message that has replies and choose **View 3 replies** to see who answered and what; click a reply (or use the arrow keys and <kbd>Enter</kbd>) to go to it.
 - The time in a quote line uses the ratio sign (∶) instead of a colon, because TeamSpeak turns `:0` and `8)` into emoticons. A reply that would be longer than TeamSpeak's message limit quotes less of the original first; if your text alone is too long, it isn't sent and the input keeps it.
 

@@ -257,7 +257,7 @@ void TestCompose::captionEscapedAsShown_data()
     QTest::newRow("fake file") << QStringLiteral("[URL=ts3file://evil?serverUID=a&channel=1&filename=x.png]x[/URL]");
     QTest::newRow("noparse") << QStringLiteral("[noparse][URL=ts3file://x?channel=1&filename=y.png]y[/URL][/noparse]");
     QTest::newRow("brackets only") << QString(kCaptionMaxChars, QLatin1Char('['));
-    QTest::newRow("persian") << QStringLiteral("سلام [دنیا] :)");
+    QTest::newRow("persian") << QStringLiteral("\u0633\u0644\u0627\u0645 [\u062f\u0646\u06cc\u0627] :)");
     QTest::newRow("address") << QStringLiteral("see https://example.com/a?b=[c] and www.example.com");
 }
 
@@ -290,7 +290,7 @@ void TestCompose::captionGoesAloneOnlyWhenTooLong()
         for (const QChar ch : {QChar(QLatin1Char('a')), QChar(0x0633), QChar(QLatin1Char('['))}) {
             const QString caption = QString(length, ch);
             for (bool album : {false, true}) {
-                QVector<Item> items = {file(QStringLiteral("خیلی_طولانی_نام_فایل_برای_آزمایش.jpg"), 2516582), file(QStringLiteral("b.mp4"), 99999)};
+                QVector<Item> items = {file(QStringLiteral("\u062e\u06cc\u0644\u06cc_\u0637\u0648\u0644\u0627\u0646\u06cc_\u0646\u0627\u0645_\u0641\u0627\u06cc\u0644_\u0628\u0631\u0627\u06cc_\u0622\u0632\u0645\u0627\u06cc\u0634.jpg"), 2516582), file(QStringLiteral("b.mp4"), 99999)};
                 const bool    alone = compose::captionGoesAlone(caption, items, album, context);
                 const bool    inAlbum = album;
                 ComposeOptions options;

@@ -526,7 +526,7 @@ class TestVoice : public QObject
         QVERIFY(Settings::validVoiceMicrophone(QString(Settings::maxVoiceMicrophoneLength + 1, QLatin1Char('a'))).isEmpty());
         QCOMPARE(Settings::validVoiceMicrophone(QString(Settings::maxVoiceMicrophoneLength, QLatin1Char('a'))).size(), Settings::maxVoiceMicrophoneLength);
         QVERIFY(Settings::validVoiceMicrophone(QStringLiteral("mic\nx")).isEmpty());
-        QVERIFY(Settings::validVoiceMicrophone(QString::fromUtf8("میکروفون")).isEmpty());
+        QVERIFY(Settings::validVoiceMicrophone(QString::fromUtf8("\u0645\u06cc\u06a9\u0631\u0648\u0641\u0648\u0646")).isEmpty());
         const Settings defaults;
         QVERIFY(defaults.voiceMicrophone.isEmpty());
         QVERIFY(defaults.voiceMuteTeamSpeakMic);

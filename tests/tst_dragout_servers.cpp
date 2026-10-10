@@ -115,7 +115,7 @@ void TestDragOutServers::safeLocalFileName_data()
     QTest::newRow("double extension stays") << QStringLiteral("photo.jpg.exe") << QStringLiteral("photo.jpg.exe");
     QTest::newRow("empty") << QString() << QStringLiteral("file");
     QTest::newRow("only dots") << QStringLiteral("...") << QStringLiteral("file");
-    QTest::newRow("persian") << QStringLiteral("عکس تعطیلات.jpg") << QStringLiteral("عکس تعطیلات.jpg");
+    QTest::newRow("persian") << QStringLiteral("\u0639\u06a9\u0633 \u062a\u0639\u0637\u06cc\u0644\u0627\u062a.jpg") << QStringLiteral("\u0639\u06a9\u0633 \u062a\u0639\u0637\u06cc\u0644\u0627\u062a.jpg");
 }
 
 void TestDragOutServers::safeLocalFileName()

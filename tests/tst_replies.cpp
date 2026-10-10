@@ -151,7 +151,7 @@ class TestReplies : public QObject
         QTest::addColumn<QString>("text");
         QTest::addColumn<int>("minutes");
         QTest::newRow("plain") << QStringLiteral("Alice") << QStringLiteral("Hello world") << 21 * 60 + 14;
-        QTest::newRow("persian") << QStringLiteral("مهدی") << QStringLiteral("سلام، خوبی؟ این یک پیام است") << 9 * 60 + 3;
+        QTest::newRow("persian") << QStringLiteral("\u0645\u0647\u062f\u06cc") << QStringLiteral("\u0633\u0644\u0627\u0645\u060c \u062e\u0648\u0628\u06cc\u061f \u0627\u06cc\u0646 \u06cc\u06a9 \u067e\u06cc\u0627\u0645 \u0627\u0633\u062a") << 9 * 60 + 3;
         QTest::newRow("brackets") << QStringLiteral("[Admin] Bob]") << QStringLiteral("see [b]this[/b] and [URL=ts3file://x]y[/URL]") << 12 * 60;
         QTest::newRow("backslash") << QStringLiteral("back\\") << QStringLiteral("a\\[b] c\\") << 1;
         QTest::newRow("quotes") << QStringLiteral("\"Q\"") << QStringLiteral("he said “no” and left") << 600;
@@ -275,7 +275,7 @@ class TestReplies : public QObject
     void normalizing()
     {
         QCOMPARE(replies::normalized(QStringLiteral("Hello, World! :) 12")), QStringLiteral("helloworld12"));
-        QCOMPARE(replies::normalized(QStringLiteral("سلام، خوبی؟")), QStringLiteral("سلامخوبی"));
+        QCOMPARE(replies::normalized(QStringLiteral("\u0633\u0644\u0627\u0645\u060c \u062e\u0648\u0628\u06cc\u061f")), QStringLiteral("\u0633\u0644\u0627\u0645\u062e\u0648\u0628\u06cc"));
         replies::Quote q;
         q.nick    = QStringLiteral("A");
         q.snippet = QStringLiteral("Hello, World");

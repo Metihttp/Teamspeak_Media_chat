@@ -19,7 +19,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Audio files and voice messages play in the chat, with a seek bar; only one video or audio plays at a time.
 - Reactions with any emoji under pictures, GIFs, videos, albums, audio files and voice messages, seen by people with TS Media who are online in the same chat: a quick row of eight (👍 ❤️ 😂 😮 😢 🔥 and your two most recent others) and **+** for the emoji picker. Up to 10 per person and 20 different ones per item.
 - Replies: right-click a message → **Reply**, <kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>Alt</kbd>+<kbd>↓</kbd> in the chat input, or the *Reply to the last message in the current chat* hotkey. A bar above the chat input shows what you are replying to (<kbd>Enter</kbd> sends, <kbd>Esc</kbd> cancels), and files sent meanwhile go out as the reply. With the plugin, a reply shows a Discord-style reply line above it that jumps to the original, and the original gets **View N replies**; everyone else sees an italic quote line (*↪ Alice · 21∶14: “…”*) before the reply.
-- HD emoji: emoji and TeamSpeak's smileys show as sharp Windows 11 pictures in the chat, in reply lines, the reply bar and reactions; a message of only emoji (up to 27) shows them large. Point at one to see its name; copying keeps the emoji and smiley codes.
+- HD emoji: emoji and TeamSpeak's smileys show as sharp Windows 11 pictures in the chat, and emoji also in reply lines, the reply bar and reactions; a message of only emoji (up to 27) shows them large. Point at one to see its name; copying keeps the emoji and smiley codes.
 - Emoji picker: the smiley at the right end of the chat input, <kbd>Ctrl</kbd>+<kbd>E</kbd>, and the send window's caption field. About 1,600 emoji, search, recently used, skin tones and full keyboard use.
 - TeamSpeak's own chat menu gets **Reply**, **View N replies** and **Copy text** at the top, and on an HD emoji its name, **Copy emoji** and **Use in the chat input**.
 - **Settings → General → Emoji**: *Show emoji in high quality in the chat*, *Show messages of only emoji large* and *Show the emoji button in the chat input*.
@@ -50,6 +50,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 
 - A chat message TeamSpeak never confirmed counted as sent: now it is reported, and **Retry** posts it again without a second upload.
 - Seeking a video after it ended started it again by itself.
+- In TeamSpeak's dark chat, the text of TS Media chat's own lines (notices, warnings, `/tsmedia help`) was dark blue on dark grey and hard to read: now it is light. Light chats are unchanged.
 
 ## [2.1.0] - 2026-10-09
 

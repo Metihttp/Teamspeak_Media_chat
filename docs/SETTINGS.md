@@ -5,7 +5,7 @@
 Every option of TS Media chat, with its default and its range.
 
 <p align="center">
-  <img src="images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates">
+  <img src="images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates, showing the Sending tab">
 </p>
 
 Open the settings with **Plugins → TS Media chat → Settings…**, by typing `/tsmedia settings` in the chat, or with the plugin's Settings button in **Tools → Options → Addons**.
