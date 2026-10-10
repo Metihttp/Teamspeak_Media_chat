@@ -58,6 +58,8 @@ struct Message {
 
 // The chat messages among the newest maxBlocks blocks, in document order.
 QVector<Message> scan(QTextDocument* doc, int maxBlocks = kMaxBlocks);
+// The chat messages from block number firstBlock to the end (after edits that left earlier blocks alone).
+QVector<Message> scanFrom(QTextDocument* doc, int firstBlock);
 // One block; header-less blocks (TeamSpeak's status lines, plugin prints) give block < 0.
 Message parseBlock(const QTextBlock& block);
 
@@ -66,6 +68,9 @@ Message parseBlock(const QTextBlock& block);
 QString emoticonText(const QString& imageName);
 
 // ---- edits (the caller keeps ChatIntegration's "mutating" flag set) -------------------------------------
+// Several edits in a row belong in one edit block of the caller's (QTextCursor::beginEditBlock): the
+// chat is then laid out again once instead of once per edit. Layout queries (line heights, sizes) come
+// before that block: inside it the layout hasn't seen the edits yet.
 
 // Takes m's raw quote line out and puts our picture (name, logical size) and our line break at the start
 // of its block. False if m doesn't describe the document any more.

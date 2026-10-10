@@ -16,6 +16,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QRandomGenerator>
+#include <QScreen>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextBrowser>
@@ -27,6 +28,7 @@
 #include <QUrl>
 #include <QVariantAnimation>
 
+#include <algorithm>
 #include <functional>
 
 #include "chatintegration.h"
@@ -41,6 +43,7 @@ namespace {
 
 constexpr int   kRelayoutMs   = 120;
 constexpr int   kStyleCheckMs = 1000;
+constexpr int   kMaxRendered  = 48; // reply line pictures kept per chat before those far off screen go
 constexpr int   kWatchMs      = 300;
 constexpr int   kScrollMs     = 260;
 constexpr int   kFlashMs      = 1700;
@@ -174,6 +177,9 @@ ChatReplies::ChatReplies(ChatIntegration* chat, Core* core)
 {
     // Object names of this instance: a picture left over from an earlier one (a crash) never shares one.
     m_tag = QString::number(QRandomGenerator::global()->generate(), 16);
+    // A reply line off screen has this picture (a missing one would make Qt draw its "file" icon there).
+    m_blank = QPixmap(1, 1);
+    m_blank.fill(Qt::transparent);
 
     m_relayout = new QTimer(this);
     m_relayout->setSingleShot(true);
@@ -183,7 +189,7 @@ ChatReplies::ChatReplies(ChatIntegration* chat, Core* core)
         m_dirty.clear();
         for (QTextBrowser* browser : dirty) {
             if (m_views.contains(browser))
-                refreshLines(browser, false);
+                refreshLines(browser);
         }
     });
 
@@ -193,7 +199,7 @@ ChatReplies::ChatReplies(ChatIntegration* chat, Core* core)
     connect(m_styleCheck, &QTimer::timeout, this, [this] {
         for (auto it = m_views.begin(); it != m_views.end(); ++it) {
             QTextBrowser* browser = it.key();
-            if (!it->rendered.isEmpty() && browser->isVisible() && keyOf(styleOf(browser)) != it->styleKey)
+            if (!it->lines.isEmpty() && browser->isVisible() && keyOf(styleOf(browser)) != it->styleKey)
                 scheduleRelayout(browser); // redraws only what changed
         }
     });
@@ -225,8 +231,9 @@ ChatReplies::~ChatReplies()
     m_hasPending = false;
     if (m_bar)
         delete m_bar.data(); // leaves TeamSpeak's layout with it
+    m_composeLines.clear(); // a send window still open goes right after us (ChatIntegration deletes it)
 
-    // The chats stay with TeamSpeak: every quote line goes back where it was.
+    // The chats stay with TeamSpeak: every quote line goes back where it was (one edit per chat).
     const bool wasMutating = m_chat->m_mutating;
     m_chat->m_mutating     = true;
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
@@ -236,7 +243,9 @@ ChatReplies::~ChatReplies()
         const Anchor anchor = capture(browser);
         if (replydoc::restoreAll(browser->document()) > 0)
             restoreAnchor(browser, anchor);
-        for (auto name = it->rendered.constBegin(); name != it->rendered.constEnd(); ++name)
+        if (it->document != browser->document())
+            continue; // the pictures were in a document TeamSpeak replaced
+        for (auto name = it->lines.constBegin(); name != it->lines.constEnd(); ++name)
             browser->document()->addResource(QTextDocument::ImageResource, QUrl(name.key()), QPixmap()); // the pictures go too
     }
     m_chat->m_mutating = wasMutating;
@@ -268,8 +277,34 @@ ChatReplies::View* ChatReplies::viewOf(QTextBrowser* browser)
 
 void ChatReplies::index(View& view, QTextDocument* doc) const
 {
+    if (view.document != doc) {
+        // Another document (TeamSpeak swapped it): its pictures have to be added to it anew.
+        view.document = doc;
+        view.lines.clear();
+        view.rendered.clear();
+    }
     view.messages = replydoc::scan(doc);
+    link(view);
+}
+
+void ChatReplies::reindexFrom(View& view, QTextDocument* doc, int firstMessage) const
+{
+    // Blocks before the first edited message are as they were: only the rest is read again (a reply
+    // that came in at the end of a long chat costs a few blocks, not the whole chat).
+    if (view.document != doc || firstMessage < 0 || firstMessage >= view.messages.size()) {
+        index(view, doc);
+        return;
+    }
+    const int block = view.messages.at(firstMessage).block;
+    view.messages.resize(firstMessage);
+    view.messages += replydoc::scanFrom(doc, block);
+    link(view);
+}
+
+void ChatReplies::link(View& view) const
+{
     view.byBlock.clear();
+    view.byObject.clear();
     view.repliesTo.clear();
     view.originalOf = QVector<int>(view.messages.size(), -1);
     QVector<replies::Candidate> candidates;
@@ -277,6 +312,8 @@ void ChatReplies::index(View& view, QTextDocument* doc) const
     for (int i = 0; i < view.messages.size(); ++i) {
         const replydoc::Message& m = view.messages.at(i);
         view.byBlock.insert(m.block, i);
+        if (m.restyled)
+            view.byObject.insert(m.object, i);
         replies::Candidate c;
         c.uid     = m.uid;
         c.nick    = m.nick;
@@ -314,34 +351,49 @@ void ChatReplies::afterScan(QTextBrowser* browser)
     QTextDocument* doc  = browser->document();
     index(view, doc);
 
-    QVector<int> raw; // raw quote lines that become reply lines
+    // Raw quote lines that become reply lines. Their sizes first (that may lay blocks out), then all the
+    // edits as one: the chat is laid out again once, not once per reply (a reloaded history with 1000
+    // replies: 0.1 s instead of 1.4 s).
+    struct Collapse {
+        int     message;
+        QString name;
+        QSizeF  size;
+    };
+    QVector<Collapse> raw;
+    Style             style;
     for (int i = 0; i < view.messages.size(); ++i) {
         const replydoc::Message& m = view.messages.at(i);
-        if (m.hasQuote && !m.restyled && m.quoteStart >= 0)
-            raw.append(i);
+        if (!m.hasQuote || m.restyled || m.quoteStart < 0)
+            continue;
+        if (raw.isEmpty())
+            style = styleOf(browser);
+        const replyart::Header      header = headerFor(view, i);
+        const replyart::HeaderStyle hs     = headerStyle(browser, style, m);
+        raw.append({i, newObjectName(), QSizeF(replyart::headerSize(header, hs, style.maxWidth))});
     }
     if (!raw.isEmpty()) {
         const Anchor anchor      = capture(browser);
-        const Style  style       = styleOf(browser);
         const bool   wasMutating = m_chat->m_mutating;
         m_chat->m_mutating       = true;
+        int         first        = -1;
+        QTextCursor batch(doc);
+        batch.beginEditBlock();
         // Back to front: the edits of later messages don't move earlier ones.
         for (int k = raw.size() - 1; k >= 0; --k) {
-            const replydoc::Message&    m      = view.messages.at(raw.at(k));
-            const replyart::Header      header = headerFor(view, raw.at(k));
-            const replyart::HeaderStyle hs     = headerStyle(browser, style, m);
-            const QSize                 size   = replyart::headerSize(header, hs, style.maxWidth);
-            const QString               name   = newObjectName();
-            doc->addResource(QTextDocument::ImageResource, QUrl(name), QPixmap::fromImage(replyart::renderHeader(header, hs, size)));
-            if (replydoc::collapse(doc, m, name, QSizeF(size)))
-                view.rendered.insert(name, QString()); // drawn again below with its signature
+            const Collapse& c = raw.at(k);
+            // Drawn once it is on screen (renderVisible); until then a blank picture, never none.
+            doc->addResource(QTextDocument::ImageResource, QUrl(c.name), m_blank);
+            if (replydoc::collapse(doc, view.messages.at(c.message), c.name, c.size))
+                first = c.message;
         }
+        batch.endEditBlock(); // TeamSpeak's view hears of it (contentsChange) while we are still "mutating"
         m_chat->m_mutating = wasMutating;
-        index(view, doc);
+        if (first >= 0)
+            reindexFrom(view, doc, first);
         restoreAnchor(browser, anchor);
         m_chat->scheduleVisibilityUpdate();
     }
-    refreshLines(browser, !raw.isEmpty());
+    refreshLines(browser);
 }
 
 int ChatReplies::messageAt(QTextBrowser* browser, const QPoint& viewportPos)
@@ -367,7 +419,7 @@ int ChatReplies::messageAt(QTextBrowser* browser, const QPoint& viewportPos)
 int ChatReplies::lineAt(QTextBrowser* browser, const QPoint& viewportPos, QRectF* rect)
 {
     View* view = viewOf(browser);
-    if (!view || view->rendered.isEmpty())
+    if (!view || view->lines.isEmpty())
         return -1;
     QTextDocument* doc = browser->document();
     const QPointF  docPos(viewportPos.x() + browser->horizontalScrollBar()->value(), viewportPos.y() + browser->verticalScrollBar()->value());
@@ -488,56 +540,142 @@ QString ChatReplies::newObjectName()
     return replydoc::objectPrefix() + m_tag + QLatin1Char('.') + QString::number(++m_nextObject);
 }
 
-void ChatReplies::refreshLines(QTextBrowser* browser, bool force)
+QString ChatReplies::signatureOf(const Line& line)
+{
+    const replyart::Header&      h  = line.header;
+    const replyart::HeaderStyle& hs = line.style;
+    return QStringList{h.nick, h.snippet, QString::number(h.media), QString::number(h.found), h.nickColor.name(), QString::number(line.size.width()),
+                       QString::number(line.size.height()), QString::number(hs.dpr), QString::number(hs.dark), hs.base.name(), QString::number(hs.hovered),
+                       QString::number(hs.pressed), hs.font.toString()}
+        .join(QLatin1Char('|'));
+}
+
+void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
 {
     View* view = viewOf(browser);
     if (!view)
         return;
-    QTextDocument* doc     = browser->document();
-    const Style    style   = styleOf(browser);
-    view->styleKey         = keyOf(style);
-    bool           resized = false;
-    Anchor         anchor;
-    QSet<QString>  present;
+    QTextDocument* doc   = browser->document();
+    const Style    style = styleOf(browser);
+    if (!only)
+        view->styleKey = keyOf(style);
+    struct Resize {
+        int    message;
+        QSizeF size;
+    };
+    QVector<Resize> resizes;
+    QSet<QString>   present;
     for (int i = 0; i < view->messages.size(); ++i) {
         const replydoc::Message& m = view->messages.at(i);
-        if (!m.restyled)
+        if (!m.restyled || (only && !only->contains(m.object)))
             continue;
         present.insert(m.object);
-        const replyart::Header      header = headerFor(*view, i);
-        const replyart::HeaderStyle hs     = headerStyle(browser, style, m);
-        const QSize                 size   = replyart::headerSize(header, hs, style.maxWidth);
-        const QString signature = QStringList{header.nick, header.snippet, QString::number(header.media), QString::number(header.found), header.nickColor.name(),
-                                              QString::number(size.width()), QString::number(size.height()), QString::number(hs.dpr), QString::number(hs.dark),
-                                              hs.base.name(), QString::number(hs.hovered), QString::number(hs.pressed), hs.font.toString()}
-                                      .join(QLatin1Char('|'));
-        if (!force && view->rendered.value(m.object) == signature)
-            continue;
-        doc->addResource(QTextDocument::ImageResource, QUrl(m.object), QPixmap::fromImage(replyart::renderHeader(header, hs, size)));
-        view->rendered.insert(m.object, signature);
-        if (QSizeF(size) != m.objectSize) {
-            if (!resized)
-                anchor = capture(browser);
-            const bool wasMutating = m_chat->m_mutating;
-            m_chat->m_mutating     = true;
-            replydoc::resizeObject(doc, m.position, QSizeF(size));
-            m_chat->m_mutating = wasMutating;
-            resized            = true;
+        Line line;
+        line.header    = headerFor(*view, i);
+        line.style     = headerStyle(browser, style, m);
+        line.size      = replyart::headerSize(line.header, line.style, style.maxWidth);
+        line.signature = signatureOf(line);
+        if (QSizeF(line.size) != m.objectSize)
+            resizes.append({i, QSizeF(line.size)});
+        if (!view->lines.contains(m.object) && !view->rendered.contains(m.object))
+            doc->addResource(QTextDocument::ImageResource, QUrl(m.object), m_blank); // one we see for the first time (another document)
+        view->lines.insert(m.object, line);
+    }
+    if (!only) {
+        // Reply lines that went (TeamSpeak cleared or reloaded the chat): their pictures go with them.
+        for (auto it = view->lines.begin(); it != view->lines.end();) {
+            if (present.contains(it.key())) {
+                ++it;
+                continue;
+            }
+            doc->addResource(QTextDocument::ImageResource, QUrl(it.key()), QPixmap());
+            view->rendered.remove(it.key());
+            it = view->lines.erase(it);
         }
     }
-    for (auto it = view->rendered.begin(); it != view->rendered.end();) {
-        if (present.contains(it.key())) {
+    if (!resizes.isEmpty()) {
+        // A new width or font: every line that changed size, in one edit (laid out again once).
+        const Anchor anchor      = capture(browser);
+        const bool   wasMutating = m_chat->m_mutating;
+        m_chat->m_mutating       = true;
+        QTextCursor batch(doc);
+        batch.beginEditBlock();
+        for (const Resize& r : qAsConst(resizes)) {
+            replydoc::Message& m = view->messages[r.message];
+            replydoc::resizeObject(doc, m.position, r.size);
+            m.objectSize = r.size; // a format change: no position moved
+        }
+        batch.endEditBlock();
+        m_chat->m_mutating = wasMutating;
+        restoreAnchor(browser, anchor);
+    }
+    renderVisible(browser, *view);
+    if (!only)
+        evict(browser, *view);
+    browser->viewport()->update();
+}
+
+// The document positions from the first block the viewport shows (margin: that many viewport heights
+// more above and below) to the last one.
+QPair<int, int> ChatReplies::positionsShown(QTextBrowser* browser, qreal margin) const
+{
+    QTextDocument*               doc    = browser->document();
+    QAbstractTextDocumentLayout* layout = doc->documentLayout();
+    const qreal                  y      = browser->verticalScrollBar()->value();
+    const qreal                  height = browser->viewport()->height();
+    int                          from   = layout->hitTest(QPointF(0, qMax(0.0, y - margin * height)), Qt::FuzzyHit);
+    int                          to     = layout->hitTest(QPointF(browser->viewport()->width(), y + height + margin * height), Qt::FuzzyHit);
+    from                                = from < 0 ? 0 : doc->findBlock(from).position();
+    if (to < 0)
+        to = doc->characterCount();
+    return {from, to};
+}
+
+// Called right before the chat paints (and after every refresh): the reply lines on screen get their
+// pictures, the others keep a blank one. A few lines are drawn at a time, so this stays cheap.
+void ChatReplies::renderVisible(QTextBrowser* browser, View& view)
+{
+    if (view.lines.isEmpty() || view.messages.isEmpty() || view.document != browser->document())
+        return;
+    QTextDocument*        doc   = browser->document();
+    const QPair<int, int> shown = positionsShown(browser, 0.0);
+    auto it = std::lower_bound(view.messages.cbegin(), view.messages.cend(), shown.first, [](const replydoc::Message& m, int position) { return m.position < position; });
+    bool drew = false;
+    for (; it != view.messages.cend() && it->position <= shown.second; ++it) {
+        if (!it->restyled)
+            continue;
+        const auto line = view.lines.constFind(it->object);
+        if (line == view.lines.cend())
+            continue;
+        const auto now = view.rendered.constFind(it->object);
+        if (now != view.rendered.cend() && *now == line->signature)
+            continue;
+        doc->addResource(QTextDocument::ImageResource, QUrl(it->object), QPixmap::fromImage(replyart::renderHeader(line->header, line->style, line->size)));
+        view.rendered.insert(it->object, line->signature);
+        drew = true;
+    }
+    if (drew && view.rendered.size() > kMaxRendered)
+        evict(browser, view);
+}
+
+// Pictures of reply lines more than a screen away go back to the blank one (memory stays bounded however
+// long the chat and however far it was scrolled).
+void ChatReplies::evict(QTextBrowser* browser, View& view)
+{
+    if (view.rendered.isEmpty() || view.document != browser->document())
+        return;
+    QTextDocument*        doc  = browser->document();
+    const QPair<int, int> keep = positionsShown(browser, 1.0);
+    for (auto it = view.rendered.begin(); it != view.rendered.end();) {
+        const int  message = view.byObject.value(it.key(), -1);
+        const bool near    = message >= 0 && view.messages.at(message).position >= keep.first && view.messages.at(message).position <= keep.second;
+        if (near) {
             ++it;
             continue;
         }
-        doc->addResource(QTextDocument::ImageResource, QUrl(it.key()), QPixmap()); // its picture goes with it
-        it = view->rendered.erase(it);
+        doc->addResource(QTextDocument::ImageResource, QUrl(it.key()), m_blank);
+        it = view.rendered.erase(it);
     }
-    if (resized) {
-        index(*view, doc);
-        restoreAnchor(browser, anchor);
-    }
-    browser->viewport()->update();
 }
 
 void ChatReplies::scheduleRelayout(QTextBrowser* browser)
@@ -551,13 +689,19 @@ void ChatReplies::setHover(QTextBrowser* browser, const QString& object)
 {
     if (browser == m_hoverIn && object == m_hoverObject)
         return;
-    const QPointer<QTextBrowser> left = m_hoverIn;
-    m_hoverIn                         = object.isEmpty() ? nullptr : browser;
-    m_hoverObject                     = object;
-    if (left && left != browser)
-        refreshLines(left, false);
-    if (browser)
-        refreshLines(browser, false);
+    const QPointer<QTextBrowser> left       = m_hoverIn;
+    const QString                leftObject = m_hoverObject;
+    m_hoverIn                               = object.isEmpty() ? nullptr : browser;
+    m_hoverObject                           = object;
+    // Only the two lines whose look changed (a long chat has hundreds of reply lines).
+    if (left && !leftObject.isEmpty()) {
+        const QSet<QString> one{leftObject};
+        refreshLines(left, &one);
+    }
+    if (browser && !object.isEmpty()) {
+        const QSet<QString> one{object};
+        refreshLines(browser, &one);
+    }
 }
 
 ChatReplies::Anchor ChatReplies::capture(QTextBrowser* browser) const
@@ -606,7 +750,8 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
         placeOverlayBar();
         return false;
     }
-    switch (type) { // the viewport events below; everything else (paint, ...) passes untouched
+    switch (type) { // the viewport events below; everything else passes untouched
+    case QEvent::Paint:
     case QEvent::Resize:
     case QEvent::PaletteChange:
     case QEvent::StyleChange:
@@ -627,6 +772,13 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
         return false;
 
     switch (type) {
+    case QEvent::Paint:
+        // Before the chat paints: the reply lines it is about to show get their pictures (scrolling,
+        // a resize, a new message: whatever brought them on screen). Cheap when nothing is missing.
+        if (View* view = viewOf(browser))
+            renderVisible(browser, *view);
+        return false;
+
     case QEvent::Resize:
     case QEvent::PaletteChange:
     case QEvent::StyleChange:
@@ -669,7 +821,8 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
             return false;
         m_pressIn     = browser;
         m_pressObject = viewOf(browser)->messages.at(message).object;
-        refreshLines(browser, false);
+        const QSet<QString> one{m_pressObject};
+        refreshLines(browser, &one);
         return true; // no text selection from a reply line
     }
 
@@ -677,11 +830,15 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() != Qt::LeftButton || m_pressObject.isEmpty())
             return false;
-        const QString pressed = m_pressObject;
-        const bool    same    = m_pressIn == browser;
+        const QString                pressed   = m_pressObject;
+        const QPointer<QTextBrowser> pressedIn = m_pressIn;
+        const bool                   same      = m_pressIn == browser;
         m_pressObject.clear();
         m_pressIn = nullptr;
-        refreshLines(browser, false);
+        if (pressedIn) {
+            const QSet<QString> one{pressed};
+            refreshLines(pressedIn, &one);
+        }
         const int message = lineAt(browser, me->pos(), nullptr);
         if (same && message >= 0 && viewOf(browser)->messages.at(message).object == pressed)
             activateLine(browser, message);
@@ -736,12 +893,21 @@ void ChatReplies::prepareMenu(QTextBrowser* browser, const QPoint& pos, const QP
     m_menu.block     = viewOf(browser)->messages.at(message).block;
     m_menu.globalPos = globalPos;
     arm();
-    // Posted: it runs once TeamSpeak's handler returned (or inside its menu's own event loop, after the
-    // menu was caught). Without any menu at all, ours shows.
-    QTimer::singleShot(0, this, [this] {
-        disarm();
-        if (!m_menu.handled && m_menu.browser && m_menu.block >= 0 && !QApplication::activePopupWidget())
-            showFallbackMenu();
+    // Posted twice: the check runs once TeamSpeak's handler returned and once whatever that handler
+    // posted ran too (a menu opened from a queued call is caught as well, instead of ours showing next to
+    // it). With exec() both run inside its menu's own event loop, after the menu was caught. Only when no
+    // menu showed at all does ours. A newer right-click makes these checks void.
+    const quint32 serial = ++m_menuSerial;
+    QTimer::singleShot(0, this, [this, serial] {
+        if (serial != m_menuSerial)
+            return;
+        QTimer::singleShot(0, this, [this, serial] {
+            if (serial != m_menuSerial)
+                return;
+            disarm();
+            if (!m_menu.handled && m_menu.browser && m_menu.block >= 0 && !QApplication::activePopupWidget())
+                showFallbackMenu();
+        });
     });
 }
 
@@ -770,7 +936,9 @@ void ChatReplies::inject(QMenu* menu)
     const QList<QAction*> ours  = actionsFor(menu, m_menu.browser, m_menu.block, m_menu.globalPos);
     if (ours.isEmpty())
         return;
-    QAction* first = menu->actions().value(0, nullptr);
+    // Caught at Show: a menu TeamSpeak keeps and shows again, placed for its old size already.
+    const bool shown = menu->isVisible();
+    QAction*   first = menu->actions().value(0, nullptr);
     menu->insertActions(first, ours);
     for (QAction* action : ours)
         m_injected.append(action);
@@ -780,14 +948,36 @@ void ChatReplies::inject(QMenu* menu)
         menu->insertAction(first, separator);
         m_injected.append(separator);
     }
-    // A menu TeamSpeak keeps for the next time gets them anew then. Later: the trigger comes after the hide.
-    connect(menu, &QMenu::aboutToHide, this, [this] {
-        for (const QPointer<QAction>& action : qAsConst(m_injected)) {
-            if (action)
-                action->deleteLater();
+    // A menu TeamSpeak keeps for the next time gets them anew then. Unique: such a menu (the client menu
+    // a nickname's right-click may show) collects no connection per right-click.
+    connect(menu, &QMenu::aboutToHide, this, &ChatReplies::dropInjected, Qt::UniqueConnection);
+    if (shown) {
+        // A visible menu grows downwards by our items (QMenu resizes itself): near the bottom of the
+        // screen it would reach past it. Moved up as far as needed.
+        const QScreen* screen = QGuiApplication::screenAt(menu->geometry().center());
+        if (!screen)
+            screen = menu->screen();
+        if (screen) {
+            const QRect area = screen->availableGeometry();
+            QRect       g    = menu->geometry();
+            if (g.bottom() > area.bottom())
+                g.moveBottom(area.bottom());
+            if (g.top() < area.top())
+                g.moveTop(area.top());
+            if (g.topLeft() != menu->geometry().topLeft())
+                menu->move(g.topLeft());
         }
-        m_injected.clear();
-    });
+    }
+}
+
+void ChatReplies::dropInjected()
+{
+    // Later, not now: an item's trigger comes after its menu hid.
+    for (const QPointer<QAction>& action : qAsConst(m_injected)) {
+        if (action)
+            action->deleteLater();
+    }
+    m_injected.clear();
 }
 
 QList<QAction*> ChatReplies::actionsFor(QMenu* menu, QTextBrowser* browser, int block, const QPoint& globalPos)
@@ -951,6 +1141,7 @@ void ChatReplies::startReply(QTextBrowser* browser, int block, bool show)
     pending.snippet             = pending.media ? m.mediaLabel : replies::makeSnippet(m.text, 160);
     m_pending                   = pending;
     m_hasPending                = true;
+    updateComposeLines();
 
     QWidget* input = inputFor(browser);
     if (input) {
@@ -969,6 +1160,7 @@ void ChatReplies::cancelReply()
     m_hasPending   = false;
     m_pending      = Pending();
     m_watch->stop();
+    updateComposeLines();
     if (had)
         hideBar();
 }
@@ -991,6 +1183,8 @@ void ChatReplies::watchPending()
         showBar(input);
     else if (!shown && m_bar && !m_bar->isHidden())
         hideBar();
+    else if (shown && m_bar)
+        applyBarTheme(input); // TeamSpeak's theme switched meanwhile (a no-op otherwise)
 }
 
 bool ChatReplies::barShownFor(QWidget* input) const
@@ -1064,16 +1258,23 @@ void ChatReplies::placeOverlayBar()
     m_bar->raise();
 }
 
-void ChatReplies::showBar(QWidget* input)
+void ChatReplies::applyBarTheme(QWidget* input)
 {
-    if (!input || !m_hasPending)
+    if (!m_bar || !input)
         return;
-    attachBar(input);
     const Style style = m_pending.browser ? styleOf(m_pending.browser) : Style();
     QColor      base  = input->palette().color(QPalette::Base);
     if (style.dark != (base.lightness() < 128))
         base = style.base;
     m_bar->setTheme(style.dark, base, style.font);
+}
+
+void ChatReplies::showBar(QWidget* input)
+{
+    if (!input || !m_hasPending)
+        return;
+    attachBar(input);
+    applyBarTheme(input);
     m_bar->setReply(m_pending.original.nick, m_pending.nickColor, m_pending.snippet, m_pending.media);
     QTextBrowser* chat   = m_pending.browser;
     const bool    bottom = chat && ChatIntegration::atBottom(chat);
@@ -1269,7 +1470,28 @@ QWidget* ChatReplies::composeLine(QWidget* parent, const ChatTarget& target)
         return nullptr;
     auto* line = new ComposeReplyLine(m_pending.original.nick, m_pending.snippet, m_pending.media, parent);
     connect(line, &ComposeReplyLine::dropped, this, [this] { cancelReply(); });
+    for (int i = m_composeLines.size() - 1; i >= 0; --i) {
+        if (!m_composeLines.at(i).line)
+            m_composeLines.remove(i); // closed windows' lines
+    }
+    m_composeLines.append({line, target});
     return line;
+}
+
+// The send window says what its files go out as: when the reply changes (the hotkey while it is open) or
+// ends (sent, canceled, disconnected), its line follows, so it never shows a reply that isn't sent.
+void ChatReplies::updateComposeLines()
+{
+    for (int i = m_composeLines.size() - 1; i >= 0; --i) {
+        const ComposeLine& compose = m_composeLines.at(i);
+        if (compose.line && m_hasPending && sameChat(m_pending.target, compose.target)) {
+            compose.line->setReply(m_pending.original.nick, m_pending.snippet, m_pending.media);
+            continue;
+        }
+        if (compose.line)
+            compose.line->deleteLater(); // the window lays itself out again
+        m_composeLines.remove(i);
+    }
 }
 
 QString ChatReplies::leadFor(const ChatTarget& target) const

@@ -59,6 +59,8 @@ class ComposeReplyLine : public QWidget
   public:
     ComposeReplyLine(const QString& nick, const QString& snippet, bool media, QWidget* parent);
 
+    // Another message is being replied to now (the reply hotkey while the window is open).
+    void  setReply(const QString& nick, const QString& snippet, bool media);
     QSize sizeHint() const override;
 
   signals:

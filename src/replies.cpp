@@ -111,6 +111,15 @@ QString visibleText(const QString& text)
     return withoutInvisible(text);
 }
 
+QString leftChars(const QString& text, int max)
+{
+    if (max <= 0)
+        return {};
+    if (text.size() <= max)
+        return text;
+    return text.left(text.at(max - 1).isHighSurrogate() ? max - 1 : max);
+}
+
 QString timeColon()
 {
     return QString(kRatio);
@@ -137,7 +146,7 @@ QString makeSnippet(const QString& source, int maxChars)
     if (maxChars <= 0)
         return {};
     static const QRegularExpression url(QStringLiteral("(?:\\b[A-Za-z][A-Za-z0-9+.\\-]{1,15}://|\\bwww\\.)\\S+"));
-    QString text = withoutInvisible(source.left(kMaxBodyChars));
+    QString text = withoutInvisible(leftChars(source, kMaxBodyChars));
     text.replace(url, QStringLiteral("(link)"));
     text = sanitizeCaption(text); // one line, no controls or bidi marks, whitespace collapsed
     if (text.size() <= maxChars)
@@ -290,7 +299,7 @@ Quote parseQuote(const QVector<Run>& runs)
             return {};
         quote.minutes = hours * 60 + minutes;
     }
-    QString snippet = withoutInvisible(m.captured(3)).trimmed().left(kMaxSnippet);
+    QString snippet = leftChars(withoutInvisible(m.captured(3)).trimmed(), kMaxSnippet); // a giant emoji run: never half of one
     if (snippet.startsWith(clip())) {
         quote.media = true;
         snippet     = snippet.mid(clip().size()).trimmed();
@@ -325,7 +334,7 @@ Quote parseQuoteBBCode(const QString& raw)
 
 QString normalized(const QString& text)
 {
-    const QVector<uint> codes = text.left(kMaxBodyChars).toUcs4();
+    const QVector<uint> codes = leftChars(text, kMaxBodyChars).toUcs4();
     QVector<uint>       kept;
     kept.reserve(codes.size());
     for (const uint code : codes) {

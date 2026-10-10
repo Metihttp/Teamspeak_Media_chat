@@ -327,7 +327,7 @@ Message parseBlock(const QTextBlock& block)
             for (int j = i + 1; j < pieces.size() && pieces.at(j).start == pieces.at(j - 1).end && pieces.at(j).format.anchorHref() == p.format.anchorHref(); ++j)
                 label += pieces.at(j).text;
             label.remove(QChar(0x2060));
-            m.mediaLabel = label.trimmed().left(replies::kMaxNickChars * 4);
+            m.mediaLabel = replies::leftChars(label.trimmed(), replies::kMaxNickChars * 4);
             break;
         }
         QString part = p.text.mid(qMax(0, m.textStart - p.start));
@@ -339,16 +339,23 @@ Message parseBlock(const QTextBlock& block)
         if (body.size() > replies::kMaxBodyChars)
             break;
     }
-    m.text = body.left(replies::kMaxBodyChars).trimmed();
+    m.text = replies::leftChars(body, replies::kMaxBodyChars).trimmed();
     return m;
 }
 
 QVector<Message> scan(QTextDocument* doc, int maxBlocks)
 {
+    if (!doc)
+        return {};
+    return scanFrom(doc, qMax(0, doc->blockCount() - qMax(1, maxBlocks)));
+}
+
+QVector<Message> scanFrom(QTextDocument* doc, int firstBlock)
+{
     QVector<Message> out;
     if (!doc)
         return out;
-    for (QTextBlock b = doc->findBlockByNumber(qMax(0, doc->blockCount() - qMax(1, maxBlocks))); b.isValid(); b = b.next()) {
+    for (QTextBlock b = doc->findBlockByNumber(qMax(0, firstBlock)); b.isValid(); b = b.next()) {
         Message m = parseBlock(b);
         if (m.block >= 0)
             out.append(m);
@@ -455,7 +462,11 @@ int restoreAll(QTextDocument* doc)
     if (!doc)
         return 0;
     const QVector<int> objects = objectPositions(doc);
-    int                done    = 0;
+    // One edit for all of them: the chat is laid out again once, not once per reply line (1000 reply
+    // lines: 1.4 s one by one, 0.1 s together), and TeamSpeak's view gets one contentsChange.
+    QTextCursor batch(doc);
+    batch.beginEditBlock();
+    int done = 0;
     for (int i = objects.size() - 1; i >= 0; --i)
         done += restore(doc, objects.at(i)) ? 1 : 0;
     // Line breaks of ours whose picture went some other way.
@@ -482,6 +493,7 @@ int restoreAll(QTextDocument* doc)
         c.endEditBlock();
         done += orphans.size();
     }
+    batch.endEditBlock();
     return done;
 }
 

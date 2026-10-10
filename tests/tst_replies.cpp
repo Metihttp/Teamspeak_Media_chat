@@ -1,7 +1,8 @@
-// Unit tests for 2.2 replies: the quote line format and its parser (round trips, hostile input), snippets,
-// matching a reply to its original, TeamSpeak-like chat documents (reading, turning quote lines into
-// reply lines and back, the line height), the reply line's drawing sizes and colours, and the quote line
-// in front of a caption when files are sent as a reply.
+// Unit tests for 2.2 replies: the quote line format and its parser (round trips, hostile input, giant
+// emoji runs), snippets, matching a reply to its original, TeamSpeak-like chat documents (reading,
+// turning quote lines into reply lines and back, the line height, 1000 of them in one edit and reading
+// only the edited tail again), the reply line's drawing sizes and colours, and the quote line in front of
+// a caption when files are sent as a reply.
 
 #include <QAbstractTextDocumentLayout>
 #include <QElapsedTimer>
@@ -517,6 +518,109 @@ class TestReplies : public QObject
         QCOMPARE(messages.last().text, QStringLiteral("message 5199"));
         qInfo("scan of the newest %d of 5200 messages: %lld ms", replydoc::kMaxBlocks, static_cast<long long>(timer.elapsed()));
         QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
+    }
+
+    // A reloaded history full of replies: every quote line becomes a reply line in one edit, only the
+    // blocks from the first edited one are read again, and unloading gives them all back in one edit.
+    // One edit per reply line laid the whole chat out again each time: 1000 lines took 1.4 s each way.
+    void manyRepliesInOneEdit()
+    {
+        QTextDocument doc;
+        QString       html;
+        html.reserve(4000 * 400);
+        const QString text = QStringLiteral("Anyone up for a match tonight? I'm thinking around nine, the usual server, bring snacks %1");
+        for (int i = 0; i < 4000; ++i) {
+            const int     minute = (i / 10) % 60;
+            const QString time   = QStringLiteral("10:%1:00").arg(minute, 2, 10, QLatin1Char('0'));
+            if (i % 4 == 3) {
+                html += messageHtml(time, 3, kUidAlice, QStringLiteral("Alice"),
+                                    quoteHtml(QStringLiteral("Bob"), 3, kUidBob, replies::formatTime(10 * 60 + minute), replies::makeSnippet(text.arg(i - 1)))
+                                        + QStringLiteral("<br>reply %1").arg(i));
+            } else {
+                html += messageHtml(time, 3, kUidBob, QStringLiteral("Bob"), text.arg(i));
+            }
+        }
+        doc.setHtml(html);
+        doc.setTextWidth(800);
+        doc.documentLayout()->documentSize();
+        const QString                    before   = doc.toPlainText();
+        const QVector<replydoc::Message> messages = replydoc::scan(&doc);
+
+        QElapsedTimer timer;
+        timer.start();
+        int         collapsed = 0;
+        int         first     = -1;
+        QTextCursor batch(&doc);
+        batch.beginEditBlock();
+        for (int i = messages.size() - 1; i >= 0; --i) {
+            if (messages.at(i).hasQuote && replydoc::collapse(&doc, messages.at(i), replydoc::objectPrefix() + QString::number(i), QSizeF(600, 14))) {
+                ++collapsed;
+                first = i;
+            }
+        }
+        batch.endEditBlock();
+        doc.documentLayout()->documentSize();
+        const qint64 collapseMs = timer.restart();
+        QCOMPARE(collapsed, 1000);
+
+        // The messages before the first edit as they were, the rest read again: the same as reading it all.
+        QVector<replydoc::Message> partial = messages.mid(0, first);
+        partial += replydoc::scanFrom(&doc, messages.at(first).block);
+        const QVector<replydoc::Message> all = replydoc::scan(&doc);
+        QCOMPARE(partial.size(), all.size());
+        for (int i = 0; i < all.size(); ++i) {
+            QCOMPARE(partial.at(i).block, all.at(i).block);
+            QCOMPARE(partial.at(i).position, all.at(i).position);
+            QCOMPARE(partial.at(i).restyled, all.at(i).restyled);
+            QCOMPARE(partial.at(i).object, all.at(i).object);
+            QCOMPARE(partial.at(i).text, all.at(i).text);
+            QCOMPARE(partial.at(i).quote.snippet, all.at(i).quote.snippet);
+        }
+
+        timer.restart();
+        QCOMPARE(replydoc::restoreAll(&doc), 1000);
+        doc.documentLayout()->documentSize();
+        const qint64 restoreMs = timer.elapsed();
+        QCOMPARE(doc.toPlainText(), before);
+        QVERIFY(replydoc::objectPositions(&doc).isEmpty());
+        qInfo("1000 reply lines in a 4000-message chat: collapsed in %lld ms, given back in %lld ms", static_cast<long long>(collapseMs),
+              static_cast<long long>(restoreMs));
+        QVERIFY2(collapseMs < 700, qPrintable(QString::number(collapseMs)));
+        QVERIFY2(restoreMs < 700, qPrintable(QString::number(restoreMs)));
+    }
+
+    void giantEmojiRuns()
+    {
+        QCOMPARE(replies::leftChars(QStringLiteral("a😀"), 2), QStringLiteral("a"));
+        QCOMPARE(replies::leftChars(QStringLiteral("a😀"), 3), QStringLiteral("a😀"));
+        QCOMPARE(replies::leftChars(QStringLiteral("abc"), 0), QString());
+        QString emoji;
+        for (int i = 0; i < 250; ++i)
+            emoji += QStringLiteral("😀");
+        // A quoted snippet that is a long run of emoji is cut short, never inside one (a lone surrogate
+        // would be drawn as a box).
+        const replies::Quote q = replies::parseQuoteBBCode(arrow() + QStringLiteral(" Alice · 21∶14: “x") + emoji + QStringLiteral("”"));
+        QVERIFY(q.valid());
+        QVERIFY(q.snippet.size() <= replies::kMaxSnippet);
+        QVERIFY(!q.snippet.at(q.snippet.size() - 1).isHighSurrogate());
+        // A file label like that in the chat, too.
+        QTextDocument doc;
+        doc.setHtml(messageHtml(QStringLiteral("11:00:00"), 3, kUidAlice, QStringLiteral("Alice"),
+                                QStringLiteral("<a href=\"%1\">x%2</a>").arg(photo().toUrl().toHtmlEscaped(), emoji)));
+        const QVector<replydoc::Message> messages = replydoc::scan(&doc);
+        QCOMPARE(messages.size(), 1);
+        const QString label = messages.first().mediaLabel;
+        QVERIFY(!label.isEmpty() && label.size() <= replies::kMaxNickChars * 4);
+        QVERIFY(!label.at(label.size() - 1).isHighSurrogate());
+        // The reply line stays within its width whatever it is given.
+        replyart::Header header;
+        header.nick    = QStringLiteral("x") + emoji.left(60);
+        header.snippet = q.snippet;
+        replyart::HeaderStyle style;
+        style.font.setPixelSize(13);
+        const QSize size = replyart::headerSize(header, style, 400);
+        QVERIFY(size.width() <= 400);
+        QVERIFY(!replyart::renderHeader(header, style, size).isNull());
     }
 
     // ---- the reply line's drawing ---------------------------------------------------------------------------

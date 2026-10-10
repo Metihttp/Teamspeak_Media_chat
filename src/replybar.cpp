@@ -93,9 +93,12 @@ void ReplyBar::setReply(const QString& nick, const QColor& nickColor, const QStr
 
 void ReplyBar::setTheme(bool dark, const QColor& base, const QFont& font)
 {
+    const QFont scaled = replyart::scaledFont(font, 0.92);
+    if (dark == m_dark && base == m_base && scaled == this->font())
+        return; // checked while the bar shows: nothing to lay out again
     m_dark = dark;
     m_base = base;
-    setFont(replyart::scaledFont(font, 0.92));
+    setFont(scaled);
     updateGeometry();
     update();
 }
@@ -240,6 +243,15 @@ ComposeReplyLine::ComposeReplyLine(const QString& nick, const QString& snippet, 
     setLayoutDirection(Qt::LeftToRight);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setAccessibleName(i18n::t("Replying to %1").arg(nick));
+}
+
+void ComposeReplyLine::setReply(const QString& nick, const QString& snippet, bool media)
+{
+    m_nick    = nick;
+    m_snippet = snippet;
+    m_media   = media;
+    setAccessibleName(i18n::t("Replying to %1").arg(nick));
+    update();
 }
 
 QSize ComposeReplyLine::sizeHint() const

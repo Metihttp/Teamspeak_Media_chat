@@ -19,6 +19,8 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QPair>
+#include <QPixmap>
 #include <QPoint>
 #include <QPointer>
 #include <QSet>
@@ -30,6 +32,7 @@
 #include "replyart.h"
 
 class ChatIntegration;
+class ComposeReplyLine;
 class QAction;
 class QEvent;
 class QKeyEvent;
@@ -68,13 +71,25 @@ class ChatReplies : public QObject
     void sentWithFiles(const ChatTarget& target);
 
   private:
+    // What a reply line's picture should show. Pictures are drawn only for the lines on screen (right
+    // before the chat paints, renderVisible): a picture is up to the chat's width at the screen's scale
+    // (about 140 KB at 2x), so drawing every reply line of a long chat would take hundreds of MB.
+    struct Line {
+        QString               signature; // everything the picture depends on
+        replyart::Header      header;
+        replyart::HeaderStyle style;
+        QSize                 size;
+    };
     struct View {
+        QTextDocument*             document = nullptr; // the document indexed (TeamSpeak may swap it)
         QVector<replydoc::Message> messages;
         QVector<int>               originalOf; // per message: its original's index, -1 if none
         QHash<int, QVector<int>>   repliesTo;  // message index -> the replies to it (document order)
         QHash<int, int>            byBlock;    // block number -> message index
-        QHash<QString, QString>    rendered;   // reply line object -> what its picture shows
-        QString                    styleKey;   // the chat's look the lines were last drawn for
+        QHash<QString, int>        byObject;   // reply line object -> message index
+        QHash<QString, Line>       lines;      // reply line object -> what it should show
+        QHash<QString, QString>    rendered;   // reply line object -> the signature its picture has (drawn ones only)
+        QString                    styleKey;   // the chat's look the lines were last laid out for
         bool                       indexed = false;
     };
     struct Style {
@@ -108,6 +123,8 @@ class ChatReplies : public QObject
     // indexing
     View*  viewOf(QTextBrowser* browser);
     void   index(View& view, QTextDocument* doc) const;
+    void   reindexFrom(View& view, QTextDocument* doc, int firstMessage) const; // after edits at or after it
+    void   link(View& view) const;                                               // originals, replies, lookups
     void   ensureIndex(QTextBrowser* browser);
     void   track(QTextBrowser* browser);
     int    messageAt(QTextBrowser* browser, const QPoint& viewportPos);
@@ -118,7 +135,13 @@ class ChatReplies : public QObject
     static QString        keyOf(const Style& style);
     replyart::Header      headerFor(const View& view, int message) const;
     replyart::HeaderStyle headerStyle(QTextBrowser* browser, const Style& style, const replydoc::Message& m) const;
-    void                  refreshLines(QTextBrowser* browser, bool force);
+    static QString        signatureOf(const Line& line);
+    // Works out what every reply line (or only the ones in `only`) shows and how big it is, resizes the
+    // ones that changed size (one edit) and draws those on screen.
+    void                  refreshLines(QTextBrowser* browser, const QSet<QString>* only = nullptr);
+    void                  renderVisible(QTextBrowser* browser, View& view); // pictures for the lines on screen
+    void                  evict(QTextBrowser* browser, View& view);         // pictures far off screen go
+    QPair<int, int>       positionsShown(QTextBrowser* browser, qreal margin) const;
     QString               newObjectName();
     Anchor                capture(QTextBrowser* browser) const;
     void                  restoreAnchor(QTextBrowser* browser, const Anchor& anchor) const;
@@ -130,6 +153,7 @@ class ChatReplies : public QObject
     void            arm();
     void            disarm();
     void            inject(QMenu* menu);
+    void            dropInjected(); // TeamSpeak's menu hid: our items in it go
     QList<QAction*> actionsFor(QMenu* menu, QTextBrowser* browser, int block, const QPoint& globalPos);
     void            showFallbackMenu();
     void            showReplies(QTextBrowser* browser, int block, const QPoint& globalPos);
@@ -140,7 +164,9 @@ class ChatReplies : public QObject
     void     cancelReply();
     QWidget* inputFor(QTextBrowser* browser) const;
     void     showBar(QWidget* input);
+    void     applyBarTheme(QWidget* input); // the chat's colours and font (no-op when unchanged)
     void     hideBar();
+    void     updateComposeLines();
     void     attachBar(QWidget* input);
     void     placeOverlayBar();
     bool     barShownFor(QWidget* input) const;
@@ -173,7 +199,10 @@ class ChatReplies : public QObject
     QPointer<QTextBrowser> m_pressIn;
     QString                m_pressObject;
 
+    QPixmap                  m_blank; // the picture of a reply line that isn't on screen (1x1, transparent)
+
     MenuContext              m_menu;
+    quint32                  m_menuSerial = 0; // the right-click the posted fallback check belongs to
     QObject*                 m_catcher = nullptr;
     bool                     m_armed   = false;
     QList<QPointer<QAction>> m_injected;
@@ -182,6 +211,11 @@ class ChatReplies : public QObject
 
     bool                m_hasPending = false;
     Pending             m_pending;
+    struct ComposeLine {
+        QPointer<ComposeReplyLine> line;
+        ChatTarget                 target;
+    };
+    QVector<ComposeLine> m_composeLines; // "Replying to …" in open send windows: they follow m_pending
     QPointer<ReplyBar>  m_bar;
     QPointer<QWidget>   m_barInput;
     bool                m_barOverlay = false; // no vertical layout around the input: the bar floats above it

@@ -40,6 +40,8 @@ QString timeColon();
 QString clip();
 // text without invisible characters and bidi marks (names and snippets from the chat are drawn as is).
 QString visibleText(const QString& text);
+// The first max UTF-16 units of text, one less when that would split a surrogate pair (an emoji).
+QString leftChars(const QString& text, int max);
 
 // The message being replied to, as read from the chat.
 struct Original {
