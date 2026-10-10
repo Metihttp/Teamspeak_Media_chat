@@ -98,6 +98,7 @@
 // plugin.cpp's entry points, called the way TeamSpeak calls them (same DLL).
 extern "C" int  ts3plugin_processCommand(uint64 serverConnectionHandlerID, const char* command);
 extern "C" void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID);
+extern "C" void ts3plugin_onHotkeyEvent(const char* keyword);
 
 namespace {
 
@@ -1269,6 +1270,10 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
 //   reactpicker {grab, index, more} the quick reaction picker: grab it, click a reaction, or "+"
 //   react.row {name, pill | add}    clicks a pill (its index) or the add pill of the reaction row under a preview
 //   clickobj {object}               clicks a visible button by objectName (prefix)
+//   hotkey {keyword}                a plugin hotkey (ts3plugin_onHotkeyEvent), e.g. tsmedia_reply
+//   quitin {ms}                     TeamSpeak's Quit action ms later; the script goes on meanwhile
+//   selectmsg {find, nth, whole}    selects a message's text (whole: with its header) in the visible chat; key target "chat"
+//   latemenu {find, delayMs}        a right-click only the plugin sees, then a plain menu like TeamSpeak's delayMs later
 //   emojis                          HD emoji counts in the visible chat
 //   setemoji {hdEmoji, jumboEmoji, emojiButton}   Settings values, saved and applied
 // ============================================================================================
@@ -1440,6 +1445,8 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         }
         if (t == QLatin1String("focus"))
             return QApplication::focusWidget();
+        if (t == QLatin1String("chat"))
+            return b;
         return widgetNamed(t);
     };
     const auto modsOf = [&c]() {
@@ -1905,6 +1912,45 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         ts3plugin_processCommand(sch, "voice");
         next(1000);
         return false;
+    }
+    if (cmd == QLatin1String("quitin")) { // TeamSpeak's Quit action in ms (the script goes on meanwhile)
+        const int ms = c.value(QString::fromLatin1("ms")).toInt(500);
+        say(QString::fromLatin1("quitin: %1 ms").arg(ms));
+        later(ms, [this] {
+            QAction* quit = nullptr;
+            if (QWidget* mw = m_chat ? m_chat->mainWindow() : nullptr) {
+                for (QAction* a : mw->findChildren<QAction*>()) {
+                    if (a->shortcut() == QKeySequence(QString::fromLatin1("Ctrl+Q")))
+                        quit = a;
+                }
+            }
+            QWidget* popup = QApplication::activePopupWidget();
+            say(QString::fromLatin1("quitin: now, popup %1").arg(popup ? popup->objectName() : QString::fromLatin1("none")));
+            if (quit)
+                QMetaObject::invokeMethod(quit, "trigger", Qt::QueuedConnection);
+        });
+        return true;
+    }
+    if (cmd == QLatin1String("hotkey")) { // as TeamSpeak calls it for a bound hotkey
+        const QByteArray keyword = str("keyword", "tsmedia_reply").toLatin1();
+        say(QString::fromLatin1("hotkey: ") + QString::fromLatin1(keyword));
+        ts3plugin_onHotkeyEvent(keyword.constData());
+        next(900);
+        return false;
+    }
+    if (cmd == QLatin1String("selectmsg")) { // selects the text of the nth newest message containing find in the visible chat
+        const QTextBlock tb = b ? findMessage(b) : QTextBlock();
+        if (!tb.isValid()) {
+            say(QString::fromLatin1("selectmsg: no message with \"%1\"").arg(str("find", "")));
+            return true;
+        }
+        const replydoc::Message m = replydoc::parseBlock(tb);
+        QTextCursor             cursor(b->document());
+        cursor.setPosition(c.value(QString::fromLatin1("whole")).toBool() ? tb.position() : m.textStart);
+        cursor.setPosition(tb.position() + tb.length() - 1, QTextCursor::KeepAnchor);
+        b->setTextCursor(cursor);
+        say(QString::fromLatin1("selectmsg: block %1, %2 characters").arg(tb.blockNumber()).arg(cursor.selectionEnd() - cursor.selectionStart()));
+        return true;
     }
     if (cmd == QLatin1String("clickobj")) { // a visible button by objectName (prefix), e.g. the input's emoji button
         auto* button = qobject_cast<QAbstractButton*>(widgetNamed(str("object", "")));
