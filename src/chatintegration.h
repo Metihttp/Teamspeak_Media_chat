@@ -92,6 +92,9 @@ class ChatIntegration : public QObject
     // ---- implementation (owned by chatintegration.cpp; may be reorganised freely) --------------
   private:
     friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
+#ifdef TSMEDIA_TESTHOOKS
+    friend class SelfTest; // test builds: the scripted live-test driver (selftest.cpp)
+#endif
 
     struct PreviewPos {
         int     position = 0; // document position of the preview object

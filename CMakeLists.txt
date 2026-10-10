@@ -176,6 +176,7 @@ tsmedia_delay_load_media_foundation(tsmedia)
 option(TSMEDIA_TESTHOOKS "Build with test hooks" OFF)
 if(TSMEDIA_TESTHOOKS)
     target_compile_definitions(tsmedia PRIVATE TSMEDIA_TESTHOOKS)
+    target_sources(tsmedia PRIVATE src/selftest.cpp src/selftest.h) # the scripted live-test driver
 endif()
 
 # 2.2 updater (docs/UPDATES.md). The install/rollback/manifest parts are always built (a DLL installed by

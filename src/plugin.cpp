@@ -40,6 +40,11 @@
 #include "video/mfvideo.h"
 #include "voicecontroller.h" // 2.2 voice
 #include "voicesection.h"    // 2.2 voice
+#ifdef TSMEDIA_TESTHOOKS
+#include <QElapsedTimer>
+
+#include "selftest.h" // test builds: the scripted live-test driver
+#endif
 
 #define PLUGIN_API_VERSION 26
 #define TS3_EXPORT extern "C" __declspec(dllexport)
@@ -274,6 +279,31 @@ bool takeTrigger(const QString& name, QString* content)
     return true;
 }
 
+// <data dir>/selftest_options.txt containing "quiet": TeamSpeak's sound pack and the microphone are
+// muted on localhost connections (runtime values only: TeamSpeak's profile is not changed).
+void quietLocalConnection(uint64 sch)
+{
+    QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
+    if (!options.open(QIODevice::ReadOnly) || !QString::fromUtf8(options.readAll()).contains(QLatin1String("quiet"), Qt::CaseInsensitive))
+        return;
+    if (!isLocalServer(sch))
+        return;
+    float before = 0.0f;
+    if (ts3::funcs.getPlaybackConfigValueAsFloat)
+        ts3::funcs.getPlaybackConfigValueAsFloat(sch, "volume_factor_wave", &before);
+    // TeamSpeak keeps it in dB (its profile has VolumeFactorWaveDb); -60 is far below hearing.
+    const unsigned waveError = ts3::funcs.setPlaybackConfigValue ? ts3::funcs.setPlaybackConfigValue(sch, "volume_factor_wave", "-60") : 1u;
+    float after = 0.0f;
+    if (ts3::funcs.getPlaybackConfigValueAsFloat)
+        ts3::funcs.getPlaybackConfigValueAsFloat(sch, "volume_factor_wave", &after);
+    unsigned micError = 1u;
+    if (ts3::funcs.setClientSelfVariableAsInt && ts3::funcs.flushClientSelfUpdates) {
+        micError = ts3::funcs.setClientSelfVariableAsInt(sch, CLIENT_INPUT_MUTED, 1);
+        ts3::funcs.flushClientSelfUpdates(sch, nullptr);
+    }
+    ts3::log(QStringLiteral("[test] quiet: wave volume %1 -> %2 (error %3), microphone muted (error %4)").arg(before).arg(after).arg(waveError).arg(micError));
+}
+
 // <data dir>/selftest_upload.txt names files to upload to the channel after connecting to a
 // localhost server.
 void selfTestUpload(uint64 sch)
@@ -456,6 +486,10 @@ TS3_EXPORT int ts3plugin_init()
         chat->start();
         if (chat->voice()) // 2.2 voice: "Open TS Media settings" in the recorder's errors
             QObject::connect(chat->voice(), &VoiceController::settingsRequested, chat, [] { showSettings(nullptr); });
+#ifdef TSMEDIA_TESTHOOKS
+        // Test builds: selftest_script.txt (localhost servers only; a child of the chat, gone with it).
+        new SelfTest(core, chat, SelfTest::Hooks{[] { showSettings(nullptr); }, []() -> QWidget* { return g_settings.data(); }}, chat);
+#endif
         updateMenus();
         // 2.2 updater: this start counts as successful (started marker, applied -> done), then the
         // consent window / daily check are scheduled. Deleted first in ts3plugin_shutdown.
@@ -474,6 +508,11 @@ TS3_EXPORT void ts3plugin_shutdown()
     //   3. compressions (transcode worker joined)    7. AccessGroup, PeerHub, then Core (its pools)
     //   4. diagnostics hooks, the updater            8. Media Foundation, then the plugin log
     auto cleanup = [] {
+#ifdef TSMEDIA_TESTHOOKS
+        QElapsedTimer shutdownClock;
+        shutdownClock.start();
+        ts3::log(QStringLiteral("[test] shutdown: start"));
+#endif
         // 2.2 protocol: BYE where we said hello (not waiting for an answer), reactions.json written.
         if (g_peers)
             g_peers->prepareShutdown();
@@ -526,6 +565,9 @@ TS3_EXPORT void ts3plugin_shutdown()
             g_mediaFoundation = false;
         }
 
+#ifdef TSMEDIA_TESTHOOKS
+        ts3::log(QStringLiteral("[test] shutdown: done in %1 ms").arg(shutdownClock.elapsed()));
+#endif
         // 2.2 foundation: last, so the steps above can still log.
         plog::shutdown();
     };
@@ -665,6 +707,9 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
     }
     (*menuItems)[count] = nullptr;
     *menuIcon           = nullptr;
+#ifdef TSMEDIA_TESTHOOKS
+    ts3::log(QStringLiteral("[test] initMenus: %1 items").arg(count));
+#endif
 }
 
 TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
@@ -688,6 +733,9 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
         (*hotkeys)[i] = hk;
     }
     (*hotkeys)[count] = nullptr;
+#ifdef TSMEDIA_TESTHOOKS
+    ts3::log(QStringLiteral("[test] initHotkeys: %1 hotkeys").arg(count));
+#endif
 }
 
 TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID)
@@ -763,6 +811,11 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
     Q_UNUSED(errorNumber);
     const uint64 sch = serverConnectionHandlerID;
 #ifdef TSMEDIA_TESTHOOKS
+    // Test builds only: selftest_options.txt "quiet" mutes TeamSpeak's notification sounds and the
+    // microphone of localhost connections for this session (live tests run unattended).
+    if (newStatus == STATUS_CONNECTION_ESTABLISHED || newStatus == STATUS_CONNECTED) {
+        onGuiThread([sch] { quietLocalConnection(sch); });
+    }
     // Test builds only, and only against localhost servers (checked when the hooks fire).
     if (newStatus == STATUS_CONNECTION_ESTABLISHED) {
         onGuiThread([sch] {
