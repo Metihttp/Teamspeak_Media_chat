@@ -333,15 +333,20 @@ class TestVoiceMedia : public QObject
         QTRY_COMPARE_WITH_TIMEOUT(rec.state(), State::Captured, 20000);
         const QString path = m_dir.filePath(QStringLiteral("canceled_encode.m4a"));
         rec.encode(path);
-        // Once the sink writer has made the file, the encoder checks the flag between 100 ms samples. (The
-        // writer's setup itself can't be interrupted; under load in the full suite it once took 630 ms.)
+        // Once the sink writer has made the file, the encoder checks the flag between 100 ms samples. The
+        // writer's setup and its Finalize can't be interrupted: in the full suite they took up to 640 ms,
+        // about as long as encoding all 5 minutes (750 ms here), so the bound only catches a hang.
         QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(path), 5000);
+        const bool    during = rec.state() == State::Encoding; // a fast run may already be done
         QElapsedTimer clock;
         clock.start();
         rec.cancel(); // during the encode
-        QVERIFY2(clock.elapsed() < 500, qPrintable(QString::number(clock.elapsed())));
+        QVERIFY2(clock.elapsed() < 2000, qPrintable(QString::number(clock.elapsed())));
         QCOMPARE(rec.state(), State::Idle);
-        QVERIFY(!QFile::exists(path));
+        if (during)
+            QVERIFY(!QFile::exists(path)); // also when it was canceled while finalizing
+        else
+            QFile::remove(path);
 
         // Cancel while recording (and destruction while recording) returns at once too.
         voice::FakeCapture::Options live;

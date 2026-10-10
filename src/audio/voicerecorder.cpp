@@ -1,5 +1,6 @@
 #include "audio/voicerecorder.h"
 
+#include <QFile>
 #include <QFileInfo>
 #include <QMutexLocker>
 #include <QTimer>
@@ -134,18 +135,30 @@ void VoiceRecorder::encode(const QString& path)
 
 void VoiceRecorder::cancel()
 {
-    m_cancel = true;
+    // An encode still running now is canceled: whatever it writes goes, even if it gets to the end (its
+    // last step, the sink writer's Finalize, can't be interrupted). A file of an encode that had already
+    // finished is the caller's.
+    const bool encoding = state() == State::Encoding;
+    m_cancel            = true;
     stop();
     joinWorker();
     m_workerDone = true;
     m_poll->stop();
+    QString finished;
     {
         QMutexLocker lock(&m_mutex);
         m_pcm.clear();
         m_pcm.shrink_to_fit();
         m_bins.clear();
         m_backend.reset();
+        if (encoding) {
+            finished = m_encodedPath;
+            m_encodedPath.clear();
+            m_encodedBytes = 0;
+        }
     }
+    if (!finished.isEmpty())
+        QFile::remove(finished);
     m_elapsedMs = 0;
     setState(State::Idle);
     m_reported = State::Idle;
@@ -369,17 +382,20 @@ void VoiceRecorder::encodeRun(QString path)
     const float  peak   = waveform::peakDb(m_pcm.data(), static_cast<int>(qMin<qint64>(frames, std::numeric_limits<int>::max())));
     const double gain   = waveform::normalizeGain(peak);
     const AacResult r   = writeAac(path, m_pcm.data(), frames, rate, gain, &m_cancel);
+    const bool      canceled = m_cancel.load() || r.canceled;
+    if (r.ok && canceled)
+        QFile::remove(path); // canceled while the writer finalized: the finished file goes too
     {
         QMutexLocker lock(&m_mutex);
-        if (r.ok) {
+        if (r.ok && !canceled) {
             m_encodedPath  = path;
             m_encodedBytes = QFileInfo(path).size();
-        } else {
+        } else if (!r.ok) {
             m_encodeError = r.error;
             m_encodeCode  = r.code;
         }
     }
-    if (m_cancel.load() || r.canceled)
+    if (canceled)
         setState(State::Idle);
     else
         setState(r.ok ? State::Encoded : State::EncodeFailed);
