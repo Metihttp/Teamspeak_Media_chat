@@ -335,8 +335,9 @@ QString nickFrom(const QString& quoted)
 
 Header parseHeader(const QString& before, const QString& nickText, const QString& nickHref, const QString& after)
 {
-    // The icon (at most two), the optional time and spaces; never text of the message.
-    static const QRegularExpression lead(QStringLiteral("^\\x{FFFC}{0,2}[ \\t]*(?:<[^<>\\n\\x{2028}\\x{2029}]{1,24}>)?[ \\t]*$"));
+    // The icon (at most two), the optional time and spaces; never text of the message. 2.2 reply: a reply
+    // line of ours (a picture and a line break, replydoc.h) may come first, right before TeamSpeak's icon.
+    static const QRegularExpression lead(QStringLiteral("^(?:\\x{FFFC}\\x{2028}(?=\\x{FFFC}))?\\x{FFFC}{0,2}[ \\t]*(?:<[^<>\\n\\x{2028}\\x{2029}]{1,24}>)?[ \\t]*$"));
     static const QRegularExpression colon(QStringLiteral("^:[ \\t]?"));
     Header                          header;
     const QString                   nick = nickFrom(nickText);
@@ -354,7 +355,7 @@ Header parseHeader(const QString& before, const QString& nickText, const QString
 
 Header parseHeaderText(const QString& text)
 {
-    static const QRegularExpression re(QStringLiteral("^\\x{FFFC}{0,2}[ \\t]*(?:<[^<>\\n\\x{2028}\\x{2029}]{1,24}>)?[ \\t]*\"((?:(?!\"[ \\t]*:)[^\\n\\x{2028}\\x{2029}]){1,64})\"[ \\t]*:[ \\t]?"));
+    static const QRegularExpression re(QStringLiteral("^(?:\\x{FFFC}\\x{2028}(?=\\x{FFFC}))?\\x{FFFC}{0,2}[ \\t]*(?:<[^<>\\n\\x{2028}\\x{2029}]{1,24}>)?[ \\t]*\"((?:(?!\"[ \\t]*:)[^\\n\\x{2028}\\x{2029}]){1,64})\"[ \\t]*:[ \\t]?"));
     Header                          header;
     const QRegularExpressionMatch   match = re.match(text);
     if (!match.hasMatch())

@@ -135,6 +135,13 @@ add_library(tsmedia SHARED
     src/composehooks.cpp      src/composehooks.h
     src/peerhub.cpp           src/peerhub.h
     src/chatreactions.cpp     src/chatreactions.h
+    # 2.2 reply
+    src/replies.cpp           src/replies.h
+    src/replydoc.cpp          src/replydoc.h
+    src/replyart.cpp          src/replyart.h
+    src/replybar.cpp          src/replybar.h
+    src/repliespopup.cpp      src/repliespopup.h
+    src/chatreplies.cpp       src/chatreplies.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -265,6 +272,11 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlink.cpp
         src/reactions.cpp
         src/reactionart.cpp
+        # 2.2 reply: the format, matching, TeamSpeak-like chat documents, the reply line's size
+        tests/tst_replies.cpp
+        src/replies.cpp
+        src/replydoc.cpp
+        src/replyart.cpp
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
@@ -332,6 +344,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/reactionart.cpp
         src/reactions.cpp
         src/peerprotocol.cpp
+        src/replyart.cpp # 2.2 reply: reply lines
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})

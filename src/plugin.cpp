@@ -170,6 +170,7 @@ void printHelp(uint64 sch)
         ts3::print(sch, i18n::t(line));
     }
     ts3::print(sch, i18n::t("Tip: drop files on the chat to send them (hold Shift to skip), or copy files or a screenshot and press Ctrl+V in the chat input."));
+    ts3::print(sch, i18n::t("Tip: right-click a message and choose Reply, or press Alt+Up in the chat input to reply to the last one.")); // 2.2 reply
 }
 
 // "/tsmedia cancel" and its hotkey: the keyboard way to stop sending (the toast never takes the focus).
@@ -612,6 +613,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
     const Hotkey keys[] = {
         {"tsmedia_send", i18n::t("Send files to the current chat")},
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
+        {"tsmedia_reply", i18n::t("Reply to the last message in the current chat")}, // 2.2 reply
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
 
@@ -681,6 +683,11 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
         });
     } else if (key == QLatin1String("tsmedia_cancel")) {
         onGuiThread([] { cancelUploads(0); });
+    } else if (key == QLatin1String("tsmedia_reply")) { // 2.2 reply
+        onGuiThread([] {
+            if (g_chat)
+                g_chat->replyToLatest();
+        });
     }
 }
 

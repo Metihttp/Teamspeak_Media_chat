@@ -68,6 +68,7 @@ class TestCoreSend : public QObject
     void failedAlbumMessageWarnsOnce();
     void postsOfOneSendKeepTheirOrder();
     void captionSettles();
+    void replyLeadGoesFirst(); // 2.2 reply
 
   private:
     QString    file(const QString& name, int seed = 1);
@@ -421,6 +422,41 @@ void TestCoreSend::captionSettles()
     QCOMPARE(settled.count(), 2);
     QCOMPARE(settled.at(1).at(0).toInt(), lost);
     QCOMPARE(settled.at(1).at(1).toBool(), false);
+}
+
+// 2.2 reply: files sent as a reply carry the quote line first, in the same message as the caption and
+// the first link (an album: its one message); the quote line is posted once.
+void TestCoreSend::replyLeadGoesFirst()
+{
+    const QString lead = QStringLiteral("[i]↪ Alice: “hi”[/i]");
+    SendRequest   request;
+    request.target    = channel();
+    request.caption   = QStringLiteral("look");
+    request.replyLead = lead;
+    SendItem item;
+    item.path = file(QStringLiteral("reply.zip"), 1);
+    request.items.append(item);
+    QVERIFY(m_core->send(request) != 0);
+    QVERIFY(serveUntil([] { return fakets3::messages().size() == 1; }));
+    QVERIFY(QString::fromUtf8(fakets3::messages().first().text).startsWith(lead + QStringLiteral("\nlook\n[URL=ts3file://")));
+
+    SendRequest album;
+    album.target    = channel();
+    album.album     = true;
+    album.replyLead = lead;
+    for (int i = 1; i <= 3; ++i) {
+        SendItem photo;
+        photo.path = file(QStringLiteral("r%1.jpg").arg(i), i + 1);
+        album.items.append(photo);
+    }
+    album.items.append(item); // and a file after the album: no second quote line
+    album.items.last().path = file(QStringLiteral("after.zip"), 9);
+    QVERIFY(m_core->send(album) != 0);
+    QVERIFY(serveUntil([] { return fakets3::messages().size() == 3; }));
+    const QString albumMessage = QString::fromUtf8(fakets3::messages().at(1).text);
+    QVERIFY(albumMessage.startsWith(lead + QStringLiteral("\n[URL=ts3file://")));
+    QCOMPARE(linksIn(fakets3::messages().at(1)), 3);
+    QVERIFY(!QString::fromUtf8(fakets3::messages().at(2).text).contains(QChar(0x21AA)));
 }
 
 TSMEDIA_REGISTER_TEST(TestCoreSend)

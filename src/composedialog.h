@@ -44,6 +44,9 @@ struct ComposeHost {
     std::function<int(const SendRequest&)>                 send;            // Core::send: the batch id, 0 if nothing was started
     std::function<void(bool)>                              rememberAlbum;   // the "Send as an album" choice, after a send
     bool                                                   albumDefault = true;
+    // 2.2 reply: "Replying to Alice" under the header while the files would go out as a reply (send()
+    // adds the quote line); nullptr: not a reply. The widget deletes itself when the user drops the reply.
+    std::function<QWidget*(QWidget*, const ChatTarget&)> replyLine;
 };
 
 class ComposeDialog : public QDialog

@@ -783,6 +783,11 @@ ComposeDialog::ComposeDialog(ComposeHost host, const ChatTarget& target, QWidget
     layout->setContentsMargins(kMargin, kMargin, kMargin, kMargin);
     layout->setSpacing(kSpacing);
     layout->addLayout(header);
+    // 2.2 reply: the reply these files go out as; dropping it (its x) lays the window out again.
+    if (QWidget* reply = m_host.replyLine ? m_host.replyLine(this, m_target) : nullptr) {
+        layout->addWidget(reply);
+        connect(reply, &QObject::destroyed, this, [this] { QTimer::singleShot(0, this, [this] { fitHeight(); }); });
+    }
     if (m_presence)
         layout->addWidget(m_presence);
     layout->addWidget(m_banner);
