@@ -12,6 +12,7 @@
 #include <QTextBrowser>
 
 #include "chatreactions.h" // 2.2 reactions
+#include "chatreplies.h"   // 2.2 reply
 #include "i18n.h"
 #include "settings.h"
 #include "spoiler.h"
@@ -80,6 +81,8 @@ void ChatIntegration::showSpoilerMenu(QTextBrowser* browser, const QString& key,
     // 2.2 reactions are allowed on spoilers and never reveal them (decisions).
     if (m_reactions)
         m_reactions->addMenu(menu, browser, album.isEmpty() ? key : album);
+    if (m_replies) // 2.2 reply: replying never reveals the spoiler
+        m_replies->addPreviewMenu(menu, browser);
     menu->setDefaultAction(reveal);
     menu->popup(globalPos);
 }

@@ -594,7 +594,9 @@ QVector<ComposedMessage> composeChatMessagesDetailed(const QList<MediaLink>& lin
     QVector<ComposedMessage> out;
     const QString            sep     = QString::fromLatin1(kMessageSeparator);
     const QString            url     = options.includeNotice ? bbcodeSafeUrl(options.downloadUrl) : QString();
-    const QString            caption = captionPart(options.caption);
+    QString                  caption = captionPart(options.caption);
+    if (!options.lead.isEmpty()) // 2.2 reply: the quote line first, then the caption (if any)
+        caption = caption.isEmpty() ? options.lead : options.lead + QString::fromLatin1(kMessageSeparator) + caption;
     const auto               fits    = [&options](const QString& text) {
         return options.legacySize ? utf8Size(text) < options.maxBytes : escapedMessageSize(text) <= options.maxBytes;
     };

@@ -122,6 +122,9 @@ struct SendRequest {
     QVector<SendItem> items;   // their messages appear in this order (albums first, see Core::send)
     QString           caption; // as typed; shown above the first file or album (never cut)
     bool              album = false; // 2 or more pictures/videos go out as albums of up to 10
+    // 2.2 reply: a quote line (replies::quoteLine, BBCode as is) that goes before the caption, in the same
+    // message; the send is then a reply. Empty: not a reply.
+    QString           replyLead;
 };
 
 struct UploadJob {
@@ -422,6 +425,7 @@ class Core : public QObject
         QString           caption;             // as typed
         bool              captionDone = false; // queued with a unit (or handed on to a retry)
         int               captionOrigin = 0;   // the batch captionSettled() reports it under (a retry carries it on)
+        QString           lead;                // 2.2 reply: SendRequest::replyLead, posted with the caption
         QVector<PostUnit> units;
     };
     // One chat message waiting in its connection's queue.

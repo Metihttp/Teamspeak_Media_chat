@@ -27,6 +27,7 @@
 #include "voicecard.h" // 2.2 voice
 #include "previewrenderer.h"
 #include "reactionart.h" // 2.2 reactions
+#include "replyart.h"   // 2.2 reply
 #include "uiutil.h"
 
 namespace {
@@ -1335,6 +1336,42 @@ QList<Sample> buildSamples()
                      rx::Zone::None);
         voiceReacted(QStringLiteral("reactions_voice_add_pill_hover"), QStringLiteral("reactions: voice message, add pill under the pointer"),
                      {{proto::ThumbsUp, 2}}, 0, true, rx::Zone::AddPill);
+    }
+    // 2.2 reply: the reply line that replaces a reply's quote line (found / hovered / lost original, a
+    // file, a narrow chat), at the height of a 9 pt message line.
+    {
+        const auto replyLine = [](const QString& nick, const QString& snippet, bool media, bool found, bool hover, const QColor& nickColor) {
+            return [=](const PreviewStyle& st, QSize* ls) {
+                replyart::Header header;
+                header.nick      = nick;
+                header.snippet   = snippet;
+                header.media     = media;
+                header.found     = found;
+                header.nickColor = nickColor;
+                replyart::HeaderStyle hs;
+                hs.dark       = st.dark;
+                hs.base       = st.dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff);
+                hs.font       = st.font;
+                hs.dpr        = st.dpr;
+                hs.lineHeight = 13;
+                hs.hovered    = hover;
+                const QSize size = replyart::headerSize(header, hs, st.maxWidth);
+                *ls              = size;
+                return replyart::renderHeader(header, hs, size);
+            };
+        };
+        const QColor  blue(0x1c, 0xb0, 0xf4);
+        const QString text = QStringLiteral("Anyone up for a match tonight? I'm thinking around nine, the usual server.");
+        add(QStringLiteral("reply_line_found"), QStringLiteral("reply line: original in the chat"), replyLine(QStringLiteral("Alice"), text, false, true, false, blue), 520);
+        add(QStringLiteral("reply_line_hover"), QStringLiteral("reply line: hovered (click goes to the original)"), replyLine(QStringLiteral("Alice"), text, false, true, true, blue), 520);
+        add(QStringLiteral("reply_line_lost"), QStringLiteral("reply line: original not in the chat any more"),
+            replyLine(QStringLiteral("Sara"), QStringLiteral("Did anyone see where I left the map files?"), false, false, false, QColor()), 520);
+        add(QStringLiteral("reply_line_file"), QStringLiteral("reply line: to a file"), replyLine(QStringLiteral("Reza"), QStringLiteral("alpine-lake.jpg"), true, true, false, blue), 520);
+        add(QStringLiteral("reply_line_narrow"), QStringLiteral("reply line: narrow chat, long name"),
+            replyLine(QStringLiteral("A very long nickname indeed"), text, false, true, false, QColor(0x00, 0x2f, 0x5d)), 220);
+        add(QStringLiteral("reply_line_persian"), QStringLiteral("reply line: Persian"), replyLine(QStringLiteral("مهدی"), QStringLiteral("سلام، امشب بازی داریم؟"), false, true, false, blue), 520);
+        add(QStringLiteral("reply_line_mixed"), QStringLiteral("reply line: Persian and English mixed"),
+            replyLine(QStringLiteral("Ali"), QStringLiteral("سلام دنیا and hello"), false, true, false, blue), 520);
     }
     return list;
 }

@@ -2012,6 +2012,7 @@ int Core::send(const SendRequest& request)
     const int batch                = ++m_nextBatch;
     m_batches[batch].caption       = request.caption;
     m_batches[batch].captionOrigin = batch;
+    m_batches[batch].lead          = request.replyLead; // 2.2 reply
     for (const QVector<int>& indexes : qAsConst(units)) {
         PostUnit unit;
         unit.album = indexes.size() >= 2;
@@ -2814,6 +2815,7 @@ void Core::composeUnit(int batch, int index)
     const PostUnit unit      = b->units.at(index);
     // The caption goes with the first unit that posts something (marked as done below).
     const QString    caption = b->captionDone ? QString() : b->caption;
+    const QString    lead    = b->captionDone ? QString() : b->lead; // 2.2 reply: the quote line goes with the caption
     const int        origin  = b->captionOrigin ? b->captionOrigin : batch;
     QVector<int>     ids;
     QList<MediaLink> links;
@@ -2859,7 +2861,8 @@ void Core::composeUnit(int batch, int index)
     options.includeNotice = s.addRequiredNotice;
     options.downloadUrl   = s.pluginDownloadUrl;
     options.caption       = caption;
-    if (!caption.isEmpty()) {
+    options.lead          = lead; // 2.2 reply
+    if (!caption.isEmpty() || !lead.isEmpty()) {
         auto info = m_batches.find(batch);
         if (info != m_batches.end())
             info->captionDone = true;
@@ -3339,11 +3342,14 @@ int Core::retryUpload(int id)
     request.items.append(item);
     int  captionOrigin = 0;
     auto batch         = m_batches.find(job.batch);
-    if (batch != m_batches.end() && !batch->captionDone && !batch->caption.isEmpty() && !batchCanStillPost(job.batch, id)) {
-        request.caption    = batch->caption;
-        captionOrigin      = batch->captionOrigin ? batch->captionOrigin : job.batch;
+    if (batch != m_batches.end() && !batch->captionDone && (!batch->caption.isEmpty() || !batch->lead.isEmpty()) && !batchCanStillPost(job.batch, id)) {
+        request.caption   = batch->caption;
+        request.replyLead = batch->lead; // 2.2 reply: the retry is the reply now
+        if (!batch->caption.isEmpty())
+            captionOrigin = batch->captionOrigin ? batch->captionOrigin : job.batch;
         batch->captionDone = true;
         batch->caption.clear(); // handed on: the retry reports it (captionSettled)
+        batch->lead.clear();
     }
     forgetUpload(id);
 
