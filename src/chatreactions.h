@@ -53,6 +53,9 @@ class ChatReactions : public QObject
     enum class Kind { Unknown, Server, Channel, Private };
 
   private:
+#ifdef TSMEDIA_TESTHOOKS
+    friend class SelfTest; // test builds: the live-test driver clicks the row's pills (selftest.cpp)
+#endif
     struct Geometry {
         QSize         picture; // logical
         rx::RowLayout row;

@@ -290,10 +290,22 @@ bool takeTrigger(const QString& name, QString* content)
 void quietLocalConnection(uint64 sch)
 {
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
-    if (!options.open(QIODevice::ReadOnly) || !QString::fromUtf8(options.readAll()).contains(QLatin1String("quiet"), Qt::CaseInsensitive))
+    const QString optionText = options.open(QIODevice::ReadOnly) ? QString::fromUtf8(options.readAll()) : QString();
+    if (!optionText.contains(QLatin1String("quiet"), Qt::CaseInsensitive))
         return;
     if (!isLocalServer(sch))
         return;
+    // "nocapture" as well: TeamSpeak's capture device is closed and voice deactivated on this connection
+    // (unattended runs never pick up the room; voice messages use the fake capture, selftest_voice.txt).
+    if (optionText.contains(QLatin1String("nocapture"), Qt::CaseInsensitive)) {
+        unsigned deactivated = 1u;
+        if (ts3::funcs.setClientSelfVariableAsInt && ts3::funcs.flushClientSelfUpdates) {
+            deactivated = ts3::funcs.setClientSelfVariableAsInt(sch, CLIENT_INPUT_DEACTIVATED, 1);
+            ts3::funcs.flushClientSelfUpdates(sch, nullptr);
+        }
+        const unsigned closed = ts3::funcs.closeCaptureDevice ? ts3::funcs.closeCaptureDevice(sch) : 1u;
+        ts3::log(QStringLiteral("[test] nocapture: input deactivated (error %1), capture device closed (error %2)").arg(deactivated).arg(closed));
+    }
     float before = 0.0f;
     if (ts3::funcs.getPlaybackConfigValueAsFloat)
         ts3::funcs.getPlaybackConfigValueAsFloat(sch, "volume_factor_wave", &before);

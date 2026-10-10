@@ -62,6 +62,9 @@ class SelfTest : public QObject
     qint64                    m_jobsLoggedAt   = 0;
     bool                      runPart2(const QString& cmd, const QJsonObject& c, bool* handled);
     void                      reactStep(const QString& key, int reaction, int left, int gapMs);
+    // Part 3 (replies and HD emoji): context menus, keys into the chat input, clicks on reply lines.
+    bool                      runPart3(const QString& cmd, const QJsonObject& c, bool* handled);
+    void                      later(int ms, std::function<void()> fn); // a child timer: gone with the driver
 };
 
 #endif
