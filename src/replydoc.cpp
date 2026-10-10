@@ -1,12 +1,15 @@
 #include "replydoc.h"
 
 #include <QPair>
+#include <QPixmap>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
 #include <QTextLayout>
+#include <QUrl>
 #include <QVariantList>
 
 #include "albums.h"      // uidFromClientHref
@@ -530,6 +533,19 @@ int restoreAll(QTextDocument* doc)
         done += orphans.size();
     }
     batch.endEditBlock();
+    return done;
+}
+
+int giveBack(QTextDocument* doc)
+{
+    if (!doc)
+        return 0;
+    QSet<QString> names;
+    for (const int p : objectPositions(doc))
+        names.insert(formatAt(doc, p).toImageFormat().name());
+    const int done = restoreAll(doc);
+    for (const QString& name : qAsConst(names))
+        doc->addResource(QTextDocument::ImageResource, QUrl(name), QPixmap());
     return done;
 }
 

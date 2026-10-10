@@ -87,7 +87,7 @@ class ChatReplies : public QObject
         QSize                 size;
     };
     struct View {
-        QTextDocument*             document = nullptr; // the document indexed (TeamSpeak may swap it)
+        QPointer<QTextDocument>    document; // the document indexed (TeamSpeak may swap it, or delete it)
         QVector<replydoc::Message> messages;
         QVector<int>               originalOf; // per message: its original's index, -1 if none
         QHash<int, QVector<int>>   repliesTo;  // message index -> the replies to it (document order)
@@ -131,8 +131,8 @@ class ChatReplies : public QObject
 
     // indexing
     View*  viewOf(QTextBrowser* browser);
-    void   index(View& view, QTextDocument* doc) const;
-    void   reindexFrom(View& view, QTextDocument* doc, int firstMessage) const; // after edits at or after it
+    void   index(View& view, QTextDocument* doc);
+    void   reindexFrom(View& view, QTextDocument* doc, int firstMessage); // after edits at or after it
     void   link(View& view) const;                                               // originals, replies, lookups
     void   ensureIndex(QTextBrowser* browser);
     void   track(QTextBrowser* browser);
@@ -198,8 +198,10 @@ class ChatReplies : public QObject
     QString                  m_tag; // this instance's part of object names
     quint32                  m_nextObject = 0;
     QHash<QTextBrowser*, View> m_views;
+    QVector<QPointer<QTextDocument>> m_retired; // documents a chat had before TeamSpeak swapped them (given back on unload too)
     QSet<QTextBrowser*>      m_tracked;
     QSet<QTextBrowser*>      m_dirty;
+    QSet<QTextBrowser*>      m_waitingPictures; // reply lines drawn while some of their emoji were on their way
     QTimer*                  m_relayout   = nullptr;
     QTimer*                  m_styleCheck = nullptr;
     QTimer*                  m_watch      = nullptr;

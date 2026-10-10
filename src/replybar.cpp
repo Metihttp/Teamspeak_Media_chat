@@ -9,6 +9,7 @@
 
 #include <cmath>
 
+#include "emojirender.h"
 #include "i18n.h"
 #include "replyart.h"
 
@@ -62,6 +63,13 @@ void drawReplyText(QPainter& p, const QRectF& box, const QFont& font, const QStr
     replyart::drawRun(p, x, baseline, fm, fm.elidedText(snippet, Qt::ElideRight, qMax(0.0, box.right() - x)));
 }
 
+// 2.2 emoji: emoji the worker draws later (emojitext.h) show once they are there.
+void repaintOnNewPictures(QWidget* widget)
+{
+    if (emoji::ImageNotifier* notifier = emoji::notifier())
+        QObject::connect(notifier, &emoji::ImageNotifier::imagesReady, widget, QOverload<>::of(&QWidget::update));
+}
+
 } // namespace
 
 // ============================================================================================
@@ -79,6 +87,7 @@ ReplyBar::ReplyBar(QWidget* parent)
     setLayoutDirection(Qt::LeftToRight);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setAccessibleDescription(i18n::t("Press Enter to send your reply, or Esc to cancel it."));
+    repaintOnNewPictures(this);
 }
 
 void ReplyBar::setReply(const QString& nick, const QColor& nickColor, const QString& snippet, bool media)
@@ -243,6 +252,7 @@ ComposeReplyLine::ComposeReplyLine(const QString& nick, const QString& snippet, 
     setLayoutDirection(Qt::LeftToRight);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setAccessibleName(i18n::t("Replying to %1").arg(nick));
+    repaintOnNewPictures(this);
 }
 
 void ComposeReplyLine::setReply(const QString& nick, const QString& snippet, bool media)

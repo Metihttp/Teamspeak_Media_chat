@@ -10,6 +10,7 @@
 
 #include <cmath>
 
+#include "emojirender.h"
 #include "i18n.h"
 #include "replyart.h"
 #include "uiutil.h"
@@ -45,6 +46,9 @@ RepliesPopup::RepliesPopup(bool dark, const QColor& base, const QFont& chatFont,
     m_header    = qMax(28, static_cast<int>(std::ceil(fm.height() + 14)));
     m_current   = 0;
     setFixedSize(kWidth, 2 * kPadding + m_header + visibleRows() * m_rowHeight);
+    // 2.2 emoji: emoji the worker draws later (emojitext.h) show once they are there.
+    if (emoji::ImageNotifier* notifier = emoji::notifier())
+        connect(notifier, &emoji::ImageNotifier::imagesReady, this, QOverload<>::of(&QWidget::update));
 }
 
 int RepliesPopup::visibleRows() const

@@ -24,4 +24,13 @@ void drawTextLine(QPainter& p, qreal x, qreal baseline, const QFontMetricsF& fm,
 void setTextPicturesEnabled(bool enabled);
 bool textPicturesEnabled();
 
+// A picture Windows draws for the first time costs about 3 ms, and reply lines are drawn while TeamSpeak
+// paints its chat. With a budget (ms; < 0: none, the default for tests and tools), drawTextLine draws
+// new pictures itself only for that long per quarter second and asks the worker for the others
+// (emojirender.h requestImage); their emoji stay text until then. ChatReplies sets one while it runs.
+void setNewPictureBudget(int ms);
+// How many emoji drawTextLine left as text for the worker since the last call (then 0 again). Draw the
+// line again once notifier() announces new pictures.
+int takeTextFallbacks();
+
 } // namespace emoji

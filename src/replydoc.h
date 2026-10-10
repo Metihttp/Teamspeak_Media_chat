@@ -87,6 +87,9 @@ bool collapse(QTextDocument* doc, const Message& m, const QString& name, const Q
 bool restore(QTextDocument* doc, int position);
 // Every picture of ours in doc, and line breaks of ours left without one. Returns how many.
 int restoreAll(QTextDocument* doc);
+// restoreAll(), and the pictures' memory goes too (their resources are emptied): for a document no chat
+// shows any more (TeamSpeak swapped it out and may show it again later).
+int giveBack(QTextDocument* doc);
 // A new size for our picture at position (the chat got wider, another font).
 void resizeObject(QTextDocument* doc, int position, const QSizeF& size);
 // Positions of our pictures in doc.

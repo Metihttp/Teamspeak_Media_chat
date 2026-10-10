@@ -9,8 +9,9 @@
 // and hasColor() is false (the chat then keeps TeamSpeak's own rendering).
 //
 // A picture Windows 11 draws for the first time costs about 3 ms (its emoji are COLR v1 gradients):
-// render() is for the few a chat line or a reaction row needs; the picker asks with requestImage(),
-// which draws on a worker thread and announces the pictures through notifier().
+// render() is for the few a reaction row or a menu needs (reply lines: within a budget, emojitext.h);
+// the chat and the picker ask with requestImage(), which draws on a worker thread and announces the
+// pictures through notifier().
 //
 // Threads: the API is for the GUI thread only. The GUI thread and the worker each have their own
 // engine; every COM and GDI object is created, used and released on its thread. shutdown() joins the

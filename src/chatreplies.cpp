@@ -33,7 +33,8 @@
 
 #include "chatemoji.h" // 2.2 emoji: its items in the chat menu
 #include "chatintegration.h"
-#include "emojitext.h" // 2.2 emoji: whether names and snippets show HD emoji
+#include "emojirender.h" // 2.2 emoji: pictures the worker drew
+#include "emojitext.h"   // 2.2 emoji: whether names and snippets show HD emoji
 #include "i18n.h"
 #include "medialink.h" // kMaxMessageBytes
 #include "replybar.h"
@@ -45,6 +46,7 @@ namespace {
 
 constexpr int   kRelayoutMs   = 120;
 constexpr int   kReindexMs    = 400; // after ChatEmoji's last edit (it works through a history in steps)
+constexpr int   kPictureMs    = 16;  // new emoji pictures drawn while TeamSpeak paints, per quarter second (emojitext.h)
 constexpr int   kStyleCheckMs = 1000;
 constexpr int   kMaxRendered  = 48; // reply line pictures kept per chat before those far off screen go
 constexpr int   kWatchMs      = 300;
@@ -229,6 +231,21 @@ ChatReplies::ChatReplies(ChatIntegration* chat, Core* core)
     });
 
     m_catcher = new ReplyMenuCatcher(this);
+
+    // Emoji in names and snippets that are new to this PC (about 3 ms each on Windows 11): a few are
+    // drawn at once, the others by the emoji worker; lines drawn without some are drawn again when the
+    // pictures are there. A reply line of 24 new emoji no longer holds TeamSpeak's paint for 80 ms.
+    emoji::setNewPictureBudget(kPictureMs);
+    if (emoji::ImageNotifier* notifier = emoji::notifier()) {
+        connect(notifier, &emoji::ImageNotifier::imagesReady, this, [this] {
+            const QSet<QTextBrowser*> waiting = m_waitingPictures;
+            m_waitingPictures.clear();
+            for (QTextBrowser* browser : waiting) {
+                if (m_tracked.contains(browser))
+                    browser->viewport()->update(); // renderVisible draws them again before it paints
+            }
+        });
+    }
 }
 
 ChatReplies::~ChatReplies()
@@ -252,13 +269,17 @@ ChatReplies::~ChatReplies()
         delete m_bar.data(); // leaves TeamSpeak's layout with it
     m_composeLines.clear(); // a send window still open goes right after us (ChatIntegration deletes it)
 
+    emoji::setNewPictureBudget(-1);
+
     // The chats stay with TeamSpeak: every quote line goes back where it was (one edit per chat).
     const bool wasMutating = m_chat->m_mutating;
     m_chat->m_mutating     = true;
+    QSet<QTextDocument*> shown;
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         QTextBrowser* browser = it.key();
         if (!browser || !m_tracked.contains(browser))
             continue;
+        shown.insert(browser->document());
         const Anchor anchor = capture(browser);
         if (replydoc::restoreAll(browser->document()) > 0)
             restoreAnchor(browser, anchor);
@@ -266,6 +287,12 @@ ChatReplies::~ChatReplies()
             continue; // the pictures were in a document TeamSpeak replaced
         for (auto name = it->lines.constBegin(); name != it->lines.constEnd(); ++name)
             browser->document()->addResource(QTextDocument::ImageResource, QUrl(name.key()), QPixmap()); // the pictures go too
+    }
+    // Documents TeamSpeak swapped out of a chat and may show again later: their quote lines come back
+    // too, and their reply line pictures go (as ChatEmoji does for its HD emoji).
+    for (const QPointer<QTextDocument>& doc : qAsConst(m_retired)) {
+        if (doc && !shown.contains(doc.data()))
+            replydoc::giveBack(doc.data());
     }
     m_chat->m_mutating = wasMutating;
 }
@@ -283,6 +310,7 @@ void ChatReplies::track(QTextBrowser* browser)
         m_tracked.remove(browser);
         m_views.remove(browser);
         m_dirty.remove(browser);
+        m_waitingPictures.remove(browser);
     });
 }
 
@@ -294,10 +322,15 @@ ChatReplies::View* ChatReplies::viewOf(QTextBrowser* browser)
     return it == m_views.end() ? nullptr : &it.value();
 }
 
-void ChatReplies::index(View& view, QTextDocument* doc) const
+void ChatReplies::index(View& view, QTextDocument* doc)
 {
     if (view.document != doc) {
-        // Another document (TeamSpeak swapped it): its pictures have to be added to it anew.
+        // Another document (TeamSpeak swapped it): its pictures have to be added to it anew. The old one
+        // may be shown again later: its quote lines are given back on unload too.
+        if (view.document && !m_retired.contains(view.document))
+            m_retired.append(view.document);
+        m_retired.removeAll(QPointer<QTextDocument>());
+        m_retired.removeAll(QPointer<QTextDocument>(doc));
         view.document = doc;
         view.lines.clear();
         view.rendered.clear();
@@ -306,7 +339,7 @@ void ChatReplies::index(View& view, QTextDocument* doc) const
     link(view);
 }
 
-void ChatReplies::reindexFrom(View& view, QTextDocument* doc, int firstMessage) const
+void ChatReplies::reindexFrom(View& view, QTextDocument* doc, int firstMessage)
 {
     // Blocks before the first edited message are as they were: only the rest is read again (a reply
     // that came in at the end of a long chat costs a few blocks, not the whole chat).
@@ -686,8 +719,13 @@ void ChatReplies::renderVisible(QTextBrowser* browser, View& view)
         const auto now = view.rendered.constFind(it->object);
         if (now != view.rendered.cend() && *now == line->signature)
             continue;
+        emoji::takeTextFallbacks();
         doc->addResource(QTextDocument::ImageResource, QUrl(it->object), QPixmap::fromImage(replyart::renderHeader(line->header, line->style, line->size)));
-        view.rendered.insert(it->object, line->signature);
+        // Some emoji still on their way (emojitext.h): drawn again once they are there.
+        const bool complete = emoji::takeTextFallbacks() == 0;
+        view.rendered.insert(it->object, complete ? line->signature : QString());
+        if (!complete)
+            m_waitingPictures.insert(browser);
         drew = true;
     }
     if (drew && view.rendered.size() > kMaxRendered)

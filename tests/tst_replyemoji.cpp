@@ -2,18 +2,23 @@
 // start while HD emoji (chatemoji.h) are pictures inside its text: neither is taken for the other, either
 // can be given back first without leaving a picture of the other behind, messages and quote lines with HD
 // emoji read back as their text, a reply of only emoji becomes large once its quote line is out, and the
-// reply line draws emoji as HD pictures.
+// reply line draws emoji as HD pictures (new ones within a budget, the rest from the worker). A document
+// TeamSpeak swapped out is given back too.
 
 #include <QAbstractTextDocumentLayout>
+#include <QElapsedTimer>
 #include <QFontMetricsF>
 #include <QImage>
+#include <QPixmap>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
+#include <QUrl>
 #include <QtTest>
 
 #include "chatemoji.h"
+#include "emojidata.h"
 #include "emojiformat.h"
 #include "emojirender.h"
 #include "emojitext.h"
@@ -170,6 +175,7 @@ class TestReplyEmoji : public QObject
     {
         Settings::instance() = Settings();
         emoji::setTextPicturesEnabled(true);
+        emoji::setNewPictureBudget(-1);
     }
 
     // A reply line and HD emoji keep apart: their formats never pass for each other.
@@ -363,6 +369,78 @@ class TestReplyEmoji : public QObject
         const QImage plainOff = replyart::renderHeader(header, style, plainSize);
         emoji::setTextPicturesEnabled(true);
         QCOMPARE(differingPixels(plainOn, plainOff), 0);
+    }
+
+    // Review: emoji new to this PC cost about 3 ms each to draw. With a budget (ChatReplies sets one while
+    // it runs) a line of 30 new emoji draws a few at once and leaves the others to the worker, as text for
+    // now; once the worker has them, the line is complete. Before, the first paint of such a reply line
+    // held TeamSpeak's chat for about 85 ms (24 pictures), and a screen of them for seconds.
+    void newEmojiWaitForTheWorker()
+    {
+        if (!emoji::hasColor())
+            QSKIP("No colour emoji font here");
+        emoji::shutdown(); // nothing cached
+        emoji::setNewPictureBudget(4);
+        replyart::Header header;
+        header.nick = QStringLiteral("Alice");
+        for (int k = 0; k < 30; ++k) {
+            header.snippet += emoji::text(1200 + k * 13);
+            emoji::supported(1200 + k * 13); // the engine started and asked (not what is timed here)
+        }
+        replyart::HeaderStyle style;
+        style.font = QFont(QStringLiteral("Segoe UI"));
+        style.font.setPixelSize(12);
+        style.dpr        = 1.0;
+        style.lineHeight = 13;
+        const QSize size = replyart::headerSize(header, style, 900);
+
+        emoji::takeTextFallbacks();
+        QElapsedTimer clock;
+        clock.start();
+        const QImage first   = replyart::renderHeader(header, style, size);
+        const qint64 firstMs = clock.elapsed();
+        const int    waiting = emoji::takeTextFallbacks();
+        QVERIFY2(waiting >= 12, qPrintable(QString::number(waiting))); // most of the 24 drawn ones are left to the worker
+        QVERIFY2(firstMs < 45, qPrintable(QString::number(firstMs)));
+        QTRY_COMPARE_WITH_TIMEOUT(emoji::cacheInfo().pending, 0, 20000);
+        const QImage second = replyart::renderHeader(header, style, size);
+        QCOMPARE(emoji::takeTextFallbacks(), 0);
+        QCOMPARE(second.size(), first.size()); // the same room: only the pictures came
+        QVERIFY(differingPixels(first, second) > 100);
+
+        // Without a budget (tests and tools): everything at once, as before.
+        emoji::setNewPictureBudget(-1);
+        emoji::shutdown();
+        const QImage all = replyart::renderHeader(header, style, size);
+        QCOMPARE(emoji::takeTextFallbacks(), 0);
+        QCOMPARE(differingPixels(all, second), 0);
+    }
+
+    // Review: a chat document TeamSpeak swapped out (and may show again) gets its quote lines back, and the
+    // reply line pictures' memory goes, exactly as ChatReplies does for the documents still shown.
+    void swappedOutDocumentIsGivenBack()
+    {
+        QTextDocument doc;
+        message(&doc, QStringLiteral("Alice"), kUidAlice, u("Pizza \xF0\x9F\x8D\x95 tonight"));
+        message(&doc, QStringLiteral("Bob"), kUidBob, QStringLiteral("count me in"), u("Pizza \xF0\x9F\x8D\x95 tonight"), true);
+        const QString before = formatsOf(&doc);
+        if (emoji::hasColor())
+            ChatEmoji::processDocument(&doc, 1.0);
+        QVERIFY(collapseReplies(&doc));
+        const QVector<int> objects = replydoc::objectPositions(&doc);
+        QCOMPARE(objects.size(), 1);
+        const QString name = formatAt(&doc, objects.first()).toImageFormat().name();
+        QPixmap       picture(40, 10);
+        picture.fill(Qt::red);
+        doc.addResource(QTextDocument::ImageResource, QUrl(name), picture);
+
+        QCOMPARE(replydoc::giveBack(&doc), 1);
+        QVERIFY(replydoc::objectPositions(&doc).isEmpty());
+        QVERIFY(qvariant_cast<QPixmap>(doc.resource(QTextDocument::ImageResource, QUrl(name))).isNull());
+        ChatEmoji::restore(&doc); // what ChatEmoji does for it after us
+        QCOMPARE(formatsOf(&doc), before);
+        QCOMPARE(replydoc::giveBack(&doc), 0);
+        QCOMPARE(replydoc::giveBack(nullptr), 0);
     }
 };
 
