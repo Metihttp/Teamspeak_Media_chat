@@ -1,5 +1,6 @@
 #include "replydoc.h"
 
+#include <QPair>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -8,7 +9,8 @@
 #include <QTextLayout>
 #include <QVariantList>
 
-#include "albums.h" // uidFromClientHref
+#include "albums.h"      // uidFromClientHref
+#include "emojiformat.h" // 2.2 emoji: HD pictures read as what they stand for
 
 namespace replydoc {
 
@@ -135,7 +137,7 @@ replies::Quote quoteFromRuns(const QVariantList& stored)
         if (end >= 0)
             text.truncate(end);
         if (format.isImageFormat())
-            runs.append({emoticonText(format.toImageFormat().name()), QString()});
+            runs.append({textOf(text, format.toCharFormat()), QString()});
         else if (!text.isEmpty())
             runs.append({text, format.toCharFormat().isAnchor() ? format.toCharFormat().anchorHref() : QString()});
         if (end >= 0)
@@ -144,11 +146,41 @@ replies::Quote quoteFromRuns(const QVariantList& stored)
     return replies::parseQuote(runs);
 }
 
+// 2.2 emoji: a piece of the quote line as TeamSpeak showed it. An HD emoji goes back to its text (or to
+// TeamSpeak's emoticon picture it replaced), so the stored line never holds a picture of ChatEmoji's,
+// whose resources it drops when it goes.
+QPair<QString, QTextFormat> asReceived(const QString& text, const QTextCharFormat& format)
+{
+    if (!emojiformat::isHd(format))
+        return {text, format};
+    const QString emoji = emojiformat::originalText(format);
+    if (!emoji.isEmpty())
+        return {emoji.repeated(text.size()), emojiformat::originalFormat(format)};
+    QTextCharFormat original = emojiformat::originalFormat(format);
+    if (!original.isImageFormat()) {
+        QTextImageFormat image;
+        image.setName(emojiformat::emoticonName(format));
+        original = image;
+    }
+    return {text, original};
+}
+
 } // namespace
 
 QString objectPrefix()
 {
     return QString::fromLatin1("tsmedia-reply:");
+}
+
+QString textOf(const QString& text, const QTextCharFormat& format)
+{
+    if (emojiformat::isHd(format)) {
+        const QString emoji = emojiformat::originalText(format);
+        return (emoji.isEmpty() ? emoticonText(emojiformat::emoticonName(format)) : emoji).repeated(text.size());
+    }
+    if (format.isImageFormat())
+        return emoticonText(format.toImageFormat().name()).repeated(qMax(1, static_cast<int>(text.count(QChar::ObjectReplacementCharacter))));
+    return text;
 }
 
 QString emoticonText(const QString& imageName)
@@ -293,7 +325,7 @@ Message parseBlock(const QTextBlock& block)
                     if (from >= to)
                         continue;
                     if (p.format.isImageFormat()) {
-                        runs.append({emoticonText(p.format.toImageFormat().name()), QString()});
+                        runs.append({textOf(p.text.mid(from - p.start, to - from), p.format), QString()});
                         continue;
                     }
                     if (p.format.isAnchor() && !isClientLink(p.format))
@@ -319,7 +351,7 @@ Message parseBlock(const QTextBlock& block)
         if (p.end <= m.textStart)
             continue;
         if (p.format.isImageFormat()) {
-            body += emoticonText(p.format.toImageFormat().name());
+            body += textOf(p.text, p.format); // emoticons and HD emoji as their text
             continue;
         }
         if (isFileLink(p.format)) {
@@ -377,8 +409,9 @@ bool collapse(QTextDocument* doc, const Message& m, const QString& name, const Q
         const int to   = qMin(p.end, m.quoteEnd);
         if (from >= to)
             continue;
-        runs << p.text.mid(from - p.start, to - from);
-        runs << static_cast<QVariant>(static_cast<const QTextFormat&>(p.format));
+        const QPair<QString, QTextFormat> received = asReceived(p.text.mid(from - p.start, to - from), p.format);
+        runs << received.first;
+        runs << static_cast<QVariant>(received.second);
     }
     if (runs.isEmpty())
         return false;
@@ -431,7 +464,10 @@ bool restore(QTextDocument* doc, int position)
     for (int i = 0; i + 1 < runs.size(); i += 2) {
         const QTextFormat f = qvariant_cast<QTextFormat>(runs.at(i + 1));
         if (f.isImageFormat()) {
-            c.insertImage(f.toImageFormat());
+            // One picture per character (two smileys in a row are one piece).
+            const int count = qBound(1, static_cast<int>(runs.at(i).toString().count(QChar::ObjectReplacementCharacter)), 64);
+            for (int k = 0; k < count; ++k)
+                c.insertImage(f.toImageFormat());
             continue;
         }
         c.insertText(runs.at(i).toString(), f.toCharFormat());

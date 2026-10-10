@@ -1193,6 +1193,19 @@ QList<Sample> buildSamples()
                 view({{fire, 2}, {up, 1}}, 1 << up), cardHover);
         reacted(QStringLiteral("reactions_audio_none_hover"), QStringLiteral("reactions: audio card hovered, none yet (no button)"), audioPicture, ReactionView(),
                 cardHover);
+        // 2.2 integration: any emoji as a reaction on an album, a hidden spoiler (it stays covered) and an
+        // audio card.
+        reacted(QStringLiteral("reactions_album_emoji"), QStringLiteral("reactions: album, any emoji (HD), one yours"), albumPicture,
+                view({{heart, 2}, {other("1f923"), 3}, {other("1f355"), 1}}, 0, {emoji::fromWireCode("1f355")}), hover);
+        const Picture spoilerPicture = [=](const PreviewStyle& st, QSize* ls) {
+            PreviewStyle covered   = st;
+            covered.concealOpacity = 1.0;
+            return renderPreview(photoReady, pictureStill(photo, MediaStill::Full, stillPixels(photoReady, covered)), covered, ls);
+        };
+        reacted(QStringLiteral("reactions_spoiler_emoji"), QStringLiteral("reactions: hidden spoiler, any emoji (still covered)"), spoilerPicture,
+                view({{fire, 1}, {other("1f440"), 4}, {other("1f92f"), 2}}, 1 << fire), hover);
+        reacted(QStringLiteral("reactions_audio_emoji"), QStringLiteral("reactions: audio card, any emoji"), audioPicture,
+                view({{other("1f3b6"), 2}, {up, 1}, {other("1f525"), 1}}, 0, {emoji::fromWireCode("1f3b6")}), cardHover);
         // The pictures themselves, large and at pill size, to look at the drawing (2.2 emoji: HD on top, the
         // vector pictures used without the colour renderer below). 64 px at a 70 px step: the sample stays
         // inside the contact sheet's 430 px column.
@@ -1399,6 +1412,17 @@ QList<Sample> buildSamples()
         add(QStringLiteral("reply_line_persian"), QStringLiteral("reply line: Persian"), replyLine(QStringLiteral("مهدی"), QStringLiteral("سلام، امشب بازی داریم؟"), false, true, false, blue), 520);
         add(QStringLiteral("reply_line_mixed"), QStringLiteral("reply line: Persian and English mixed"),
             replyLine(QStringLiteral("Ali"), QStringLiteral("سلام دنیا and hello"), false, true, false, blue), 520);
+        // 2.2 integration: HD emoji in the snippet and the name (where their glyphs would be).
+        add(QStringLiteral("reply_line_emoji"), QStringLiteral("reply line: emoji in the snippet (HD)"),
+            replyLine(QStringLiteral("Alice"), QStringLiteral("Pizza 🍕 tonight? Bring snacks 🎉 :)"), false, true, false, blue), 520);
+        add(QStringLiteral("reply_line_emoji_hover"), QStringLiteral("reply line: emoji in the snippet, hovered"),
+            replyLine(QStringLiteral("Alice"), QStringLiteral("Pizza 🍕 tonight? Bring snacks 🎉 :)"), false, true, true, blue), 520);
+        add(QStringLiteral("reply_line_emoji_only"), QStringLiteral("reply line: to a message of only emoji"),
+            replyLine(QStringLiteral("Reza"), QStringLiteral("😂😂😂"), false, true, false, QColor(0x3a, 0xd3, 0x5f)), 520);
+        add(QStringLiteral("reply_line_emoji_name_lost"), QStringLiteral("reply line: emoji in the name, original gone"),
+            replyLine(QStringLiteral("Sara 🌸"), QStringLiteral("see you there 👋🏽"), false, false, false, QColor()), 520);
+        add(QStringLiteral("reply_line_emoji_narrow"), QStringLiteral("reply line: emoji, narrow chat (elided)"),
+            replyLine(QStringLiteral("Alice"), QStringLiteral("🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕🍕"), false, true, false, blue), 220);
     }
     return list;
 }

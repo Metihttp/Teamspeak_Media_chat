@@ -20,16 +20,23 @@
 //    of the view stays where it was.
 //  * Copying: Ctrl+C on a selection with HD emoji copies the text with the emoji (and TeamSpeak's
 //    emoticon codes) back in place; a copy made through TeamSpeak's own menu is corrected the same way.
-//    A right click on an HD emoji offers "Copy emoji", "Copy text" and "Use in the chat input".
+//  * The chat menu: ChatReplies puts emojiActions() and copyTextAction() into TeamSpeak's own menu
+//    (or its small one when TeamSpeak shows none) next to "Reply": one mechanism for both. On an HD
+//    emoji that is its name, "Copy emoji" and "Use in the chat input"; on a message "Copy text".
 //  * The pointer over an emoji shows its name.
+//  * A reply line (replydoc.h) at a block's start is left alone; a message that is a reply is judged
+//    without it (a reply of only emoji is large too). Formats: emojiformat.h.
 
 #include <QHash>
+#include <QList>
 #include <QObject>
+#include <QPoint>
 #include <QPointer>
 #include <QSet>
 #include <QTextCursor>
 #include <QVector>
 
+class QAction;
 class QMenu;
 class QTextBlock;
 class QTextBrowser;
@@ -54,6 +61,16 @@ class ChatEmoji : public QObject
     // True while this edits a document (ChatIntegration doesn't rescan for those changes).
     static bool isMutating();
 
+    // ---- the chat menu (2.2 reply: ChatReplies injects these with its own items) ---------------------
+    // The HD emoji at viewportPos in browser's viewport, or -1.
+    int emojiUnder(QTextBrowser* browser, const QPoint& viewportPos) const;
+    // For the HD emoji at viewportPos: its name (disabled, with its picture), "Copy emoji" and "Use in
+    // the chat input" (when there is one), parented to menu. Empty when there is no HD emoji there.
+    QList<QAction*> emojiActions(QMenu* menu, QTextBrowser* browser, const QPoint& viewportPos);
+    // "Copy text": [from, to) of browser's document with HD emoji and smileys as their text (the
+    // selection instead when the click at position is in it). Parented to menu.
+    QAction* copyTextAction(QMenu* menu, QTextBrowser* browser, int position, int from, int to);
+
     // ---- also for tests and tools ------------------------------------------------------------------
     // Everything waiting in browser's document, now (pictures drawn synchronously).
     void processNow(QTextBrowser* browser);
@@ -65,6 +82,10 @@ class ChatEmoji : public QObject
     static int countEmoji(QTextDocument* document);
     // Replaces everything in a document without a view (tests): pictures at dpr, drawn now.
     static void processDocument(QTextDocument* document, qreal dpr);
+
+  signals:
+    // This changed browser's document (positions inside its blocks moved; blocks stay where they are).
+    void documentEdited(QTextBrowser* browser);
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -102,14 +123,13 @@ class ChatEmoji : public QObject
     void  copySelection(QTextBrowser* browser);
     bool  fixClipboard();
     int   emojiAt(QTextBrowser* browser, const QPoint& viewportPos, int* position, QRect* area = nullptr) const;
-    void  showMenu(QTextBrowser* browser, int position, int id, const QPoint& globalPos);
     void  insertIntoInput(int id);
+    void  setClipboardText(const QString& text);
 
     QHash<QTextBrowser*, View> m_views;
     QVector<QPointer<QTextDocument>> m_retired; // documents a view had before a swap (TeamSpeak may keep them)
     QTimer*                    m_timer = nullptr;
     EmojiInput*                m_input = nullptr;
-    QPointer<QMenu>            m_menu;         // the emoji's context menu while it is open
     QPointer<QTextBrowser>     m_copyBrowser;  // TeamSpeak's own menu (or its copy shortcut) was used in it ...
     qint64                     m_copyMs = 0;   // ... at this time: the copy that follows is corrected
     bool                       m_settingClipboard = false;

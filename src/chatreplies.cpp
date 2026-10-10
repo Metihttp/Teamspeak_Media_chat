@@ -31,7 +31,9 @@
 #include <algorithm>
 #include <functional>
 
+#include "chatemoji.h" // 2.2 emoji: its items in the chat menu
 #include "chatintegration.h"
+#include "emojitext.h" // 2.2 emoji: whether names and snippets show HD emoji
 #include "i18n.h"
 #include "medialink.h" // kMaxMessageBytes
 #include "replybar.h"
@@ -42,6 +44,7 @@
 namespace {
 
 constexpr int   kRelayoutMs   = 120;
+constexpr int   kReindexMs    = 400; // after ChatEmoji's last edit (it works through a history in steps)
 constexpr int   kStyleCheckMs = 1000;
 constexpr int   kMaxRendered  = 48; // reply line pictures kept per chat before those far off screen go
 constexpr int   kWatchMs      = 300;
@@ -208,6 +211,22 @@ ChatReplies::ChatReplies(ChatIntegration* chat, Core* core)
     m_watch = new QTimer(this);
     m_watch->setInterval(kWatchMs);
     connect(m_watch, &QTimer::timeout, this, &ChatReplies::watchPending);
+
+    // 2.2 emoji: HD emoji came or went in a chat; once ChatEmoji pauses, its blocks are read again (the
+    // header line heights may have changed) and the reply lines laid out anew.
+    m_reindex = new QTimer(this);
+    m_reindex->setSingleShot(true);
+    m_reindex->setInterval(kReindexMs);
+    connect(m_reindex, &QTimer::timeout, this, [this] {
+        for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+            if (!it->stale)
+                continue;
+            it->stale = false;
+            QTextBrowser* browser = it.key();
+            index(it.value(), browser->document());
+            refreshLines(browser);
+        }
+    });
 
     m_catcher = new ReplyMenuCatcher(this);
 }
@@ -456,6 +475,15 @@ int ChatReplies::lineAt(QTextBrowser* browser, const QPoint& viewportPos, QRectF
     return -1;
 }
 
+void ChatReplies::documentEdited(QTextBrowser* browser)
+{
+    View* view = viewOf(browser);
+    if (!view || !view->indexed)
+        return;
+    view->stale = true;
+    m_reindex->start(); // again: one read once the edits pause
+}
+
 // ============================================================================================
 // Drawing the reply lines
 // ============================================================================================
@@ -477,7 +505,9 @@ ChatReplies::Style ChatReplies::styleOf(QTextBrowser* browser) const
 
 QString ChatReplies::keyOf(const Style& style)
 {
-    return QStringList{QString::number(style.dark), style.base.name(), style.font.toString(), QString::number(style.dpr), QString::number(style.maxWidth)}.join(QLatin1Char('|'));
+    return QStringList{QString::number(style.dark), style.base.name(), style.font.toString(), QString::number(style.dpr), QString::number(style.maxWidth),
+                       QString::number(emoji::textPicturesEnabled())} // 2.2 emoji: HD emoji turned on or off
+        .join(QLatin1Char('|'));
 }
 
 replyart::Header ChatReplies::headerFor(const View& view, int message) const
@@ -527,8 +557,11 @@ replyart::HeaderStyle ChatReplies::headerStyle(QTextBrowser* browser, const Styl
                 line = layout->lineAt(index).height();
         }
     }
-    if (line <= 0)
-        line = QFontMetricsF(font).height();
+    // 2.2 emoji: a message of only emoji has 48 px emoji in its header line; the reply line above it
+    // stays one text line high.
+    const qreal plain = QFontMetricsF(font).height();
+    if (line <= 0 || line > plain * 1.6)
+        line = plain;
     hs.lineHeight = qMax(8.0, line - QFontMetricsF(font).descent());
     hs.hovered    = m_hoverIn == browser && !m.object.isEmpty() && m_hoverObject == m.object;
     hs.pressed    = hs.hovered && m_pressIn == browser && m_pressObject == m.object;
@@ -546,7 +579,7 @@ QString ChatReplies::signatureOf(const Line& line)
     const replyart::HeaderStyle& hs = line.style;
     return QStringList{h.nick, h.snippet, QString::number(h.media), QString::number(h.found), h.nickColor.name(), QString::number(line.size.width()),
                        QString::number(line.size.height()), QString::number(hs.dpr), QString::number(hs.dark), hs.base.name(), QString::number(hs.hovered),
-                       QString::number(hs.pressed), hs.font.toString()}
+                       QString::number(hs.pressed), hs.font.toString(), QString::number(emoji::textPicturesEnabled())}
         .join(QLatin1Char('|'));
 }
 
@@ -602,6 +635,11 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
         batch.beginEditBlock();
         for (const Resize& r : qAsConst(resizes)) {
             replydoc::Message& m = view->messages[r.message];
+            // By its block: HD emoji may have moved positions since the index was read (never blocks).
+            const QTextBlock block = doc->findBlockByNumber(m.block);
+            if (!block.isValid())
+                continue;
+            m.position = block.position();
             replydoc::resizeObject(doc, m.position, r.size);
             m.objectSize = r.size; // a format change: no position moved
         }
@@ -615,20 +653,18 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
     browser->viewport()->update();
 }
 
-// The document positions from the first block the viewport shows (margin: that many viewport heights
-// more above and below) to the last one.
-QPair<int, int> ChatReplies::positionsShown(QTextBrowser* browser, qreal margin) const
+// The numbers of the first and the last block the viewport shows (margin: that many viewport heights more
+// above and below). Block numbers, not positions: ChatEmoji's edits move positions inside blocks without
+// telling ChatIntegration, but never blocks.
+QPair<int, int> ChatReplies::blocksShown(QTextBrowser* browser, qreal margin) const
 {
     QTextDocument*               doc    = browser->document();
     QAbstractTextDocumentLayout* layout = doc->documentLayout();
     const qreal                  y      = browser->verticalScrollBar()->value();
     const qreal                  height = browser->viewport()->height();
-    int                          from   = layout->hitTest(QPointF(0, qMax(0.0, y - margin * height)), Qt::FuzzyHit);
-    int                          to     = layout->hitTest(QPointF(browser->viewport()->width(), y + height + margin * height), Qt::FuzzyHit);
-    from                                = from < 0 ? 0 : doc->findBlock(from).position();
-    if (to < 0)
-        to = doc->characterCount();
-    return {from, to};
+    const int                    from   = layout->hitTest(QPointF(0, qMax(0.0, y - margin * height)), Qt::FuzzyHit);
+    const int                    to     = layout->hitTest(QPointF(browser->viewport()->width(), y + height + margin * height), Qt::FuzzyHit);
+    return {from < 0 ? 0 : doc->findBlock(from).blockNumber(), to < 0 ? doc->blockCount() - 1 : doc->findBlock(to).blockNumber()};
 }
 
 // Called right before the chat paints (and after every refresh): the reply lines on screen get their
@@ -638,10 +674,10 @@ void ChatReplies::renderVisible(QTextBrowser* browser, View& view)
     if (view.lines.isEmpty() || view.messages.isEmpty() || view.document != browser->document())
         return;
     QTextDocument*        doc   = browser->document();
-    const QPair<int, int> shown = positionsShown(browser, 0.0);
-    auto it = std::lower_bound(view.messages.cbegin(), view.messages.cend(), shown.first, [](const replydoc::Message& m, int position) { return m.position < position; });
+    const QPair<int, int> shown = blocksShown(browser, 0.0);
+    auto it = std::lower_bound(view.messages.cbegin(), view.messages.cend(), shown.first, [](const replydoc::Message& m, int block) { return m.block < block; });
     bool drew = false;
-    for (; it != view.messages.cend() && it->position <= shown.second; ++it) {
+    for (; it != view.messages.cend() && it->block <= shown.second; ++it) {
         if (!it->restyled)
             continue;
         const auto line = view.lines.constFind(it->object);
@@ -665,10 +701,10 @@ void ChatReplies::evict(QTextBrowser* browser, View& view)
     if (view.rendered.isEmpty() || view.document != browser->document())
         return;
     QTextDocument*        doc  = browser->document();
-    const QPair<int, int> keep = positionsShown(browser, 1.0);
+    const QPair<int, int> keep = blocksShown(browser, 1.0);
     for (auto it = view.rendered.begin(); it != view.rendered.end();) {
         const int  message = view.byObject.value(it.key(), -1);
-        const bool near    = message >= 0 && view.messages.at(message).position >= keep.first && view.messages.at(message).position <= keep.second;
+        const bool near    = message >= 0 && view.messages.at(message).block >= keep.first && view.messages.at(message).block <= keep.second;
         if (near) {
             ++it;
             continue;
@@ -885,13 +921,16 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
 
 void ChatReplies::prepareMenu(QTextBrowser* browser, const QPoint& pos, const QPoint& globalPos)
 {
-    m_menu           = MenuContext();
-    const int message = messageAt(browser, pos);
-    if (message < 0)
-        return; // not on a message (blank space, a status line, one of our own prints)
+    m_menu             = MenuContext();
+    const int  message = messageAt(browser, pos);
+    const bool onEmoji = m_chat->m_emoji && m_chat->m_emoji->emojiUnder(browser, pos) >= 0; // 2.2 emoji
+    if (message < 0 && !onEmoji)
+        return; // not on a message (blank space, a status line, one of our own prints) nor an HD emoji
     m_menu.browser   = browser;
-    m_menu.block     = viewOf(browser)->messages.at(message).block;
+    m_menu.block     = message >= 0 ? viewOf(browser)->messages.at(message).block : -1;
+    m_menu.pos       = pos;
     m_menu.globalPos = globalPos;
+    m_menu.onEmoji   = onEmoji;
     arm();
     // Posted twice: the check runs once TeamSpeak's handler returned and once whatever that handler
     // posted ran too (a menu opened from a queued call is caught as well, instead of ours showing next to
@@ -905,7 +944,7 @@ void ChatReplies::prepareMenu(QTextBrowser* browser, const QPoint& pos, const QP
             if (serial != m_menuSerial)
                 return;
             disarm();
-            if (!m_menu.handled && m_menu.browser && m_menu.block >= 0 && !QApplication::activePopupWidget())
+            if (!m_menu.handled && m_menu.browser && (m_menu.block >= 0 || m_menu.onEmoji) && !QApplication::activePopupWidget())
                 showFallbackMenu();
         });
     });
@@ -930,10 +969,10 @@ void ChatReplies::disarm()
 void ChatReplies::inject(QMenu* menu)
 {
     disarm();
-    if (m_menu.handled || !m_menu.browser || m_menu.block < 0)
+    if (m_menu.handled || !m_menu.browser || (m_menu.block < 0 && !m_menu.onEmoji))
         return;
     m_menu.handled              = true;
-    const QList<QAction*> ours  = actionsFor(menu, m_menu.browser, m_menu.block, m_menu.globalPos);
+    const QList<QAction*> ours  = actionsFor(menu, true);
     if (ours.isEmpty())
         return;
     // Caught at Show: a menu TeamSpeak keeps and shows again, placed for its old size already.
@@ -980,15 +1019,44 @@ void ChatReplies::dropInjected()
     m_injected.clear();
 }
 
-QList<QAction*> ChatReplies::actionsFor(QMenu* menu, QTextBrowser* browser, int block, const QPoint& globalPos)
+QList<QAction*> ChatReplies::actionsFor(QMenu* menu, bool chatMenu)
 {
     QList<QAction*> actions;
-    View*           view = viewOf(browser);
-    const int       idx  = view ? view->byBlock.value(block, -1) : -1;
-    if (idx < 0)
+    QTextBrowser*   browser = m_menu.browser;
+    if (!menu || !browser)
         return actions;
-    const qreal                  dpr = menu->devicePixelRatioF();
+    const int                    block     = m_menu.block;
+    const QPoint                 globalPos = m_menu.globalPos;
+    View*                        view      = viewOf(browser);
+    const int                    idx       = view && block >= 0 ? view->byBlock.value(block, -1) : -1;
+    ChatEmoji*                   emoji     = chatMenu ? m_chat->m_emoji : nullptr;
+    const qreal                  dpr       = menu->devicePixelRatioF();
     const QPointer<QTextBrowser> guard(browser);
+
+    // 2.2 emoji: the HD emoji right-clicked comes first: its name, "Copy emoji", "Use in the chat input".
+    if (emoji && m_menu.onEmoji) {
+        const QList<QAction*> own = emoji->emojiActions(menu, browser, m_menu.pos);
+        if (!own.isEmpty()) {
+            actions << own;
+            auto* separator = new QAction(menu);
+            separator->setSeparator(true);
+            actions << separator;
+        }
+    }
+    if (idx < 0) {
+        // Not a message (an HD emoji in a line of TeamSpeak's own): "Copy text" copies that line.
+        if (emoji) {
+            QTextDocument*   doc  = browser->document();
+            const QPointF    at(m_menu.pos.x() + browser->horizontalScrollBar()->value(), m_menu.pos.y() + browser->verticalScrollBar()->value());
+            const int        hit  = doc->documentLayout()->hitTest(at, Qt::FuzzyHit);
+            const QTextBlock line = doc->findBlock(qMax(0, hit));
+            if (QAction* copy = emoji->copyTextAction(menu, browser, hit, line.position(), line.position() + line.length() - 1))
+                actions << copy;
+        }
+        if (!actions.isEmpty() && actions.last()->isSeparator())
+            delete actions.takeLast();
+        return actions;
+    }
 
     auto* reply = new QAction(replyart::glyphIcon(replyart::Glyph::Reply, menuIconColor(), dpr), i18n::t("&Reply"), menu);
     ChatTarget target;
@@ -1014,6 +1082,19 @@ QList<QAction*> ChatReplies::actionsFor(QMenu* menu, QTextBrowser* browser, int 
         });
         actions << list;
     }
+
+    // 2.2 emoji: "Copy text": what the person wrote (no header, no quote line), with emoji and smileys as
+    // text; the selection instead when the click is in it.
+    if (emoji) {
+        QTextDocument*          doc   = browser->document();
+        const QTextBlock        tb    = doc->findBlockByNumber(block);
+        const replydoc::Message fresh = replydoc::parseBlock(tb); // positions as they are now
+        const QPointF           at(m_menu.pos.x() + browser->horizontalScrollBar()->value(), m_menu.pos.y() + browser->verticalScrollBar()->value());
+        if (tb.isValid() && fresh.block >= 0) {
+            if (QAction* copy = emoji->copyTextAction(menu, browser, doc->documentLayout()->hitTest(at, Qt::FuzzyHit), fresh.textStart, tb.position() + tb.length() - 1))
+                actions << copy;
+        }
+    }
     return actions;
 }
 
@@ -1022,7 +1103,7 @@ void ChatReplies::addPreviewMenu(QMenu* menu, QTextBrowser* browser)
     if (!menu || !browser || m_menu.browser != browser || m_menu.block < 0 || m_menu.handled)
         return;
     m_menu.handled             = true;
-    const QList<QAction*> ours = actionsFor(menu, browser, m_menu.block, m_menu.globalPos);
+    const QList<QAction*> ours = actionsFor(menu, false);
     if (ours.isEmpty())
         return;
     QAction* first = menu->actions().value(0, nullptr);
@@ -1043,7 +1124,7 @@ void ChatReplies::showFallbackMenu()
     menu->setObjectName(QString::fromLatin1("tsmediaReplyMenu"));
     menu->setAttribute(Qt::WA_DeleteOnClose);
     menu->setLayoutDirection(Qt::LeftToRight);
-    const QList<QAction*> ours = actionsFor(menu, browser, m_menu.block, m_menu.globalPos);
+    const QList<QAction*> ours = actionsFor(menu, true);
     if (ours.isEmpty()) {
         delete menu;
         return;

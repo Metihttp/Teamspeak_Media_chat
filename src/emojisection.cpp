@@ -16,7 +16,7 @@ EmojiSection::EmojiSection(QWidget* parent)
     m_colour    = emoji::hasColor();
     auto* group = new QGroupBox(i18n::t("Emoji"), this);
 
-    m_hd = new QCheckBox(i18n::t("Show emoji in &high quality in the chat"), group);
+    m_hd = new QCheckBox(i18n::t("Show emoji in high &quality in the chat"), group);
     QLabel* hdHint =
         hint(m_colour ? i18n::t("Emoji and TeamSpeak's smileys like :) show as sharp, colorful pictures. Everyone with TS Media sees them like this; "
                                 "people without it see TeamSpeak's own.")
@@ -24,7 +24,7 @@ EmojiSection::EmojiSection(QWidget* parent)
              group);
     m_hd->setAccessibleDescription(hdHint->text());
 
-    m_jumbo = new QCheckBox(i18n::t("Show messages of only emoji &large"), group);
+    m_jumbo = new QCheckBox(i18n::t("Show messages of only emoji lar&ge"), group);
     QLabel* jumboHint = hint(i18n::t("Up to 27 emoji with nothing else in the message, like in Discord."), group);
     m_jumbo->setAccessibleDescription(jumboHint->text());
 

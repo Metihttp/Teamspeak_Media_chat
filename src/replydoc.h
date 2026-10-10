@@ -10,6 +10,10 @@
 // reply line sits above the message's header, and the message keeps its number of lines. The picture's
 // format keeps the quote line's text and formats, so restore() gives it back exactly (plugin unload,
 // TeamSpeak's own copy of the chat stays as it was received).
+//
+// 2.2 emoji: ChatEmoji's HD pictures (emojiformat.h) read as the emoji or smiley they stand for, and a
+// quote line taken out keeps them as TeamSpeak showed them (the emoji's text, TeamSpeak's emoticon), so
+// giving either back never leaves a picture of the other behind.
 
 #include <QColor>
 #include <QSizeF>
@@ -25,12 +29,13 @@ class QTextDocument;
 
 namespace replydoc {
 
-// Our reply line picture: an image named objectPrefix() + id, with these properties.
+// Our reply line picture: an image named objectPrefix() + id, with these properties (other than the HD
+// emoji's 0x7460-0x7463, emojiformat.h, and the previews' and albums' 0x7453-0x7456).
 QString        objectPrefix(); // "tsmedia-reply:"
-constexpr int  kObjectProperty    = QTextFormat::UserProperty + 0x7460; // 1 on our picture
-constexpr int  kRunsProperty      = QTextFormat::UserProperty + 0x7461; // the quote line: text, QTextFormat, text, ...
-constexpr int  kOffsetProperty    = QTextFormat::UserProperty + 0x7462; // where it was, from the block start
-constexpr int  kSeparatorProperty = QTextFormat::UserProperty + 0x7463; // our line break after the picture
+constexpr int  kObjectProperty    = QTextFormat::UserProperty + 0x7470; // 1 on our picture
+constexpr int  kRunsProperty      = QTextFormat::UserProperty + 0x7471; // the quote line: text, QTextFormat, text, ...
+constexpr int  kOffsetProperty    = QTextFormat::UserProperty + 0x7472; // where it was, from the block start
+constexpr int  kSeparatorProperty = QTextFormat::UserProperty + 0x7473; // our line break after the picture
 constexpr int  kMaxBlocks         = 4000; // the newest blocks of a chat that are read (older ones: as TeamSpeak shows them)
 
 struct Message {
@@ -66,6 +71,9 @@ Message parseBlock(const QTextBlock& block);
 // The text of an emoticon picture TeamSpeak put in place of ":)" ("emoticons:smile.svg" -> ":)"); empty
 // for any other picture.
 QString emoticonText(const QString& imageName);
+// What a piece of a block with this format stands for as text: an HD emoji's emoji or smiley code (once
+// per character, each is one picture), an emoticon's code, nothing for other pictures, else text itself.
+QString textOf(const QString& text, const QTextCharFormat& format);
 
 // ---- edits (the caller keeps ChatIntegration's "mutating" flag set) -------------------------------------
 // Several edits in a row belong in one edit block of the caller's (QTextCursor::beginEditBlock): the

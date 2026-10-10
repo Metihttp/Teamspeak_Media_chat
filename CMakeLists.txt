@@ -171,7 +171,8 @@ add_library(tsmedia SHARED
     src/emojiprefs.cpp        src/emojiprefs.h
     src/emojipicker.cpp       src/emojipicker.h
     src/emojiinput.cpp        src/emojiinput.h
-    src/chatemoji.cpp         src/chatemoji.h
+    src/chatemoji.cpp         src/chatemoji.h       src/emojiformat.h
+    src/emojitext.cpp         src/emojitext.h
     src/emojisection.cpp      src/emojisection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
@@ -319,6 +320,8 @@ if(TSMEDIA_BUILD_TESTS)
         src/chatemoji.cpp         # the document part (QTextDocument only in the tests)
         src/emojiinput.cpp
         src/emojipicker.cpp
+        src/emojitext.cpp         # HD emoji in the reply line, bar and popup
+        tests/tst_replyemoji.cpp  # 2.2 integration: replies and HD emoji in the same chat
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
@@ -431,9 +434,11 @@ if(TSMEDIA_BUILD_TOOLS)
         src/reactions.cpp
         src/peerprotocol.cpp
         src/replyart.cpp # 2.2 reply: reply lines
-        # 2.2 emoji: HD reaction pictures
+        # 2.2 emoji: HD reaction pictures, HD emoji in reply lines
         src/emojirender.cpp
         src/emojidata.cpp
+        src/emojisegment.cpp
+        src/emojitext.cpp
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})

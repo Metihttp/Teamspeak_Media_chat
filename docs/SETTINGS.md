@@ -62,7 +62,7 @@ See [emoji](USAGE.md#emoji) for the picker and HD emoji in the chat.
 
 | Setting | Default | Range and notes |
 | --- | --- | --- |
-| Show emoji in high quality in the chat | on | Emoji and TeamSpeak's smileys show as HD pictures (Windows' Segoe UI Emoji, drawn with DirectWrite), also in reactions. Greyed out on a PC without a color emoji font. Off: every chat goes back to TeamSpeak's own emoji and smileys at once. |
+| Show emoji in high quality in the chat | on | Emoji and TeamSpeak's smileys in messages show as HD pictures (Windows' Segoe UI Emoji, drawn with DirectWrite), and so do emoji in reply lines, the reply bar and *View replies*. Greyed out on a PC without a color emoji font. Off: every chat goes back to TeamSpeak's own emoji and smileys at once. Reactions are pictures either way. |
 | Show messages of only emoji large | on | Up to 27 emoji with nothing else in the message show at 48 px. Only while the option above is on. |
 | Show the emoji button in the chat input | on | The smiley at the right end of TeamSpeak's chat input. <kbd>Ctrl</kbd>+<kbd>E</kbd> opens the picker either way. |
 

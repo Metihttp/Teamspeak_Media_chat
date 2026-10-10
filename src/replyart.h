@@ -61,7 +61,8 @@ QColor headerNameColor(const Header& header, const HeaderStyle& style);
 
 // One piece of text (a name, a snippet) starting at x on baseline y, in its own direction: a Persian
 // snippet reads right to left in its place while the line around it stays left to right (as
-// previewrenderer's drawFileName). Uses the painter's font; fm must be its metrics.
+// previewrenderer's drawFileName). Emoji are HD pictures (emojitext.h). Uses the painter's font; fm
+// must be its metrics.
 void drawRun(QPainter& p, qreal x, qreal baseline, const QFontMetricsF& fm, const QString& text);
 
 // ---- glyphs (stroke style of the plugin's other icons) ------------------------------------------------

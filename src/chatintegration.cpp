@@ -321,6 +321,9 @@ void ChatIntegration::start()
     m_voice = new VoiceController(this, m_core, this); // 2.2 voice
     m_replies   = new ChatReplies(this, m_core);   // 2.2 reply
     m_emoji     = new ChatEmoji(this);             // 2.2 emoji
+    // 2.2 integration: HD emoji move positions inside a chat's blocks without a rescan; the replies'
+    // index of that chat is read again.
+    connect(m_emoji, &ChatEmoji::documentEdited, m_replies, &ChatReplies::documentEdited);
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));

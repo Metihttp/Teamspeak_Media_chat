@@ -9,6 +9,7 @@ Where your files go, what other people learn about you, what stays on your compu
 - Files go only to your TeamSpeak server, with TeamSpeak's own file transfer.
 - The only web request the plugin makes is the update check, to GitHub, and only after you agree.
 - People in your channel learn that you have TS Media chat and its version, and see your reactions. Both go through TeamSpeak and can be turned off.
+- A reply is an ordinary chat message that quotes the start of the original and names its author.
 - The microphone is used only while the *Voice message* window shows *Recording*.
 - No telemetry, no accounts, no analytics.
 
@@ -18,12 +19,19 @@ Where your files go, what other people learn about you, what stays on your compu
 - **Channel members can open what you send.** Anyone on the server with download permission for that channel can get the file. Treat sent files like any other file in the file browser: they stay on the server until someone deletes them.
 - **The chat message is an ordinary TeamSpeak message.** It holds the file link with the file's size, picture size, duration, a blurred placeholder, the path of its preview, its SHA-256 and, where they apply, the spoiler, album and voice message marks. Everyone who can read the chat can read it, with or without the plugin.
 
+## Replies and emoji
+
+- **A reply quotes the original.** Its first line names the original's author with a TeamSpeak client link (the same kind TeamSpeak puts into the chat when you drag a client there, with their client ID and unique ID), the time and up to about 60 characters of the original message. It goes to the chat you reply in, like any message you type, and everyone in that chat can read it, with or without the plugin. Files sent as a reply carry the same line.
+- **Replies are matched on your computer.** Finding the original only compares the text, the author and the time of messages already in your chat. Nothing is asked of the server or of other people, and a quote line is never fetched or followed.
+- **HD emoji are drawn on your computer** with Windows' own emoji font; nothing is downloaded. Messages stay plain text with Unicode emoji, so people without the plugin see TeamSpeak's own emoji.
+- **Reactions with any emoji** travel the same way as the six classic ones (see below), as emoji codes. The emoji picker's recently used emoji and skin tone stay on your computer (`emoji.ini`).
+
 ## What your channel sees
 
 TS Media chat talks to other copies of itself with TeamSpeak's plugin commands. They go through your TeamSpeak server to the people in your channel, or to one private-chat partner, never to the whole server and never to the internet. Clients without TS Media chat ignore them.
 
 - **Presence.** When you enter a channel, the plugin says hello to the people there, and to a private-chat partner when you send them something: *I have TS Media chat*, its version (for example `2.2.0`) and which features it supports. That is how the send window can say *3 of 5 people here will see it in the chat*. When you turn it off, or the plugin unloads, it says goodbye. Turn it off with **Settings → Privacy & updates → Tell people in your channel that you have TS Media**.
-- **Reactions.** Your reactions go to the people with TS Media who are online in the same channel or private chat: which reactions you picked on which media item (named by a hash of its link). Someone who comes in later asks the people present for their own reactions; nobody ever passes on someone else's. Reactions are not stored on the server. Turn them off with **Settings → Privacy & updates → Show reactions on media**: none are then shown or sent.
+- **Reactions.** Your reactions go to the people with TS Media who are online in the same channel or private chat: which emoji you picked on which media item (named by a hash of its link). Someone who comes in later asks the people present for their own reactions; nobody ever passes on someone else's. Reactions are not stored on the server. Turn them off with **Settings → Privacy & updates → Show reactions on media**: none are then shown or sent.
 - **Who sent it** is always the identity the TeamSpeak server reports, never something written inside a message, so nobody can react or say hello in your name.
 - What others see comes from their messages, checked the same way: reactions on channel media are accepted only from people in your channel, private ones only from the partner of that private chat, and nothing from ServerQuery clients.
 
@@ -44,7 +52,7 @@ Everything below is in `%APPDATA%\TS3Client\plugins\tsmedia` (a portable TeamSpe
 - **Saved reactions** (`reactions.json`): the reactions you have seen, with the TeamSpeak unique ID and nickname of each person who reacted, for at most 30 days and 500 media items. **Clear cache** deletes them.
 - **The plugin's log** (`logs\tsmedia.log`, up to 256 KB, plus one older copy `tsmedia.1.log`): the same lines TeamSpeak's own log gets from the plugin, so it contains the names of files you send and receive, local paths, and server, channel and nicknames where a line mentions them. Those values are marked in the file, so the diagnostic info can leave them out. The log never leaves your computer by itself.
 - **Diagnostic info** (`/tsmedia diag`) is built only when you open it and leaves your computer only if you paste it somewhere. It shows exactly what *Copy* copies: plugin, Qt, TeamSpeak and Windows versions, which video and audio codecs Windows has, your settings (custom folders and links only as "changed"), counts of this session's transfers, file checks, presence and reactions, and the recent TS Media lines of the log. File names and paths in those lines read `<file 1>`, `<path 1>` unless you tick *Include file names* (your user folder then shows as `%USERPROFILE%`). Server addresses, server and channel names, unique IDs and nicknames are never included. *Copy and open bug report* opens GitHub's form in your browser with only the version fields filled in.
-- **Settings** (`settings.ini`), including the servers you gave their own settings, by their ID and name.
+- **Settings** (`settings.ini`), including the servers you gave their own settings, by their ID and name, and the emoji picker's recently used emoji and skin tone (`emoji.ini`).
 
 ## The microphone (voice messages)
 
@@ -87,7 +95,9 @@ Anyone can type a TeamSpeak file link with fake metadata, so the plugin checks e
 - File names are sanitised before they touch the disk, for the cache, *Save as* and dragged-out copies alike.
 - Control and bidirectional-text characters are removed from displayed names and captions, so a name can't disguise its real extension.
 - A download whose size doesn't match the link is discarded.
-- Plugin commands from other clients are size- and rate-limited and checked field by field before anything is stored.
+- Plugin commands from other clients are size- and rate-limited and checked field by field before anything is stored. Reaction emoji must be emoji of the plugin's own table, at most 10 per person and item.
+- A reply's quote line counts only when it has exactly the expected form; one with any other link in it is shown as ordinary text. Names and snippets read from the chat lose control and bidirectional-text characters before they are drawn.
+- At most 400 emoji per message become HD pictures, and the chat is worked through a few milliseconds at a time, so a message full of emoji can't freeze TeamSpeak.
 
 ## Automatic downloads are limited
 

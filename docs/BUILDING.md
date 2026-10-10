@@ -62,7 +62,7 @@ cmake --build build --config Release
 
 ## Unit tests
 
-The 64-bit build also builds `tsmedia_tests`, one executable with a test class per area: link format and chat messages, the send pipeline against a fake TeamSpeak (`tests/fakets3.*`), file checks, albums, spoilers, presence and reactions, audio, drag-out and per-server settings, the server group, diagnostics and the updater (signed test vectors in `tests/data/update`). Run them from a *Developer PowerShell for VS 2022*:
+The 64-bit build also builds `tsmedia_tests`, one executable with a test class per area: link format and chat messages, the send pipeline against a fake TeamSpeak (`tests/fakets3.*`), file checks, albums, spoilers, presence and reactions, replies, emoji (the table, the renderer, HD emoji in chat documents, together with reply lines), audio, drag-out and per-server settings, the server group, diagnostics and the updater (signed test vectors in `tests/data/update`). Run them from a *Developer PowerShell for VS 2022*:
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure

@@ -7,6 +7,7 @@
 
 #include <cmath>
 
+#include "emojitext.h" // 2.2 emoji: HD emoji in names and snippets
 #include "uiutil.h"
 
 namespace replyart {
@@ -133,11 +134,8 @@ QFont scaledFont(const QFont& chatFont, qreal factor)
 
 void drawRun(QPainter& p, qreal x, qreal baseline, const QFontMetricsF& fm, const QString& text)
 {
-    if (text.isEmpty())
-        return;
-    const int    direction = text.isRightToLeft() ? Qt::TextForceRightToLeft : Qt::TextForceLeftToRight;
-    const QRectF box(x, baseline - fm.ascent(), fm.horizontalAdvance(text) + 2.0, fm.ascent() + fm.descent());
-    p.drawText(box, Qt::AlignLeft | Qt::AlignTop | Qt::TextSingleLine | direction, text);
+    // 2.2 emoji: the table's emoji as HD pictures in their glyphs' places (same widths and direction).
+    emoji::drawTextLine(p, x, baseline, fm, text, text.isRightToLeft());
 }
 
 QColor headerNameColor(const Header& header, const HeaderStyle& style)

@@ -2,11 +2,12 @@
 
 [← Back to README](../README.md)
 
-How to send files and voice messages, what you see in the chat, how the gallery viewer works, and the chat commands.
+How to send files and voice messages, reply to messages, use HD emoji, what you see in the chat, how the gallery viewer works, and the chat commands.
 
 - [Sending files](#sending-files): [the send window](#the-send-window), [editing a picture](#editing-a-picture), [large videos](#large-videos), [upload progress](#upload-progress), [file names and folders](#file-names-and-folders)
 - [Viewing media](#viewing-media): [albums](#albums), [spoilers](#spoilers), [audio](#audio-files), [reactions](#reactions), [file checks](#file-checks), [data saver](#data-saver)
 - [Voice messages](#voice-messages)
+- [Replies](#replies) and [emoji](#emoji)
 - [Dragging files out of the chat](#dragging-files-out-of-the-chat)
 - [Right-click menu](#right-click-menu), [gallery viewer](#gallery-viewer), [chat commands](#chat-commands) and [hotkeys](#hotkeys)
 
@@ -152,9 +153,10 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 
 ### Reactions
 
-- Pictures, GIFs, videos, albums, audio files and voice messages can get six reactions: thumbs up, heart, laughing, surprised, sad and fire.
-- Point at a picture without reactions and click the round button at its top right, or the **+** pill at the end of an existing row, or right-click → **Add reaction**. The picker works with the keyboard too: arrows, <kbd>Home</kbd> / <kbd>End</kbd>, <kbd>1</kbd>–<kbd>6</kbd>, <kbd>Enter</kbd> or <kbd>Space</kbd>, <kbd>Esc</kbd>.
-- The row under the media shows each reaction with its count; yours is highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Sara and Reza*).
+- Pictures, GIFs, videos, albums, audio files and voice messages (spoilers too, which stay covered) can get reactions with any emoji, drawn as HD pictures.
+- Point at a picture without reactions and click the round button at its top right, or the **+** pill at the end of an existing row, or right-click → **Add reaction**. The quick row offers eight: 👍 ❤️ 😂 😮 😢 🔥 and your two most recent other emoji. Its **+** opens the [emoji picker](#emoji) for any other one; there, a pick adds or removes that reaction, and your reactions are marked. The quick row works with the keyboard too: arrows, <kbd>Home</kbd> / <kbd>End</kbd>, <kbd>1</kbd>–<kbd>8</kbd>, <kbd>+</kbd> for the picker, <kbd>Enter</kbd> or <kbd>Space</kbd>, <kbd>Esc</kbd>. The right-click menu's **Add reaction** lists the quick ones, your others and **More reactions…**.
+- The row under the media shows each reaction with its count, in the order they first appeared; yours are highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Sara and Reza*). Everyone can add up to 10 reactions to one item, and an item shows up to 20 different ones.
+- People on an older 2.2 build see only the six classic reactions (👍 ❤️ 😂 😮 😢 🔥).
 - Reactions go through TeamSpeak, never to the server's files: people with TS Media 2.2 or later who are online in the same channel or private chat see them right away. Someone who comes in later sees the reactions of the people who are still there. They aren't available in the server chat.
 - If a reaction can't be sent (not connected, TeamSpeak limiting messages, plugin commands blocked on the server), it is taken back and the tooltip says why.
 - Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions on media* (Privacy & updates) turns reactions off: none are shown or sent.
@@ -220,7 +222,19 @@ Right-click any preview or card. The item in bold is what a click on the preview
 | Copy image | downloaded images and GIFs (confirms *Image copied*) |
 | Copy link | always (copies the `ts3file://` link and confirms *Link copied*) |
 | Copy details | files that don't match what was sent (both checksums and the path) |
-| Add reaction | pictures, GIFs, videos, albums, audio and voice messages, outside the server chat (with counts and who reacted) |
+| Add reaction | pictures, GIFs, videos, albums, audio and voice messages, outside the server chat (with counts and who reacted, and *More reactions…* for any emoji) |
+| Reply / View N replies | at the top, for the message the preview is in ([replies](#replies)) |
+
+Right-click a message itself (not a preview) and TeamSpeak's own chat menu opens, with these at its top:
+
+| Item | Shown for |
+| --- | --- |
+| Reply | any message ([replies](#replies)) |
+| View 3 replies / View 1 reply | a message that has replies |
+| Copy text | any message: what was written, without the time and name (and without a reply's quote line), with emoji and smileys as text; the selection instead when you right-clicked inside it |
+| The emoji's name, Copy emoji, Use in the chat input | an HD emoji under the pointer ([emoji](#emoji)) |
+
+When TeamSpeak shows no menu of its own there, a small menu with the same items opens.
 
 ## Replies
 
@@ -229,7 +243,8 @@ Reply to any message in a channel, server or private chat, yours or someone else
 - **Start a reply:** right-click the message and choose **Reply** (it's at the top of TeamSpeak's own chat menu, and of the menu of a picture or file). Or press <kbd>Alt</kbd>+<kbd>↑</kbd> in the chat input: that picks the newest message, and pressing it again goes further back (<kbd>Alt</kbd>+<kbd>↓</kbd> goes forward again). TeamSpeak's hotkey settings also offer *Reply to the last message in the current chat*.
 - A bar above the chat input says *Replying to Alice* with the start of her message. Click it to see that message again. Type your reply and press <kbd>Enter</kbd>. <kbd>Esc</kbd> or the **×** cancels it. TeamSpeak commands (`/…`) are sent as usual and don't end the reply. Switching to another chat tab hides the bar; it's back when you return.
 - **Files as a reply:** while the bar is shown, files you paste, drop or pick go out as the reply. The send window says *Replying to …*; its **×** sends them without the reply.
-- **What others see:** the reply starts with a quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by your text, so people without the plugin can follow too. With the plugin, the quote line becomes a small reply line above the message, with the author in their chat colour. Click it to scroll to the original message, which lights up for a moment. If the original isn't in the chat any more (an old message, another session), the line stays grey and its tooltip says so.
+- **What others see:** the reply starts with a quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by your text, so people without the plugin (and people on 2.1) can follow too: they see that italic line as text. With the plugin, the quote line becomes a small reply line above the message, with the author in their chat colour. Click it to scroll to the original message, which lights up for a moment. If the original isn't in the chat any more (an old message, another session), the line stays grey and its tooltip says so.
+- Emoji in the quoted text keep their place: the reply line, the bar and *View replies* show them as HD emoji, and people without the plugin see them in TeamSpeak's own way. A reply of nothing but emoji shows them large, like any message of only emoji.
 - **View replies:** right-click a message that has replies and choose **View 3 replies** to see who answered and what; click a reply (or use the arrow keys and <kbd>Enter</kbd>) to go to it.
 - The time in a quote line uses the ratio sign (∶) instead of a colon, because TeamSpeak turns `:0` and `8)` into emoticons. A reply that would be longer than TeamSpeak's message limit quotes less of the original first; if your text alone is too long, it isn't sent and the input keeps it.
 
@@ -284,9 +299,10 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 - **HD emoji in the chat.** Emoji in messages (yours and everyone's, in channel, server and private chats and in the chat history) show as sharp, colorful pictures, about the size of the text and never making a line taller (also after zooming the chat with <kbd>Ctrl</kbd> and the mouse wheel). TeamSpeak's own smileys (`:)`, `;)`, `:D`, `8)`, `:(`, `:P` …) become the matching emoji too. A message of nothing but emoji (up to 27) shows them large, like in Discord. Point at an emoji to see its name.
 - Everyone with TS Media sees them like this; people without it see TeamSpeak's own rendering. Nothing about the message changes: it is plain text with Unicode emoji.
 - Left as they are: links (also nicknames and file names), the TS Media link with its *plugin required* note, and characters that are text unless marked as emoji (©, ™, arrows, digits). Windows draws no country flags, so those stay letters.
-- **Copying** (<kbd>Ctrl</kbd>+<kbd>C</kbd> or TeamSpeak's own *Copy*) gives the text with the emoji and smiley codes in place. Right-click an emoji for *Copy emoji*, *Copy text* (the selection, or the whole message) and *Use in the chat input*.
+- **Copying** (<kbd>Ctrl</kbd>+<kbd>C</kbd> or TeamSpeak's own *Copy*) gives the text with the emoji and smiley codes in place. Right-clicking an emoji opens TeamSpeak's chat menu with the emoji's name, *Copy emoji* and *Use in the chat input* at the top, followed by *Reply* and *Copy text* (the message, or the selection when you right-clicked inside it); see the [right-click menu](#right-click-menu).
 - **The emoji picker.** Click the smiley at the right end of the chat input, or press <kbd>Ctrl</kbd>+<kbd>E</kbd> there (Windows' own panel, <kbd>Win</kbd>+<kbd>.</kbd>, works too). About 1,600 emoji in eight groups, with *Recently used* first, a search by name or word (`joy`, `+1`, `:fire:` …), a skin-tone choice and a preview with the name. Typing searches right away; <kbd>↓</kbd> or <kbd>Tab</kbd> moves into the grid, the arrows move there, <kbd>Page Up</kbd> / <kbd>Page Down</kbd> jump a group, <kbd>Enter</kbd> inserts and closes, <kbd>Shift</kbd>+<kbd>Enter</kbd> or <kbd>Shift</kbd>+click inserts and keeps it open, <kbd>Esc</kbd> clears the search or closes; <kbd>Ctrl</kbd>+<kbd>E</kbd> or the button again closes it too. The send window's caption field has the same button.
-- **Reactions** use the same HD emoji. The quick row offers eight (👍 ❤️ 😂 😮 😢 🔥, which every TS Media 2.2 shows, and your two most recent others); **+** opens the whole picker, so any emoji can be a reaction. People on an older 2.2 build see only the six.
+- **Reactions** use the same HD emoji, and any emoji can be one ([reactions](#reactions)).
+- Reply lines, the reply bar and *View replies* show emoji in HD too ([replies](#replies)).
 - The options are under [Settings → General → Emoji](SETTINGS.md#emoji).
 
 ## Chat commands
@@ -315,5 +331,6 @@ In **Tools → Options → Hotkeys**, click **Add**, then **Show Advanced Action
 | Send files to the current chat | opens the file picker for the chat you are looking at |
 | Cancel all uploads | stops every running upload |
 | Record a voice message (press to start, press again to stop) | starts a voice message; the next press stops it for a listen (or sends it), the one after sends |
+| Reply to the last message in the current chat | starts a reply to the newest message of the chat you are looking at ([replies](#replies)) |
 
 The **Plugins → TS Media chat** menu also has **Pause automatic downloads on this server** / **Resume automatic downloads on this server**, **Check for updates…** (official builds), **Settings…** and **Open media cache folder**. Server admins find **Give TS Media chat access** and **Remove TS Media chat access** in a client's right-click menu ([server admin guide](SERVER-ADMIN.md#one-click-ts-media-chat-group)).

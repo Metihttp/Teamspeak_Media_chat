@@ -214,7 +214,7 @@ Create the group once in **Settings → Servers → Server access → Create TS 
 
 ### What do friends on TS Media 2.1 or older see?
 
-Your files, captions and albums still reach them: they see the caption, every picture of an album as its own preview, spoilers unblurred and voice messages as an ordinary audio file card. They don't see or send reactions and don't count as having TS Media in your send window. Once they install 2.2.0 by hand, later versions reach them through the update check.
+Your files, captions and albums still reach them: they see the caption, every picture of an album as its own preview, spoilers unblurred and voice messages as an ordinary audio file card. A reply reaches them as an italic quote line (*↪ Alice · 21∶14: “…”*) followed by the reply, and emoji look the way TeamSpeak draws them. They don't see or send reactions and don't count as having TS Media in your send window. Once they install 2.2.0 by hand, later versions reach them through the update check.
 
 ### Does it work with TeamSpeak 5 or TeamSpeak 6?
 

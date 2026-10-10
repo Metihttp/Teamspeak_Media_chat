@@ -2,7 +2,7 @@
 
 # TS Media chat
 
-**Discord-style images, GIFs, videos, voice messages and files in the TeamSpeak 3 chat**
+**Discord-style images, GIFs, videos, voice messages, replies and HD emoji in the TeamSpeak 3 chat**
 
 [![Download TS Media chat](https://img.shields.io/github/v/release/Metihttp/Teamspeak_Media_chat?style=for-the-badge&label=Download&color=5865F2)](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
 
@@ -30,7 +30,8 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 
 - **Send anything.** Drag & drop, paste with Ctrl+V or pick files, with a caption, spoilers or as an album.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
-- **React.** Six reactions under pictures, videos and audio.
+- **Reply and react.** Reply to any message, Discord-style, and react to media with any emoji.
+- **HD emoji.** Sharp Windows 11 emoji in the chat, an emoji picker, and big emoji for messages of only emoji.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
 - **Works for everyone.** People without the plugin get a normal TeamSpeak download link.
 - **Stays on your server.** Files go to the channel's file browser, never to a cloud service.
@@ -91,7 +92,7 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 - **Photos and GIFs** up to 15 MB load automatically; larger ones when you click them.
 - **Albums** show as one grid. **Spoilers** stay blurred until clicked.
 - **Videos and audio files** play inline. Other files appear as cards that open in their default app.
-- **Reactions:** click the round button on a picture, or right-click → **Add reaction**.
+- **Reactions with any emoji:** click the round button on a picture, or right-click → **Add reaction**; **+** opens the emoji picker.
 - **Checked downloads:** a file that differs from the one that was sent is blocked (*File doesn't match what was sent*).
 
 <picture>
@@ -109,6 +110,15 @@ Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as
 </picture>
 
 Use **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice` or a hotkey. Record up to 5 minutes, listen, then send. Your TeamSpeak microphone is muted while you record, so voice activation doesn't send you live (a setting). [More about voice messages](docs/USAGE.md#voice-messages).
+
+## Replies and emoji
+
+- **Reply:** right-click a message → **Reply**, or press <kbd>Alt</kbd>+<kbd>↑</kbd> in the chat input (again for older messages). A bar above the input shows what you are replying to; <kbd>Enter</kbd> sends, <kbd>Esc</kbd> cancels.
+- With the plugin, a reply shows a small reply line above it; click it to jump to the original. Right-click the original → **View 2 replies** lists the answers.
+- Without the plugin (or on 2.1), people see an italic quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by the reply.
+- **HD emoji:** emoji and TeamSpeak's smileys show as sharp, colorful pictures, also in reply lines; a message of only emoji shows them large. Open the picker with the smiley at the right of the chat input or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
+
+More in the user guide: [replies](docs/USAGE.md#replies) and [emoji](docs/USAGE.md#emoji).
 
 ## Settings
 
@@ -149,6 +159,7 @@ Password-protected channels are not supported, and clients must reach the file t
 - **Your files stay on your TeamSpeak server.** No cloud, no telemetry.
 - **The only web request is the update check**, to GitHub, and only after you turn it on.
 - **Your channel sees that you have TS Media** (and its version), and your reactions. Both go through TeamSpeak only and can be turned off in **Settings → Privacy & updates**.
+- **A reply quotes the original:** its author's name and the start of the message, readable by everyone in that chat.
 - **The microphone is only on** while the *Voice message* window shows *Recording*.
 - **Channel members can open what you send.** Files stay until someone deletes them.
 - **Received programs are never run**, only shown in Explorer.
