@@ -242,7 +242,9 @@ void print(uint64 sch, const QString& bbcode)
 {
     if (!sch)
         return;
-    const QByteArray utf8 = bbcode.toUtf8();
+    // TeamSpeak draws plugin lines in dark blue (#00008b): 1.2:1 on its dark chat (live test 2.2), so
+    // there they get a light colour of their own (prefixes and links inside keep theirs).
+    const QByteArray utf8 = (chatDark ? QString::fromLatin1("[color=#dcddde]") + bbcode + QString::fromLatin1("[/color]") : bbcode).toUtf8();
     // The tab the user is looking at (a private chat, the server tab) when it belongs to that connection.
     if (sch == currentConnection() && funcs.printMessageToCurrentTab)
         funcs.printMessageToCurrentTab(utf8.constData());

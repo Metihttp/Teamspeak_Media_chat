@@ -68,6 +68,7 @@ class TestCoreSend : public QObject
     void failedAlbumMessageWarnsOnce();
     void postsOfOneSendKeepTheirOrder();
     void captionSettles();
+    void chatLinesReadableOnDarkChat();
 
   private:
     QString    file(const QString& name, int seed = 1);
@@ -424,5 +425,26 @@ void TestCoreSend::captionSettles()
 }
 
 TSMEDIA_REGISTER_TEST(TestCoreSend)
+
+// Live test 2.2: TeamSpeak draws plugin lines in dark blue (#00008b), unreadable on its dark chat.
+void TestCoreSend::chatLinesReadableOnDarkChat()
+{
+    const uint64 sch = channel().sch;
+    ts3::setChatDark(true);
+    ts3::printInfo(sch, QStringLiteral("TesterB can now send files."));
+    ts3::setChatDark(false);
+    ts3::printInfo(sch, QStringLiteral("Light chat line."));
+    QString dark, light;
+    for (const QString& line : fakets3::logLines()) {
+        if (line.contains(QLatin1String("TesterB can now send files.")))
+            dark = line;
+        if (line.contains(QLatin1String("Light chat line.")))
+            light = line;
+    }
+    QVERIFY(dark.startsWith(QLatin1String("[chat] [color=#dcddde][color=#949cf7][b]TS Media chat[/b][/color] ")));
+    QVERIFY(dark.endsWith(QLatin1String("[/color]")));
+    QVERIFY(light.startsWith(QLatin1String("[chat] [color=#4752c4][b]TS Media chat[/b][/color] ")));
+    QVERIFY(!light.contains(QLatin1String("#dcddde")));
+}
 
 #include "tst_coresend.moc"
