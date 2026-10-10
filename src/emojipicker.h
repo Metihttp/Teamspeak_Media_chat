@@ -34,6 +34,9 @@ class EmojiPicker : public QWidget
     // Opens next to anchor (global coordinates): above it, right-aligned (where chat inputs are), or below
     // when there is no room; below first when preferBelow.
     void openAt(const QRect& anchor, bool preferBelow = false);
+    // The button that opened it (global coordinates): a press there while it is open closes it, and the
+    // press isn't handed on to the button (which would open it again at once).
+    void setOpener(const QRect& opener);
 
     static QSize preferredSize();
 
@@ -51,6 +54,7 @@ class EmojiPicker : public QWidget
     void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override; // a press on the opener closes it (no reopening)
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;

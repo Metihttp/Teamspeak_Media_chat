@@ -277,6 +277,7 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 emoji: table, segmentation, picture cache, renderer
         tests/tst_emoji.cpp
         tests/tst_emojireact.cpp  # any-emoji reactions, preferences, the chat document
+        tests/tst_emojireview.cpp # review regressions: TeamSpeak-like chat widgets, picker keys, worker queue
         src/emojidata.cpp
         src/emojisegment.cpp
         src/emojirender.cpp

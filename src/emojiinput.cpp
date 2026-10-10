@@ -165,6 +165,9 @@ void EmojiInput::attach(QTextEdit* edit)
     Input input;
     input.edit = edit;
     edit->installEventFilter(this);
+    // The viewport is resized after the input's own Resize event (the scroll area lays it out then):
+    // the button follows the viewport's.
+    edit->viewport()->installEventFilter(this);
     m_inputs.append(input);
     layout(m_inputs.last());
 }
@@ -173,6 +176,7 @@ void EmojiInput::detach(Input& input)
 {
     if (input.edit) {
         input.edit->removeEventFilter(this);
+        input.edit->viewport()->removeEventFilter(this);
         if (input.ours)
             ScrollAreaAccess::set(input.edit, input.original);
     }
@@ -284,6 +288,7 @@ void EmojiInput::openPicker(QTextEdit* edit)
         if (input.edit == edit && input.button && input.button->isVisible())
             anchor = QRect(input.button->mapToGlobal(QPoint(0, 0)), input.button->size());
     }
+    picker->setOpener(anchor); // the button again closes it (a click in the text just closes it and goes on)
     if (anchor.isNull())
         anchor = QRect(edit->mapToGlobal(QPoint(0, 0)), edit->size());
     picker->openAt(anchor);
@@ -292,8 +297,17 @@ void EmojiInput::openPicker(QTextEdit* edit)
 bool EmojiInput::eventFilter(QObject* watched, QEvent* event)
 {
     Input* input = inputFor(watched);
-    if (!input)
+    if (!input) {
+        // The viewport: laid out anew (a taller or shorter input, other margins).
+        for (Input& candidate : m_inputs) {
+            if (candidate.edit && candidate.edit->viewport() == watched && (event->type() == QEvent::Resize || event->type() == QEvent::Move)) {
+                if (candidate.ours)
+                    layout(candidate);
+                break;
+            }
+        }
         return false;
+    }
     switch (event->type()) {
     case QEvent::Resize:
     case QEvent::Show:
@@ -331,7 +345,7 @@ void EmojiInput::addPickerButton(QLineEdit* field)
     action->setToolTip(i18n::t("Emoji"));
     action->setObjectName(QString::fromLatin1("tsmediaEmojiAction"));
     QPointer<QLineEdit> guard(field);
-    QObject::connect(action, &QAction::triggered, action, [guard] {
+    QObject::connect(action, &QAction::triggered, action, [guard, action] {
         if (!guard)
             return;
         auto* picker = new EmojiPicker(EmojiPicker::Mode::Insert, isDark(guard.data()), guard->palette().color(QPalette::Base), guard.data());
@@ -343,6 +357,11 @@ void EmojiInput::addPickerButton(QLineEdit* field)
             if (guard)
                 guard->setFocus(Qt::PopupFocusReason);
         });
+        // The field's button for this action: a second click on it closes the picker.
+        for (QWidget* w : action->associatedWidgets()) {
+            if (w != guard.data() && w->parentWidget() == guard.data() && w->isVisible())
+                picker->setOpener(QRect(w->mapToGlobal(QPoint(0, 0)), w->size()));
+        }
         // Below the field (the send window is in the middle of the screen).
         picker->openAt(QRect(guard->mapToGlobal(QPoint(0, 0)), guard->size()), true);
     });

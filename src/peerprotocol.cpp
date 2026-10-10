@@ -546,6 +546,13 @@ std::optional<React> readReact(const Message& message)
             if (valid)
                 sets.insert(keyText, set);
         }
+        // Every item of e= belongs to one of i= (as the format says); one that doesn't makes it malformed.
+        for (auto it = sets.constBegin(); valid && it != sets.constEnd(); ++it) {
+            bool listed = false;
+            for (const ReactItem& item : qAsConst(react.items))
+                listed = listed || item.key == it.key();
+            valid = listed;
+        }
         if (valid) {
             for (ReactItem& item : react.items) {
                 const auto found = sets.constFind(item.key);

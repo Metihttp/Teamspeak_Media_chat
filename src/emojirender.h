@@ -82,6 +82,7 @@ struct CacheInfo {
     qint64 hits    = 0;
     qint64 misses  = 0;
     int    pending = 0; // waiting for the worker
+    qint64 drawn   = 0; // pictures the worker has drawn since it started (each asked-for picture once)
 };
 CacheInfo cacheInfo();
 void      setCacheLimits(int maxEntries, qint64 maxBytes);

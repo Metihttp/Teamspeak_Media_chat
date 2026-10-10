@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFont>
+#include <QHash>
 #include <QPainter>
 #include <QSet>
 #include <QThread>
@@ -15,7 +16,8 @@
 #include <wrl/client.h>
 
 #include <condition_variable>
-#include <deque>
+#include <iterator>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -584,7 +586,8 @@ struct Result {
 };
 
 // Draws queued pictures with its own colour engine (created and released on this thread). Newest
-// requests first: what was asked for last is what is on screen now.
+// requests first: what was asked for last is what is on screen now. Each picture is queued once: asking
+// again (every paint of the picker asks for what it still lacks) only moves an urgent one to the front.
 class RenderWorker final : public QThread
 {
   public:
@@ -594,20 +597,37 @@ class RenderWorker final : public QThread
         setObjectName(QString::fromLatin1("tsmedia emoji"));
     }
 
+    static QString keyOf(const Job& job) { return job.text + QChar(0x1f) + QString::number(job.side); }
+
     void enqueue(const Job& job, bool urgent)
     {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            if (urgent)
+            if (m_stopping || m_failed)
+                return;
+            const QString key = keyOf(job);
+            if (key == m_current || m_done.contains(key))
+                return; // being drawn now, or drawn and on its way to the GUI thread
+            const auto queued = m_index.find(key);
+            if (queued != m_index.end()) {
+                if (urgent)
+                    m_jobs.splice(m_jobs.end(), m_jobs, queued.value()); // drawn next (iterators stay valid)
+                return;
+            }
+            if (urgent) {
                 m_jobs.push_back(job);
-            else
+                m_index.insert(key, std::prev(m_jobs.end()));
+            } else {
                 m_jobs.push_front(job);
+                m_index.insert(key, m_jobs.begin());
+            }
             bool dropped = false;
             while (static_cast<int>(m_jobs.size()) > kMaxQueued) {
                 Result gone;
                 gone.text    = m_jobs.front().text;
                 gone.side    = m_jobs.front().side;
                 gone.dropped = true;
+                m_index.remove(keyOf(m_jobs.front()));
                 m_results.push_back(std::move(gone));
                 m_jobs.pop_front();
                 dropped = true;
@@ -626,6 +646,7 @@ class RenderWorker final : public QThread
             std::lock_guard<std::mutex> lock(m_mutex);
             m_stopping = true;
             m_jobs.clear();
+            m_index.clear();
         }
         m_wake.notify_one();
     }
@@ -635,6 +656,7 @@ class RenderWorker final : public QThread
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<Result>         out;
         out.swap(m_results);
+        m_done.clear(); // in the cache now (or dropped): asked for again only when it has gone
         m_posted = false;
         return out;
     }
@@ -645,6 +667,12 @@ class RenderWorker final : public QThread
         return m_failed;
     }
 
+    qint64 drawn() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_drawn;
+    }
+
   protected:
     void run() override
     {
@@ -652,7 +680,21 @@ class RenderWorker final : public QThread
         if (!engine.start()) {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_failed = true;
+            // Everything asked for so far is given back undrawn: the GUI thread draws it itself now (a
+            // chat waiting for these pictures is told, instead of waiting for ever).
+            for (const Job& job : m_jobs) {
+                Result gone;
+                gone.text    = job.text;
+                gone.side    = job.side;
+                gone.dropped = true;
+                m_results.push_back(std::move(gone));
+            }
             m_jobs.clear();
+            m_index.clear();
+            if (!m_stopping && !m_posted) {
+                m_posted = true;
+                QCoreApplication::postEvent(m_notifier, new QEvent(static_cast<QEvent::Type>(kDeliverEvent)));
+            }
             return;
         }
         for (;;) {
@@ -664,9 +706,14 @@ class RenderWorker final : public QThread
                     break;
                 job = m_jobs.back();
                 m_jobs.pop_back();
+                m_current = keyOf(job);
+                m_index.remove(m_current);
             }
             Result result{job.text, job.side, engine.render(job.text, job.side)};
             std::lock_guard<std::mutex> lock(m_mutex);
+            m_done.insert(m_current);
+            m_current.clear();
+            ++m_drawn;
             if (m_stopping)
                 break;
             m_results.push_back(std::move(result));
@@ -681,14 +728,18 @@ class RenderWorker final : public QThread
     }
 
   private:
-    QObject*                m_notifier;
-    mutable std::mutex      m_mutex;
-    std::condition_variable m_wake;
-    std::deque<Job>         m_jobs;
-    std::vector<Result>     m_results;
-    bool                    m_stopping = false;
-    bool                    m_posted   = false;
-    bool                    m_failed   = false;
+    QObject*                                 m_notifier;
+    mutable std::mutex                       m_mutex;
+    std::condition_variable                  m_wake;
+    std::list<Job>                           m_jobs;    // front: drawn last; back: drawn next
+    QHash<QString, std::list<Job>::iterator> m_index;   // each queued picture once
+    QString                                  m_current; // being drawn
+    QSet<QString>                            m_done;    // drawn, not taken by the GUI thread yet
+    std::vector<Result>                      m_results;
+    bool                                     m_stopping = false;
+    bool                                     m_posted   = false;
+    bool                                     m_failed   = false;
+    qint64                                   m_drawn    = 0;
 };
 
 struct State {
@@ -872,9 +923,11 @@ void prefetch(const QVector<int>& ids, int logicalPx, qreal dpr)
     State* s = state();
     if (!s || s->engine != Engine::Color)
         return;
-    for (int i = ids.size() - 1; i >= 0; --i) { // queued in front: the first id is drawn first of these
-        if (isValid(ids.at(i)))
-            requestImage(text(ids.at(i)), logicalPx, dpr, false);
+    // Each goes to the far end of the queue (drawn last), so the last id ends up there and the first id
+    // is drawn first of these.
+    for (int id : ids) {
+        if (isValid(id))
+            requestImage(text(id), logicalPx, dpr, false);
     }
 }
 
@@ -930,6 +983,7 @@ CacheInfo cacheInfo()
         info.hits    = g_state->cache.hits();
         info.misses  = g_state->cache.misses();
         info.pending = g_state->pending.size();
+        info.drawn   = g_state->worker ? g_state->worker->drawn() : 0;
     }
     return info;
 }

@@ -82,6 +82,8 @@ class ChatEmoji : public QObject
         QSet<QString>           resources;  // names added to this document
         QSet<QString>           redraw;     // ... to be drawn again (another device pixel ratio)
         qreal                   dpr = 0;    // the pictures' device pixel ratio
+        int                     fontPx = 0; // the inline size for the document's font when last checked
+        bool                    fontCheck = true; // the browser's font may have changed: check it
         bool                    waiting = false; // a step waits for pictures from the worker
         bool                    urgent  = false; // the pictures asked for now are for new messages
     };
@@ -104,10 +106,13 @@ class ChatEmoji : public QObject
     void  insertIntoInput(int id);
 
     QHash<QTextBrowser*, View> m_views;
+    QVector<QPointer<QTextDocument>> m_retired; // documents a view had before a swap (TeamSpeak may keep them)
     QTimer*                    m_timer = nullptr;
     EmojiInput*                m_input = nullptr;
+    QPointer<QMenu>            m_menu;         // the emoji's context menu while it is open
     QPointer<QTextBrowser>     m_copyBrowser;  // TeamSpeak's own menu (or its copy shortcut) was used in it ...
     qint64                     m_copyMs = 0;   // ... at this time: the copy that follows is corrected
     bool                       m_settingClipboard = false;
     bool                       m_lastEnabled      = false;
+    bool                       m_lastJumbo        = false;
 };

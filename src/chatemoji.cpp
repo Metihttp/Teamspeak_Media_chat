@@ -124,6 +124,56 @@ QString normalizedText(QString text)
     return text;
 }
 
+// Puts back what restore() takes out; the picture names it met go to names (may be null).
+void restoreInto(QTextDocument* document, QSet<QString>* names)
+{
+    if (!document)
+        return;
+    QVector<int> positions;
+    for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
+        for (auto it = b.begin(); !it.atEnd(); ++it) {
+            const QTextFragment f = it.fragment();
+            if (f.isValid() && isOurs(f.charFormat())) {
+                if (names)
+                    names->insert(f.charFormat().toImageFormat().name());
+                for (int i = 0; i < f.length(); ++i)
+                    positions.append(f.position() + i);
+            }
+        }
+    }
+    if (positions.isEmpty())
+        return;
+    MutatingScope mutating;
+    QTextCursor   cursor(document);
+    cursor.beginEditBlock();
+    for (int i = positions.size() - 1; i >= 0; --i) {
+        const int p = positions.at(i);
+        cursor.setPosition(p);
+        cursor.setPosition(p + 1, QTextCursor::KeepAnchor);
+        const QTextCharFormat ours     = cursor.charFormat();
+        const QTextCharFormat original = qvariant_cast<QTextFormat>(ours.property(kOriginalFormat)).toCharFormat();
+        if (ours.hasProperty(kEmoticonName)) {
+            QTextCharFormat back = original;
+            if (!back.isImageFormat()) { // older state without the whole format: the emoticon's name at least
+                QTextImageFormat image;
+                image.setName(ours.stringProperty(kEmoticonName));
+                back = image;
+            }
+            cursor.setCharFormat(back);
+        } else {
+            cursor.insertText(ours.stringProperty(kOriginalText), original);
+        }
+    }
+    cursor.endEditBlock();
+}
+
+// The pictures' memory: the document keeps the names, with nothing behind them.
+void dropResources(QTextDocument* document, const QSet<QString>& names)
+{
+    for (const QString& name : names)
+        document->addResource(QTextDocument::ImageResource, QUrl(name), QVariant());
+}
+
 bool selectionHasEmoji(const QTextCursor& selection)
 {
     if (!selection.hasSelection())
@@ -154,11 +204,14 @@ ChatEmoji::ChatEmoji(QObject* parent)
         connect(n, &emoji::ImageNotifier::imagesReady, this, [this] { schedule(0); });
     connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, &ChatEmoji::fixClipboard);
     m_lastEnabled = enabled();
+    m_lastJumbo   = Settings::instance().jumboEmoji;
 }
 
 ChatEmoji::~ChatEmoji()
 {
     m_timer->stop();
+    if (m_menu) // its actions call into this
+        delete m_menu.data();
     restoreAll();
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         if (it->browser) {
@@ -213,6 +266,15 @@ void ChatEmoji::documentSwapped(QTextBrowser* browser)
     View* view = viewFor(browser);
     if (!view || view->document == browser->document())
         return;
+    // TeamSpeak may keep the old document and show it again later: it is given back on unload too.
+    m_retired.removeAll(QPointer<QTextDocument>());
+    if (view->document) {
+        // Not watched any more (watched again, once, if it comes back).
+        disconnect(view->document.data(), &QTextDocument::contentsChange, this, nullptr);
+        if (!m_retired.contains(view->document))
+            m_retired.append(view->document);
+    }
+    m_retired.removeAll(QPointer<QTextDocument>(browser->document()));
     view->document = browser->document();
     view->resources.clear();
     view->redraw.clear();
@@ -226,11 +288,19 @@ void ChatEmoji::watch(View& view)
     if (!doc)
         return;
     QPointer<QTextBrowser> browser = view.browser;
-    connect(doc, &QTextDocument::contentsChange, this, [this, doc, browser](int position, int, int added) {
+    connect(doc, &QTextDocument::contentsChange, this, [this, doc, browser](int position, int removed, int added) {
         if (g_mutating || !browser)
             return;
         View* v = viewFor(browser.data());
-        if (!v || v->document != doc || !enabled())
+        if (!v || v->document != doc)
+            return;
+        // The chat was cleared (QTextDocument::clear() also drops every resource right after this
+        // signal): the pictures are added again for whatever comes next.
+        if (removed > 0 && doc->characterCount() <= 1) {
+            v->resources.clear();
+            v->redraw.clear();
+        }
+        if (!enabled())
             return;
         if (v->dirty.size() >= kMaxRanges) {
             restart(*v); // too much at once: the whole document again (what is done is quick to skip)
@@ -266,12 +336,17 @@ void ChatEmoji::schedule(int delayMs)
 
 void ChatEmoji::settingsChanged()
 {
-    const bool on = enabled();
+    const bool on    = enabled();
+    const bool jumbo = Settings::instance().jumboEmoji;
     if (m_input)
         m_input->settingsChanged();
-    // Turned off, or the jumbo rule changed: everything back, then (when on) done again.
+    // Only when HD emoji were turned on or off, or the jumbo rule changed (saving other settings leaves
+    // the chats alone): everything back, then (when on) done again.
+    if (on == m_lastEnabled && (!on || jumbo == m_lastJumbo))
+        return;
     restoreAll();
     m_lastEnabled = on;
+    m_lastJumbo   = jumbo;
     if (!on)
         return;
     for (auto it = m_views.begin(); it != m_views.end(); ++it)
@@ -287,16 +362,24 @@ void ChatEmoji::restoreAll()
         view.waiting = false;
         if (!view.document || !view.browser)
             continue;
-        const bool bottom = atBottom(view.browser);
-        restore(view.document);
-        // The pictures' memory: the document keeps the names, with nothing behind them.
-        for (const QString& name : qAsConst(view.resources))
-            view.document->addResource(QTextDocument::ImageResource, QUrl(name), QVariant());
+        const bool    bottom = atBottom(view.browser);
+        QSet<QString> names  = view.resources;
+        restoreInto(view.document, &names);
+        dropResources(view.document, names);
         view.resources.clear();
         view.redraw.clear();
         if (bottom)
             view.browser->verticalScrollBar()->setValue(view.browser->verticalScrollBar()->maximum());
     }
+    // Documents TeamSpeak swapped out of a view and may still show later.
+    for (const QPointer<QTextDocument>& document : qAsConst(m_retired)) {
+        if (!document)
+            continue;
+        QSet<QString> names;
+        restoreInto(document.data(), &names);
+        dropResources(document.data(), names);
+    }
+    m_retired.clear();
 }
 
 // ---- the steps ---------------------------------------------------------------------------------------
@@ -341,6 +424,17 @@ bool ChatEmoji::stepView(View& view, qint64 budgetMs, bool synchronous)
     QTextDocument* doc     = view.document;
     if (!browser || !doc)
         return false;
+    // The chat's font changed (zoomed with Ctrl + the wheel, or TeamSpeak's chat font): the whole
+    // document is walked again, newest first; processBlock() gives inline emoji the new size.
+    if (view.fontCheck) {
+        view.fontCheck = false;
+        const int px   = inlinePixels(doc->defaultFont());
+        if (view.fontPx > 0 && px != view.fontPx && !view.resources.isEmpty()) {
+            view.history = QTextCursor(doc);
+            view.history.movePosition(QTextCursor::End);
+        }
+        view.fontPx = px;
+    }
     if (view.dirty.isEmpty() && view.history.isNull() && view.redraw.isEmpty() && view.dpr == browser->devicePixelRatioF())
         return false;
     QElapsedTimer clock;
@@ -468,13 +562,33 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
         bool            emoticon = false;
         bool            message  = false; // in the message part (after "Nick": )
     };
+    // An HD emoji already there whose size no longer fits the text (the chat was zoomed or its font changed).
+    struct Resize {
+        int              position = 0;
+        int              length   = 0;
+        int              id       = -1;
+        int              px       = 0;
+        QTextImageFormat format;
+    };
     QVector<Candidate> todo;
+    QVector<Resize>    resizes;
     int  messageStart   = -1; // after the nickname link and its ": "
     bool header         = false;
     bool otherInMessage = false; // links, other objects or text in the message part
     int  existing       = 0;     // HD emoji already in the message part
+    int  inBlock        = 0;     // HD emoji already anywhere in the block (the cap counts them too)
+    QFont lastFont; // most emoji of a message share one font: measured once
+    int   lastPx = -1;
+    const auto pixelsFor = [&](const QTextCharFormat& format) {
+        const QFont font = format.font().resolve(doc->defaultFont());
+        if (lastPx < 0 || !(font == lastFont)) {
+            lastFont = font;
+            lastPx   = inlinePixels(font);
+        }
+        return lastPx;
+    };
 
-    for (auto it = block.begin(); !it.atEnd() && todo.size() < kMaxPerBlock; ++it) {
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
         const QTextFragment f = it.fragment();
         if (!f.isValid())
             continue;
@@ -496,11 +610,24 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
         if (cf.isImageFormat()) {
             if (isOurs(cf)) {
                 existing += inMessage ? f.length() : 0;
+                inBlock += f.length();
+                const QTextImageFormat image = cf.toImageFormat();
+                // Its picture is in the document (also in one TeamSpeak shows again after a swap).
+                view.resources.insert(image.name());
+                // Inline ones follow the text's size (jumbo ones are 48 px whatever the text).
+                if (!cf.boolProperty(kJumboProperty)) {
+                    const int px = pixelsFor(qvariant_cast<QTextFormat>(cf.property(kOriginalFormat)).toCharFormat());
+                    const int id = idOf(cf);
+                    if (id >= 0 && qRound(image.width()) != px)
+                        resizes.append({pos, f.length(), id, px, image});
+                }
                 continue;
             }
+            if (inBlock + todo.size() >= kMaxPerBlock)
+                continue; // enough in this message: the rest stays as TeamSpeak shows it
             const int id = emoji::forTeamSpeakEmoticon(cf.toImageFormat().name());
             if (id >= 0 && emoji::supported(id)) {
-                for (int i = 0; i < f.length(); ++i)
+                for (int i = 0; i < f.length() && inBlock + todo.size() < kMaxPerBlock; ++i)
                     todo.append({pos + i, 1, id, cf, QString(), true, inMessage});
             } else if (inMessage) {
                 otherInMessage = true;
@@ -508,7 +635,7 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
             continue;
         }
         const QString               text    = f.text();
-        const QVector<emoji::Match> matches = emoji::findEmoji(text, kMaxPerBlock - todo.size());
+        const QVector<emoji::Match> matches = emoji::findEmoji(text, qMax(0, kMaxPerBlock - inBlock - todo.size()));
         int                         covered = 0; // text before this index is accounted for
         for (const emoji::Match& m : matches) {
             if (inMessage && !otherInMessage) {
@@ -535,7 +662,7 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
                 otherInMessage = true;
         }
     }
-    if (todo.isEmpty())
+    if (todo.isEmpty() && resizes.isEmpty())
         return true;
 
     int pictures = existing;
@@ -546,28 +673,43 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
     // The pictures, all of them before anything changes.
     const qreal dpr     = view.dpr > 0 ? view.dpr : (view.browser ? view.browser->devicePixelRatioF() : 1.0);
     bool        missing = false;
-    QVector<int> sizes;
-    sizes.reserve(todo.size());
-    for (const Candidate& c : qAsConst(todo)) {
-        const int px = jumbo && c.message ? kJumboPixels : inlinePixels(c.format.font().resolve(doc->defaultFont()));
-        sizes.append(px);
-        const QString name = resourceName(c.id, px);
+    const auto  need    = [&](int id, int px) {
+        const QString name = resourceName(id, px);
         if (view.resources.contains(name))
-            continue;
-        const QImage image = synchronous ? emoji::render(c.id, px, dpr) : emoji::requestImage(c.id, px, dpr, view.urgent);
+            return;
+        const QImage image = synchronous ? emoji::render(id, px, dpr) : emoji::requestImage(id, px, dpr, view.urgent);
         if (image.isNull()) {
             missing = true;
-            continue;
+            return;
         }
         doc->addResource(QTextDocument::ImageResource, QUrl(name), image);
         view.resources.insert(name);
+    };
+    QVector<int> sizes;
+    sizes.reserve(todo.size());
+    for (const Candidate& c : qAsConst(todo)) {
+        const int px = jumbo && c.message ? kJumboPixels : pixelsFor(c.format);
+        sizes.append(px);
+        need(c.id, px);
     }
+    for (const Resize& r : qAsConst(resizes))
+        need(r.id, r.px);
     if (missing)
         return false;
 
     MutatingScope mutating;
     QTextCursor   cursor(doc);
     cursor.beginEditBlock();
+    // Sizes first: they change no positions (each fragment is still where it was found).
+    for (const Resize& r : qAsConst(resizes)) {
+        QTextImageFormat image = r.format;
+        image.setName(resourceName(r.id, r.px));
+        image.setWidth(r.px);
+        image.setHeight(r.px);
+        cursor.setPosition(r.position);
+        cursor.setPosition(r.position + r.length, QTextCursor::KeepAnchor);
+        cursor.setCharFormat(image);
+    }
     for (int i = todo.size() - 1; i >= 0; --i) {
         const Candidate& c  = todo.at(i);
         const int        px = sizes.at(i);
@@ -616,42 +758,7 @@ void ChatEmoji::processDocument(QTextDocument* document, qreal dpr)
 
 void ChatEmoji::restore(QTextDocument* document)
 {
-    if (!document)
-        return;
-    QVector<int> positions;
-    for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
-        for (auto it = b.begin(); !it.atEnd(); ++it) {
-            const QTextFragment f = it.fragment();
-            if (f.isValid() && isOurs(f.charFormat())) {
-                for (int i = 0; i < f.length(); ++i)
-                    positions.append(f.position() + i);
-            }
-        }
-    }
-    if (positions.isEmpty())
-        return;
-    MutatingScope mutating;
-    QTextCursor   cursor(document);
-    cursor.beginEditBlock();
-    for (int i = positions.size() - 1; i >= 0; --i) {
-        const int p = positions.at(i);
-        cursor.setPosition(p);
-        cursor.setPosition(p + 1, QTextCursor::KeepAnchor);
-        const QTextCharFormat ours     = cursor.charFormat();
-        const QTextCharFormat original = qvariant_cast<QTextFormat>(ours.property(kOriginalFormat)).toCharFormat();
-        if (ours.hasProperty(kEmoticonName)) {
-            QTextCharFormat back = original;
-            if (!back.isImageFormat()) { // older state without the whole format: the emoticon's name at least
-                QTextImageFormat image;
-                image.setName(ours.stringProperty(kEmoticonName));
-                back = image;
-            }
-            cursor.setCharFormat(back);
-        } else {
-            cursor.insertText(ours.stringProperty(kOriginalText), original);
-        }
-    }
-    cursor.endEditBlock();
+    restoreInto(document, nullptr);
 }
 
 int ChatEmoji::countEmoji(QTextDocument* document)
@@ -781,7 +888,10 @@ int ChatEmoji::emojiAt(QTextBrowser* browser, const QPoint& viewportPos, int* po
 
 void ChatEmoji::showMenu(QTextBrowser* browser, int position, int id, const QPoint& globalPos)
 {
+    if (m_menu)
+        delete m_menu.data();
     auto* menu = new QMenu(browser);
+    m_menu     = menu;
     menu->setObjectName(QString::fromLatin1("tsmediaEmojiMenu"));
     menu->setAttribute(Qt::WA_DeleteOnClose);
     menu->setLayoutDirection(Qt::LeftToRight);
@@ -828,15 +938,35 @@ void ChatEmoji::insertIntoInput(int id)
 bool ChatEmoji::eventFilter(QObject* watched, QEvent* event)
 {
     const QEvent::Type type = event->type();
-    if (type != QEvent::KeyPress && type != QEvent::ShortcutOverride && type != QEvent::ToolTip && type != QEvent::ContextMenu)
+    if (type != QEvent::KeyPress && type != QEvent::ShortcutOverride && type != QEvent::ToolTip && type != QEvent::ContextMenu && type != QEvent::Paint
+        && type != QEvent::FontChange && type != QEvent::StyleChange)
         return false;
     QTextBrowser* browser = nullptr;
-    for (auto it = m_views.constBegin(); it != m_views.constEnd(); ++it) {
-        if (it->browser && (it->browser.data() == watched || it->browser->viewport() == watched))
+    View*         view    = nullptr;
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->browser && (it->browser.data() == watched || it->browser->viewport() == watched)) {
             browser = it->browser.data();
+            view    = &it.value();
+        }
     }
     if (!browser)
         return false;
+    const bool onViewport = watched == browser->viewport();
+
+    if (type == QEvent::Paint) {
+        // Moved to a screen with another pixel ratio (or the scale changed): its pictures are drawn again.
+        if (onViewport && view->dpr > 0 && !view->resources.isEmpty() && view->dpr != browser->devicePixelRatioF() && enabled())
+            schedule(0);
+        return false;
+    }
+    if (type == QEvent::FontChange || type == QEvent::StyleChange) {
+        // Seen before QTextEdit hands the new font to its document: checked in the next step.
+        if (!onViewport && enabled()) {
+            view->fontCheck = true;
+            schedule(0);
+        }
+        return false;
+    }
 
     if (type == QEvent::KeyPress || type == QEvent::ShortcutOverride) {
         auto* ke = static_cast<QKeyEvent*>(event);
@@ -855,7 +985,14 @@ bool ChatEmoji::eventFilter(QObject* watched, QEvent* event)
         copySelection(browser);
         return true;
     }
-    if (!enabled() && type != QEvent::ContextMenu)
+    // Pointer positions are the viewport's (the frame around it would put them off by its width). The
+    // menu key opens TeamSpeak's menu on the browser itself: its Copy is corrected like the mouse's.
+    if (type == QEvent::ContextMenu && !onViewport) {
+        m_copyBrowser = browser;
+        m_copyMs      = QDateTime::currentMSecsSinceEpoch();
+        return false;
+    }
+    if (!onViewport || (!enabled() && type != QEvent::ContextMenu))
         return false;
 
     if (type == QEvent::ToolTip) {

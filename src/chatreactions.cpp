@@ -609,6 +609,7 @@ void ChatReactions::openFullPicker(QTextBrowser* browser, const QString& key, co
             pickerGuard->setMarked(QSet<int>(now.begin(), now.end()));
         }
     });
+    picker->setOpener(anchor); // the add button again closes it (instead of opening the quick row again)
     picker->openAt(anchor, true);
 }
 

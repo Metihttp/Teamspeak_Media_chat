@@ -155,6 +155,13 @@ QString capitalized(QString text)
     return text;
 }
 
+// Ctrl+E, the key that opened it, closes it again (the key, not the letter: other keyboard layouts too).
+bool isPickerShortcut(const QKeyEvent* ke)
+{
+    const bool ctrl = (ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier)) == Qt::ControlModifier;
+    return ctrl && (ke->key() == Qt::Key_E || ke->nativeVirtualKey() == 'E');
+}
+
 } // namespace
 
 // ============================================================================================
@@ -179,10 +186,12 @@ class EmojiGrid : public QWidget
         : QWidget(parent)
         , m_colors(colors)
     {
+        setObjectName(QString::fromLatin1("tsmediaEmojiGrid"));
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
         setAttribute(Qt::WA_OpaquePaintEvent);
         setAccessibleName(i18n::t("Emoji"));
+        setAccessibleDescription(i18n::t("Arrow keys move, Page Up and Page Down jump a group, Enter picks."));
         if (emoji::ImageNotifier* n = emoji::notifier())
             connect(n, &emoji::ImageNotifier::imagesReady, this, [this] { update(); });
     }
@@ -192,6 +201,7 @@ class EmojiGrid : public QWidget
         m_sections = sections;
         m_empty    = empty;
         m_items.clear();
+        m_sectionOf.clear();
         m_rects.clear();
         int y = 0;
         for (int s = 0; s < m_sections.size(); ++s) {
@@ -253,6 +263,12 @@ class EmojiGrid : public QWidget
         ensureVisible(m_focus);
         if (onHover)
             onHover(m_focus);
+        // Screen readers: the grid is one widget, so its name says which emoji has the focus (Qt
+        // announces the change).
+        if (fromKeyboard) {
+            const QString name = capitalized(emoji::name(m_items.at(m_focus)));
+            setAccessibleName(name.isEmpty() ? i18n::t("Emoji") : name);
+        }
         update();
     }
 
@@ -649,6 +665,7 @@ class EmojiPickerPrivate
     QVector<int>  tabSection; // tab -> section index in the grid (-1: none)
     QVector<bool> tabHasItems = QVector<bool>(kTabCount, true); // from the last layout without a search
     QSet<int>     marked;
+    QRect         opener; // the button it was opened with (global): a press there closes it for good
 
     QRect tabsRect() const { return QRect(kPad, kPad + kSearch + 6, kColumns * kCell, kTabs); }
     QRect tabRect(int tab) const
@@ -688,7 +705,14 @@ class EmojiPickerPrivate
         return tab == 0 ? i18n::t("Recently used") : emoji::groupName(static_cast<emoji::Group>(tab - 1));
     }
 
-    int display(int id) const { return tone > 0 ? emoji::withTone(id, tone) : id; }
+    // With the chosen skin tone; the base when this PC's font has no picture for that variant.
+    int display(int id) const
+    {
+        if (tone <= 0)
+            return id;
+        const int variant = emoji::withTone(id, tone);
+        return variant != id && emoji::supported(variant) ? variant : id;
+    }
 
     void rebuild()
     {
@@ -848,9 +872,17 @@ class EmojiGridKeys : public QObject
   protected:
     bool eventFilter(QObject*, QEvent* event) override
     {
+        if (event->type() == QEvent::ShortcutOverride && isPickerShortcut(static_cast<QKeyEvent*>(event))) {
+            event->accept(); // comes as a key press, not to a shortcut of the window behind
+            return true;
+        }
         if (event->type() != QEvent::KeyPress)
             return false;
         auto*      ke    = static_cast<QKeyEvent*>(event);
+        if (isPickerShortcut(ke)) {
+            m_d->q->close();
+            return true;
+        }
         EmojiGrid* grid  = m_d->grid;
         const int  focus = qMax(0, grid->focus());
         const int  count = grid->itemCount();
@@ -919,7 +951,13 @@ class EmojiGridKeys : public QObject
             m_d->activate(focus, ke->modifiers() & Qt::ShiftModifier);
             return true;
         case Qt::Key_Escape:
-            m_d->q->close();
+            // As in the search field: the search is cleared first, then it closes.
+            if (!m_d->search->text().isEmpty()) {
+                m_d->search->clear();
+                m_d->search->setFocus(Qt::OtherFocusReason);
+            } else {
+                m_d->q->close();
+            }
             return true;
         case Qt::Key_Backtab:
             m_d->search->setFocus(Qt::BacktabFocusReason);
@@ -1152,6 +1190,20 @@ void EmojiPicker::mouseReleaseEvent(QMouseEvent* event)
     }
 }
 
+void EmojiPicker::setOpener(const QRect& opener)
+{
+    d->opener = opener;
+}
+
+void EmojiPicker::mousePressEvent(QMouseEvent* event)
+{
+    // A press outside closes the popup, and Qt then gives the press to what is under it. On the button
+    // that opened it that would open it again at once: a second click on the button closes it instead.
+    if (!rect().contains(event->pos()) && d->opener.contains(event->globalPos()))
+        setAttribute(Qt::WA_NoMouseReplay);
+    QWidget::mousePressEvent(event);
+}
+
 void EmojiPicker::leaveEvent(QEvent*)
 {
     if (d->hoverTab >= 0) {
@@ -1162,8 +1214,16 @@ void EmojiPicker::leaveEvent(QEvent*)
 
 bool EmojiPicker::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched == d->search && event->type() == QEvent::ShortcutOverride && isPickerShortcut(static_cast<QKeyEvent*>(event))) {
+        event->accept();
+        return true;
+    }
     if (watched == d->search && event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
+        if (isPickerShortcut(ke)) {
+            close();
+            return true;
+        }
         switch (ke->key()) {
         case Qt::Key_Down:
         case Qt::Key_Tab:
