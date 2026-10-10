@@ -67,6 +67,11 @@ struct Settings {
     bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
     bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
 
+    // 2.2 emoji (global)
+    bool hdEmoji     = true; // emoji (and TeamSpeak's emoticons) in the chat as HD pictures
+    bool emojiButton = true; // the emoji button in the chat input (the picker's shortcut works either way)
+    bool jumboEmoji  = true; // messages of only emoji (up to 27) show them large
+
     static Settings& instance();
     void             load();
     void             save() const;

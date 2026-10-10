@@ -135,6 +135,15 @@ add_library(tsmedia SHARED
     src/composehooks.cpp      src/composehooks.h
     src/peerhub.cpp           src/peerhub.h
     src/chatreactions.cpp     src/chatreactions.h
+    # 2.2 emoji: the table, the colour renderer, the picker, HD emoji in the chat
+    src/emojidata.cpp         src/emojidata.h       src/emojitable.inc
+    src/emojisegment.cpp      src/emojisegment.h
+    src/emojirender.cpp       src/emojirender.h     src/emojicache.h
+    src/emojiprefs.cpp        src/emojiprefs.h
+    src/emojipicker.cpp       src/emojipicker.h
+    src/emojiinput.cpp        src/emojiinput.h
+    src/chatemoji.cpp         src/chatemoji.h
+    src/emojisection.cpp      src/emojisection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -265,6 +274,16 @@ if(TSMEDIA_BUILD_TESTS)
         src/pluginlink.cpp
         src/reactions.cpp
         src/reactionart.cpp
+        # 2.2 emoji: table, segmentation, picture cache, renderer
+        tests/tst_emoji.cpp
+        tests/tst_emojireact.cpp  # any-emoji reactions, preferences, the chat document
+        src/emojidata.cpp
+        src/emojisegment.cpp
+        src/emojirender.cpp
+        src/emojiprefs.cpp
+        src/chatemoji.cpp         # the document part (QTextDocument only in the tests)
+        src/emojiinput.cpp
+        src/emojipicker.cpp
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
@@ -332,6 +351,9 @@ if(TSMEDIA_BUILD_TOOLS)
         src/reactionart.cpp
         src/reactions.cpp
         src/peerprotocol.cpp
+        # 2.2 emoji: HD reaction pictures
+        src/emojirender.cpp
+        src/emojidata.cpp
     )
     target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -339,4 +361,17 @@ if(TSMEDIA_BUILD_TOOLS)
         target_compile_options(render_gallery PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
     target_link_libraries(render_gallery PRIVATE Qt5::Core Qt5::Gui)
+
+    # 2.2 emoji: emoji_probe <candidates> <probe> asks DirectWrite which emoji Segoe UI Emoji draws in colour
+    # (tools/emoji/gen_emoji.py builds src/emojitable.inc from the answer); --sheet draws them all.
+    add_executable(emoji_probe
+        tools/emoji_probe.cpp
+        src/emojirender.cpp src/emojidata.cpp src/i18n.cpp
+    )
+    target_include_directories(emoji_probe PRIVATE src)
+    target_compile_definitions(emoji_probe PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(emoji_probe PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(emoji_probe PRIVATE Qt5::Core Qt5::Gui)
 endif()

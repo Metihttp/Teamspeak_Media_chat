@@ -2,9 +2,10 @@
 
 // 2.2 reactions: everything a reaction looks like, as pure drawing functions (QtGui only, so the
 // render tools and unit tests can use them).
-//  * The six reactions are coloured vector pictures (QPainterPath), drawn for this plugin in a flat,
-//    friendly emoji style: no emoji font (TeamSpeak's Qt can't be relied on to draw colour emoji), no
-//    bitmaps, no third-party artwork. Crisp at every device pixel ratio.
+//  * 2.2 emoji: a reaction is any emoji (an emoji id, emojidata.h), drawn by the colour emoji renderer
+//    (emojirender.h: DirectWrite + Direct2D, crisp at the painter's pixel ratio). Without it the six v1
+//    reactions keep their own coloured vector pictures (QPainterPath, a flat friendly style) and other
+//    emoji are drawn as text.
 //  * The reaction row: pills of 24 px under the media, in the fixed reaction order, plus an "add"
 //    pill whose slot is always reserved (hovering never changes the layout).
 //  * The round "add reaction" button shown over a hovered picture that has no row yet.
@@ -25,11 +26,14 @@ class QPainter;
 
 namespace rx {
 
-// "Thumbs up", "Heart", "Laughing", "Surprised", "Sad", "Fire" (i18n::t).
-QString reactionName(int index);
+// "Thumbs up", "Heart", "Laughing", "Surprised", "Sad", "Fire" for the six (i18n::t); the emoji's name
+// ("Face with tears of joy") for others.
+QString reactionName(int reaction);
 
-// One reaction picture filling box (square).
-void drawReaction(QPainter& p, const QRectF& box, int index);
+// One reaction picture filling box (square). reaction: an emoji id.
+void drawReaction(QPainter& p, const QRectF& box, int reaction);
+// The six v1 pictures without the emoji renderer (index: proto::Reaction).
+void drawClassicReaction(QPainter& p, const QRectF& box, int index);
 // Line icons: a smiley with a plus (add reaction) and two people (presence line).
 void drawAddReactionGlyph(QPainter& p, const QRectF& box, const QColor& color);
 void drawPeopleGlyph(QPainter& p, const QRectF& box, const QColor& color);
@@ -49,7 +53,7 @@ QString countText(int count); // "1".."99", "99+"
 struct RowLayout {
     QSize           size;      // the row with its top margin; empty: no row
     QVector<QRectF> pills;     // relative to the row's top-left
-    QVector<int>    reactions; // the reaction of each pill
+    QVector<int>    reactions; // the reaction (emoji id) of each pill
     QRectF          addPill;   // reserved whenever there is a row
 
     bool isEmpty() const { return size.isEmpty(); }
@@ -58,7 +62,7 @@ struct RowLayout {
 // Width of a count text in the row's font (bold for your own reactions).
 using MeasureText = std::function<qreal(const QString& text, bool bold)>;
 
-// The row for view under a picture pictureWidth wide: one line as wide as max(picture, the pills),
+// The row for view under a picture pictureWidth wide (its pills in the view's order): one line as wide as max(picture, the pills),
 // at most maxWidth, wrapping onto more lines when narrower. keep: a row (with only the add pill) even
 // without reactions (the pointer is still on it after the last one was removed).
 RowLayout layoutRow(const ReactionView& view, int pictureWidth, int maxWidth, const MeasureText& measure, bool keep = false);

@@ -1,11 +1,14 @@
 #pragma once
 
-// 2.2 reactions: the small popup with the six reactions (opened by the add button, the add pill or
-// "Add reaction" without a hover). Keyboard: Left/Right/Home/End move, Enter or Space toggles and
-// closes, 1-6 toggle directly, Esc closes. Your current reactions are shown as checked. A top-level
-// popup named "tsmedia..." so plugin shutdown deletes it if it is still open.
+// 2.2 reactions: the small popup with the quick reactions (opened by the add button, the add pill or
+// "Add reaction" without a hover). 2.2 emoji: eight HD emoji (the six every 2.2 client knows, then your
+// two most recent others) and "+", which opens the full emoji picker so any emoji can be a reaction.
+// Keyboard: Left/Right/Home/End move, Enter or Space picks and closes, 1-8 pick directly, + or = opens
+// the full picker, Esc closes. Your current reactions are shown as checked. A top-level popup named
+// "tsmedia..." so plugin shutdown deletes it if it is still open.
 
 #include <QColor>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -16,26 +19,29 @@ class ReactionPicker : public QWidget
     Q_OBJECT
 
   public:
-    // ownMask: your reactions on this media (checked). base: the chat's background colour.
-    ReactionPicker(bool dark, const QColor& base, int ownMask, QWidget* parent = nullptr);
+    // quick: the emoji ids to offer; own: your reactions on this media (checked). base: the chat's background.
+    ReactionPicker(bool dark, const QColor& base, const QVector<int>& quick, const QSet<int>& own, QWidget* parent = nullptr);
 
     // Opens below anchor (global coordinates), right-aligned with it; above it when there is no room.
     void openAt(const QRect& anchor);
 
-    static QSize fixedSize();
+    QSize        sizeForCount() const;
+    static QSize fixedSize(int quickCount = 8);
 
   signals:
-    void picked(int reaction); // then it closes
+    void picked(int reaction); // an emoji id; then it closes
+    void more();               // "+": the full picker; then it closes
 
   protected:
     void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
   private:
-    void choose(int reaction);
+    void choose(int index);
     void moveFocus(int index);
 
     bool                      m_dark;
     QColor                    m_base;
-    QVector<QAbstractButton*> m_buttons;
+    QVector<int>              m_quick;
+    QVector<QAbstractButton*> m_buttons; // the quick ones, then "+"
 };

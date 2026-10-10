@@ -15,6 +15,7 @@
 #include <QHash>
 #include <QImageReader>
 #include <QPainter>
+#include <QSet>
 #include <QTextStream>
 #include <QtMath>
 
@@ -24,6 +25,8 @@
 #include "albums.h" // 2.2 album
 #include "blurhash.h"
 #include "dragpixmap.h" // 2.2 drag-out
+#include "emojidata.h"   // 2.2 emoji
+#include "emojirender.h" // 2.2 emoji
 #include "previewrenderer.h"
 #include "reactionart.h" // 2.2 reactions
 #include "uiutil.h"
@@ -1044,17 +1047,21 @@ QList<Sample> buildSamples()
     {
         // A preview as ChatIntegration draws it: the media first, then rx::composeObject over it.
         using Picture = std::function<QImage(const PreviewStyle&, QSize*)>;
-        auto view     = [](std::initializer_list<std::pair<int, int>> counts, int mineMask) {
+        // counts: (v1 reaction index, count); 2.2 emoji: (-emoji id - 1, count) for any other emoji.
+        auto view = [](std::initializer_list<std::pair<int, int>> counts, int mineMask, QSet<int> mineIds = {}) {
             ReactionView v;
-            for (const auto& c : counts)
-                v.per[c.first].count = c.second;
-            for (int i = 0; i < proto::kReactionCount; ++i) {
-                v.per[i].mine = (mineMask >> i) & 1;
-                for (int n = 0; n < v.per[i].count - (v.per[i].mine ? 1 : 0) && n < 3; ++n)
-                    v.per[i].others << QStringLiteral("Friend %1").arg(n + 1);
+            for (const auto& c : counts) {
+                ReactionView::Entry e;
+                e.reaction = c.first >= 0 ? proto::legacyReactionEmoji(c.first) : -c.first - 1;
+                e.count    = c.second;
+                e.mine     = (c.first >= 0 && ((mineMask >> c.first) & 1)) || mineIds.contains(e.reaction);
+                for (int n = 0; n < e.count - (e.mine ? 1 : 0) && n < 3; ++n)
+                    e.others << QStringLiteral("Friend %1").arg(n + 1);
+                v.entries.append(e);
             }
             return v;
         };
+        const auto other = [](const char* code) { return -emoji::fromWireCode(QByteArray(code)) - 1; };
         auto reacted = [&add](const QString& name, const QString& label, Picture picture, ReactionView v, std::function<void(rx::ObjectState&)> change,
                               int maxWidth = 400) {
             add(name, label, [picture, v, change](const PreviewStyle& st, QSize* ls) {
@@ -1090,16 +1097,27 @@ QList<Sample> buildSamples()
                 view({{up, 3}, {heart, 12}, {lol, 1}}, 1 << up), [](rx::ObjectState& s) {
                     s.hovered    = true;
                     s.hoverZone  = Zone::Pill;
-                    s.hoverIndex = proto::Heart;
+                    s.hoverIndex = proto::legacyReactionEmoji(proto::Heart);
                 });
         reacted(QStringLiteral("reactions_pressed_pill"), QStringLiteral("reactions: pill pressed"), photoPicture, view({{up, 3}, {fire, 2}}, 0),
                 [](rx::ObjectState& s) {
                     s.hovered    = true;
                     s.hoverZone  = s.pressZone = Zone::Pill;
-                    s.hoverIndex = s.pressIndex = proto::Fire;
+                    s.hoverIndex = s.pressIndex = proto::legacyReactionEmoji(proto::Fire);
                 });
         reacted(QStringLiteral("reactions_six_99plus"), QStringLiteral("reactions: all six, 99+, two yours"), photoPicture,
                 view({{up, 120}, {heart, 42}, {lol, 7}, {wow, 1}, {sad, 2}, {fire, 99}}, (1 << heart) | (1 << fire)), hover);
+        // 2.2 emoji: any emoji as a reaction, HD pills, many different ones wrapping.
+        reacted(QStringLiteral("reactions_emoji_mixed"), QStringLiteral("reactions: any emoji (HD), two yours, hover"), photoPicture,
+                view({{up, 4}, {other("1f923"), 3}, {other("1f389"), 2}, {other("1fae1"), 1}, {other("1f480"), 5}, {heart, 2}}, 1 << up,
+                     {emoji::fromWireCode("1f389")}),
+                hover);
+        reacted(QStringLiteral("reactions_emoji_twenty"), QStringLiteral("reactions: twenty different ones, wrapped"), photoPicture,
+                view({{up, 9}, {heart, 7}, {lol, 5}, {wow, 1}, {sad, 1}, {fire, 3}, {other("1f923"), 2}, {other("1f389"), 4}, {other("1f480"), 1},
+                      {other("1f440"), 2}, {other("1f64f"), 1}, {other("1f4af"), 6}, {other("1f60e"), 1}, {other("1f914"), 1}, {other("1f973"), 2},
+                      {other("1f44f"), 3}, {other("1f308"), 1}, {other("1f355"), 1}, {other("1f680"), 2}, {other("1f468-200d-1f469-200d-1f467"), 1}},
+                     1 << fire, {emoji::fromWireCode("1f4af")}),
+                hover);
         reacted(QStringLiteral("reactions_add_pill_hover"), QStringLiteral("reactions: add pill under the pointer"), photoPicture, view({{sad, 1}}, 0),
                 [](rx::ObjectState& s) {
                     s.hovered   = true;
@@ -1173,9 +1191,10 @@ QList<Sample> buildSamples()
                 view({{fire, 2}, {up, 1}}, 1 << up), cardHover);
         reacted(QStringLiteral("reactions_audio_none_hover"), QStringLiteral("reactions: audio card hovered, none yet (no button)"), audioPicture, ReactionView(),
                 cardHover);
-        // The pictures themselves, large and at pill size, to look at the drawing.
-        add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 72, 36, 24 and 16 px"), [](const PreviewStyle& st, QSize* ls) {
-            const QSize size(6 * 80, 72 + 8 + 36 + 8 + 24 + 8 + 16);
+        // The pictures themselves, large and at pill size, to look at the drawing (2.2 emoji: HD on the left
+        // half, the vector pictures used without the colour renderer on the right).
+        add(QStringLiteral("reactions_icons"), QStringLiteral("reaction pictures at 72, 36, 24 and 16 px: HD, then vector"), [](const PreviewStyle& st, QSize* ls) {
+            const QSize size(12 * 80, 72 + 8 + 36 + 8 + 24 + 8 + 16);
             QImage      out(size * st.dpr, QImage::Format_ARGB32_Premultiplied);
             out.setDevicePixelRatio(st.dpr);
             out.fill(Qt::transparent);
@@ -1183,7 +1202,8 @@ QList<Sample> buildSamples()
             for (int i = 0; i < proto::kReactionCount; ++i) {
                 qreal y = 0;
                 for (const int px : {72, 36, 24, 16}) {
-                    rx::drawReaction(p, QRectF(i * 80 + (72 - px) / 2.0, y, px, px), i);
+                    rx::drawReaction(p, QRectF(i * 80 + (72 - px) / 2.0, y, px, px), proto::legacyReactionEmoji(i));
+                    rx::drawClassicReaction(p, QRectF((i + 6) * 80 + (72 - px) / 2.0, y, px, px), i);
                     y += px + 8;
                 }
             }
@@ -1413,5 +1433,6 @@ int main(int argc, char* argv[])
     if (g_layoutFailures)
         QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
     // 2.2 album: and every grid's size (g_layoutErrors)
+    emoji::shutdown(); // 2.2 emoji: the renderer's worker and engines
     return contrastFailures == 0 && dragCard == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
 }

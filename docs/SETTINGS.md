@@ -86,6 +86,18 @@ Changing the volume in the gallery viewer updates this setting too.
 
 - **Link in the note** must be an `http://` or `https://` address; `https://` is added when it is missing (you see it once you leave the field). Empty means the official page, `https://github.com/Metihttp/Teamspeak_Media_chat`. The link is checked when you leave the field: a problem (not a web address, another scheme, `[` or `]`, more than 512 characters) is explained right under it. The field can only be edited while the note is on.
 
+## Emoji
+
+On the **General** tab.
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Show emoji in high quality in the chat | on | Emoji and TeamSpeak's smileys as HD pictures (Windows' Segoe UI Emoji, drawn with DirectWrite). Greyed out on a PC without a color emoji font. |
+| Show messages of only emoji large | on | Up to 27 emoji with nothing else in the message. Only while the option above is on. |
+| Show the emoji button in the chat input | on | <kbd>Ctrl</kbd>+<kbd>E</kbd> opens the picker either way. |
+
+The picker remembers your recently used emoji and skin tone in `emoji.ini`, next to `settings.ini`.
+
 ## Server access
 
 For server admins: creates and repairs the `tsmediachat` server group whose members can send files with TS Media chat, on the server of the tab you're looking at. These actions take effect on the server right away; **OK**, **Apply**, **Cancel** and **Restore defaults** don't affect them. The box contacts the server only while it is visible.

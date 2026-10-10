@@ -17,9 +17,16 @@
 //   HELLO pv=1 v=2.2.0 caps=p,r rr=1   I'm here (to the channel, or to one private-chat partner).
 //   HI    pv=1 v=2.2.0 caps=p,r        the answer, only to whoever asked.
 //   BYE                                presence switched off or the plugin unloads.
-//   R     s=c|p [y=1] i=<key>:<codes>,...   my complete reaction set on each media (idempotent).
+//   R     s=c|p [y=1] i=<key>:<codes>,... [e=<key>:<emoji>.<emoji>,...]
+//                                      my complete reaction set on each media (idempotent).
 //   SYNC  s=c m=<key>,...              a late joiner asks present members for their own reactions.
 // The sender's identity is never in the payload: receivers take the invoker that the server fills in.
+//
+// 2.2 emoji: any emoji can be a reaction. i= keeps the six v1 codes (what every 2.2 client reads; an
+// item whose set has none of them says "key:" there). e= is added for items whose set has other emoji:
+// the whole set in the order it was made, each emoji as its wire code (emojidata.h: "1f923",
+// "2764-fe0f"). Receivers that know e= take an item's set from it (unknown emoji are left out) and use
+// i= for the rest; older ones ignore the field. A malformed e= is ignored as a whole.
 
 #include <QByteArray>
 #include <QMetaType>
@@ -64,6 +71,33 @@ bool codesToMask(const QByteArray& codes, quint8* mask);
 // A media id: MediaLink::key(), 20 lower-case hex digits.
 bool isMediaKey(const QByteArray& key);
 bool isMediaKey(const QString& key);
+
+// ---- 2.2 emoji: reactions with any emoji ---------------------------------------------------------------
+
+// A reactor's complete set on one media: emoji ids (emojidata.h) in the order they were added, distinct,
+// at most kMaxReactionsPerSet and kMaxSetCodeChars of wire codes.
+using ReactionSet = QVector<int>;
+constexpr int kMaxReactionsPerSet  = 10;
+constexpr int kMaxSetCodeChars     = 400; // e= text of one item, so every item fits into one message
+constexpr int kMaxDistinctReactions = 20; // different reactions shown on one media
+
+// The emoji of a v1 reaction (👍 ❤️ 😂 😮 😢 🔥); -1 out of range. And back: the v1 index of an emoji, -1.
+int legacyReactionEmoji(int index);
+int legacyReactionIndex(int emojiId);
+
+quint8      legacyMask(const ReactionSet& set); // the v1 reactions in set
+ReactionSet setFromMask(quint8 mask);           // in v1 display order
+// Valid ids, each once, within the limits (later ones are left out).
+ReactionSet cleanSet(const ReactionSet& set);
+// The same reactions in the same order. (Not QVector's ==: with Qt 5.15 and a current MSVC it uses a
+// deprecated checked iterator, which /W4 reports.)
+bool sameSet(const ReactionSet& a, const ReactionSet& b);
+// Whether one more emoji still fits into set (kMaxReactionsPerSet, kMaxSetCodeChars).
+bool canAdd(const ReactionSet& set, int emojiId);
+// "1f44d.1f923" for e=; and back: false for a malformed list (characters, empty or malformed codes, too
+// many); unknown emoji are left out, duplicates once.
+QByteArray setToEmojiCodes(const ReactionSet& set);
+bool       emojiCodesToSet(const QByteArray& codes, ReactionSet* set);
 
 // ---- messages -------------------------------------------------------------------------------------
 
@@ -113,8 +147,10 @@ Message              makeBye();
 enum class Scope { Channel, Private }; // s=c, s=p (the server chat is not allowed)
 
 struct ReactItem {
-    QString key;  // media key
-    quint8  mask = 0; // the sender's complete set on it; 0 = none any more
+    QString     key;      // media key
+    quint8      mask = 0; // the v1 part of the sender's set (what 2.2.0 receivers see); 0 = none of them
+    ReactionSet set;      // 2.2 emoji: the whole set; empty with a mask: the mask's reactions
+    ReactionSet reactions() const { return set.isEmpty() ? setFromMask(mask) : set; }
 };
 
 struct React {

@@ -13,6 +13,7 @@
 
 class ComposeDialog; // 2.2 compose
 class ChatReactions; // 2.2 reactions
+class ChatEmoji;     // 2.2 emoji
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -294,4 +295,5 @@ class ChatIntegration : public QObject
     QTimer*                                 m_albumTimer  = nullptr; // redraws albums with new GIF frames, ~30 per second
     QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
     ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
+    ChatEmoji*                              m_emoji     = nullptr; // 2.2 emoji: HD emoji in the chats, the input's emoji button
 };
