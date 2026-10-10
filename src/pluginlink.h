@@ -55,8 +55,10 @@ class PluginLink : public QObject, public peers::Sender
     struct Limits {
         int answerTimeoutMs    = 3000;  // no answer by then: not sent (S0)
         int presenceRetries    = 1;     // a flooded presence command goes again once after the pause
-        int inboundBurst       = 20;    // commands per person ...
-        int inboundWindowMs    = 30000; // ... per this long
+        // Commands per person per window. Never below what a sender's FloodGovernor lets through (24 at
+        // once, then one a second): the live test's 40 quick reactions lost 10 of them at 20 per 30 s.
+        int inboundBurst       = 40;    // commands per person ...
+        int inboundWindowMs    = 30000; // ... per this long (refills 1.33 a second)
         int maxQueued          = 64;    // per connection; the oldest background work goes first
         int returnCodeLingerMs = 30000; // late answers to timed-out commands are still recognised
         int maxRateEntries     = 512;   // people tracked by the inbound limit per connection

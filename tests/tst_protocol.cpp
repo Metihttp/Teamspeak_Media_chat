@@ -231,6 +231,7 @@ class TestProtocol : public QObject
     void linkBlocksOnPermissionError();
     void linkSpendsPluginBucket();
     void linkInboundRules();
+    void linkInboundCoversSenderRate();
     void linkRetryHint();
 
     // presence
@@ -776,16 +777,51 @@ void TestProtocol::linkInboundRules()
     link.onCommand(7, 2, kUidSara, QStringLiteral("Sara"), "tsm1 BYE x");
     link.onCommand(7, 2, kUidSara, QStringLiteral("Sara"), "tsm1 " + QByteArray(3000, 'A'));
     QCOMPARE(link.counters(7).rejected, 2);
-    // At most 20 per person per 30 s (the malformed one counted too); others are not affected.
-    for (int i = 0; i < 30; ++i)
+    // At most 40 per person per 30 s (the malformed one counted too); others are not affected.
+    for (int i = 0; i < 50; ++i)
         link.onCommand(7, 2, kUidSara, QStringLiteral("Sara"), "tsm1 BYE");
-    QCOMPARE(spy.count(), 1 + 18);
+    QCOMPARE(spy.count(), 1 + 38);
     QCOMPARE(link.counters(7).rateLimited, 12);
     link.onCommand(7, 3, kUidReza, QStringLiteral("Reza"), "tsm1 BYE");
-    QCOMPARE(spy.count(), 20);
+    QCOMPARE(spy.count(), 40);
     backend.now += 30000;
     link.onCommand(7, 2, kUidSara, QStringLiteral("Sara"), "tsm1 BYE");
-    QCOMPARE(spy.count(), 21);
+    QCOMPARE(spy.count(), 41);
+}
+
+void TestProtocol::linkInboundCoversSenderRate()
+{
+    // Live test: 40 quick reactions were sent as fast as the sender's governor allows, and the
+    // receiver's per-person limit dropped 10 of them. Everything a sender's FloodGovernor lets through
+    // (its defaults: 24 at once from rest, then one a second) must arrive.
+    qRegisterMetaType<proto::Message>();
+    FakeBackend sender;
+    sender.flood = FloodGovernor(roomyLimits());
+    PluginLink out(sender);
+    int        offered = 0;
+    const auto offer   = [&](int n) {
+        for (int i = 0; i < n; ++i)
+            out.sendWith(7, proto::makeSync(proto::Scope::Channel, {keyNumber(offered++)}), peers::Target::toChannel(), PluginLink::Priority::Background, {});
+    };
+    FakeBackend receiver;
+    PluginLink  in(receiver);
+    QSignalSpy  spy(&in, &PluginLink::received);
+    int         answered = 0, delivered = 0;
+    offer(40); // a burst of clicks, then two a second: more than the governor lets out
+    for (int ms = 0; ms <= 120000; ms += 50) {
+        sender.now += 50;
+        receiver.now += 50;
+        if (ms % 500 == 0)
+            offer(1);
+        for (; answered < sender.commands.size(); ++answered)
+            out.onServerError(7, 0, sender.commands.at(answered).rc, QString(), false); // the server's Ok
+        out.pump();
+        for (; delivered < sender.commands.size(); ++delivered)
+            in.onCommand(7, 2, kUidSara, QStringLiteral("Sara"), sender.commands.at(delivered).payload);
+    }
+    QVERIFY(sender.commands.size() >= 120);
+    QCOMPARE(in.counters(7).rateLimited, 0);
+    QCOMPARE(spy.count(), sender.commands.size());
 }
 
 void TestProtocol::linkRetryHint()
