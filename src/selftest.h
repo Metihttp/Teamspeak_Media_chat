@@ -58,6 +58,10 @@ class SelfTest : public QObject
     int                       m_pos     = 0;
     bool                      m_running = false;
     qint64                    m_notLocalSince = 0; // the current tab stopped being a localhost server then
+    int                       m_logJobsEveryMs = 0; // waitidle: progress lines this often (0: none)
+    qint64                    m_jobsLoggedAt   = 0;
+    bool                      runPart2(const QString& cmd, const QJsonObject& c, bool* handled);
+    void                      reactStep(const QString& key, int reaction, int left, int gapMs);
 };
 
 #endif

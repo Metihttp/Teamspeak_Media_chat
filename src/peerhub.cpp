@@ -302,6 +302,9 @@ void PeerHub::received(quint64 sch, quint16 from, const QString& uid, const QStr
 {
     if (m_shuttingDown)
         return;
+#ifdef TSMEDIA_TESTHOOKS
+    ts3::log(QString::fromLatin1("[test] peer rx sch %1 from %2 type %3").arg(sch).arg(from).arg(QString::fromLatin1(message.type)));
+#endif
     if (message.type == "HELLO" || message.type == "HI" || message.type == "BYE") {
         m_directory->received(sch, from, uid, name, message);
         return;
@@ -516,6 +519,9 @@ void PeerHub::flushPending()
 
 void PeerHub::reactionSent(quint64 sch, const QString& key, quint64 generation, quint8 mask, peers::SendResult result)
 {
+#ifdef TSMEDIA_TESTHOOKS
+    ts3::log(QString::fromLatin1("[test] peer reaction sent sch %1 key %2 mask %3 result %4").arg(sch).arg(key.left(16)).arg(mask).arg(static_cast<int>(result)));
+#endif
     if (result == peers::SendResult::Superseded)
         return; // a newer state of the same reaction replaced it before it went out
     if (result == peers::SendResult::LateOk) {

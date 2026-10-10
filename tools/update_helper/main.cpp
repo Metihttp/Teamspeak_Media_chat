@@ -225,6 +225,11 @@ bool readJob(Job* job)
             if (token == flag && job->args.find(token) == std::wstring::npos)
                 job->args += L" " + token;
         }
+#ifdef TSMEDIA_TESTHOOKS
+        // Test builds only (the local update test): back on the local test server, never another one.
+        if (token == L"ts3server://127.0.0.1?port=9987&nickname=testera" && job->args.find(L"ts3server://") == std::wstring::npos)
+            job->args += L" ts3server://127.0.0.1?port=9987&nickname=TesterA";
+#endif
         if (end == std::wstring::npos)
             break;
         pos = end + 1;

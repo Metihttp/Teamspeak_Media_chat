@@ -954,6 +954,12 @@ void Updater::restartNow()
     job.pid    = GetCurrentProcessId();
     job.exe    = processExePath();
     job.flags  = relaunchFlags(QCoreApplication::arguments().mid(1));
+#ifdef TSMEDIA_TESTHOOKS
+    // Test builds against the local fake GitHub only: TeamSpeak comes back on the local test server
+    // instead of connecting to the user's autoconnect bookmarks (the test helper accepts exactly this).
+    if (!testOrigin().isEmpty())
+        job.flags.append(latin("ts3server://127.0.0.1?port=9987&nickname=TesterA"));
+#endif
     job.expect = pending;
     job.from   = m_current;
     unsigned long     error  = 0;

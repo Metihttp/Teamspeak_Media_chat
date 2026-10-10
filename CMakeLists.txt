@@ -219,6 +219,9 @@ if(MSVC)
     target_link_options(tsmedia_update_helper PRIVATE /DEPENDENTLOADFLAG:0x800)
 endif()
 target_link_libraries(tsmedia_update_helper PRIVATE bcrypt)
+if(TSMEDIA_TESTHOOKS)
+    target_compile_definitions(tsmedia_update_helper PRIVATE TSMEDIA_TESTHOOKS) # the local update test's relaunch link
+endif()
 
 set_target_properties(tsmedia PROPERTIES
     OUTPUT_NAME "tsmedia_${TSMEDIA_ARCH}"

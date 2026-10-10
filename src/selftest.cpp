@@ -20,6 +20,20 @@
 //   connect {nick}                  a new server tab to 127.0.0.1:9987
 //   say {text}                      a raw channel message (no flood governor)
 //   quit                            TeamSpeak's own Quit action (Ctrl+Q), queued
+// Part 2 of the 2.2 live test:
+//   react {name, reaction, times, gapMs}   toggles a reaction of the newest entry named so (PeerHub::toggle)
+//   reactmany {count, reaction}     one toggle on each of the newest <count> media of this server, at once
+//   reactions {name}                logs the reaction view of an entry
+//   peers                           logs the presence summary of the visible chat and PeerHub's diagnostics
+//   selfvar {var, value}  vars      sets / logs our client variables (CLIENT_INPUT_MUTED = 6, ...)
+//   command {text}                  /tsmedia <text> (ts3plugin_processCommand)
+//   menuitem {id, nick}             a plugin menu item (ts3plugin_onMenuItemEvent), on a client by nickname
+//   settings.tab {name}             opens Settings on the tab whose title contains name
+//   grabobj {object, name}          grabs a visible top-level window by objectName (prefix)
+//   textdump {object, name}         writes the texts of a top-level window's text boxes to debug/<name>.txt
+//   clipboard {name}                writes the clipboard text to debug/<name>.txt
+//   toast {name}                    grabs the upload toast of the visible chat
+//   click {..., object}             as above; also by window objectName, '&' ignored in button texts
 
 #ifdef TSMEDIA_TESTHOOKS
 
@@ -50,7 +64,10 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QAbstractTextDocumentLayout>
+#include <QClipboard>
+#include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QTextEdit>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTimer>
@@ -61,10 +78,38 @@
 #include "composedialog.h"
 #include "core.h"
 #include "inlinemedia.h"
+#include "peerhub.h"
 #include "settings.h"
 #include "ts3api.h"
 
+// plugin.cpp's entry points, called the way TeamSpeak calls them (same DLL).
+extern "C" int  ts3plugin_processCommand(uint64 serverConnectionHandlerID, const char* command);
+extern "C" void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID);
+
 namespace {
+
+QString withoutMnemonic(QString text)
+{
+    text.remove(QLatin1Char('&'));
+    return text;
+}
+
+QWidget* topLevelByObject(const QString& prefix)
+{
+    for (QWidget* w : QApplication::topLevelWidgets()) {
+        if (w->isVisible() && w->objectName().startsWith(prefix))
+            return w;
+    }
+    return nullptr;
+}
+
+void writeDebugText(const QString& name, const QString& text)
+{
+    QDir().mkpath(ts3::dataDir() + QString::fromLatin1("/debug"));
+    QFile file(ts3::dataDir() + QString::fromLatin1("/debug/") + name + QString::fromLatin1(".txt"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(text.toUtf8());
+}
 
 bool isLocal(uint64 sch)
 {
@@ -307,6 +352,18 @@ void SelfTest::waitIdle(qint64 deadline)
             busy = true;
     }
     if (busy && QDateTime::currentMSecsSinceEpoch() < deadline) {
+        if (m_logJobsEveryMs > 0 && QDateTime::currentMSecsSinceEpoch() - m_jobsLoggedAt >= m_logJobsEveryMs) {
+            m_jobsLoggedAt = QDateTime::currentMSecsSinceEpoch();
+            for (int id : m_core->uploadIds()) {
+                const UploadJob* j = m_core->upload(id);
+                if (j && j->state != UploadState::Done && j->state != UploadState::Failed && j->state != UploadState::Canceled)
+                    say(QString::fromLatin1("progress job %1 %2%3 %4% label %5 encoder %6 finishing %7 size %8/%9 \"%10\"")
+                            .arg(QString::number(j->id), stateName(j->state), j->waiting ? QString::fromLatin1(" (waiting)") : QString(),
+                                 QString::number(qRound(j->progress * 100)), j->compressLabel, QString::number(j->compressEncoder),
+                                 QString::number(j->compressFinishing ? 1 : 0), QString::number(j->size), QString::number(j->originalSize))
+                            .arg(j->message.left(160)));
+            }
+        }
         auto*              t = new QTimer(this);
         t->setSingleShot(true);
         connect(t, &QTimer::timeout, this, [this, t, deadline] {
@@ -316,6 +373,7 @@ void SelfTest::waitIdle(qint64 deadline)
         t->start(500);
         return;
     }
+    m_logJobsEveryMs = 0;
     say(busy ? QString::fromLatin1("waitidle: timed out") : QString::fromLatin1("waitidle: idle"));
     logJobs();
     next(0);
@@ -541,9 +599,12 @@ bool SelfTest::run(const QJsonObject& c)
         const int index = c.value(QString::fromLatin1("index")).toInt(0); // the n-th match (server tabs share names)
         int       seen  = 0;
         if (QWidget* mw = m_chat->mainWindow()) {
+            const bool serverTabs = c.value(QString::fromLatin1("server")).toBool(false); // only the server tab bar
             for (QTabBar* bar : mw->findChildren<QTabBar*>()) {
                 if (!bar->isVisible())
                     continue; // a hidden server tab's chat tabs
+                if (serverTabs && bar->objectName() == QLatin1String("ChatTabBar"))
+                    continue;
                 for (int i = 0; i < bar->count() && !found; ++i) {
                     if (bar->tabText(i).contains(name, Qt::CaseInsensitive) && seen++ < index)
                         continue;
@@ -642,6 +703,8 @@ bool SelfTest::run(const QJsonObject& c)
         return true;
     }
     if (cmd == QLatin1String("waitidle")) {
+        m_logJobsEveryMs = c.value(QString::fromLatin1("logEvery")).toInt(0); // progress lines meanwhile
+        m_jobsLoggedAt   = 0;
         waitIdle(QDateTime::currentMSecsSinceEpoch() + c.value(QString::fromLatin1("timeout")).toInt(120000));
         return false;
     }
@@ -799,12 +862,15 @@ bool SelfTest::run(const QJsonObject& c)
         const QString title = c.value(QString::fromLatin1("window")).toString();
         const QString text  = c.value(QString::fromLatin1("text")).toString();
         const QString frame = c.value(QString::fromLatin1("frameLabel")).toString();
+        const QString object = c.value(QString::fromLatin1("object")).toString();
         QAbstractButton* target = nullptr;
         for (QWidget* top : QApplication::topLevelWidgets()) {
-            if (!top->isVisible() || !top->windowTitle().contains(title, Qt::CaseInsensitive))
+            if (!top->isVisible())
+                continue;
+            if (!object.isEmpty() ? !top->objectName().startsWith(object) : !top->windowTitle().contains(title, Qt::CaseInsensitive))
                 continue;
             for (QAbstractButton* b : top->findChildren<QAbstractButton*>()) {
-                if (!b->isVisible() || b->text() != text)
+                if (!b->isVisible() || withoutMnemonic(b->text()) != withoutMnemonic(text))
                     continue;
                 if (!frame.isEmpty()) {
                     bool inFrame = false;
@@ -819,7 +885,9 @@ bool SelfTest::run(const QJsonObject& c)
             if (target)
                 break;
         }
-        say(QString::fromLatin1("click: \"%1\" in \"%2\"%3").arg(text, title, target ? QString() : QString::fromLatin1(" not found")));
+        say(QString::fromLatin1("click: \"%1\" in \"%2\"%3%4")
+                .arg(text, object.isEmpty() ? title : object, target ? QString() : QString::fromLatin1(" not found"),
+                     target && !target->isEnabled() ? QString::fromLatin1(" (disabled)") : QString()));
         if (target)
             QMetaObject::invokeMethod(target, "click", Qt::QueuedConnection);
         // "again": the same button once more after that many ms (e.g. Enabled: TeamSpeak unloads the plugin,
@@ -843,6 +911,8 @@ bool SelfTest::run(const QJsonObject& c)
     if (cmd == QLatin1String("menus")) {
         if (QWidget* mw = m_chat->mainWindow()) {
             for (QMenu* menu : mw->findChildren<QMenu*>()) {
+                if (c.value(QString::fromLatin1("show")).toBool()) // as if it were opened (TeamSpeak may update its items then)
+                    QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection);
                 QStringList items;
                 for (QAction* a : menu->actions()) {
                     if (!a->text().isEmpty())
@@ -879,6 +949,8 @@ bool SelfTest::run(const QJsonObject& c)
             s.autoDownloadMaxMB = v.toInt();
         else if (key == QLatin1String("videoAutoDownloadMB"))
             s.videoAutoDownloadMB = v.toInt();
+        else if (key == QLatin1String("dataSaver"))
+            s.dataSaver = v.toBool();
         else if (key == QLatin1String("uploadMaxMB"))
             s.uploadMaxMB = v.toInt();
         else if (key == QLatin1String("uploadDirectory"))
@@ -888,6 +960,7 @@ bool SelfTest::run(const QJsonObject& c)
             return true;
         }
         s.save();
+        m_core->onDataSaverChanged();
         m_chat->refreshAll();
         say(QString::fromLatin1("setting: %1 set").arg(key));
         return true;
@@ -923,7 +996,218 @@ bool SelfTest::run(const QJsonObject& c)
         finish(QString::fromLatin1("quit"));
         return false;
     }
+    bool       handled = false;
+    const bool result  = runPart2(cmd, c, &handled);
+    if (handled)
+        return result;
     say(QString::fromLatin1("unknown command ") + cmd);
+    return true;
+}
+
+void SelfTest::reactStep(const QString& key, int reaction, int left, int gapMs)
+{
+    PeerHub* hub = PeerHub::instance();
+    if (!hub || !m_chat || !isLocal(ts3::currentConnection())) {
+        say(QString::fromLatin1("react: stopped"));
+        next(0);
+        return;
+    }
+    const PeerHub::ReactError error = hub->toggle(key, reaction, m_chat->currentTarget());
+    const ReactionView        view  = hub->view(key);
+    say(QString::fromLatin1("react: %1 reaction %2 -> error %3, count %4 mine %5 (left %6)")
+            .arg(key.left(24))
+            .arg(reaction)
+            .arg(static_cast<int>(error))
+            .arg(view.per[qBound(0, reaction, proto::kReactionCount - 1)].count)
+            .arg(view.per[qBound(0, reaction, proto::kReactionCount - 1)].mine ? 1 : 0)
+            .arg(left - 1));
+    if (left <= 1) {
+        next(0);
+        return;
+    }
+    auto* t = new QTimer(this);
+    t->setSingleShot(true);
+    connect(t, &QTimer::timeout, this, [this, t, key, reaction, left, gapMs] {
+        t->deleteLater();
+        reactStep(key, reaction, left - 1, gapMs);
+    });
+    t->start(gapMs);
+}
+
+bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
+{
+    *handled          = true;
+    const uint64 sch  = ts3::currentConnection();
+    PeerHub*     hub  = PeerHub::instance();
+    const auto   name = [&c](const char* key, const char* fallback) { return c.value(QString::fromLatin1(key)).toString(QString::fromLatin1(fallback)); };
+
+    if (cmd == QLatin1String("react")) {
+        const QString key = findKey(name("name", ""));
+        if (key.isEmpty() || !hub) {
+            say(QString::fromLatin1("react: no entry or no hub for ") + name("name", ""));
+            return true;
+        }
+        reactStep(key, c.value(QString::fromLatin1("reaction")).toInt(0), qMax(1, c.value(QString::fromLatin1("times")).toInt(1)),
+                  qMax(0, c.value(QString::fromLatin1("gapMs")).toInt(600)));
+        return false;
+    }
+    if (cmd == QLatin1String("reactmany")) {
+        const int     count    = qMax(1, c.value(QString::fromLatin1("count")).toInt(40));
+        const int     reaction = c.value(QString::fromLatin1("reaction")).toInt(0);
+        const QString server   = ts3::serverUid(sch);
+        const QStringList keys = m_core->keys();
+        int done = 0, ok = 0;
+        for (int i = keys.size() - 1; i >= 0 && done < count && hub; --i) {
+            const MediaEntry* e = m_core->entry(keys.at(i));
+            if (!e || e->link.serverUid != server)
+                continue;
+            ++done;
+            if (hub->toggle(keys.at(i), reaction, m_chat->currentTarget()) == PeerHub::ReactError::None)
+                ++ok;
+        }
+        say(QString::fromLatin1("reactmany: %1 toggles, %2 accepted").arg(done).arg(ok));
+        return true;
+    }
+    if (cmd == QLatin1String("reactions")) {
+        const QString key = findKey(name("name", ""));
+        if (key.isEmpty() || !hub) {
+            say(QString::fromLatin1("reactions: no entry for ") + name("name", ""));
+            return true;
+        }
+        const ReactionView view = hub->view(key);
+        QStringList        parts;
+        for (int r = 0; r < proto::kReactionCount; ++r) {
+            if (view.per[r].count > 0 || view.per[r].mine)
+                parts << QString::fromLatin1("%1:%2%3[%4]").arg(r).arg(view.per[r].count).arg(view.per[r].mine ? QString::fromLatin1("*") : QString()).arg(view.per[r].others.join(QLatin1Char(',')));
+        }
+        say(QString::fromLatin1("reactions: %1 %2 -> %3").arg(m_core->entry(key)->link.fileName, key.left(24), parts.isEmpty() ? QString::fromLatin1("none") : parts.join(QLatin1Char(' '))));
+        return true;
+    }
+    if (cmd == QLatin1String("peers")) {
+        if (!hub) {
+            say(QString::fromLatin1("peers: no hub"));
+            return true;
+        }
+        const ChatTarget        t = m_chat->currentTarget();
+        const peers::PresenceSummary s = hub->directory()->summary(t.sch, t.mode, t.clientId);
+        say(QString::fromLatin1("peers: sch %1 own clid %2 channel %3 kind %4 has [%5] without [%6] checking [%7] text \"%8\"")
+                .arg(t.sch)
+                .arg(ts3::ownClientId(t.sch))
+                .arg(ts3::ownChannel(t.sch))
+                .arg(static_cast<int>(s.kind))
+                .arg(s.has.join(QLatin1Char(',')), s.without.join(QLatin1Char(',')), s.checking.join(QLatin1Char(',')), peers::presenceText(s)));
+        for (const QString& line : hub->diagnosticLines())
+            say(QString::fromLatin1("peers diag: ") + line);
+        return true;
+    }
+    if (cmd == QLatin1String("move")) { // our own client into another channel of this (localhost) server
+        const uint64   cid = static_cast<uint64>(c.value(QString::fromLatin1("cid")).toDouble(1));
+        const unsigned err = ts3::funcs.requestClientMove(sch, ts3::ownClientId(sch), cid, "", nullptr);
+        say(QString::fromLatin1("move: to channel %1 (error %2)").arg(cid).arg(err));
+        next(1500);
+        return false;
+    }
+    if (cmd == QLatin1String("selfvar")) {
+        const int var   = c.value(QString::fromLatin1("var")).toInt(-1);
+        const int value = c.value(QString::fromLatin1("value")).toInt(0);
+        // Only the microphone / speaker flags; never anything else of the user's client.
+        if (var != CLIENT_INPUT_MUTED && var != CLIENT_INPUT_DEACTIVATED && var != CLIENT_OUTPUT_MUTED) {
+            say(QString::fromLatin1("selfvar: refused %1").arg(var));
+            return true;
+        }
+        const unsigned e1 = ts3::funcs.setClientSelfVariableAsInt(sch, static_cast<size_t>(var), value);
+        const unsigned e2 = ts3::funcs.flushClientSelfUpdates(sch, nullptr);
+        say(QString::fromLatin1("selfvar: %1 = %2 (error %3 / %4)").arg(var).arg(value).arg(e1).arg(e2));
+        return true;
+    }
+    if (cmd == QLatin1String("vars")) {
+        int muted = -1, deact = -1, hw = -1, out = -1;
+        const anyID own = ts3::ownClientId(sch);
+        ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_INPUT_MUTED, &muted);
+        ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_INPUT_DEACTIVATED, &deact);
+        ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_INPUT_HARDWARE, &hw);
+        ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_OUTPUT_MUTED, &out);
+        say(QString::fromLatin1("vars: sch %1 clid %2 input_muted %3 input_deactivated %4 input_hardware %5 output_muted %6").arg(sch).arg(own).arg(muted).arg(deact).arg(hw).arg(out));
+        return true;
+    }
+    if (cmd == QLatin1String("command")) {
+        const QByteArray text = name("text", "help").toUtf8();
+        say(QString::fromLatin1("command: /tsmedia ") + QString::fromUtf8(text));
+        ts3plugin_processCommand(sch, text.constData());
+        next(800);
+        return false;
+    }
+    if (cmd == QLatin1String("menuitem")) {
+        const int     id   = c.value(QString::fromLatin1("id")).toInt(0);
+        const QString nick = name("nick", "");
+        anyID         clid = 0;
+        if (!nick.isEmpty())
+            clid = ts3::clientIdByNickname(sch, nick);
+        say(QString::fromLatin1("menuitem: %1 on \"%2\" (clid %3)").arg(id).arg(nick).arg(clid));
+        ts3plugin_onMenuItemEvent(sch, nick.isEmpty() ? PLUGIN_MENU_TYPE_GLOBAL : PLUGIN_MENU_TYPE_CLIENT, id, clid);
+        next(800);
+        return false;
+    }
+    if (cmd == QLatin1String("settings.tab")) {
+        QWidget* dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
+        if (!dialog && m_hooks.openSettings) {
+            m_hooks.openSettings();
+            dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
+        }
+        auto* tabs = dialog ? dialog->findChild<QTabWidget*>(QString::fromLatin1("tsmediaSettingsTabs")) : nullptr;
+        bool  found = false;
+        for (int i = 0; tabs && i < tabs->count() && !found; ++i) {
+            if (withoutMnemonic(tabs->tabText(i)).contains(name("name", ""), Qt::CaseInsensitive)) {
+                tabs->setCurrentIndex(i);
+                found = true;
+                say(QString::fromLatin1("settings.tab: \"%1\" (%2x%3)").arg(tabs->tabText(i)).arg(dialog->width()).arg(dialog->height()));
+            }
+        }
+        if (!found)
+            say(QString::fromLatin1("settings.tab: none named ") + name("name", ""));
+        next(1500);
+        return false;
+    }
+    if (cmd == QLatin1String("grabobj")) {
+        QWidget* w = topLevelByObject(name("object", "tsmedia"));
+        say(QString::fromLatin1("grabobj: %1 -> %2")
+                .arg(w ? QString::fromLatin1("%1 \"%2\" %3x%4").arg(w->objectName(), w->windowTitle()).arg(w->width()).arg(w->height()) : QString::fromLatin1("none"),
+                     w ? saveGrab(w, name("name", "obj")) : QString()));
+        return true;
+    }
+    if (cmd == QLatin1String("textdump")) {
+        QWidget* w = topLevelByObject(name("object", "tsmedia"));
+        QString  out;
+        if (w) {
+            for (QPlainTextEdit* e : w->findChildren<QPlainTextEdit*>())
+                out += e->toPlainText() + QString::fromLatin1("\n-----\n");
+            for (QTextEdit* e : w->findChildren<QTextEdit*>())
+                out += e->toPlainText() + QString::fromLatin1("\n-----\n");
+            out += describeWidgetTexts(w);
+        }
+        writeDebugText(name("name", "textdump"), out);
+        say(QString::fromLatin1("textdump: %1 (%2 chars)").arg(w ? w->objectName() : QString::fromLatin1("no window")).arg(out.size()));
+        return true;
+    }
+    if (cmd == QLatin1String("clipboard")) {
+        const QString text = QApplication::clipboard() ? QApplication::clipboard()->text() : QString();
+        writeDebugText(name("name", "clipboard"), text);
+        say(QString::fromLatin1("clipboard: %1 chars").arg(text.size()));
+        return true;
+    }
+    if (cmd == QLatin1String("toast")) {
+        QTextBrowser* b     = m_chat->visibleChatBrowser();
+        QWidget*      toast = nullptr;
+        for (QWidget* w : b ? b->findChildren<QWidget*>(QString::fromLatin1("tsmediaUploadToast")) : QList<QWidget*>()) {
+            if (w->isVisible())
+                toast = w;
+        }
+        say(QString::fromLatin1("toast: %1 %2").arg(toast ? QString::fromLatin1("visible") : QString::fromLatin1("none"), toast ? saveGrab(toast, name("name", "toast")) : QString()));
+        if (toast)
+            say(QString::fromLatin1("toast texts: ") + describeWidgetTexts(toast));
+        return true;
+    }
+    *handled = false;
     return true;
 }
 

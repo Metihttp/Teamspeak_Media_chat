@@ -163,6 +163,9 @@ It refuses DLLs with imports outside an allowlist, and checks every imported Qt 
   update requests then go to a local server with GitHub's paths. `-DTSMEDIA_VERSION_OVERRIDE=2.1.9`
   (test builds only) builds a "next version" to offer. `selftest_init_fail.txt` / `selftest_init_crash.txt`
   in the same folder make the next start fail or crash right after the boot guard (rollback tests).
+  With `update_base.txt` set, *Restart now* in a test build brings TeamSpeak back with
+  `ts3server://127.0.0.1?port=9987&nickname=TesterA` (the test helper accepts exactly that link), so a
+  restart never connects to the tester's autoconnect bookmarks; release builds never pass a link.
 
 ### Measured on TeamSpeak 3.6.2 (the S0 spike)
 
