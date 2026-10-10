@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QSet>
 
 #include <algorithm>
 
@@ -12,21 +13,37 @@
 
 bool ReactionView::isEmpty() const
 {
-    for (const Entry& e : per) {
+    for (const Entry& e : entries) {
         if (e.count > 0)
             return false;
     }
     return true;
 }
 
+ReactionView::Entry ReactionView::entry(int reaction) const
+{
+    for (const Entry& e : entries) {
+        if (e.reaction == reaction)
+            return e;
+    }
+    Entry none;
+    none.reaction = reaction;
+    return none;
+}
+
+proto::ReactionSet ReactionView::own() const
+{
+    proto::ReactionSet set;
+    for (const Entry& e : entries) {
+        if (e.mine)
+            set.append(e.reaction);
+    }
+    return set;
+}
+
 int ReactionView::ownMask() const
 {
-    int mask = 0;
-    for (int i = 0; i < proto::kReactionCount; ++i) {
-        if (per[i].mine)
-            mask |= 1 << i;
-    }
-    return mask;
+    return proto::legacyMask(own());
 }
 
 // ---- ReactionStore --------------------------------------------------------------------------------
@@ -76,12 +93,12 @@ QString ReactionStore::cleanName(const QString& name) const
     return out.trimmed();
 }
 
-ReactionStore::Apply ReactionStore::applyRemote(const QString& serverUid, const QString& key, const QString& uid, const QString& name, quint8 mask,
-                                                qint64 nowMs)
+ReactionStore::Apply ReactionStore::applyRemote(const QString& serverUid, const QString& key, const QString& uid, const QString& name,
+                                                const proto::ReactionSet& reactions, qint64 nowMs)
 {
     if (!proto::isMediaKey(key) || !isClientUid(uid))
         return Apply::Rejected;
-    mask &= proto::kAllReactions;
+    const proto::ReactionSet clean = proto::cleanSet(reactions);
     if (m_known && !m_known(key, serverUid)) {
         // Later messages from the same reactor replace their earlier one; the oldest goes first when full.
         for (int i = 0; i < m_orphans.size(); ++i) {
@@ -92,28 +109,63 @@ ReactionStore::Apply ReactionStore::applyRemote(const QString& serverUid, const 
         }
         if (m_orphans.size() >= m_limits.maxOrphans)
             m_orphans.removeFirst();
-        m_orphans.append({serverUid, key, uid, cleanName(name), mask, nowMs});
+        m_orphans.append({serverUid, key, uid, cleanName(name), clean, nowMs});
         return Apply::Orphaned;
     }
-    return set(key, uid, name, mask, nowMs / 1000);
+    return set(key, uid, name, clean, nowMs / 1000);
+}
+
+ReactionStore::Apply ReactionStore::applyRemote(const QString& serverUid, const QString& key, const QString& uid, const QString& name, quint8 mask, qint64 nowMs)
+{
+    return applyRemote(serverUid, key, uid, name, proto::setFromMask(static_cast<quint8>(mask & proto::kAllReactions)), nowMs);
+}
+
+void ReactionStore::setOwn(const QString& key, const QString& ownUid, const QString& ownName, const proto::ReactionSet& reactions, qint64 nowMs)
+{
+    if (!proto::isMediaKey(key) || !isClientUid(ownUid))
+        return;
+    set(key, ownUid, ownName, proto::cleanSet(reactions), nowMs / 1000);
 }
 
 void ReactionStore::setOwn(const QString& key, const QString& ownUid, const QString& ownName, quint8 mask, qint64 nowMs)
 {
-    if (!proto::isMediaKey(key) || !isClientUid(ownUid))
-        return;
-    set(key, ownUid, ownName, static_cast<quint8>(mask & proto::kAllReactions), nowMs / 1000);
+    setOwn(key, ownUid, ownName, proto::setFromMask(static_cast<quint8>(mask & proto::kAllReactions)), nowMs);
 }
 
-ReactionStore::Apply ReactionStore::set(const QString& key, const QString& uid, const QString& name, quint8 mask, qint64 nowSec)
+void ReactionStore::reorder(Media& media)
+{
+    // Earliest reactor first, each one's set in its own order.
+    QVector<QPair<qint64, QString>> who;
+    for (auto it = media.by.constBegin(); it != media.by.constEnd(); ++it)
+        who.append({it->tSec, it.key()});
+    std::sort(who.begin(), who.end());
+    media.order.clear();
+    for (const auto& w : qAsConst(who)) {
+        for (int id : media.by.value(w.second).set) {
+            if (!media.order.contains(id))
+                media.order.append(id);
+        }
+    }
+}
+
+ReactionStore::Apply ReactionStore::set(const QString& key, const QString& uid, const QString& name, const proto::ReactionSet& reactions, qint64 nowSec)
 {
     auto media = m_media.find(key);
-    if (mask == 0) {
+    if (reactions.isEmpty()) {
         if (media == m_media.end() || !media->by.contains(uid))
             return Apply::Unchanged;
         media->by.remove(uid);
-        if (media->by.isEmpty())
+        if (media->by.isEmpty()) {
             m_media.erase(media);
+        } else {
+            // Reactions nobody has any more leave the order.
+            QSet<int> left;
+            for (const Reactor& r : qAsConst(media->by)) {
+                for (int id : r.set)
+                    left.insert(id);
+            }
+            media->order.erase(std::remove_if(media->order.begin(), media->order.end(), [&left](int id) { return !left.contains(id); }), media->order.end());
+        }
         emit changed(key);
         return Apply::Applied;
     }
@@ -142,25 +194,41 @@ ReactionStore::Apply ReactionStore::set(const QString& key, const QString& uid, 
         }
         reactor = media->by.insert(uid, Reactor());
         reactor->tSec = nowSec;
-    } else if (reactor->mask == mask && (clean.isEmpty() || reactor->name == clean)) {
+    } else if (proto::sameSet(reactor->set, reactions) && (clean.isEmpty() || reactor->name == clean)) {
         return Apply::Unchanged;
     }
-    if (reactor->mask == 0)
+    if (reactor->set.isEmpty())
         reactor->tSec = nowSec;
-    reactor->mask = mask;
+    reactor->set = reactions;
     if (!clean.isEmpty())
         reactor->name = clean;
     media->seenSec = nowSec;
+    // New reactions join the end of the order; ones nobody has any more leave it.
+    QSet<int> present;
+    for (const Reactor& r : qAsConst(media->by)) {
+        for (int id : r.set)
+            present.insert(id);
+    }
+    media->order.erase(std::remove_if(media->order.begin(), media->order.end(), [&present](int id) { return !present.contains(id); }), media->order.end());
+    for (int id : reactions) {
+        if (!media->order.contains(id))
+            media->order.append(id);
+    }
     emit changed(key);
     return Apply::Applied;
 }
 
-quint8 ReactionStore::maskOf(const QString& key, const QString& uid) const
+proto::ReactionSet ReactionStore::setOf(const QString& key, const QString& uid) const
 {
     const auto media = m_media.constFind(key);
     if (media == m_media.constEnd())
-        return 0;
-    return media->by.value(uid).mask;
+        return {};
+    return media->by.value(uid).set;
+}
+
+quint8 ReactionStore::maskOf(const QString& key, const QString& uid) const
+{
+    return proto::legacyMask(setOf(key, uid));
 }
 
 ReactionView ReactionStore::view(const QString& key, const QString& ownUid) const
@@ -170,29 +238,36 @@ ReactionView ReactionStore::view(const QString& key, const QString& ownUid) cons
     if (media == m_media.constEnd())
         return view;
     struct Who {
-        QString name;
-        qint64  t;
-        quint8  mask;
+        QString                   name;
+        qint64                    t;
+        const proto::ReactionSet* set;
     };
     QVector<Who> others;
+    QSet<int>    mine;
     for (auto it = media->by.constBegin(); it != media->by.constEnd(); ++it) {
-        const bool own = !ownUid.isEmpty() && it.key() == ownUid;
-        for (int i = 0; i < proto::kReactionCount; ++i) {
-            if (!(it->mask & (1u << i)))
-                continue;
-            ++view.per[i].count;
-            if (own)
-                view.per[i].mine = true;
+        if (!ownUid.isEmpty() && it.key() == ownUid) {
+            for (int id : it->set)
+                mine.insert(id);
+        } else {
+            others.append({it->name, it->tSec, &it->set});
         }
-        if (!own)
-            others.append({it->name, it->tSec, it->mask});
     }
     std::sort(others.begin(), others.end(), [](const Who& a, const Who& b) { return a.t != b.t ? a.t < b.t : a.name < b.name; });
-    for (const Who& who : qAsConst(others)) {
-        for (int i = 0; i < proto::kReactionCount; ++i) {
-            if (who.mask & (1u << i))
-                view.per[i].others.append(who.name);
+    for (int id : media->order) {
+        if (view.entries.size() >= proto::kMaxDistinctReactions)
+            break;
+        ReactionView::Entry entry;
+        entry.reaction = id;
+        entry.mine     = mine.contains(id);
+        entry.count    = entry.mine ? 1 : 0;
+        for (const Who& who : qAsConst(others)) {
+            if (who.set->contains(id)) {
+                ++entry.count;
+                entry.others.append(who.name);
+            }
         }
+        if (entry.count > 0)
+            view.entries.append(entry);
     }
     return view;
 }
@@ -212,6 +287,11 @@ int ReactionStore::reactorCount(const QString& key) const
     return m_media.value(key).by.size();
 }
 
+int ReactionStore::distinctCount(const QString& key) const
+{
+    return m_media.value(key).order.size();
+}
+
 QVector<proto::ReactItem> ReactionStore::syncAnswer(const QStringList& requested, const QString& ownUid) const
 {
     QVector<proto::ReactItem> items;
@@ -222,9 +302,9 @@ QVector<proto::ReactItem> ReactionStore::syncAnswer(const QStringList& requested
         if (seen.contains(key) || items.size() >= proto::kMaxItems)
             continue;
         seen.append(key);
-        const quint8 mask = maskOf(key, ownUid);
-        if (mask != 0)
-            items.append({key, mask});
+        const proto::ReactionSet set = setOf(key, ownUid);
+        if (!set.isEmpty())
+            items.append({key, proto::legacyMask(set), set});
     }
     return items;
 }
@@ -242,7 +322,7 @@ void ReactionStore::resolveOrphans(const QString& key, qint64 nowMs)
         m_orphans.removeAt(i);
     }
     for (const Orphan& o : qAsConst(ready))
-        set(o.key, o.uid, o.name, o.mask, o.atMs / 1000);
+        set(o.key, o.uid, o.name, o.set, o.atMs / 1000);
 }
 
 void ReactionStore::resolveKnownOrphans(qint64 nowMs)
@@ -257,7 +337,7 @@ void ReactionStore::resolveKnownOrphans(qint64 nowMs)
         m_orphans.removeAt(i);
     }
     for (const Orphan& o : qAsConst(ready))
-        set(o.key, o.uid, o.name, o.mask, o.atMs / 1000);
+        set(o.key, o.uid, o.name, o.set, o.atMs / 1000);
 }
 
 void ReactionStore::expireOrphans(qint64 nowMs)
@@ -312,9 +392,12 @@ QByteArray ReactionStore::toJson(qint64 nowSec) const
         const Media& m = m_media.constFind(item.second).value();
         QJsonObject  by;
         for (auto r = m.by.constBegin(); r != m.by.constEnd(); ++r) {
-            QJsonObject reactor;
+            QJsonObject  reactor;
+            const quint8 mask = proto::legacyMask(r->set);
             reactor.insert(QStringLiteral("n"), r->name);
-            reactor.insert(QStringLiteral("e"), QString::fromLatin1(proto::maskToCodes(r->mask)));
+            reactor.insert(QStringLiteral("e"), QString::fromLatin1(proto::maskToCodes(mask)));
+            if (proto::setFromMask(mask).size() != r->set.size()) // 2.2 emoji: other emoji too
+                reactor.insert(QStringLiteral("x"), QString::fromLatin1(proto::setToEmojiCodes(r->set)));
             reactor.insert(QStringLiteral("t"), static_cast<double>(r->tSec));
             by.insert(r.key(), reactor);
         }
@@ -361,19 +444,31 @@ bool ReactionStore::fromJson(const QByteArray& json, qint64 nowSec)
         for (auto r = by.constBegin(); r != by.constEnd() && m.by.size() < m_limits.maxReactors; ++r) {
             if (!isClientUid(r.key()) || !r.value().isObject())
                 continue;
-            const QJsonObject reactor = r.value().toObject();
-            const QJsonValue  codes   = reactor.value(QStringLiteral("e"));
-            quint8            mask    = 0;
-            if (!codes.isString() || !proto::codesToMask(codes.toString().toLatin1(), &mask) || codes.toString().size() > 256 || mask == 0)
+            const QJsonObject  reactor = r.value().toObject();
+            const QJsonValue   codes   = reactor.value(QStringLiteral("e"));
+            const QJsonValue   emojis  = reactor.value(QStringLiteral("x")); // 2.2 emoji
+            proto::ReactionSet set;
+            if (emojis.isString() && emojis.toString().size() <= proto::kMaxValueChars)
+                proto::emojiCodesToSet(emojis.toString().toLatin1(), &set);
+            if (set.isEmpty()) {
+                quint8 mask = 0;
+                if (!codes.isString() || !proto::codesToMask(codes.toString().toLatin1(), &mask) || codes.toString().size() > 256)
+                    continue;
+                set = proto::setFromMask(mask);
+            }
+            set = proto::cleanSet(set);
+            if (set.isEmpty())
                 continue;
             Reactor value;
-            value.mask = mask;
+            value.set  = set;
             value.name = cleanName(reactor.value(QStringLiteral("n")).toString());
             value.tSec = qBound<qint64>(0, static_cast<qint64>(reactor.value(QStringLiteral("t")).toDouble(0)), nowSec + 86400);
             m.by.insert(r.key(), value);
         }
-        if (!m.by.isEmpty())
+        if (!m.by.isEmpty()) {
+            reorder(m);
             m_media.insert(it.key(), m);
+        }
     }
     trim(nowSec);
     return true;

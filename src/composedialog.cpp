@@ -1,4 +1,5 @@
 #include "composedialog.h"
+#include "emojiinput.h" // 2.2 emoji
 
 #include <QAbstractButton>
 #include <QAccessible>
@@ -913,6 +914,7 @@ ComposeDialog::ComposeDialog(ComposeHost host, const ChatTarget& target, QWidget
     m_caption->setClearButtonEnabled(false);
     m_caption->setAcceptDrops(false); // files dropped on it are added, not typed in
     m_caption->installEventFilter(this);
+    EmojiInput::addPickerButton(m_caption); // 2.2 emoji: the emoji picker for the caption
     captionLabel->setBuddy(m_caption);
     m_captionHelp = roleLabel(QString(), "hint", this);
     m_counter     = roleLabel(QString(), "hint", this);

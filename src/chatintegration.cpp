@@ -49,6 +49,7 @@
 #include "audiocard.h" // 2.2 audio
 #include "filedrag.h" // 2.2 drag-out
 #include "albums.h" // 2.2 album
+#include "chatemoji.h"     // 2.2 emoji
 #include "chatreactions.h" // 2.2 reactions
 #include "chatreplies.h"   // 2.2 reply
 #include "i18n.h"
@@ -264,6 +265,8 @@ ChatIntegration::~ChatIntegration()
     // 2.2 reply: quote lines given back, the reply bar out of TeamSpeak's layout, our menu items gone.
     delete m_replies;
     m_replies = nullptr;
+    delete m_emoji; // 2.2 emoji: the chats get their text and emoticons back, the inputs their space
+    m_emoji = nullptr;
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         if (it->browser && it->document == it->browser->document())
             restoreAlbums(it->browser);
@@ -317,6 +320,7 @@ void ChatIntegration::start()
     m_reactions = new ChatReactions(this, m_core); // 2.2 reactions
     m_voice = new VoiceController(this, m_core, this); // 2.2 voice
     m_replies   = new ChatReplies(this, m_core);   // 2.2 reply
+    m_emoji     = new ChatEmoji(this);             // 2.2 emoji
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -381,6 +385,8 @@ void ChatIntegration::discover()
             v.stale.clear();
             watchDocument(v.browser, v.document);
             scheduleScan(v.browser);
+            if (m_emoji) // 2.2 emoji
+                m_emoji->documentSwapped(v.browser);
         }
     }
 
@@ -415,6 +421,8 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
     browser->viewport()->setAcceptDrops(true);
     browser->viewport()->setMouseTracking(true);
     scheduleScan(browser);
+    if (m_emoji) // 2.2 emoji (its event filter goes before ours: it only takes events on its own emoji)
+        m_emoji->attach(browser);
 }
 
 void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* document)
@@ -423,7 +431,7 @@ void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* docume
         auto it = m_views.find(browser);
         if (it != m_views.end())
             it->positionsValid = false;
-        if (!m_mutating)
+        if (!m_mutating && !ChatEmoji::isMutating()) // 2.2 emoji: its own edits need no rescan
             scheduleScan(browser);
     });
 }
@@ -437,6 +445,8 @@ void ChatIntegration::attachInput(QWidget* input)
         area->viewport()->installEventFilter(this);
         area->viewport()->setAcceptDrops(true);
     }
+    if (auto* edit = qobject_cast<QTextEdit*>(input); edit && m_emoji) // 2.2 emoji: the emoji button, Ctrl+E
+        m_emoji->attachInput(edit);
 }
 
 ChatIntegration::View* ChatIntegration::viewFor(QTextBrowser* browser)
@@ -913,6 +923,8 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
 
 void ChatIntegration::refreshAll()
 {
+    if (m_emoji) // 2.2 emoji
+        m_emoji->settingsChanged();
     const bool previewsOn = Settings::instance().inlinePreviews;
     if (m_media) {
         m_media->settingsChanged();

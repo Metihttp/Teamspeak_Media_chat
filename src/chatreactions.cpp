@@ -18,6 +18,9 @@
 
 #include "albums.h" // 2.2 album: the album's row
 #include "chatintegration.h"
+#include "emojidata.h"   // 2.2 emoji
+#include "emojipicker.h" // 2.2 emoji
+#include "emojiprefs.h"  // 2.2 emoji
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "peerhub.h"
@@ -129,6 +132,8 @@ ChatReactions::~ChatReactions()
         hub->setPresentKeys(nullptr, {});
     if (m_picker)
         delete m_picker.data();
+    if (m_fullPicker) // 2.2 emoji
+        delete m_fullPicker.data();
 }
 
 // ---- which chat ------------------------------------------------------------------------------------
@@ -563,15 +568,49 @@ void ChatReactions::openPicker(QTextBrowser* browser, const QString& key, const 
         return;
     if (m_picker)
         m_picker->close();
-    const PreviewStyle style  = m_chat->styleFor(browser);
-    auto*              picker = new ReactionPicker(style.dark, baseOf(browser), hub->view(reactionKey(key)).ownMask());
-    m_picker                  = picker;
+    // 2.2 emoji: the quick reactions in HD, and "+" for any emoji.
+    const PreviewStyle       style = m_chat->styleFor(browser);
+    const proto::ReactionSet own   = hub->view(reactionKey(key)).own();
+    auto*                    picker = new ReactionPicker(style.dark, baseOf(browser), emoji::prefs::quickReactions(), QSet<int>(own.begin(), own.end()));
+    m_picker                        = picker;
     QPointer<QTextBrowser> guard(browser);
     connect(picker, &ReactionPicker::picked, this, [this, guard, key](int reaction) {
         if (guard)
             toggle(guard.data(), key, reaction);
     });
+    connect(picker, &ReactionPicker::more, this, [this, guard, key, anchor] {
+        if (guard)
+            openFullPicker(guard.data(), key, anchor);
+    });
     picker->openAt(anchor);
+}
+
+// 2.2 emoji: the whole emoji picker; a pick toggles that reaction (Shift keeps it open for more).
+void ChatReactions::openFullPicker(QTextBrowser* browser, const QString& key, const QRect& anchor)
+{
+    PeerHub* hub = PeerHub::instance();
+    if (!hub || !browser)
+        return;
+    if (m_fullPicker)
+        m_fullPicker->close();
+    const PreviewStyle       style  = m_chat->styleFor(browser);
+    const proto::ReactionSet own    = hub->view(reactionKey(key)).own();
+    auto*                    picker = new EmojiPicker(EmojiPicker::Mode::React, style.dark, baseOf(browser));
+    picker->setMarked(QSet<int>(own.begin(), own.end()));
+    m_fullPicker = picker;
+    QPointer<QTextBrowser> guard(browser);
+    QPointer<EmojiPicker>  pickerGuard(picker);
+    connect(picker, &EmojiPicker::picked, this, [this, guard, key, pickerGuard](int reaction, bool) {
+        if (!guard)
+            return;
+        toggle(guard.data(), key, reaction);
+        if (pickerGuard && PeerHub::instance()) {
+            const proto::ReactionSet now = PeerHub::instance()->view(reactionKey(key)).own();
+            pickerGuard->setMarked(QSet<int>(now.begin(), now.end()));
+        }
+    });
+    picker->setOpener(anchor); // the add button again closes it (instead of opening the quick row again)
+    picker->openAt(anchor, true);
 }
 
 void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& key)
@@ -597,14 +636,21 @@ void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& k
     }
     const qreal            dpr = browser->devicePixelRatioF();
     QPointer<QTextBrowser> guard(browser);
-    for (int i = 0; i < proto::kReactionCount; ++i) {
-        const int count = view.per[i].count;
-        QString   text  = rx::reactionName(i);
+    // 2.2 emoji: the quick reactions, your others on this media, then the whole picker.
+    QVector<int> offered = emoji::prefs::quickReactions();
+    for (int id : view.own()) {
+        if (!offered.contains(id))
+            offered.append(id);
+    }
+    for (int i : qAsConst(offered)) {
+        const ReactionView::Entry entry = view.entry(i);
+        const int                 count = entry.count;
+        QString                   text  = rx::reactionName(i);
         if (count > 0)
             text = i18n::t("%1 · %2").arg(text, rx::countText(count));
         QAction* action = sub->addAction(reactionIcon(i, dpr), text);
         action->setCheckable(true);
-        action->setChecked(view.per[i].mine);
+        action->setChecked(entry.mine);
         if (count > 0)
             action->setToolTip(pillToolTip(reacted, i));
         connect(action, &QAction::triggered, this, [this, guard, key, i] {
@@ -612,6 +658,11 @@ void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& k
                 toggle(guard.data(), key, i);
         });
     }
+    sub->addSeparator();
+    sub->addAction(i18n::t("&More reactions…"), this, [this, guard, key] {
+        if (guard)
+            openFullPicker(guard.data(), key, QRect(QCursor::pos(), QSize(1, 1)));
+    });
 }
 
 // ---- texts -------------------------------------------------------------------------------------------
@@ -619,9 +670,9 @@ void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& k
 QString ChatReactions::pillToolTip(const QString& key, int reaction) const
 {
     PeerHub* hub = PeerHub::instance();
-    if (!hub || reaction < 0 || reaction >= proto::kReactionCount)
+    if (!hub || !emoji::isValid(reaction))
         return {};
-    const ReactionView::Entry entry = hub->view(key).per[reaction];
+    const ReactionView::Entry entry = hub->view(key).entry(reaction);
     if (entry.count <= 0)
         return {};
     QStringList names;

@@ -192,6 +192,16 @@ The viewer shows every media item of the chat, so you can step through them with
 
 Letter and number keys also work with non-Latin keyboard layouts. After a mouse click in the viewer, the keys act on the media again.
 
+## Emoji
+
+- **HD emoji in the chat.** Emoji in messages (yours and everyone's, in channel, server and private chats and in the chat history) show as sharp, colorful pictures, about the size of the text and never making a line taller (also after zooming the chat with <kbd>Ctrl</kbd> and the mouse wheel). TeamSpeak's own smileys (`:)`, `;)`, `:D`, `8)`, `:(`, `:P` …) become the matching emoji too. A message of nothing but emoji (up to 27) shows them large, like in Discord. Point at an emoji to see its name.
+- Everyone with TS Media sees them like this; people without it see TeamSpeak's own rendering. Nothing about the message changes: it is plain text with Unicode emoji.
+- Left as they are: links (also nicknames and file names), the TS Media link with its *plugin required* note, and characters that are text unless marked as emoji (©, ™, arrows, digits). Windows draws no country flags, so those stay letters.
+- **Copying** (<kbd>Ctrl</kbd>+<kbd>C</kbd> or TeamSpeak's own *Copy*) gives the text with the emoji and smiley codes in place. Right-click an emoji for *Copy emoji*, *Copy text* (the selection, or the whole message) and *Use in the chat input*.
+- **The emoji picker.** Click the smiley at the right end of the chat input, or press <kbd>Ctrl</kbd>+<kbd>E</kbd> there (Windows' own panel, <kbd>Win</kbd>+<kbd>.</kbd>, works too). About 1,600 emoji in eight groups, with *Recently used* first, a search by name or word (`joy`, `+1`, `:fire:` …), a skin-tone choice and a preview with the name. Typing searches right away; <kbd>↓</kbd> or <kbd>Tab</kbd> moves into the grid, the arrows move there, <kbd>Page Up</kbd> / <kbd>Page Down</kbd> jump a group, <kbd>Enter</kbd> inserts and closes, <kbd>Shift</kbd>+<kbd>Enter</kbd> or <kbd>Shift</kbd>+click inserts and keeps it open, <kbd>Esc</kbd> clears the search or closes; <kbd>Ctrl</kbd>+<kbd>E</kbd> or the button again closes it too. The send window's caption field has the same button.
+- **Reactions** use the same HD emoji. The quick row offers eight (👍 ❤️ 😂 😮 😢 🔥, which every TS Media 2.2 shows, and your two most recent others); **+** opens the whole picker, so any emoji can be a reaction. People on an older 2.2 build see only the six.
+- The options are under [Settings → General → Emoji](SETTINGS.md#emoji).
+
 ## Chat commands
 
 | Command | What it does |

@@ -90,6 +90,11 @@ struct Settings {
     // A stored microphone id as load() keeps it: printable ASCII up to maxVoiceMicrophoneLength, else empty.
     static QString validVoiceMicrophone(const QString& value);
 
+    // 2.2 emoji (global)
+    bool hdEmoji     = true; // emoji (and TeamSpeak's emoticons) in the chat as HD pictures
+    bool emojiButton = true; // the emoji button in the chat input (the picker's shortcut works either way)
+    bool jumboEmoji  = true; // messages of only emoji (up to 27) show them large
+
     static Settings& instance();
     void             load();
     void             save() const;

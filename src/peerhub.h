@@ -48,8 +48,11 @@ class PeerHub : public QObject
     ReactionStore*        store() const { return m_store; }
 
     // ---- reactions (GUI) -----------------------------------------------------------------------
-    enum class ReactError { None, Off, ServerChat, NotConnected, Blocked, PartnerOffline, Unknown };
-    // Toggles one of your reactions on key in the chat target: shown at once, sent shortly after.
+    // 2.2 emoji: TooMany: no room for another reaction (yours: kMaxReactionsPerSet; the media's:
+    // kMaxDistinctReactions different ones).
+    enum class ReactError { None, Off, ServerChat, NotConnected, Blocked, PartnerOffline, TooMany, Unknown };
+    // Toggles one of your reactions (2.2 emoji: an emoji id, emojidata.h) on key in the chat target:
+    // shown at once, sent shortly after.
     ReactError     toggle(const QString& key, int reaction, const ChatTarget& target);
     // Why a reaction can't be added there right now (None: it can).
     ReactError     reactBlock(const ChatTarget& target) const;
@@ -91,8 +94,8 @@ class PeerHub : public QObject
     struct Pending {
         quint64    sch = 0;
         ChatTarget target;
-        quint8     committed = 0;  // what the others last got from us
-        quint8     sent      = 0;  // what is on its way
+        proto::ReactionSet committed; // what the others last got from us (2.2 emoji: a set)
+        proto::ReactionSet sent;      // what is on its way
         quint64    generation = 0; // of the last send
         qint64     dueMs = -1;     // debounce
         bool       inFlight = false;
@@ -105,7 +108,7 @@ class PeerHub : public QObject
     void    receiveSync(quint64 sch, quint16 from, const QString& uid, const proto::Sync& sync);
     void    sendSync(quint64 sch);
     void    flushPending();
-    void    reactionSent(quint64 sch, const QString& key, quint64 generation, quint8 mask, peers::SendResult result);
+    void    reactionSent(quint64 sch, const QString& key, quint64 generation, const proto::ReactionSet& set, peers::SendResult result);
     void    scheduleTimers();
     void    storeChanged(const QString& key);
     void    save();

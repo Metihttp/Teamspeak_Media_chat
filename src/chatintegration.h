@@ -14,6 +14,7 @@
 class ComposeDialog; // 2.2 compose
 class ChatReactions; // 2.2 reactions
 class ChatReplies;   // 2.2 reply
+class ChatEmoji;     // 2.2 emoji
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -317,4 +318,5 @@ class ChatIntegration : public QObject
     QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
     ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
     ChatReplies*                            m_replies   = nullptr; // 2.2 reply
+    ChatEmoji*                              m_emoji     = nullptr; // 2.2 emoji: HD emoji in the chats, the input's emoji button
 };

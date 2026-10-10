@@ -1,6 +1,10 @@
 #include "peerprotocol.h"
 
+#include <QHash>
+
 #include <cstring>
+
+#include "emojidata.h" // 2.2 emoji
 
 namespace proto {
 
@@ -110,6 +114,14 @@ QByteArray itemText(const ReactItem& item)
     return item.key.toLatin1() + ':' + maskToCodes(item.mask);
 }
 
+// 2.2 emoji: the v1 reactions as emoji (the order of kCodes).
+const char* const kLegacyEmoji[kReactionCount] = {"1f44d", "2764-fe0f", "1f602", "1f62e", "1f622", "1f525"};
+
+bool isEmojiCodeChar(char c)
+{
+    return isDigit(c) || (c >= 'a' && c <= 'f') || c == '-';
+}
+
 } // namespace
 
 // ---- reactions ------------------------------------------------------------------------------------
@@ -164,6 +176,112 @@ bool codesToMask(const QByteArray& codes, quint8* mask)
 bool isMediaKey(const QByteArray& key)
 {
     return key.size() == 20 && allOf(key, isHexLower);
+}
+
+// ---- 2.2 emoji ----------------------------------------------------------------------------------------
+
+int legacyReactionEmoji(int index)
+{
+    if (index < 0 || index >= kReactionCount)
+        return -1;
+    return emoji::fromWireCode(QByteArray(kLegacyEmoji[index]));
+}
+
+int legacyReactionIndex(int emojiId)
+{
+    if (!emoji::isValid(emojiId))
+        return -1;
+    for (int i = 0; i < kReactionCount; ++i) {
+        if (legacyReactionEmoji(i) == emojiId)
+            return i;
+    }
+    return -1;
+}
+
+quint8 legacyMask(const ReactionSet& set)
+{
+    quint8 mask = 0;
+    for (int id : set) {
+        const int index = legacyReactionIndex(id);
+        if (index >= 0)
+            mask |= static_cast<quint8>(1u << index);
+    }
+    return mask;
+}
+
+ReactionSet setFromMask(quint8 mask)
+{
+    ReactionSet set;
+    for (int i = 0; i < kReactionCount; ++i) {
+        const int id = legacyReactionEmoji(i);
+        if ((mask & (1u << i)) && id >= 0)
+            set.append(id);
+    }
+    return set;
+}
+
+ReactionSet cleanSet(const ReactionSet& set)
+{
+    ReactionSet out;
+    for (int id : set) {
+        if (emoji::isValid(id) && !out.contains(id) && canAdd(out, id))
+            out.append(id);
+    }
+    return out;
+}
+
+bool sameSet(const ReactionSet& a, const ReactionSet& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (int i = 0; i < a.size(); ++i) {
+        if (a.at(i) != b.at(i))
+            return false;
+    }
+    return true;
+}
+
+bool canAdd(const ReactionSet& set, int emojiId)
+{
+    if (!emoji::isValid(emojiId) || set.contains(emojiId) || set.size() >= kMaxReactionsPerSet)
+        return false;
+    ReactionSet more = set;
+    more.append(emojiId);
+    return setToEmojiCodes(more).size() <= kMaxSetCodeChars;
+}
+
+QByteArray setToEmojiCodes(const ReactionSet& set)
+{
+    QByteArray out;
+    for (int id : set) {
+        const QByteArray code = emoji::wireCode(id);
+        if (code.isEmpty())
+            continue;
+        if (!out.isEmpty())
+            out += '.';
+        out += code;
+    }
+    return out;
+}
+
+bool emojiCodesToSet(const QByteArray& codes, ReactionSet* set)
+{
+    set->clear();
+    if (codes.isEmpty())
+        return true;
+    if (codes.size() > kMaxValueChars)
+        return false;
+    const QList<QByteArray> list = codes.split('.');
+    if (list.size() > kMaxCodesPerItem)
+        return false;
+    for (const QByteArray& code : list) {
+        if (!allOf(code, isEmojiCodeChar) || !emoji::isWireCode(code))
+            return false;
+        const int id = emoji::fromWireCode(code);
+        if (id >= 0 && !set->contains(id) && set->size() < kMaxReactionsPerSet)
+            set->append(id);
+    }
+    return true;
 }
 
 bool isMediaKey(const QString& key)
@@ -410,7 +528,40 @@ std::optional<React> readReact(const Message& message)
             if (seen.key == keyText)
                 return std::nullopt; // contradicting states in one message
         }
-        react.items.append({keyText, mask});
+        react.items.append({keyText, mask, setFromMask(mask)});
+    }
+
+    // 2.2 emoji: whole sets for items of i= (all of e= is valid, or none of it counts).
+    const QByteArray extended = message.value("e");
+    if (!extended.isEmpty()) {
+        QHash<QString, ReactionSet> sets;
+        const QList<QByteArray>     parts = extended.split(',');
+        bool                        valid = parts.size() <= kMaxItems;
+        for (int p = 0; valid && p < parts.size(); ++p) {
+            const QByteArray& part    = parts.at(p);
+            const int         colon   = part.indexOf(':');
+            const QString     keyText = QString::fromLatin1(part.left(qMax(0, colon)));
+            ReactionSet       set;
+            valid = colon > 0 && isMediaKey(part.left(colon)) && !sets.contains(keyText) && emojiCodesToSet(part.mid(colon + 1), &set);
+            if (valid)
+                sets.insert(keyText, set);
+        }
+        // Every item of e= belongs to one of i= (as the format says); one that doesn't makes it malformed.
+        for (auto it = sets.constBegin(); valid && it != sets.constEnd(); ++it) {
+            bool listed = false;
+            for (const ReactItem& item : qAsConst(react.items))
+                listed = listed || item.key == it.key();
+            valid = listed;
+        }
+        if (valid) {
+            for (ReactItem& item : react.items) {
+                const auto found = sets.constFind(item.key);
+                if (found == sets.constEnd())
+                    continue;
+                item.set  = cleanSet(found.value());
+                item.mask = legacyMask(item.set);
+            }
+        }
     }
     return react;
 }
@@ -423,30 +574,47 @@ QVector<Message> makeReacts(Scope scope, bool syncAnswer, const QVector<ReactIte
     base.set("s", scopeText(scope));
     if (syncAnswer)
         base.set("y", "1");
-    // Room for i= in one command: the base message plus " i=" and the list.
+    // Room for i= (and e=) in one command: the base message plus " i=" / " e=" and the lists.
     const int baseBytes = serialize(base).size() + 3;
 
     QByteArray list;
+    QByteArray extended; // 2.2 emoji
     int        count = 0;
     auto       flush = [&] {
         if (count == 0)
             return;
         Message m = base;
         m.set("i", list);
+        if (!extended.isEmpty())
+            m.set("e", extended);
         out.append(m);
         list.clear();
+        extended.clear();
         count = 0;
     };
     for (const ReactItem& item : items) {
         if (!isMediaKey(item.key))
             continue;
-        const QByteArray text  = itemText(ReactItem{item.key, static_cast<quint8>(item.mask & kAllReactions)});
-        const int        added = text.size() + (count > 0 ? 1 : 0);
-        if (count > 0 && (count >= kMaxItems || list.size() + added > kMaxValueChars || baseBytes + list.size() + added > kMaxSendBytes))
+        // 2.2 emoji: the v1 part of the set in i=, the whole set in e= when it has other emoji.
+        const ReactionSet set       = cleanSet(item.reactions());
+        const quint8      mask      = legacyMask(set);
+        const QByteArray  text      = itemText(ReactItem{item.key, mask, {}});
+        const bool        other     = !set.isEmpty() && setFromMask(mask).size() != set.size();
+        const QByteArray  more      = other ? item.key.toLatin1() + ':' + setToEmojiCodes(set) : QByteArray();
+        const int         added     = text.size() + (count > 0 ? 1 : 0);
+        const int         addedMore = more.isEmpty() ? 0 : more.size() + (extended.isEmpty() ? 3 : 1);
+        if (count > 0
+            && (count >= kMaxItems || list.size() + added > kMaxValueChars || extended.size() + addedMore > kMaxValueChars
+                || baseBytes + list.size() + added + extended.size() + addedMore > kMaxSendBytes))
             flush();
         if (!list.isEmpty())
             list += ',';
         list += text;
+        if (!more.isEmpty()) {
+            if (!extended.isEmpty())
+                extended += ',';
+            extended += more;
+        }
         ++count;
     }
     flush();

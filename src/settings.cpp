@@ -177,6 +177,11 @@ void Settings::load(const QString& file)
     voiceMuteTeamSpeakMic = readBool(s, "voiceMuteTeamSpeakMic", d.voiceMuteTeamSpeakMic);
     voiceReview           = readBool(s, "voiceReview", d.voiceReview);
     voiceSounds           = readBool(s, "voiceSounds", d.voiceSounds);
+
+    // 2.2 emoji
+    hdEmoji     = readBool(s, "hdEmoji", d.hdEmoji);
+    emojiButton = readBool(s, "emojiButton", d.emojiButton);
+    jumboEmoji  = readBool(s, "jumboEmoji", d.jumboEmoji);
 }
 
 void Settings::save() const
@@ -236,6 +241,11 @@ void Settings::save(const QString& file) const
     s.setValue(key("voiceMuteTeamSpeakMic"), voiceMuteTeamSpeakMic);
     s.setValue(key("voiceReview"), voiceReview);
     s.setValue(key("voiceSounds"), voiceSounds);
+
+    // 2.2 emoji
+    s.setValue(key("hdEmoji"), hdEmoji);
+    s.setValue(key("emojiButton"), emojiButton);
+    s.setValue(key("jumboEmoji"), jumboEmoji);
     s.sync();
 }
 
