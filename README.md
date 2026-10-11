@@ -2,7 +2,7 @@
 
 # TS Media chat
 
-**Discord-style images, GIFs, videos, voice messages, replies and HD emoji in the TeamSpeak 3 chat**
+**Discord-style images, GIFs, videos, voice messages, polls, live music, replies and HD emoji in the TeamSpeak 3 chat**
 
 [![Download TS Media chat](https://img.shields.io/github/v/release/Metihttp/Teamspeak_Media_chat?style=for-the-badge&label=Download&color=5865F2)](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
 
@@ -21,18 +21,20 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat in the Cozy layout, names, avatars and times above the messages: a photo album shown as a grid under its caption with reactions, an inline video player, a voice message, and a reply with an emoji">
+  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat in the Cozy layout with message bubbles, avatars, names and times above the messages: a photo album shown as a grid under its caption with reactions, an inline video player, a voice message, and a reply with an emoji and a reaction">
 </picture>
 
 **TS Media chat** is a plugin for the TeamSpeak 3 client on Windows. Drop a file on the chat, paste a screenshot or record a voice message, and everyone with the plugin sees it right in the chat.
 
 ## Why TS Media chat
 
-- **Send anything.** Drag & drop, paste with Ctrl+V or pick files, with a caption, spoilers or as an album.
+- **Send anything.** Drag & drop, paste with Ctrl+V or use the paperclip in the chat input, with a caption, spoilers or as an album.
 - **Hold to talk.** Hold the microphone in the chat input to record a voice message; let go to send it.
+- **Anonymous polls.** Ask the channel, vote on the card, see the results; nobody sees who voted for what.
+- **Live music.** Play a song to your channel through your own voice and keep talking over it.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
-- **A Discord-like chat.** Names, avatars and times above grouped messages, only in your own view.
-- **Reply and react.** Reply to any message, Discord-style, and react to media with any emoji.
+- **A modern chat.** Names, avatars and times above grouped messages, Telegram-like bubbles and centred system lines, only in your own view.
+- **Reply and react.** Reply to any message, Discord-style, and react to any message or media with any emoji.
 - **HD emoji.** Sharp Windows 11 emoji in the chat, TeamSpeak's own emoji button opening an HD picker, and big emoji for messages of only emoji.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
 - **Works for everyone.** People without the plugin get a normal TeamSpeak download link.
@@ -71,15 +73,15 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/with-without-dark.png">
-  <img src="docs/images/with-without-light.png" width="100%" alt="The same chat messages twice. Without the plugin: a file link followed by a grey note saying the TS Media chat plugin is required. With TS Media chat: the Cozy layout with names and avatars, and the photo shown inline in the chat.">
+  <img src="docs/images/with-without-light.png" width="100%" alt="The same chat messages twice. Without the plugin: a file link followed by a grey note saying the TS Media chat plugin is required. With TS Media chat: the Cozy layout with names, avatars and message bubbles, and the photo shown inline in the chat.">
 </picture>
 
 ## Send files
 
-Drop files on the chat, press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input, or use **Plugins → TS Media chat → Send files to chat…** (also `/tsmedia send` and a hotkey). The send window opens; nothing is sent until you click **Send**. Hold <kbd>Ctrl</kbd> while dropping to send right away, or <kbd>Shift</kbd> for TeamSpeak's own drop.
+Drop files on the chat, press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input, click the **paperclip** at its left end (**Photo or video** or **Document**), or use **Plugins → TS Media chat → Send files to chat…** (also `/tsmedia send` and a hotkey). The send window opens; nothing is sent until you click **Send**. Hold <kbd>Ctrl</kbd> while dropping to send right away, or <kbd>Shift</kbd> for TeamSpeak's own drop.
 
 <p align="center">
-  <img src="docs/images/compose.png" width="560" alt="The Send to chat window with three photos: a list with thumbnails and spoiler and edit buttons, Send as an album ticked, a caption field, the line 3 of 5 people here will see it in the chat, and a Send 3 images button">
+  <img src="docs/images/compose.png" width="560" alt="The Send to chat window for the channel Lobby with three photos as large tiles, one covered as a spoiler, the line 3 of 5 people here will see it in the chat with a Who? button, Send as an album switched on, a caption field, and the Add files…, Send 3 images and Cancel buttons">
 </p>
 
 - **Caption** (up to 300 characters), **Mark as spoiler** per item, and **Send as an album** for 2 to 10 pictures and videos.
@@ -94,7 +96,7 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 - **Photos and GIFs** up to 15 MB load automatically; larger ones when you click them.
 - **Albums** show as one grid. **Spoilers** stay blurred until clicked.
 - **Videos and audio files** play inline. Other files appear as cards that open in their default app.
-- **Reactions with any emoji:** click the round button on a picture, or right-click → **Add reaction**; **+** opens the emoji picker.
+- **Reactions with any emoji:** click the round button on a picture, or right-click → **Add reaction**; **+** opens the emoji picker. Text messages, links, replies and polls get them too (point at the message → **Add reaction**, or right-click → **Add reaction…**).
 - **Checked downloads:** a file that differs from the one that was sent is blocked (*File doesn't match what was sent*).
 
 <picture>
@@ -113,14 +115,24 @@ Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as
 
 Press and hold the **microphone** at the right end of the chat input: recording starts at once, and a strip above the input shows the time and a live waveform. Let go and it is sent. To cancel, move the pointer away from the microphone before you let go (or press <kbd>Esc</kbd>). With the keyboard, **Plugins → TS Media chat → Record voice message…** or `/tsmedia voice` opens a small window with **Send** and **Cancel**. Up to 5 minutes; your TeamSpeak microphone is muted while you record, so voice activation doesn't send you live. [More about voice messages](docs/USAGE.md#voice-messages).
 
+## Polls and live music
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/polls-music-dark.png">
+  <img src="docs/images/polls-music-light.png" width="100%" alt="Left, under Anonymous polls: a poll in the chat after voting, Which map tonight?, with Harbor 25 percent, Desert Town 63 percent ticked as your choice and Night Market 12 percent, 8 votes, Retract vote and reactions under the card. Right, under The paperclip in the chat input: the paperclip menu open above the chat input with Photo or video, Document, Poll and Live music; under Live music: the music bar above the chat input with Morning Walk, pause, 1:23 of 3:45, a position slider, the volume and Stop">
+</picture>
+
+- **Polls:** paperclip → **Poll**, type a question and 2 to 10 answers. Everyone with the plugin votes on the poll card and sees the percentages, the counts and the total once they voted; people without it read the poll as text. Votes are anonymous ballots: nobody, not even the poll's author, can see who voted for what ([how polls work](docs/POLLS.md)).
+- **Live music:** paperclip → **Live music** (or `/tsmedia music`), then pick a file. It plays to your channel through your own voice, so everyone hears it, with or without the plugin, and you can keep talking. A slim bar above the chat input pauses, seeks, sets the volume and stops; on another server tab it stays, compact, and the music pauses until you come back. Channels set to Opus Music sound best ([more about live music](docs/USAGE.md#live-music)).
+
 ## Chat layout
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-layout-dark.png">
-  <img src="docs/images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy, the default: a day divider reading Today, October 10, 2026, join lines as small grey rows with an icon and their time, avatars with names and times above grouped messages, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
+  <img src="docs/images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message tinted, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
 </picture>
 
-TeamSpeak's chat gets a Discord-like look in your own view: names, avatars and times above the messages, messages of one person grouped, day dividers, and join or leave lines as small rows with an icon (runs of them fold into *+N more events*). Point at a message for **Add reaction**, **Reply**, **Copy text** and **More**; messages that mention you are highlighted. Choose *Cozy* (the default), *Compact* (one line per message) or *TeamSpeak classic* in **Settings → General → Chat layout**. Nobody else sees a difference.
+TeamSpeak's chat gets a modern look in your own view: names, avatars and times above the messages, messages of one person grouped, each message in its own bubble like Telegram (yours tinted), day dividers, and join or leave lines as small centred rows with an icon (runs of them fold into *+N more events*). Point at a message for **Add reaction**, **Reply**, **Copy text** and **More**; messages that mention you are highlighted. Choose *Cozy* (the default), *Compact* (one line per message) or *TeamSpeak classic* in **Settings → General → Chat layout**. Nobody else sees a difference.
 
 ## Replies and emoji
 

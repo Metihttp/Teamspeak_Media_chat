@@ -70,33 +70,45 @@ QString timePattern(qint64 durationMs, bool withTotal)
 }
 
 // Shared by renderAudioCard() and the hit tests.
+// 2.3: a card on a bubble starts at the bubble's text column (the bubble is its panel).
+qreal shiftOf(const PreviewStyle& style)
+{
+    return pp::onBubble(style) ? -kDiscX : 0.0;
+}
+
+qreal rightPadOf(const PreviewStyle& style)
+{
+    return pp::onBubble(style) ? 2.0 : kRightPad;
+}
+
 AudioGeometry audioGeometry(const QSizeF& size, const PreviewStyle& style, qint64 durationMs)
 {
     AudioGeometry g;
-    const qreal   w     = size.width();
-    const qreal   h     = size.height();
-    const qreal   right = w - kRightPad;
+    const qreal   w         = size.width();
+    const qreal   h         = size.height();
+    const qreal   right     = w - rightPadOf(style);
+    const qreal   textLeft  = kTextLeft + shiftOf(style);
     g.card              = QRectF(QPointF(0, 0), size);
-    g.disc              = QRectF(kDiscX, (h - kDisc) / 2.0, kDisc, kDisc);
+    g.disc              = QRectF(kDiscX + shiftOf(style), (h - kDisc) / 2.0, kDisc, kDisc);
     g.discHit           = g.disc.adjusted(-kDiscHitPad, -kDiscHitPad, kDiscHitPad, kDiscHitPad);
-    g.row2              = QRectF(kTextLeft, kRow2Center - kRowHeight / 2.0, qMax(0.0, right - kTextLeft), kRowHeight);
+    g.row2              = QRectF(textLeft, kRow2Center - kRowHeight / 2.0, qMax(0.0, right - textLeft), kRowHeight);
 
     const QFontMetricsF fm(metaFont(style));
     qreal               timeW  = qCeil(fm.horizontalAdvance(timePattern(durationMs, true)));
-    qreal               trackW = right - kGap - timeW - kTextLeft;
+    qreal               trackW = right - kGap - timeW - textLeft;
     if (trackW < kMinTrack) {
         g.timeWithTotal = false;
         timeW           = qCeil(fm.horizontalAdvance(timePattern(durationMs, false)));
-        trackW          = right - kGap - timeW - kTextLeft;
+        trackW          = right - kGap - timeW - textLeft;
     }
     if (trackW < kMinTrack / 2.0) {
         timeW  = 0.0;
-        trackW = right - kTextLeft;
+        trackW = right - textLeft;
     }
     if (timeW > 0.0)
         g.time = QRectF(right - timeW, g.row2.top(), timeW, kRowHeight);
-    g.track   = QRectF(kTextLeft, kRow2Center - kTrack / 2.0, qMax(0.0, trackW), kTrack);
-    g.seekHit = QRectF(kTextLeft - 6.0, kRow2Center - kSeekBand / 2.0, g.track.width() + 12.0, kSeekBand);
+    g.track   = QRectF(textLeft, kRow2Center - kTrack / 2.0, qMax(0.0, trackW), kTrack);
+    g.seekHit = QRectF(textLeft - 6.0, kRow2Center - kSeekBand / 2.0, g.track.width() + 12.0, kSeekBand);
     return g;
 }
 
@@ -168,9 +180,11 @@ QRectF badgeRect(const QRectF& disc)
 
 void drawBadgeCutout(QPainter& p, const QRectF& badge, const QColor& cardBackground)
 {
-    p.setPen(Qt::NoPen);
-    p.setBrush(cardBackground);
-    p.drawEllipse(badge.adjusted(-2.0, -2.0, 2.0, 2.0));
+    pp::drawInBackground(p, cardBackground, [&](const QColor& color) { // 2.3: cut out on a bubble
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawEllipse(badge.adjusted(-2.0, -2.0, 2.0, 2.0));
+    });
 }
 
 void drawButton(QPainter& p, const AudioGeometry& g, const MediaEntry& e, const PlaybackOverlay& o, const PreviewStyle& style, const pp::Palette& pal,
@@ -231,7 +245,7 @@ void drawButton(QPainter& p, const AudioGeometry& g, const MediaEntry& e, const 
         drawBadgeCutout(p, badge, cardBackground);
         p.setBrush(pal.title);
         p.drawEllipse(badge);
-        pp::drawDownloadIcon(p, badge.adjusted(3.5, 3.5, -3.5, -3.5), cardBackground);
+        pp::drawInBackground(p, cardBackground, [&](const QColor& color) { pp::drawDownloadIcon(p, badge.adjusted(3.5, 3.5, -3.5, -3.5), color); });
     }
 }
 
@@ -252,8 +266,10 @@ void drawSeekBar(QPainter& p, const AudioGeometry& g, const PlaybackOverlay& o, 
     }
     if (seeking) {
         const QPointF knob(track.left() + track.width() * fraction, track.center().y());
-        p.setBrush(cardBackground);
-        p.drawEllipse(knob, kKnob + 1.5, kKnob + 1.5);
+        pp::drawInBackground(p, cardBackground, [&](const QColor& color) {
+            p.setBrush(color);
+            p.drawEllipse(knob, kKnob + 1.5, kKnob + 1.5);
+        });
         p.setBrush(pal.progress);
         p.drawEllipse(knob, kKnob, kKnob);
     }
@@ -280,7 +296,7 @@ QImage renderAudioCard(const MediaEntry& entry, const PlaybackOverlay& overlay, 
 {
     if (isVoiceCard(entry)) // 2.2 voice
         return renderVoiceCard(entry, overlay, style, logicalSize);
-    const pp::Palette pal  = pp::palette(style.dark);
+    const pp::Palette pal  = pp::palette(style); // 2.3: on a bubble, no panel of its own
     const QSize       size = audioCardSize(entry, style);
     if (logicalSize)
         *logicalSize = size;
@@ -308,15 +324,16 @@ QImage renderAudioCard(const MediaEntry& entry, const PlaybackOverlay& overlay, 
     const QFont         meta  = metaFont(style);
     const QFontMetricsF titleFm(title);
     const QFontMetricsF metaFm(meta);
-    const qreal         right    = w - kRightPad;
-    const QString       sizeText = entry.link.size ? formatSize(entry.link.size) : QString();
+    const qreal         right     = w - rightPadOf(style);
+    const qreal         textLeft  = kTextLeft + shiftOf(style);
+    const QString       sizeText  = entry.link.size ? formatSize(entry.link.size) : QString();
     qreal               sizeW    = sizeText.isEmpty() ? 0.0 : qCeil(metaFm.horizontalAdvance(sizeText));
     qreal               nameEnd  = right - (sizeW > 0.0 ? sizeW + kGap : 0.0);
-    if (nameEnd - kTextLeft < kMinTitle) {
+    if (nameEnd - textLeft < kMinTitle) {
         sizeW   = 0.0;
         nameEnd = right;
     }
-    const QRectF nameRect(kTextLeft, kRow1Center - kRowHeight / 2.0, qMax(0.0, nameEnd - kTextLeft), kRowHeight);
+    const QRectF nameRect(textLeft, kRow1Center - kRowHeight / 2.0, qMax(0.0, nameEnd - textLeft), kRowHeight);
     const auto   left = Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute;
     p.setFont(title);
     p.setPen(pal.title);

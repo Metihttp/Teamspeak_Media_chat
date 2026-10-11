@@ -223,7 +223,8 @@ void setCharFormatAt(QTextDocument* doc, int from, int to, const QTextCharFormat
 // ---- block formats -------------------------------------------------------------------------------------
 
 const int kBlockProperties[] = {QTextFormat::BlockLeftMargin, QTextFormat::TextIndent, QTextFormat::BlockTopMargin, QTextFormat::BlockBottomMargin,
-                                QTextFormat::LineHeight,      QTextFormat::LineHeightType,  QTextFormat::LayoutDirection, QTextFormat::BackgroundBrush};
+                                QTextFormat::LineHeight,      QTextFormat::LineHeightType,  QTextFormat::LayoutDirection, QTextFormat::BackgroundBrush,
+                                QTextFormat::BlockRightMargin, QTextFormat::BlockAlignment}; // 2.3 chat-visuals: bubbles, centred rows
 
 QTextBlockFormat revertedBlock(QTextBlockFormat format)
 {
@@ -242,13 +243,14 @@ QTextBlockFormat revertedBlock(QTextBlockFormat format)
     format.clearProperty(kCollapsed);
     format.clearProperty(kMention);
     format.clearProperty(kRunHead);
+    format.clearProperty(kOwn); // 2.3 chat-visuals
     return format;
 }
 
 bool blockHasOurs(const QTextBlockFormat& format)
 {
     return format.hasProperty(kOrigBlock) || format.hasProperty(kBlockTag) || format.hasProperty(kKind) || format.hasProperty(kCollapsed) || format.hasProperty(kMention)
-           || format.hasProperty(kRunHead);
+           || format.hasProperty(kRunHead) || format.hasProperty(kOwn);
 }
 
 bool wordChar(const QChar c)
@@ -839,10 +841,13 @@ Plan plan(const Env& env, const QTextBlock& block, const Row& row, const Neighbo
                 join = false;
         }
         p.continuation = join;
+        // 2.3 chat-visuals: your own messages get their own bubble colour; bubbles need room around them.
+        p.own    = row.outgoing || (!env.ownUid.isEmpty() && row.uid == env.ownUid);
+        p.bottom = t.bubbles ? t.bubblePadBottom + 1 : 0;
         if (join) {
             p.name = blankName();
             p.size = compact ? QSizeF(t.L, 1) : QSizeF(t.G, 0);
-            p.top  = 0;
+            p.top  = t.bubbles ? t.bubblePadBottom + t.bubbleGap + t.bubblePadTop : 0;
             break;
         }
         if (compact) {
@@ -850,13 +855,19 @@ Plan plan(const Env& env, const QTextBlock& block, const Row& row, const Neighbo
             p.size = QSizeF(layoutart::compactHeadSize(row.nick, t, row.reply, env.contentWidth));
             p.top  = afterDivider ? t.afterDivider : t.compactHeadTop;
         } else {
-            p.name = nameFor(env, "head", serial);
-            p.size = QSizeF(layoutart::headSize(headSpecFor(env, block.blockNumber(), row, date), t, env.contentWidth));
-            p.top  = afterDivider ? t.afterDivider : t.headTop;
+            const layoutart::HeadSpec spec = headSpecFor(env, block.blockNumber(), row, date);
+            // 2.3 chat-visuals: with bubbles the line is bubbleRight narrower (a wider head would stick out
+            // of the chat: a horizontal scroll bar).
+            const int room = t.bubbles && env.contentWidth > 0 ? qMax(t.G + 8, env.contentWidth - t.bubbleRight) : env.contentWidth;
+            p.name    = nameFor(env, "head", serial);
+            p.size    = QSizeF(layoutart::headSize(spec, t, room));
+            p.nameRow = qMin(p.size.width(), layoutart::headNameRowWidth(spec, t));
+            p.top     = afterDivider ? t.afterDivider : (t.bubbles ? t.bubbleHeadTop : t.headTop);
         }
         break;
     }
     case RowType::System:
+        // 2.3 chat-visuals: centred, the icon in front, the time after the text (Compact too).
         p.name = nameFor(env, "sys", serial);
         p.size = QSizeF(layoutart::systemPrefixSize(t));
         p.kind = row.kind;
@@ -864,8 +875,10 @@ Plan plan(const Env& env, const QTextBlock& block, const Row& row, const Neighbo
             p.top = afterDivider ? t.afterDivider : t.compactSystemTop;
         else
             p.top = afterDivider ? t.afterDivider : (prev == RowType::System ? t.systemRunTop : t.systemTop);
-        if (!compact && !row.time.isEmpty())
-            p.trailer = QStringLiteral("  ") + layoutart::shortTime(row.time, t.ampm || layoutart::hasAmPm(row.time));
+        if (!row.time.isEmpty()) {
+            // No-break spaces: a wrapped centred row never leaves its time alone on a line.
+            p.trailer = QString(2, QChar::Nbsp) + layoutart::shortTime(row.time, t.ampm || layoutart::hasAmPm(row.time)).replace(QLatin1Char(' '), QChar::Nbsp);
+        }
         break;
     case RowType::Day:
     case RowType::History:
@@ -973,6 +986,8 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
             image.setAnchor(true); // a click on the head is a click on the nickname
             image.setAnchorHref(row.href);
         }
+        if (kind == Head && plan.nameRow > 0)
+            image.setProperty(kNameRow, plan.nameRow); // 2.3 chat-visuals: the bubble is at least that wide
         // Blank until it is on screen (ChatLayout draws it then); never missing (Qt would draw its file icon).
         doc->addResource(QTextDocument::ImageResource, QUrl(plan.name), blankPicture());
         c.setPosition(row.headerStart);
@@ -1023,24 +1038,29 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
             if (!p.format.isAnchor() || isFileLink(p.format))
                 continue;
             const QColor current = p.format.foreground().style() != Qt::NoBrush ? p.format.foreground().color() : QColor();
-            if (!current.isValid() || ui::contrastRatio(current, env.colors.base) < 4.5 || ui::contrastRatio(current, layoutart::hoverRow(env.colors)) < 4.5)
-                changes.append({QTextFormat::ForegroundBrush, QBrush(env.colors.link)});
+            bool         weak    = !current.isValid() || ui::contrastRatio(current, env.colors.base) < 4.5 || ui::contrastRatio(current, layoutart::hoverRow(env.colors)) < 4.5;
+            // 2.3 chat-visuals: on its bubble, in every state
+            for (int state = 0; t.bubbles && !weak && state < 4; ++state)
+                weak = ui::contrastRatio(current, layoutart::bubbleBack(env.colors, plan.own, state & 1, state & 2)) < 4.5;
+            if (weak)
+                changes.append({QTextFormat::ForegroundBrush, QBrush(t.bubbles ? env.colors.linkOnBubble : env.colors.link)});
             changes.append({QTextFormat::TextUnderlineColor, env.colors.linkUnderline});
         } else if (row.type == RowType::System && !row.keepFormatting && !row.ownPrint) {
             const QColor current = p.format.foreground().style() != Qt::NoBrush ? p.format.foreground().color() : QColor();
+            const QColor back    = t.bubbles ? layoutart::pillBack(env.colors, true) : env.colors.base; // 2.3 chat-visuals: on its pill
             if (row.kind == SystemKind::Danger || row.kind == SystemKind::Poke) {
                 // Kicks, bans and errors keep their red (at 4.5:1); pokes keep TeamSpeak's colour.
-                if (current.isValid() && row.kind == SystemKind::Danger && ui::contrastRatio(current, env.colors.base) < 4.5)
-                    changes.append({QTextFormat::ForegroundBrush, QBrush(replyart::readable(current, env.colors.base, env.colors.danger, 4.5))});
+                if (current.isValid() && row.kind == SystemKind::Danger && (ui::contrastRatio(current, env.colors.base) < 4.5 || ui::contrastRatio(current, back) < 4.5))
+                    changes.append({QTextFormat::ForegroundBrush, QBrush(replyart::readable(current, back, t.bubbles ? env.colors.dangerOnPill : env.colors.danger, 4.5))});
             } else if (p.format.isAnchor()) {
                 changes.append({QTextFormat::ForegroundBrush, QBrush(env.colors.name)}); // a name or a channel, bold kept
             } else {
-                changes.append({QTextFormat::ForegroundBrush, QBrush(env.colors.muted)});
+                changes.append({QTextFormat::ForegroundBrush, QBrush(t.bubbles ? env.colors.mutedOnBubble : env.colors.muted)});
             }
         } else if (row.type == RowType::System && row.ownPrint && p.format.foreground().style() != Qt::NoBrush) {
             // TS Media's own lines: readable on this skin (their colour is TeamSpeak's dark blue otherwise).
             const QColor current = p.format.foreground().color();
-            if (ui::contrastRatio(current, env.colors.base) < 4.5)
+            if (ui::contrastRatio(current, env.colors.base) < 4.5 || (t.bubbles && ui::contrastRatio(current, layoutart::pillBack(env.colors, true)) < 4.5))
                 changes.append({QTextFormat::ForegroundBrush, QBrush(env.colors.text)});
         }
         if (!changes.isEmpty())
@@ -1083,7 +1103,7 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
         QFont           small = t.time;
         trailer.setFont(small, QTextCharFormat::FontPropertiesSpecifiedOnly);
         trailer.setProperty(QTextFormat::FontPixelSize, small.pixelSize());
-        trailer.setForeground(env.colors.muted);
+        trailer.setForeground(t.bubbles ? env.colors.mutedOnBubble : env.colors.muted); // 2.3 chat-visuals: on its pill
         trailer.setProperty(kKind, static_cast<int>(Trailer));
         revertFormat(last); // as TeamSpeak made it
         last.clearProperty(kKind);
@@ -1114,13 +1134,19 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
             bf.setLeftMargin(t.G);
             bf.setTextIndent(-t.G);
             bf.setLineHeight(t.lineMin, QTextBlockFormat::MinimumHeight);
+            if (t.bubbles)
+                bf.setRightMargin(t.bubbleRight); // 2.3 chat-visuals: the bubble's padding stays in the chat
         }
+        if (plan.own)
+            bf.setProperty(kOwn, true);
         break;
     case RowType::System: {
+        // 2.3 chat-visuals: centred (a pill under it with bubbles), the same margin on both sides.
         rowKind = RowSystem;
-        const int indent = compact ? t.L + 20 : t.G;
-        bf.setLeftMargin(indent);
-        bf.setTextIndent(-indent);
+        bf.setAlignment(Qt::AlignHCenter);
+        bf.setLeftMargin(t.pillInset);
+        bf.setRightMargin(t.pillInset);
+        bf.setTextIndent(0);
         if (compact)
             bf.setLineHeight(t.compactLeading, QTextBlockFormat::LineDistanceHeight);
         else
@@ -1220,6 +1246,12 @@ bool unstyle(QTextDocument* doc, int n)
         }
     }
     return true;
+}
+
+QTextCharFormat originalCharFormat(QTextCharFormat format)
+{
+    revertFormat(format); // 2.3: what unstyle() gives such a character back
+    return format;
 }
 
 bool sanitize(QTextDocument* doc, int n)
@@ -1342,7 +1374,8 @@ static QImage renderImpl(const Env& env, const QTextBlock& block, const QDate& d
     const Row                row = read(block);
     const layoutart::Tokens& t   = env.tokens;
     QString                  sig = QString::number(lead.kind) + QLatin1Char('|') + QString::number(size.width()) + QLatin1Char('x') + QString::number(size.height())
-                  + QLatin1Char('|') + QString::number(env.dpr) + QLatin1Char('|') + env.colors.base.name() + QLatin1Char('|') + t.body.toString();
+                  + QLatin1Char('|') + QString::number(env.dpr) + QLatin1Char('|') + env.colors.base.name() + QLatin1Char('|') + t.body.toString()
+                  + QLatin1Char('|') + QString::number(t.bubbles); // 2.3 chat-visuals: drawn on bubbles and pills
     QImage out;
     switch (lead.kind) {
     case Head: {
@@ -1357,7 +1390,9 @@ static QImage renderImpl(const Env& env, const QTextBlock& block, const QDate& d
                + QString::number(look.replyAvatar.cacheKey()) + QString::number(isMention(block));
         if (draw) {
             layoutart::Colors colors = env.colors;
-            if (isMention(block))
+            if (t.bubbles)
+                colors.muted = colors.mutedOnBubble; // 2.3 chat-visuals: the time on its bubble (any state)
+            else if (isMention(block))
                 colors.muted = colors.mutedOnMention; // the time on the highlighted row keeps 4.5:1
             out = layoutart::renderHead(spec, t, colors, size, env.dpr);
         }
@@ -1372,10 +1407,14 @@ static QImage renderImpl(const Env& env, const QTextBlock& block, const QDate& d
         break;
     }
     case SystemPrefix: {
-        const QString time = env.mode == Mode::Compact ? layoutart::shortTime(row.time, t.ampm || layoutart::hasAmPm(row.time)) : QString();
-        sig += QLatin1Char('|') + QString::number(static_cast<int>(row.kind)) + time + QString::number(static_cast<int>(env.mode));
-        if (draw)
-            out = layoutart::renderSystemPrefix(row.kind, time, t, env.colors, env.dpr);
+        // 2.3 chat-visuals: the icon only (the row is centred, its time after the text)
+        sig += QLatin1Char('|') + QString::number(static_cast<int>(row.kind)) + QString::number(static_cast<int>(env.mode));
+        if (draw) {
+            layoutart::Colors colors = env.colors;
+            if (t.bubbles)
+                colors.muted = colors.mutedOnBubble; // on its pill
+            out = layoutart::renderSystemPrefix(row.kind, t, colors, env.dpr);
+        }
         break;
     }
     case Divider: {

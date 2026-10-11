@@ -249,7 +249,8 @@ class TestEmojiButton : public QObject
         ChatArea       a;
         EmojiInput     input;
         const QMargins before = viewportMargins(a.input);
-        const QMargins mic(before.left(), before.top(), before.right() + kMargin, before.bottom());
+        // 2.3 attach: the paperclip's slot at the left edge too.
+        const QMargins mic(before.left() + kMargin, before.top(), before.right() + kMargin, before.bottom());
         input.attach(a.input);
         QCOMPARE(viewportMargins(a.input), mic); // the input gives only the microphone's slot
         QWidget* micButton = a.input->findChild<QWidget*>(QStringLiteral("tsmediaMicButton"));

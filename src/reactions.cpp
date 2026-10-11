@@ -64,6 +64,17 @@ void ReactionStore::setKnownKey(KnownKey check)
     m_known = std::move(check);
 }
 
+// 2.3 text reactions
+void ReactionStore::setKeyCheck(KeyCheck check)
+{
+    m_keyCheck = check;
+}
+
+bool ReactionStore::validKey(const QString& key) const
+{
+    return m_keyCheck ? m_keyCheck(key) : proto::isMediaKey(key);
+}
+
 bool ReactionStore::isClientUid(const QString& uid)
 {
     // TeamSpeak identities are base64 (28 characters); ServerQuery logins are plain words.
@@ -96,7 +107,7 @@ QString ReactionStore::cleanName(const QString& name) const
 ReactionStore::Apply ReactionStore::applyRemote(const QString& serverUid, const QString& key, const QString& uid, const QString& name,
                                                 const proto::ReactionSet& reactions, qint64 nowMs)
 {
-    if (!proto::isMediaKey(key) || !isClientUid(uid))
+    if (!validKey(key) || !isClientUid(uid))
         return Apply::Rejected;
     const proto::ReactionSet clean = proto::cleanSet(reactions);
     if (m_known && !m_known(key, serverUid)) {
@@ -122,7 +133,7 @@ ReactionStore::Apply ReactionStore::applyRemote(const QString& serverUid, const 
 
 void ReactionStore::setOwn(const QString& key, const QString& ownUid, const QString& ownName, const proto::ReactionSet& reactions, qint64 nowMs)
 {
-    if (!proto::isMediaKey(key) || !isClientUid(ownUid))
+    if (!validKey(key) || !isClientUid(ownUid))
         return;
     set(key, ownUid, ownName, proto::cleanSet(reactions), nowMs / 1000);
 }
@@ -432,7 +443,7 @@ bool ReactionStore::fromJson(const QByteArray& json, qint64 nowSec)
     m_orphans.clear();
     const QJsonObject media = root.value(QStringLiteral("media")).toObject();
     for (auto it = media.constBegin(); it != media.constEnd(); ++it) {
-        if (!proto::isMediaKey(it.key()) || !it.value().isObject())
+        if (!validKey(it.key()) || !it.value().isObject())
             continue;
         const QJsonObject entry = it.value().toObject();
         const qint64      seen  = static_cast<qint64>(entry.value(QStringLiteral("seen")).toDouble(-1));

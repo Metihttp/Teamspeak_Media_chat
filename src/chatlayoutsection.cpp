@@ -38,7 +38,7 @@ ChatLayoutSection::ChatLayoutSection(QWidget* parent)
 
     // P2. Access keys v, y, r: free on the General tab.
     m_avatars = new QCheckBox(i18n::t("Show people's a&vatars (Cozy)"), group);
-    QLabel* avatarsHint = hint(i18n::t("The pictures TeamSpeak already has. Nothing is downloaded; initials otherwise."), group);
+    QLabel* avatarsHint = hint(i18n::t("TeamSpeak's own pictures of people, yours too; initials otherwise. TS Media downloads nothing."), group); // 2.3 chat-visuals
     m_avatars->setAccessibleDescription(avatarsHint->text());
     m_mentions = new QCheckBox(i18n::t("Highlight messages that mention &you"), group);
     QLabel* mentionsHint = hint(i18n::t("Your name or @name in someone else's message."), group);
@@ -46,6 +46,10 @@ ChatLayoutSection::ChatLayoutSection(QWidget* parent)
     m_collapse = new QCheckBox(i18n::t("Fold runs of join and leave events into one &row"), group);
     QLabel* collapseHint = hint(i18n::t("The same event shows once with a count; four or more in a row show \"+N more events\". Pokes, kicks, bans and errors always show."), group);
     m_collapse->setAccessibleDescription(collapseHint->text());
+    // 2.3 chat-visuals (access key u: b is the emoji section's "emoji button" on this tab)
+    m_bubbles = new QCheckBox(i18n::t("Show messages in b&ubbles (Cozy)"), group);
+    QLabel* bubblesHint = hint(i18n::t("Each message on its own rounded background, yours tinted, like in Telegram. Events sit centred on small pills."), group);
+    m_bubbles->setAccessibleDescription(bubblesHint->text());
 
     auto* rows = form(group);
     rows->addRow(m_cozy);
@@ -56,6 +60,8 @@ ChatLayoutSection::ChatLayoutSection(QWidget* parent)
     rows->addRow(groupHint);
     rows->addRow(m_actions);
     rows->addRow(actionsHint);
+    rows->addRow(m_bubbles); // 2.3 chat-visuals
+    rows->addRow(bubblesHint);
     rows->addRow(m_avatars);
     rows->addRow(avatarsHint);
     rows->addRow(m_mentions);
@@ -64,6 +70,7 @@ ChatLayoutSection::ChatLayoutSection(QWidget* parent)
     rows->addRow(collapseHint);
     addIndented(groupHint);
     addIndented(actionsHint);
+    addIndented(bubblesHint); // 2.3 chat-visuals
     addIndented(avatarsHint);
     addIndented(mentionsHint);
     addIndented(collapseHint);
@@ -82,7 +89,7 @@ ChatLayoutSection::ChatLayoutSection(QWidget* parent)
     }
     connect(m_group, &QCheckBox::toggled, this, &SettingsSection::changed);
     connect(m_actions, &QCheckBox::toggled, this, &SettingsSection::changed);
-    for (QCheckBox* box : {m_avatars, m_mentions, m_collapse})
+    for (QCheckBox* box : {m_avatars, m_mentions, m_collapse, m_bubbles}) // 2.3 chat-visuals: bubbles
         connect(box, &QCheckBox::toggled, this, &SettingsSection::changed);
 }
 
@@ -97,6 +104,7 @@ void ChatLayoutSection::updateEnabled()
     m_group->setEnabled(modern);
     m_actions->setEnabled(modern);
     m_avatars->setEnabled(chosen() == 1); // Cozy only
+    m_bubbles->setEnabled(chosen() == 1); // 2.3 chat-visuals: Cozy only
     m_mentions->setEnabled(modern);
     m_collapse->setEnabled(modern);
 }
@@ -111,6 +119,7 @@ void ChatLayoutSection::load(const Settings& s)
     const QSignalBlocker f(m_avatars);
     const QSignalBlocker g(m_mentions);
     const QSignalBlocker h(m_collapse);
+    const QSignalBlocker i(m_bubbles); // 2.3 chat-visuals
     m_cozy->setChecked(s.chatLayout == 1);
     m_compact->setChecked(s.chatLayout == 2);
     m_classic->setChecked(s.chatLayout == 0);
@@ -119,6 +128,7 @@ void ChatLayoutSection::load(const Settings& s)
     m_avatars->setChecked(s.chatAvatars);
     m_mentions->setChecked(s.chatMentions);
     m_collapse->setChecked(s.chatCollapseEvents);
+    m_bubbles->setChecked(s.chatBubbles); // 2.3 chat-visuals
     updateEnabled();
 }
 
@@ -130,4 +140,5 @@ void ChatLayoutSection::store(Settings& target, const Settings& loaded) const
     take(target.chatAvatars, loaded.chatAvatars, m_avatars->isChecked());
     take(target.chatMentions, loaded.chatMentions, m_mentions->isChecked());
     take(target.chatCollapseEvents, loaded.chatCollapseEvents, m_collapse->isChecked());
+    take(target.chatBubbles, loaded.chatBubbles, m_bubbles->isChecked()); // 2.3 chat-visuals
 }

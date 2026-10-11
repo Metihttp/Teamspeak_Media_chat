@@ -68,6 +68,8 @@ class SelfTest : public QObject
     void                      later(int ms, std::function<void()> fn); // a child timer: gone with the driver
     // Part 4 (chat redesign): the chat layout (layout, layoutinfo, hover) and TeamSpeak's emoji button (emojibtn).
     bool                      runPart4(const QString& cmd, const QJsonObject& c, bool* handled);
+    // 2.3 live pass A (chat and protocol): avatars on the localhost test server, text reaction rows with the mouse.
+    bool                      runPart6(const QString& cmd, const QJsonObject& c, bool* handled);
 };
 
 #endif

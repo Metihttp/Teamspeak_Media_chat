@@ -34,6 +34,7 @@
 #include "chatemoji.h" // 2.2 emoji: its items in the chat menu
 #include "chatintegration.h"
 #include "chatlayout.h"   // chat redesign: a block is given back before its quote line is taken out
+#include "chattextreactions.h" // 2.3 text reactions: "Add reaction…" in the chat menu
 #include "layoutformat.h" // chat redesign: a Cozy head draws the reply line as its reply row
 #include "emojirender.h" // 2.2 emoji: pictures the worker drew
 #include "emojitext.h"   // 2.2 emoji: whether names and snippets show HD emoji
@@ -1177,6 +1178,11 @@ QList<QAction*> ChatReplies::actionsFor(QMenu* menu, bool chatMenu)
                 showReplies(guard.data(), block, globalPos);
         });
         actions << list;
+    }
+    // 2.3 text reactions: "Add reaction…" for a message without media (the quick reactions at the pointer).
+    if (chatMenu && m_chat->m_textReactions) {
+        if (QAction* react = m_chat->m_textReactions->menuAction(menu, browser, block))
+            actions << react;
     }
 
     // 2.2 emoji: "Copy text": what the person wrote (no header, no quote line), with emoji and smileys as

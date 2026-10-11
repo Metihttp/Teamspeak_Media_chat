@@ -53,7 +53,11 @@
 #include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatlayout.h"    // chat redesign
 #include "chatreactions.h" // 2.2 reactions
+#include "chattextreactions.h" // 2.3 text reactions
 #include "chatreplies.h"   // 2.2 reply
+#include "attachart.h"     // 2.3 attach: the menu's photo and document entries
+#include "attachmenu.h"    // 2.3 attach
+#include "chatpolls.h"     // 2.3 poll
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "mediaviewer.h"
@@ -263,6 +267,9 @@ ChatIntegration::~ChatIntegration()
     // 2.2 reactions: its picker and hover state go first.
     delete m_reactions;
     m_reactions = nullptr;
+    // 2.3 text reactions: the rows out of every chat (the layout, replies and emoji they sit among are still there).
+    delete m_textReactions;
+    m_textReactions = nullptr;
     // 2.2 album: the chats stay with TeamSpeak: messages we hid are shown and collapsed album links
     // given back (the grids stay, like single previews). m_mutating stays set: no rescan is queued now.
     m_mutating = true;
@@ -270,6 +277,11 @@ ChatIntegration::~ChatIntegration()
     // and overlays gone), while the replies, the emoji and the albums it sits on are still there.
     delete m_layout;
     m_layout = nullptr;
+    // 2.3 attach / poll: the menu entries go, every poll card becomes its text again, polls.json is written.
+    attachmenu::removeEntry(QString::fromLatin1("photo"));
+    attachmenu::removeEntry(QString::fromLatin1("document"));
+    delete m_polls;
+    m_polls = nullptr;
     // 2.2 reply: quote lines given back, the reply bar out of TeamSpeak's layout, our menu items gone.
     delete m_replies;
     m_replies = nullptr;
@@ -335,12 +347,40 @@ void ChatIntegration::start()
     connect(m_emoji, &ChatEmoji::documentEdited, m_replies, &ChatReplies::documentEdited);
     // Chat redesign: the layout moves positions inside blocks too (never blocks).
     m_layout = new ChatLayout(this, m_core);
+    // 2.3 poll: poll cards (after the replies and before the layout in every scan).
+    m_polls = new ChatPolls(this);
+    // 2.3 attach: the paperclip's "Photo or video" and "Document" (attachmenu.h: orders 10 and 20).
+    {
+        const QPointer<ChatIntegration> self(this);
+        attachmenu::Entry photo;
+        photo.id      = QString::fromLatin1("photo");
+        photo.order   = 10;
+        photo.text    = [] { return i18n::t("Photo or video"); };
+        photo.icon    = [] { return attachart::icon(attachart::Glyph::Photo); };
+        photo.enabled = [] { return ts3::isConnected(ts3::currentConnection()); };
+        photo.trigger = [self](QWidget* anchor) {
+            if (self)
+                self->pickFiles(anchor ? anchor->parentWidget() : nullptr, true);
+        };
+        attachmenu::addEntry(photo);
+        attachmenu::Entry document = photo;
+        document.id      = QString::fromLatin1("document");
+        document.order   = 20;
+        document.text    = [] { return i18n::t("Document"); };
+        document.icon    = [] { return attachart::icon(attachart::Glyph::Document); };
+        document.trigger = [self](QWidget* anchor) {
+            if (self)
+                self->pickFiles(anchor ? anchor->parentWidget() : nullptr, false);
+        };
+        attachmenu::addEntry(document);
+    }
     connect(m_layout, &ChatLayout::documentEdited, m_replies, &ChatReplies::documentEdited);
     connect(m_layout, &ChatLayout::documentEdited, this, [this](QTextBrowser* browser) {
         if (View* view = viewFor(browser))
             view->positionsValid = false; // previews moved
         scheduleVisibilityUpdate();
     });
+    m_textReactions = new ChatTextReactions(this); // 2.3 text reactions (after PeerHub made its hub)
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -680,8 +720,12 @@ void ChatIntegration::scan(QTextBrowser* browser)
         applyAlbums(browser, albumPlan); // 2.2 album
         if (!present.isEmpty())
             browser->viewport()->update();
+        if (m_polls) // 2.3 poll: poll messages become poll cards
+            m_polls->afterScan(browser);
         if (m_replies) // 2.2 reply: quote lines become reply lines
             m_replies->afterScan(browser);
+        if (m_textReactions) // 2.3 text reactions: the messages read, their reaction rows
+            m_textReactions->afterScan(browser);
         if (m_layout) // chat redesign: the layout goes on last
             m_layout->afterScan(browser);
         return;
@@ -718,8 +762,12 @@ void ChatIntegration::scan(QTextBrowser* browser)
 #endif
         requestSnapshot(browser, QStringLiteral("notes hidden"));
     }
+    if (m_polls) // 2.3 poll: poll messages become poll cards
+        m_polls->afterScan(browser);
     if (m_replies) // 2.2 reply: quote lines become reply lines
         m_replies->afterScan(browser);
+    if (m_textReactions) // 2.3 text reactions: the messages read, their reaction rows
+        m_textReactions->afterScan(browser);
     if (m_layout) // chat redesign: the layout goes on last
         m_layout->afterScan(browser);
     scheduleVisibilityUpdate();
@@ -741,7 +789,19 @@ PreviewStyle ChatIntegration::styleFor(QTextBrowser* browser) const
     style.maxWidth  = qMin(s.previewMaxWidth, qMax(160, previewAreaWidth(browser) - 48 - indent));
     style.maxHeight = s.previewMaxHeight;
     style.animate   = ui::animationsEnabled();
+    // 2.3: in Cozy with bubbles every message is on a bubble: cards draw no panel of their own there.
+    if (m_layout)
+        style.bubbles = m_layout->bubbleSurfaces(browser);
     return style;
+}
+
+// 2.3: what the previews' bubbles look like, for "re-render when it changes" (bubbles switched, a new skin).
+QString ChatIntegration::surfacesKey(const PreviewStyle& style)
+{
+    QString key;
+    for (const QColor& c : style.bubbles)
+        key += c.name() + QLatin1Char(',');
+    return key;
 }
 
 // The viewport width as if the vertical scroll bar were shown. Previews sized by the actual width
@@ -851,6 +911,7 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
             view->layoutWidth        = style.maxWidth;
             view->layoutDpr          = style.dpr;
             view->layoutDark         = style.dark;
+            view->layoutBubbles      = surfacesKey(style);
         }
     }
 
@@ -1010,6 +1071,7 @@ void ChatIntegration::refreshAll()
             view->layoutWidth        = style.maxWidth;
             view->layoutDpr          = style.dpr;
             view->layoutDark         = style.dark;
+            view->layoutBubbles      = surfacesKey(style);
             const QStringList keys   = view->positionsByKey.keys();
             for (const QString& key : keys)
                 refreshPreview(b, key, false);
@@ -1049,11 +1111,13 @@ void ChatIntegration::scheduleRelayout(QTextBrowser* browser)
         // A new width re-lays the previews out; a new device pixel ratio (the window moved to
         // another monitor) or a theme switch re-renders them (sharp, in the chat's new colours).
         const PreviewStyle style = styleFor(guard.data());
-        if (style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr && style.dark == v->layoutDark)
+        const QString      bubbles = surfacesKey(style); // 2.3: bubbles switched on or off, another skin
+        if (style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr && style.dark == v->layoutDark && bubbles == v->layoutBubbles)
             return;
-        v->layoutWidth = style.maxWidth;
-        v->layoutDpr   = style.dpr;
-        v->layoutDark  = style.dark;
+        v->layoutWidth   = style.maxWidth;
+        v->layoutDpr     = style.dpr;
+        v->layoutDark    = style.dark;
+        v->layoutBubbles = bubbles;
         ensurePositions(*v);
         const QStringList keys = v->positionsByKey.keys();
         for (const QString& key : keys)
@@ -1201,7 +1265,7 @@ void ChatIntegration::updateVisibleKeys()
         // event, is noticed here (this runs every 300 ms).
         if (!view.previews.isEmpty() && view.layoutDpr > 0 && !view.relayoutQueued) {
             const PreviewStyle style = styleFor(b);
-            if (style.dpr != view.layoutDpr || style.dark != view.layoutDark)
+            if (style.dpr != view.layoutDpr || style.dark != view.layoutDark || surfacesKey(style) != view.layoutBubbles)
                 scheduleRelayout(b);
         }
         const QRectF viewport(b->viewport()->rect());
@@ -1953,7 +2017,11 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     // a Cozy head's reply row (taken before TeamSpeak's link click).
     if (m_layout && m_layout->filterEvent(watched, event))
         return true;
+    if (m_polls && m_polls->filterEvent(watched, event)) // 2.3 poll: the cards' options and buttons
+        return true;
     if (m_reactions && m_reactions->filterEvent(watched, event)) // 2.2 reactions: pills, add button
+        return true;
+    if (m_textReactions && m_textReactions->filterEvent(watched, event)) // 2.3 text reactions: the rows under messages
         return true;
     // 2.2 audio: the seek position under the pointer, on a video player or an audio card.
     auto seekFraction = [this](QTextBrowser* browser, const QString& key, const QSize& size, const QPointF& local) {
@@ -2839,6 +2907,44 @@ void ChatIntegration::pickAndSendFiles()
         return;
     lastDir = QFileInfo(files.first()).absolutePath();
     openCompose(from.data(), files, QImage(), target); // 2.2 compose: caption, spoilers, what can't be sent
+}
+
+// 2.3 attach: "Photo or video" and "Document" in the paperclip's menu. Like pickAndSendFiles, for the chat
+// of the input the paperclip is in; the chosen files go into the send window.
+void ChatIntegration::pickFiles(QWidget* source, bool media)
+{
+    static QString lastMediaDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    static QString lastFileDir  = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    ChatTarget     target;
+    QWidget*       from = source;
+    if (!from || !resolveTarget(from, &target))
+        resolveCurrentTarget(&target, &from);
+    if (m_compose) {
+        m_compose->raise();
+        m_compose->activateWindow();
+        if (sameTarget(m_compose->target(), target))
+            m_compose->addFromPicker();
+        return;
+    }
+    const SendBlock block = checkSend(from, &target);
+    if (block != SendBlock::None) {
+        warnCantSend(from, block);
+        return;
+    }
+    QString& lastDir = media ? lastMediaDir : lastFileDir;
+    const QString filter =
+        media ? i18n::t("Photos and videos (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp *.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v *.3gp *.mts *.m2ts *.mpg);;"
+                        "Photos (*.png *.jpg *.jpeg *.jfif *.gif *.webp *.bmp);;Videos (*.mp4 *.webm *.mkv *.mov *.avi *.wmv *.m4v *.3gp *.mts *.m2ts *.mpg);;"
+                        "All files (*.*)")
+              : i18n::t("All files (*.*)");
+    const QPointer<ChatIntegration> guard(this); // the chooser runs its own event loop
+    const QPointer<QWidget>         origin(from);
+    const QStringList files = QFileDialog::getOpenFileNames(mainWindow(), (media ? i18n::t("Send photos or videos to %1") : i18n::t("Send files to %1")).arg(describeTarget(target)),
+                                                            lastDir, filter);
+    if (!guard || files.isEmpty())
+        return;
+    lastDir = QFileInfo(files.first()).absolutePath();
+    openCompose(origin.data(), files, QImage(), target); // caption, spoilers, what can't be sent
 }
 
 // 2.2 compose: the caption that came from the chat input is in the chat now (or never will be).

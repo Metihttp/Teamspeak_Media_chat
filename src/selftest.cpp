@@ -25,6 +25,8 @@
 //                                   reaction: a v1 index 0..5, or emoji: any emoji (text or wire code)
 //   reactmany {count, reaction, emoji} one toggle on each of the newest <count> media of this server, at once
 //   reactions {name}                logs the reaction view of an entry
+//   textreact {text, reaction, emoji}  2.3: toggles a reaction on the newest message of the visible chat containing text
+//   textreactions {text}            2.3: logs that message's key, whether it has a row, and its reactions
 //   peers                           logs the presence summary of the visible chat and PeerHub's diagnostics
 //   selfvar {var, value}  vars      sets / logs our client variables (CLIENT_INPUT_MUTED = 6, ...)
 //   command {text}                  /tsmedia <text> (ts3plugin_processCommand)
@@ -35,6 +37,15 @@
 //   clipboard {name}                writes the clipboard text to debug/<name>.txt
 //   toast {name}                    grabs the upload toast of the visible chat
 //   click {..., object}             as above; also by window objectName, '&' ignored in button texts
+// 2.3 live pass A (runPart6):
+//   avatar {action: info|set|clear, file}   our avatar on this (localhost) server: set uploads file as TeamSpeak does
+//                                   ("/avatar" in channel 0) and sets CLIENT_FLAG_AVATAR to its MD5; clear empties the
+//                                   flag and deletes the server's file; info logs every client of our channel
+//                                   (getAvatar, the flag) and the chat layout's avatars
+//   textrow {text, nth, emoji, add, tip, click, hover}   the reaction row of a message (newest containing text):
+//                                   hover the message, then the pill of emoji (or the add pill): its tool tip, a click
+//   setting {key: chatBubbles}      also the 2.3 bubbles
+//   winsize {w, h, chat}            the main window's size and the chat pane's height (the second test client only)
 
 #ifdef TSMEDIA_TESTHOOKS
 
@@ -65,10 +76,12 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSplitter>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QAbstractTextDocumentLayout>
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QContextMenuEvent>
 #include <QHash>
 #include <QMouseEvent>
@@ -85,10 +98,15 @@
 
 #include <functional>
 
+#include "chatavatars.h"   // 2.3 live pass A: avatar file names
 #include "chatemoji.h"     // part 3: HD emoji counts
 #include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatintegration.h"
+#include "chatpolls.h"     // 2.3 poll: the poll.* commands
 #include "chatreactions.h" // part 3: the add-reaction button
+#include "chattextreactions.h" // 2.3 text reactions
+#include "textreactdoc.h"      // 2.3 text reactions
+#include "textreacthub.h"      // 2.3 text reactions
 #include "composedialog.h"
 #include "emojiformat.h"   // part 3
 #include "actionbar.h"     // part 4: the chat redesign's action bar
@@ -150,6 +168,14 @@ void say(const QString& text)
 {
     ts3::log(QString::fromLatin1("[test] script: ") + text);
 }
+
+} // namespace
+
+// 2.3 live music: music.state, music.volume, music.devices (selftestmusic.cpp).
+bool selfTestMusic(const QString& cmd, const QJsonObject& c, quint64 sch, QObject* owner, const std::function<void(const QString&)>& say);
+bool selfTestCustomDevicesOn(); // live pass B: music.devices is on (selftestmusic.cpp)
+
+namespace {
 
 // 2.2 emoji: a command's reaction as an emoji id. "emoji" is the emoji's text or wire code ("1f525");
 // otherwise "reaction" is a v1 index (0 thumbs up .. 5 fire), as the part-2 scripts were written.
@@ -1014,6 +1040,8 @@ bool SelfTest::run(const QJsonObject& c)
             s.chatHoverActions = v.toBool();
         else if (key == QLatin1String("chatAvatars"))
             s.chatAvatars = v.toBool();
+        else if (key == QLatin1String("chatBubbles")) // 2.3 chat-visuals
+            s.chatBubbles = v.toBool();
         else if (key == QLatin1String("chatMentions"))
             s.chatMentions = v.toBool();
         else if (key == QLatin1String("chatCollapseEvents"))
@@ -1035,6 +1063,12 @@ bool SelfTest::run(const QJsonObject& c)
         return true;
     }
     if (cmd == QLatin1String("connect")) {
+        // Live pass B: TeamSpeak 3.6.2 crashes in its own device code (ts3client+0x7e7d33) when a new server
+        // tab opens while a plugin's custom sound device is in use (music.devices): never both.
+        if (selfTestCustomDevicesOn()) {
+            say(QString::fromLatin1("connect: refused while music.devices is on (TeamSpeak crashes opening a tab then)"));
+            return true;
+        }
         const QByteArray nick = c.value(QString::fromLatin1("nick")).toString(QString::fromLatin1("TesterB")).toUtf8();
         uint64           tab  = 0;
         unsigned         err  = ts3::funcs.guiConnect
@@ -1075,6 +1109,17 @@ bool SelfTest::run(const QJsonObject& c)
     const bool result4 = runPart4(cmd, c, &handled); // chat redesign
     if (handled)
         return result4;
+    const bool result6 = runPart6(cmd, c, &handled); // 2.3 live pass A
+    if (handled)
+        return result6;
+    // 2.3 poll: {"cmd":"poll.post","question":"...","options":["a","b"],"multiple":false} {"cmd":"poll.vote","option":1}
+    // {"cmd":"poll.retract"} {"cmd":"poll.retry"} {"cmd":"poll.log"} {"cmd":"poll.attach"} {"cmd":"poll.creator"}
+    if (cmd.startsWith(QLatin1String("poll.")) && m_chat->polls()) {
+        say(m_chat->polls()->testCommand(cmd, c));
+        return true;
+    }
+    if (selfTestMusic(cmd, c, sch, this, [](const QString& text) { say(text); })) // 2.3 live music (selftestmusic.cpp)
+        return true;
     say(QString::fromLatin1("unknown command ") + cmd);
     return true;
 }
@@ -1156,6 +1201,36 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
                 parts << QString::fromLatin1("%1:%2%3[%4]").arg(reactionName(e.reaction)).arg(e.count).arg(e.mine ? QString::fromLatin1("*") : QString()).arg(e.others.join(QLatin1Char(',')));
         }
         say(QString::fromLatin1("reactions: %1 %2 -> %3").arg(m_core->entry(key)->link.fileName, key.left(24), parts.isEmpty() ? QString::fromLatin1("none") : parts.join(QLatin1Char(' '))));
+        return true;
+    }
+    // 2.3 text reactions: the newest message of the visible chat whose text contains "text".
+    if (cmd == QLatin1String("textreact") || cmd == QLatin1String("textreactions")) {
+        QTextBrowser*      browser = m_chat->visibleChatBrowser();
+        ChatTextReactions* text    = m_chat->m_textReactions;
+        TextReactHub*      texts   = TextReactHub::instance();
+        int                block   = -1;
+        for (QTextBlock b = browser ? browser->document()->lastBlock() : QTextBlock(); b.isValid() && block < 0; b = b.previous()) {
+            if (textreactdoc::identify(b).text.contains(name("text", "")))
+                block = b.blockNumber();
+        }
+        const QString key = block >= 0 && text ? text->keyOf(browser, block) : QString();
+        if (key.isEmpty() || !texts) {
+            say(QString::fromLatin1("%1: no message with \"%2\"").arg(cmd, name("text", "")));
+            return true;
+        }
+        if (cmd == QLatin1String("textreact"))
+            text->toggle(browser, key, reactionOf(c));
+        QStringList parts;
+        for (const ReactionView::Entry& e : texts->view(key).entries) {
+            if (e.count > 0 || e.mine)
+                parts << QString::fromLatin1("%1:%2%3[%4]").arg(reactionName(e.reaction)).arg(e.count).arg(e.mine ? QString::fromLatin1("*") : QString()).arg(e.others.join(QLatin1Char(',')));
+        }
+        say(QString::fromLatin1("%1: block %2 key %3 row %4 -> %5")
+                .arg(cmd)
+                .arg(block)
+                .arg(key)
+                .arg(textreactdoc::rowOf(browser->document()->findBlockByNumber(block)).exists() ? 1 : 0)
+                .arg(parts.isEmpty() ? QString::fromLatin1("none") : parts.join(QLatin1Char(' '))));
         return true;
     }
     if (cmd == QLatin1String("peers")) {
@@ -2433,7 +2508,7 @@ bool SelfTest::runPart4(const QString& cmd, const QJsonObject& c, bool* handled)
         if (c.value(QString::fromLatin1("tip")).toBool()) {
             QHelpEvent tip(QEvent::ToolTip, pos, vp->mapToGlobal(pos));
             QApplication::sendEvent(vp, &tip);
-            say(QString::fromLatin1("hover: tool tip \"%1\"").arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+            say(QString::fromLatin1("hover: tool tip \"%1\"").arg(QToolTip::text()));
         }
         const QString click = str("click", "");
         if (!click.isEmpty()) {
@@ -2707,7 +2782,7 @@ bool SelfTest::runPart4(const QString& cmd, const QJsonObject& c, bool* handled)
             const QPoint at = mic->iconRect().center();
             QHelpEvent   tip(QEvent::ToolTip, at, mic->mapToGlobal(at));
             QApplication::sendEvent(mic, &tip);
-            say(QString::fromLatin1("micbtn: tool tip shown %1 \"%2\"").arg(QToolTip::isVisible() ? 1 : 0).arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+            say(QString::fromLatin1("micbtn: tool tip shown %1 \"%2\"").arg(QToolTip::isVisible() ? 1 : 0).arg(QToolTip::text()));
         } else if (mic && (action == QLatin1String("click") || action == QLatin1String("press"))) {
             // A press records at once (a click is a tap: it records, then discards): never the real
             // microphone, generated sound for whatever this starts.
@@ -2849,6 +2924,215 @@ bool SelfTest::runPart4(const QString& cmd, const QJsonObject& c, bool* handled)
             });
         }
         next(c.value(QString::fromLatin1("ms")).toInt(800));
+        return false;
+    }
+    *handled = false;
+    return true;
+}
+
+// ============================================================================================
+// 2.3 live pass A (chat and protocol): avatars on the localhost test server and the reaction rows of text
+// messages, driven with the mouse. See the command list at the top.
+// ============================================================================================
+
+bool SelfTest::runPart6(const QString& cmd, const QJsonObject& c, bool* handled)
+{
+    *handled          = true;
+    const auto    str = [&c](const char* key, const char* fallback) { return c.value(QString::fromLatin1(key)).toString(QString::fromLatin1(fallback)); };
+    const uint64  sch = ts3::currentConnection();
+    QTextBrowser* b   = m_chat->visibleChatBrowser();
+
+    if (cmd == QLatin1String("avatar")) {
+        const QString action = str("action", "info");
+        if (action == QLatin1String("set")) {
+            QFile in(str("file", ""));
+            if (!in.open(QIODevice::ReadOnly) || in.size() <= 0 || in.size() > 512 * 1024) {
+                say(QString::fromLatin1("avatar: can't read ") + in.fileName());
+                return true;
+            }
+            const QByteArray data = in.readAll();
+            const QString    dir  = ts3::dataDir() + QString::fromLatin1("/debug/avatar_up");
+            QDir().mkpath(dir);
+            QFile out(dir + QString::fromLatin1("/avatar"));
+            if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) || out.write(data) != data.size()) {
+                say(QString::fromLatin1("avatar: can't write ") + out.fileName());
+                return true;
+            }
+            out.close();
+            const QByteArray md5  = QCryptographicHash::hash(data, QCryptographicHash::Md5).toHex();
+            const QByteArray from = QDir::toNativeSeparators(dir).toUtf8();
+            anyID            ftid = 0;
+            const unsigned   e    = ts3::funcs.sendFile(sch, 0, "", "/avatar", 1, 0, from.constData(), &ftid, "");
+            say(QString::fromLatin1("avatar: upload of %1 bytes: error %2 transfer %3 md5 %4").arg(data.size()).arg(e).arg(ftid).arg(QString::fromLatin1(md5)));
+            if (e != ERROR_ok)
+                return true;
+            later(2500, [this, sch, ftid, md5, dir] {
+                int            status = -1;
+                const unsigned se     = ts3::funcs.getTransferStatus ? ts3::funcs.getTransferStatus(ftid, &status) : 1u;
+                const unsigned e1     = ts3::funcs.setClientSelfVariableAsString(sch, CLIENT_FLAG_AVATAR, md5.constData());
+                const unsigned e2     = ts3::funcs.flushClientSelfUpdates(sch, nullptr);
+                QFile::remove(dir + QString::fromLatin1("/avatar"));
+                QDir().rmdir(dir);
+                say(QString::fromLatin1("avatar: transfer %1 status %2 (error %3); CLIENT_FLAG_AVATAR set (error %4 / %5)").arg(ftid).arg(status).arg(se).arg(e1).arg(e2));
+                next(1500);
+            });
+            return false;
+        }
+        if (action == QLatin1String("clear")) {
+            const QString    name  = QLatin1Char('/') + chatavatars::cacheFileName(ts3::ownUid(sch));
+            const QByteArray utf8  = name.toUtf8();
+            const char*      files[] = {utf8.constData(), nullptr};
+            const unsigned   e0    = name.size() > 8 ? ts3::funcs.requestDeleteFile(sch, 0, "", files, "") : 1u;
+            const unsigned   e1    = ts3::funcs.setClientSelfVariableAsString(sch, CLIENT_FLAG_AVATAR, "");
+            const unsigned   e2    = ts3::funcs.flushClientSelfUpdates(sch, nullptr);
+            say(QString::fromLatin1("avatar: cleared: delete %1 (error %2), CLIENT_FLAG_AVATAR empty (error %3 / %4)").arg(name.left(16) + QString::fromLatin1("...")).arg(e0).arg(e1).arg(e2));
+            next(1500);
+            return false;
+        }
+        // info: every client of our channel, then the layout's pictures
+        anyID* clients = nullptr;
+        if (ts3::funcs.getChannelClientList(sch, ts3::ownChannel(sch), &clients) == ERROR_ok && clients) {
+            for (int i = 0; clients[i]; ++i) {
+                char           path[1024] = {};
+                const unsigned e          = ts3::funcs.getAvatar(sch, clients[i], path, sizeof(path));
+                path[sizeof(path) - 1]    = '\0';
+                char*   raw               = nullptr;
+                QString flag, nick;
+                if (ts3::funcs.getClientVariableAsString(sch, clients[i], CLIENT_FLAG_AVATAR, &raw) == ERROR_ok)
+                    flag = ts3::takeString(raw);
+                if (ts3::funcs.getClientVariableAsString(sch, clients[i], CLIENT_NICKNAME, &raw) == ERROR_ok)
+                    nick = ts3::takeString(raw);
+                const QFileInfo file(QString::fromUtf8(path));
+                say(QString::fromLatin1("avatar: client %1 \"%2\"%3 flag \"%4\" getAvatar error %5 file %6 (%7 bytes)")
+                        .arg(clients[i])
+                        .arg(nick, clients[i] == ts3::ownClientId(sch) ? QString::fromLatin1(" (own)") : QString(), flag)
+                        .arg(e)
+                        .arg(e == ERROR_ok ? file.fileName() : QString::fromLatin1("-"))
+                        .arg(e == ERROR_ok && file.isFile() ? file.size() : -1));
+            }
+            ts3::funcs.freeMemory(clients);
+        }
+        if (ChatLayout* lay = m_chat->layout()) {
+            for (auto it = lay->m_avatars.cbegin(); it != lay->m_avatars.cend(); ++it) {
+                const QString uid = it.key().section(QLatin1Char('|'), 1);
+                say(QString::fromLatin1("avatar: layout uid %1... picture %2 loading %3 file %4")
+                        .arg(uid.left(6))
+                        .arg(it->image.isNull() ? QString::fromLatin1("none (initials)") : QString::fromLatin1("%1x%2").arg(it->image.width()).arg(it->image.height()))
+                        .arg(it->loading ? 1 : 0)
+                        .arg(QFileInfo(it->file).fileName()));
+            }
+            if (b)
+                say(QString::fromLatin1("avatar: ") + lay->describe(b));
+        }
+        return true;
+    }
+
+    if (cmd == QLatin1String("winsize")) { // the second test client's window only (its own config dir): room for the chat
+        QWidget* mw = m_chat->mainWindow();
+        if (!mw) {
+            say(QString::fromLatin1("winsize: no main window"));
+            return true;
+        }
+        mw->resize(c.value(QString::fromLatin1("w")).toInt(mw->width()), c.value(QString::fromLatin1("h")).toInt(mw->height()));
+        const int chat = c.value(QString::fromLatin1("chat")).toInt(0);
+        QString   splitter;
+        if (chat > 0 && b) {
+            for (QWidget* w = b; w && w != mw; w = w->parentWidget()) {
+                auto* split = qobject_cast<QSplitter*>(w->parentWidget());
+                if (!split || split->orientation() != Qt::Vertical)
+                    continue;
+                const int index = split->indexOf(w);
+                QList<int> sizes = split->sizes();
+                int        total = 0;
+                for (int v : sizes)
+                    total += v;
+                if (index < 0 || sizes.size() < 2 || total <= chat)
+                    continue;
+                for (int i = 0; i < sizes.size(); ++i)
+                    sizes[i] = i == index ? chat : (total - chat) / (sizes.size() - 1);
+                split->setSizes(sizes);
+                splitter = QString::fromLatin1(" (splitter %1 of %2 set)").arg(index).arg(sizes.size());
+                break;
+            }
+        }
+        say(QString::fromLatin1("winsize: %1x%2, chat %3x%4%5").arg(mw->width()).arg(mw->height()).arg(b ? b->width() : 0).arg(b ? b->height() : 0).arg(splitter));
+        next(800);
+        return false;
+    }
+    if (cmd == QLatin1String("textrow")) {
+        ChatTextReactions* tr = m_chat->m_textReactions;
+        if (!b || !tr || !tr->m_hub) {
+            say(QString::fromLatin1("textrow: no chat or no text reactions"));
+            return true;
+        }
+        int nth   = c.value(QString::fromLatin1("nth")).toInt(0);
+        int block = -1;
+        for (QTextBlock x = b->document()->lastBlock(); x.isValid() && block < 0; x = x.previous()) {
+            if (textreactdoc::identify(x).text.contains(str("text", "")) && nth-- <= 0)
+                block = x.blockNumber();
+        }
+        if (block < 0) {
+            say(QString::fromLatin1("textrow: no message with \"%1\"").arg(str("text", "")));
+            return true;
+        }
+        const QTextBlock tb = b->document()->findBlockByNumber(block);
+        ensureShown(b, tb);
+        QWidget*     vp     = b->viewport();
+        const QPoint onText = charRect(b, tb.position() + qMin(2, qMax(0, tb.length() - 2))).center();
+        sendMouse(vp, QEvent::MouseMove, onText, Qt::NoButton, Qt::NoButton); // the message hovered: its add pill shows
+        const QPointer<QTextBrowser> guard(b);
+        later(400, [this, guard, block, c] {
+            ChatTextReactions* tr = m_chat ? m_chat->m_textReactions : nullptr;
+            if (!guard || !tr) {
+                next(0);
+                return;
+            }
+            QTextBrowser*            b      = guard.data();
+            QWidget*                 vp     = b->viewport();
+            const bool               add    = c.value(QString::fromLatin1("add")).toBool();
+            const int                which  = reactionOf(c);
+            const textreactdoc::Row  row    = textreactdoc::rowOf(b->document()->findBlockByNumber(block));
+            QRect                    zone;
+            if (add) {
+                ChatTextReactions::View* v   = tr->viewFor(b);
+                const QRectF             obj = tr->objectRect(b, block);
+                if (v && obj.isValid() && row.exists())
+                    zone = tr->layoutFor(*v, row.key, tr->lookOf(b), true).addPill.translated(obj.topLeft()).toAlignedRect();
+            } else {
+                zone = tr->pillRect(b, block, which);
+            }
+            if (zone.isEmpty()) {
+                say(QString::fromLatin1("textrow: block %1 has %2 (row %3)").arg(block).arg(add ? QString::fromLatin1("no add pill") : QString::fromLatin1("no pill %1").arg(reactionName(which))).arg(row.exists() ? 1 : 0));
+                next(0);
+                return;
+            }
+            const QPoint at = zone.center();
+            sendMouse(vp, QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton);
+            say(QString::fromLatin1("textrow: block %1 %2 at %3,%4 (%5x%6); cursor %7; rows in chat %8")
+                    .arg(block)
+                    .arg(add ? QString::fromLatin1("add pill") : QString::fromLatin1("pill %1").arg(reactionName(which)))
+                    .arg(at.x())
+                    .arg(at.y())
+                    .arg(zone.width())
+                    .arg(zone.height())
+                    .arg(static_cast<int>(vp->cursor().shape()))
+                    .arg(tr->rowCount(b)));
+            if (c.value(QString::fromLatin1("tip")).toBool()) {
+                QHelpEvent tip(QEvent::ToolTip, at, vp->mapToGlobal(at));
+                QApplication::sendEvent(vp, &tip);
+                say(QString::fromLatin1("textrow: tool tip \"%1\"").arg(QToolTip::text()));
+            }
+            if (c.value(QString::fromLatin1("click")).toBool()) {
+                sendMouse(vp, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                sendMouse(vp, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                QWidget* popup = QApplication::activePopupWidget();
+                say(QString::fromLatin1("textrow: clicked; popup %1").arg(popup ? popup->objectName() : QString::fromLatin1("none")));
+            }
+            const QString grab = c.value(QString::fromLatin1("grab")).toString();
+            if (!grab.isEmpty())
+                say(QString::fromLatin1("textrow: -> ") + saveGrab(vp, grab));
+            next(700);
+        });
         return false;
     }
     *handled = false;

@@ -56,6 +56,25 @@ QColor flatten(const QColor& color, const QColor& background)
     return QColor::fromRgbF(mix(color.redF(), background.redF()), mix(color.greenF(), background.greenF()), mix(color.blueF(), background.blueF()));
 }
 
+QColor readableOn(const QColor& color, const QVector<QColor>& backs, double minimum)
+{
+    QColor c = color;
+    c.setAlpha(255);
+    if (backs.isEmpty())
+        return c;
+    const auto worst = [&backs](const QColor& fore) {
+        double low = 99;
+        for (const QColor& b : backs)
+            low = qMin(low, contrastRatio(fore, b));
+        return low;
+    };
+    const QColor target = backs.first().lightness() < 128 ? QColor(Qt::white) : QColor(Qt::black);
+    for (int step = 0; step < 60 && worst(c) < minimum; ++step)
+        c = QColor::fromRgbF(c.redF() + (target.redF() - c.redF()) * 0.03, c.greenF() + (target.greenF() - c.greenF()) * 0.03,
+                             c.blueF() + (target.blueF() - c.blueF()) * 0.03);
+    return c;
+}
+
 QString savedToText(const QString& savedPath)
 {
     const QFileInfo info(savedPath);

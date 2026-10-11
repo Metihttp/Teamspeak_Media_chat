@@ -14,7 +14,7 @@ PrivacySection::PrivacySection(QWidget* parent)
     setObjectName(QString::fromLatin1("tsmediaPrivacySection"));
     auto* group = new QGroupBox(i18n::t("Privacy"), this);
 
-    m_reactions           = new QCheckBox(i18n::t("S&how reactions on media"), group);
+    m_reactions           = new QCheckBox(i18n::t("S&how reactions"), group);
     auto* reactionsHint   = hint(i18n::t("Reactions travel through TeamSpeak to people with TS Media who are online in the same chat. They aren't stored on the server."), group);
     m_reactions->setAccessibleDescription(reactionsHint->text());
 

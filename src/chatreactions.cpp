@@ -248,6 +248,7 @@ QImage ChatReactions::compose(QTextBrowser* browser, const QString& key, const Q
     state.canAdd   = style.hovered && canAdd(kind); // only shown while hovered (spares video frames the lookups)
     state.noButton = entry && entry->kind == MediaKind::Audio; // decisions: cards have no hover overlay
     state.keep     = m_keep.contains(key);
+    state.bubbles  = style.bubbles; // 2.3: on a message bubble, its pills take the bubble's colour
     if (m_hover.browser == browser && m_hover.key == key) {
         state.hoverZone  = m_hover.zone;
         state.hoverIndex = m_hover.index;

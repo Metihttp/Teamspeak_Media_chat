@@ -12,6 +12,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 #include "previewrenderer.h"
 
 class QFontMetricsF;
@@ -28,6 +30,10 @@ struct Palette {
 };
 
 Palette palette(bool dark);
+// 2.3: a card's colours for style: on a bubble (style.bubbles) no panel, no frame and no hover fill (the
+// bubble is the panel), the texts and rings nudged to read on every bubble colour.
+Palette palette(const PreviewStyle& style);
+bool    onBubble(const PreviewStyle& style);
 QColor  accent(); // #5865F2
 qreal   cornerRadius();
 
@@ -49,5 +55,10 @@ void drawDownloadIcon(QPainter& p, const QRectF& box, const QColor& color);
 void drawAlertIcon(QPainter& p, const QRectF& box, const QColor& background, const QColor& mark);
 // Determinate (progress >= 0) or indeterminate ring; the static waiting glyph when !animate.
 void drawRing(QPainter& p, const QPointF& center, qreal radius, qreal width, double progress, const QColor& track, const QColor& arc, bool animate);
+
+// 2.3: draws with background (draw gets the colour to use), or, for a card on a bubble (a transparent
+// background), cuts the shape out of the picture so the bubble shows through: the ring round a badge, the
+// glyph in a badge, a knob's halo.
+void drawInBackground(QPainter& p, const QColor& background, const std::function<void(const QColor&)>& draw);
 
 } // namespace previewpaint

@@ -33,7 +33,9 @@
 #include "i18n.h"
 #include "layoutformat.h" // chat redesign: messages in TS Media's chat layout
 #include "replydoc.h"     // 2.2 reply: its line breaks are no text
+#include "polldoc.h"      // 2.3 poll: a poll card copies as its text
 #include "settings.h"
+#include "textreactdoc.h" // 2.3 text reactions: a row's line break is no text
 
 namespace {
 
@@ -193,7 +195,9 @@ bool selectionNeedsFix(const QTextCursor& selection)
     for (QTextBlock b = doc->findBlock(from); b.isValid() && b.position() < to; b = b.next()) {
         for (auto it = b.begin(); !it.atEnd(); ++it) {
             const QTextFragment f = it.fragment();
-            if (f.isValid() && f.position() < to && f.position() + f.length() > from && (isOurs(f.charFormat()) || layoutformat::isOurs(f.charFormat())))
+            if (f.isValid() && f.position() < to && f.position() + f.length() > from
+                && (isOurs(f.charFormat()) || layoutformat::isOurs(f.charFormat()) || polldoc::isObject(f.charFormat()) // 2.3 poll: its card
+                    || textreactdoc::isRowObject(f.charFormat()) || textreactdoc::isRowSeparator(f.charFormat()))) // 2.3 text reactions: a row
                 return true;
         }
     }
@@ -638,6 +642,8 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
         const QString         href = cf.anchorHref();
         if (layoutformat::isOurs(cf))
             continue; // our pictures, line breaks and trailers (never emoji)
+        if (textreactdoc::isRowObject(cf) || textreactdoc::isRowSeparator(cf))
+            continue; // 2.3 text reactions: a row is no part of the message (a jumbo message stays jumbo)
         if (cf.isAnchor() || !href.isEmpty()) {
             if (href.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
                 break; // the TS Media link and the "plugin required" note after it stay as they are
@@ -850,6 +856,12 @@ QString ChatEmoji::originalText(QTextDocument* document, int from, int to)
                     out += original;
                 continue;
             }
+            // 2.3 poll: a poll card gives the poll's text as TeamSpeak showed it; its line break nothing.
+            if (polldoc::isObject(cf)) {
+                for (int i = start; i < end; ++i)
+                    out += polldoc::copyText(cf);
+                continue;
+            }
             // Chat redesign: a head, a system prefix or a divider gives TeamSpeak's text it keeps; our line
             // breaks and trailers give nothing.
             if (layoutformat::isOurs(cf)) {
@@ -866,8 +878,9 @@ QString ChatEmoji::originalText(QTextDocument* document, int from, int to)
             }
             QString text = f.text().mid(start - f.position(), end - start);
             text.remove(QChar::ObjectReplacementCharacter);
-            if (cf.boolProperty(replydoc::kSeparatorProperty))
-                text.remove(QChar::LineSeparator); // 2.2 reply: the line break after a reply line
+            if (cf.boolProperty(replydoc::kSeparatorProperty) || cf.boolProperty(polldoc::kSeparatorProperty)
+                || cf.boolProperty(textreactdoc::kRowSeparator))
+                text.remove(QChar::LineSeparator); // 2.2 reply: the line break after a reply line (2.3 poll: before a card; 2.3 text reactions: before a row)
             out += text;
         }
     }

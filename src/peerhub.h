@@ -28,6 +28,7 @@
 
 class PluginLink;
 class QTimer;
+class TextReactHub; // 2.3 text reactions
 
 class PeerHub : public QObject
 {
@@ -46,6 +47,7 @@ class PeerHub : public QObject
     peers::PeerDirectory* directory() const { return m_directory; }
     PluginLink*           link() const { return m_link; }
     ReactionStore*        store() const { return m_store; }
+    TextReactHub*         textReactions() const { return m_text; } // 2.3 text reactions (textreacthub.h)
 
     // ---- reactions (GUI) -----------------------------------------------------------------------
     // 2.2 emoji: TooMany: no room for another reaction (yours: kMaxReactionsPerSet; the media's:
@@ -123,6 +125,7 @@ class PeerHub : public QObject
     PluginLink*              m_link      = nullptr;
     peers::PeerDirectory*    m_directory = nullptr;
     ReactionStore*           m_store     = nullptr;
+    TextReactHub*            m_text      = nullptr; // 2.3 text reactions: reactions on messages without media
     QTimer*                  m_timer     = nullptr; // debounced sends, scheduled SYNC answers
     QTimer*                  m_coalesce  = nullptr; // reactionsChanged
     QTimer*                  m_saveTimer = nullptr;

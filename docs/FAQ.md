@@ -10,6 +10,7 @@ Answers to common questions, grouped by topic. Each question has its own link, s
 - [Reactions and presence](#reactions-and-presence)
 - [Replies and emoji](#replies-and-emoji)
 - [Voice messages](#voice-messages)
+- [Polls and live music](#polls-and-live-music)
 - [Permissions](#permissions)
 - [Compatibility](#compatibility)
 - [Storage](#storage)
@@ -22,7 +23,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.2.1 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.3.0 loaded`.
 
 ### How do I update?
 
@@ -169,7 +170,7 @@ Deleted files, files that don't match and files in password-protected channels c
 
 ### Others don't see my reactions
 
-Reactions reach people with TS Media chat 2.2 or later who are online in the same channel or private chat. People on 2.1 or older and people without the plugin don't see them. Someone who comes in later sees the reactions of the people who are still there. Check that *Show reactions on media* is on in **Settings → Privacy & updates**, and that you are connected. If a reaction couldn't be sent, it is taken back and its tooltip says why (for example *This server doesn't allow plugin messages*).
+Reactions reach people with TS Media chat 2.2 or later who are online in the same channel or private chat; reactions on text messages, links, replies and polls need 2.3 on both sides. People on 2.1 or older and people without the plugin don't see them. Someone who comes in later sees the reactions of the people who are still there. Check that *Show reactions* is on in **Settings → Privacy & updates**, and that you are connected. If a reaction couldn't be sent, it is taken back and its tooltip says why (for example *This server doesn't allow plugin messages*).
 
 ### Why can't I react in the server chat?
 
@@ -177,7 +178,7 @@ Reactions are only for channel and private chats. In the server chat there are n
 
 ### Can I hide that I use TS Media chat?
 
-Yes: turn off **Settings → Privacy & updates → Tell people in your channel that you have TS Media**. The plugin then says goodbye to the people it told, and your send window no longer counts who will see your media. You still see media and can send it as before.
+Yes: turn off **Settings → Privacy & updates → Tell people in your channel that you have TS Media**. The plugin then says goodbye to the people it told, and your send window no longer counts who will see your media. You still see media and can send it as before. Polls send nothing but the votes you cast: your plugin doesn't ask the channel for earlier votes or answer others who ask, so you may not see votes cast before you joined.
 
 ## Replies and emoji
 
@@ -232,6 +233,24 @@ No. The microphone is only opened while you hold the microphone button in the ch
 
 Up to 5 minutes; the time turns red at 4:30, and at 5:00 it is sent by itself (if you hold the microphone button with the pointer moved away to cancel, it is kept in the *Voice message* window instead). A minute takes about 0.73 MB on the server.
 
+## Polls and live music
+
+### The live music sounds thin or muffled
+
+TeamSpeak sends the music with the channel's voice codec, like your voice. Channels set to **Opus Music** sound best; *Opus Voice*, Speex and CELT are made for speech, and the music bar mentions it when the music starts. Ask a channel admin to set the codec to Opus Music (channel settings → *Audio*), with a high quality.
+
+### I use push-to-talk and the channel can't hear me over the music
+
+With push-to-talk the plugin keeps your TeamSpeak input open while the music plays and sends only the music: it can't see your push-to-talk key, so it never sends your microphone without it. Switch to voice activation (**Tools → Options → Capture**) to talk over the music, or pause the music while you talk.
+
+### Nobody hears the music
+
+The music bar says why on its second line: your microphone or sound is muted in TeamSpeak, TeamSpeak has no microphone open on that server, or you have no talk power in the channel. Muting the music in the bar (or volume 0) stops sending it too. While you're on another server tab the music pauses, because TeamSpeak only sends from the server tab in front; it plays on when you go back to its tab, and play in the compact bar takes you there.
+
+### My vote didn't count / the counts differ between people
+
+A vote reaches people with TS Media 2.3 who are in the poll's channel. If it couldn't be sent, the card says *Your vote didn't reach the others* with **Retry**. Someone who comes in later gets the counts from those present after a moment. Votes are only taken in the channel the poll was posted in; elsewhere the card says so.
+
 ## Permissions
 
 ### "No permission to download"
@@ -251,6 +270,10 @@ Create the group once in **Settings → Servers → Server access → Create TS 
 ### What do friends on TS Media 2.1 or older see?
 
 Your files, captions and albums still reach them: they see the caption, every picture of an album as its own preview, spoilers unblurred and voice messages as an ordinary audio file card. A reply reaches them as an italic quote line (*↪ Alice · 21∶14: “…”*) followed by the reply, and emoji look the way TeamSpeak draws them. They don't see or send reactions and don't count as having TS Media in your send window. Once they install 2.2 or later by hand, later versions reach them through the update check.
+
+### What do friends on TS Media 2.2 see?
+
+Everything you send, with reactions on media. A poll reaches them as text (the question, the numbered answers and a link), so they can't vote on it, and they don't see reactions on text messages. Bubbles, centred system lines and avatars are only your own view anyway. Live music reaches everyone in the channel, with or without the plugin. 2.2 updates itself to 2.3 through the update check.
 
 ### Does it work with TeamSpeak 5 or TeamSpeak 6?
 

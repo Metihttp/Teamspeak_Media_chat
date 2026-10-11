@@ -383,7 +383,7 @@ class TestEmojiReact : public QObject
         message(&doc, QStringLiteral("Sara"), QString::fromUtf8("hi \xF0\x9F\x98\x80 there \xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD (c) \xC2\xA9 ok"));
         message(&doc, QStringLiteral("Reza"), QString::fromUtf8("\xF0\x9F\x98\x82\xF0\x9F\x98\x82"));
         message(&doc, QStringLiteral("Reza"), QStringLiteral("smile |emoticons:smile.svg| wink |emoticons:twinkle.svg|"));
-        message(&doc, QString::fromUtf8("Mehdi \xF0\x9F\x8C\xB8"), QStringLiteral("|emoticons:laugh.svg|"));
+        message(&doc, QString::fromUtf8("Robin \xF0\x9F\x8C\xB8"), QStringLiteral("|emoticons:laugh.svg|"));
         // A TS Media message: caption, link, the note (with an emoji of its own).
         message(&doc, QStringLiteral("Ali"), QString::fromUtf8("look \xF0\x9F\x98\x8E") + QChar(QChar::LineSeparator));
         {

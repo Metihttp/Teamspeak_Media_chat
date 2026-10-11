@@ -90,9 +90,11 @@ struct Plan {
     QString    name;    // the picture's resource name
     QSizeF     size;    // its size
     QString    time;    // kTime
-    QString    trailer; // cozy system rows: "  22:05" (empty: none)
+    QString    trailer; // system rows: "  22:05", the spaces no-break ones (empty: none)
     SystemKind kind = SystemKind::Info;
     int        tag  = 0; // kBlockTag
+    qreal      nameRow = 0;   // 2.3 chat-visuals: a Cozy head's name row width (kNameRow)
+    bool       own     = false; // 2.3 chat-visuals: your message (kOwn)
 };
 
 struct Env {
@@ -114,6 +116,8 @@ struct Env {
     // Collapsed runs of events (P2): the runs the reader opened (their first row's tag).
     bool       collapse = false;
     QSet<int>  expandedRuns;
+    // 2.3 chat-visuals: tokens.bubbles is message bubbles (Cozy): wider margins, links and muted text that
+    // read on the bubbles, system rows on pills (layoutbubbles.h). System rows are centred in every look.
 };
 
 // Mentions (P2): where text mentions nick: "@Nick" (any case), or the nickname as a whole word of three or
@@ -140,6 +144,10 @@ bool unstyle(QTextDocument* doc, int n);
 // A block that took our formats over when TeamSpeak appended it (no picture of ours leads it): our
 // properties go, its format becomes TeamSpeak's again. True if it changed.
 bool sanitize(QTextDocument* doc, int n);
+// 2.3: a character format as TeamSpeak made it, the layout's recolouring (and its bookkeeping) taken back,
+// also inside an HD emoji's kept format. For modules that keep text of a styled block for later (a poll
+// card): what they give back after the layout went must be TeamSpeak's.
+QTextCharFormat originalCharFormat(QTextCharFormat format);
 // Whether block n carries anything of ours.
 bool hasOurs(const QTextBlock& block);
 // Every block back; returns how many. The names of our pictures go to names (may be null).

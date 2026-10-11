@@ -76,9 +76,11 @@ Repeat it for `i_ft_file_download_power` and `i_ft_directory_create_power` if ne
 - The plugin never deletes sent files. It only removes the preview of an upload that was canceled or failed, and an uploaded file whose message was canceled before it was posted. Cleaning up old files is up to the server admins, in the channel's file browser.
 - Clients check every download against the SHA-256 in its link (2.2 senders). If you replace a sent file on the server, people with the plugin get *File doesn't match what was sent* instead of the new content.
 
-## Presence and reactions
+## Presence, reactions and polls
 
-TS Media chat 2.2 tells the people in a channel that it is installed (and its version), so the send window can count who will see a file in the chat, and it sends emoji reactions. Both use TeamSpeak's plugin commands to the channel or to a private-chat partner: nothing is stored on the server, nothing goes to the whole server, and the plugin paces them with the same flood protection as its chat messages. If your server refuses plugin commands, presence and reactions simply stay off there; sending and viewing files is not affected. Each user can turn both off in **Settings → Privacy & updates**.
+TS Media chat 2.2 tells the people in a channel that it is installed (and its version), so the send window can count who will see a file in the chat, and it sends emoji reactions; 2.3 adds reactions on text messages and the votes of anonymous polls. All of them use TeamSpeak's plugin commands to the channel or to a private-chat partner: nothing is stored on the server, nothing goes to the whole server, and the plugin paces them with the same flood protection as its chat messages. If your server refuses plugin commands, presence, reactions and voting simply stay off there (a poll is still posted as text); sending and viewing files is not affected. Each user can turn presence and reactions off in **Settings → Privacy & updates**.
+
+Live music (2.3) needs no permission of its own: it goes out through the user's own voice, so it needs what talking needs (talk power in moderated channels) and sounds best in channels set to the **Opus Music** codec.
 
 ## Limitations
 

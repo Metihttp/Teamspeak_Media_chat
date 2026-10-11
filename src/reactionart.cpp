@@ -11,6 +11,7 @@
 #include "emojidata.h"   // 2.2 emoji
 #include "emojirender.h" // 2.2 emoji
 #include "i18n.h"
+#include "layoutart.h" // 2.3: the bubbles' colours (rows inside a bubble)
 #include "uiutil.h"
 
 namespace rx {
@@ -540,9 +541,45 @@ ZoneHit zoneAt(const QSizeF& picture, const RowLayout& row, bool addButton, cons
     return hit;
 }
 
-RowColors rowColors(bool dark, const QColor& base)
+RowColors rowColors(bool dark, const QColor& base, bool onBubble)
 {
     RowColors c;
+    if (onBubble) {
+        // 2.3: translucent, so the pills sit on whichever bubble holds them (they are drawn over it).
+        c = rowColors(dark, base, false);
+        if (dark) {
+            c.pill        = QColor(255, 255, 255, 15);
+            c.pillHover   = QColor(255, 255, 255, 30);
+            c.pillPressed = QColor(255, 255, 255, 41);
+            c.border      = QColor(255, 255, 255, 26);
+            c.mine        = QColor(88, 101, 242, 77);
+            c.mineHover   = QColor(88, 101, 242, 102);
+            c.minePressed = QColor(88, 101, 242, 122);
+        } else {
+            c.pill        = QColor(6, 10, 22, 12);
+            c.pillHover   = QColor(6, 10, 22, 22);
+            c.pillPressed = QColor(6, 10, 22, 32);
+            c.border      = QColor(6, 10, 22, 22);
+            c.mine        = QColor(88, 101, 242, 40);
+            c.mineHover   = QColor(88, 101, 242, 58);
+            c.minePressed = QColor(88, 101, 242, 76);
+        }
+        // 2.3 ux review: the counts at 4.5:1 and your reaction's border at 3:1 on every bubble colour (yours and
+        // others', hovered, mentioning you) and in every state. Light: your hovered count was 4.3:1; the border
+        // 2.2:1 (dark) and 2.9:1 (light) on the bubbles. The bubbles' colours follow from the chat's background.
+        const QVector<QColor> bubbles = layoutart::bubbleSurfaces(layoutart::colorsFor(dark, base, QColor(), QColor()));
+        QVector<QColor>       pills, mines;
+        for (const QColor& bubble : bubbles) {
+            for (const QColor& pill : {c.pill, c.pillHover, c.pillPressed})
+                pills.append(ui::flatten(pill, bubble));
+            for (const QColor& mine : {c.mine, c.mineHover, c.minePressed})
+                mines.append(ui::flatten(mine, bubble));
+        }
+        c.count      = ui::readableOn(c.count, pills, 4.5);
+        c.mineCount  = ui::readableOn(c.mineCount, mines, 4.5);
+        c.mineBorder = ui::readableOn(c.mineBorder, bubbles, 3.0);
+        return c;
+    }
     if (dark) {
         const QColor bg = base.isValid() ? base : QColor(0x31, 0x33, 0x38);
         c.pill          = ui::flatten(QColor(255, 255, 255, 15), bg);
@@ -684,7 +721,7 @@ QImage composeObject(const QImage& picture, const QSize& pictureSize, const Reac
             paint.pressedReaction = state.pressIndex;
         paint.addHover   = state.hoverZone == Zone::AddPill;
         paint.addPressed = paint.addHover && state.pressZone == Zone::AddPill;
-        drawRow(p, QPointF(0, pictureSize.height()), out.row, view, paint, rowColors(state.dark, state.base), state.font);
+        drawRow(p, QPointF(0, pictureSize.height()), out.row, view, paint, rowColors(state.dark, state.base, !state.bubbles.isEmpty()), state.font);
     }
     p.end();
     *objectSize = object;

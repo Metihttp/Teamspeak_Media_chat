@@ -7,6 +7,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QTextBrowser> // chatpolls.h keeps QPointers to the chats
 #include <QThread>
 #include <QTimer>
 #include <QVector>
@@ -18,6 +19,7 @@
 #include "chatintegration.h"
 #include "chatlayout.h"        // chat redesign: avatars
 #include "chatlayoutsection.h" // chat redesign
+#include "chatpolls.h"         // 2.3 poll: /tsmedia poll
 #include "composesettings.h" // 2.2 compose
 #include "compresssettings.h" // 2.4 compress
 #include "core.h"
@@ -31,6 +33,8 @@
 #include "fileverify.h"         // 2.2 sha: its diagnostics section
 #include "i18n.h"
 #include "inlinemedia.h"
+#include "music/musiccontroller.h" // 2.3 live music
+#include "music/musicengine.h"     // 2.3 live music: TeamSpeak's audio callbacks
 #include "ownedtimer.h"
 #include "peerhub.h"        // 2.2 protocol
 #include "pluginlog.h"
@@ -49,6 +53,13 @@
 #include <QElapsedTimer>
 
 #include "selftest.h" // test builds: the scripted live-test driver
+void selfTestMusicShutdown(); // 2.3 live music (selftestmusic.cpp)
+// 2.3 live pass B (selftestmusic.cpp, TeamSpeak's audio threads): the capture guard (a test build never sends
+// a real microphone: only the custom test device's sound goes out) and what was sent, heard and who talked.
+void selfTestCapturePre(uint64 sch, short* samples, int sampleCount, int channels, int* edited);
+void selfTestCapturePost(uint64 sch, const short* samples, int sampleCount, int channels, const int* edited);
+void selfTestPlaybackVoice(uint64 sch, anyID client, const short* samples, int sampleCount, int channels);
+void selfTestTalkStatus(uint64 sch, int status, anyID client);
 #endif
 
 #define PLUGIN_API_VERSION 26
@@ -63,6 +74,7 @@ QPointer<upd::Updater>      g_updater;                 // 2.2 updater
 QPointer<AccessGroup>       g_access;                  // 2.2 servergroup
 QPointer<DiagnosticsDialog> g_diagnostics;             // 2.2 diagnostics
 QPointer<PeerHub>           g_peers;                   // 2.2 protocol: presence and reactions
+QPointer<MusicController>   g_music;                   // 2.3 live music
 bool                        g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
 // Explicit values: each feature owns its ids, and existing ones stay stable.
@@ -174,6 +186,8 @@ void printHelp(uint64 sch)
     const char* const commands[] = {
         "[b]/tsmedia send[/b] — choose files to send to this chat (opens the send window)",
         "[b]/tsmedia voice[/b] — record a voice message for this chat", // 2.2 voice
+        "[b]/tsmedia poll[/b] — post an anonymous poll to your channel", // 2.3 poll
+        "[b]/tsmedia music[/b] — play a music file to your channel (pause, play, stop: the playing one)", // 2.3 live music
         "[b]/tsmedia cancel[/b] — cancel all running uploads",
         "[b]/tsmedia settings[/b] — open the settings",
         "[b]/tsmedia cache[/b] — open the media cache folder",
@@ -513,6 +527,12 @@ TS3_EXPORT int ts3plugin_init()
                                   i18n::t("Pictures cached: %1 (%2 KB), waiting: %3").arg(cache.entries).arg(cache.bytes / 1024).arg(cache.pending)}};
         });
         chat->start();
+        // 2.3 live music: the paperclip menu's "Live music", the bar above the chat input (after the chat).
+        // Deleted early in ts3plugin_shutdown.
+        g_music = new MusicController(MusicController::pluginHost());
+        diag::addSectionProvider([]() -> diag::Section {
+            return g_music ? diag::Section{MusicController::diagnosticsTitle(), g_music->diagnosticLines()} : diag::Section();
+        });
 #ifdef TSMEDIA_TESTHOOKS
         // Test builds: selftest_script.txt (localhost servers only; a child of the chat, gone with it).
         new SelfTest(core, chat, SelfTest::Hooks{[] { showSettings(nullptr); }, []() -> QWidget* { return g_settings.data(); }}, chat);
@@ -548,6 +568,13 @@ TS3_EXPORT void ts3plugin_shutdown()
         // microphone given back (MicGuard) while every connection is still there; its window goes too.
         if (g_chat && g_chat->voice())
             g_chat->voice()->shutdown();
+        // 2.3 live music: TeamSpeak's audio callbacks detached, the decoder joined, a push-to-talk input it
+        // kept open given back (the connections still exist), the bar out of TeamSpeak's layout, its
+        // paperclip menu entry removed.
+        delete g_music.data();
+#ifdef TSMEDIA_TESTHOOKS
+        selfTestMusicShutdown(); // a live test's custom sound devices: TeamSpeak's own ones back
+#endif
         // 2.4 compress: running and queued transcodes are canceled and their worker joined before any
         // window, the chat or Core goes (~Core would do it too, last).
         if (g_core)
@@ -644,6 +671,30 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
         });
     } else if (cmd == QLatin1String("voice")) { // 2.2 voice
         onGuiThread([] { recordVoice(VoiceController::Origin::Command); });
+    } else if (cmd == QLatin1String("poll")) { // 2.3 poll: the keyboard way to the New poll window
+        onGuiThread([] {
+            if (g_chat && g_chat->polls())
+                g_chat->polls()->openCreator(nullptr); // the chat on screen; it says why where it can't
+        });
+    } else if (cmd == QLatin1String("music") || cmd.startsWith(QLatin1String("music "))) { // 2.3 live music
+        // "music": choose a file; "music pause" / "music play" / "music stop": the playing one; "music <path>":
+        // that file. (2.3 polish review: pause and play are what they say, not a toggle: "pause" on another
+        // server tab played the waiting music on and took the user back to its tab.)
+        const QString arg = str(command).trimmed().mid(5).trimmed();
+        onGuiThread([arg] {
+            if (!g_music)
+                return;
+            if (arg.isEmpty())
+                g_music->pick(g_chat ? g_chat->mainWindow() : nullptr);
+            else if (arg.compare(QLatin1String("stop"), Qt::CaseInsensitive) == 0)
+                g_music->stop();
+            else if (arg.compare(QLatin1String("pause"), Qt::CaseInsensitive) == 0)
+                g_music->pause();
+            else if (arg.compare(QLatin1String("play"), Qt::CaseInsensitive) == 0)
+                g_music->play();
+            else
+                g_music->start(QDir::fromNativeSeparators(arg.startsWith(QLatin1Char('"')) && arg.endsWith(QLatin1Char('"')) ? arg.mid(1, arg.size() - 2) : arg));
+        });
     } else if (cmd == QLatin1String("settings")) {
         onGuiThread([] { showSettings(nullptr); });
     } else if (cmd == QLatin1String("cache")) {
@@ -885,6 +936,8 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
     onGuiThread([sch] {
         if (g_core)
             g_core->onConnectionLost(sch);
+        if (g_music) // 2.3 live music: it stops (the bar says why)
+            g_music->connectionLost(sch);
     });
 }
 
@@ -892,6 +945,48 @@ TS3_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 serverConnection
 {
     onGuiThread([] { updateMenus(); }); // another server tab: its connection state counts now
     AccessGroup::handleCurrentConnectionChanged(serverConnectionHandlerID); // 2.2 servergroup
+    // 2.3: every server tab shares TeamSpeak's one chat input, so nothing of it hides: the hold-to-record
+    // strip (a hold ends, kept in the window) and the music bar belong to their own tab.
+    const uint64 sch = serverConnectionHandlerID;
+    onGuiThread([sch] {
+        if (g_chat && g_chat->voice())
+            g_chat->voice()->serverTabChanged(sch);
+        if (g_music)
+            g_music->serverTabChanged(sch);
+    });
+}
+
+// 2.3 live music: TeamSpeak's audio threads (never the GUI thread). Nothing happens unless music plays on
+// that connection; the engine mixes without allocating and is detached before it is deleted.
+TS3_EXPORT void ts3plugin_onEditCapturedVoiceDataEvent(uint64 serverConnectionHandlerID, short* samples, int sampleCount, int channels, int* edited)
+{
+#ifdef TSMEDIA_TESTHOOKS
+    selfTestCapturePre(serverConnectionHandlerID, samples, sampleCount, channels, edited);
+#endif
+    music::onCaptured(serverConnectionHandlerID, samples, sampleCount, channels, edited);
+#ifdef TSMEDIA_TESTHOOKS
+    selfTestCapturePost(serverConnectionHandlerID, samples, sampleCount, channels, edited);
+#endif
+}
+
+#ifdef TSMEDIA_TESTHOOKS
+// Test builds only (live pass B): the voice each client sends us and its talk status, counted for the driver.
+TS3_EXPORT void ts3plugin_onEditPlaybackVoiceDataEvent(uint64 serverConnectionHandlerID, anyID clientID, short* samples, int sampleCount, int channels)
+{
+    selfTestPlaybackVoice(serverConnectionHandlerID, clientID, samples, sampleCount, channels);
+}
+
+TS3_EXPORT void ts3plugin_onTalkStatusChangeEvent(uint64 serverConnectionHandlerID, int status, int isReceivedWhisper, anyID clientID)
+{
+    Q_UNUSED(isReceivedWhisper);
+    selfTestTalkStatus(serverConnectionHandlerID, status, clientID);
+}
+#endif
+
+TS3_EXPORT void ts3plugin_onEditMixedPlaybackVoiceDataEvent(uint64 serverConnectionHandlerID, short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray,
+                                                            unsigned int* channelFillMask)
+{
+    music::onPlayback(serverConnectionHandlerID, samples, sampleCount, channels, channelSpeakerArray, channelFillMask);
 }
 
 TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, anyID targetMode, anyID toID, anyID fromID, const char* fromName, const char* fromUniqueIdentifier, const char* message, int ffIgnored)
@@ -984,16 +1079,31 @@ TS3_EXPORT void ts3plugin_onPluginCommandEvent(uint64 serverConnectionHandlerID,
     PeerHub::onPluginCommand(serverConnectionHandlerID, pluginName, pluginCommand, invokerClientID, invokerName, invokerUniqueIdentity);
 }
 
+// 2.3 live music: the own client left the music's channel (moved, kicked, banned, timed out): it stops.
+// Only while music plays (an atomic read: TeamSpeak's thread); a move missed meanwhile is caught by the
+// controller's check every second.
+static void musicClientMoved(uint64 sch, anyID client, uint64 newChannel)
+{
+    if (!music::active())
+        return; // nothing playing: no GUI-thread call for every move on the server
+    onGuiThread([sch, client, newChannel] {
+        if (g_music)
+            g_music->clientMoved(sch, client, newChannel);
+    });
+}
+
 TS3_EXPORT void ts3plugin_onClientMoveEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, const char* moveMessage)
 {
     Q_UNUSED(moveMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+    musicClientMoved(serverConnectionHandlerID, clientID, newChannelID); // 2.3 live music
 }
 
 TS3_EXPORT void ts3plugin_onClientMoveTimeoutEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, const char* timeoutMessage)
 {
     Q_UNUSED(timeoutMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+    musicClientMoved(serverConnectionHandlerID, clientID, newChannelID); // 2.3 live music
 }
 
 TS3_EXPORT void ts3plugin_onClientMoveMovedEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID moverID,
@@ -1004,6 +1114,7 @@ TS3_EXPORT void ts3plugin_onClientMoveMovedEvent(uint64 serverConnectionHandlerI
     Q_UNUSED(moverUniqueIdentifier);
     Q_UNUSED(moveMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+    musicClientMoved(serverConnectionHandlerID, clientID, newChannelID); // 2.3 live music
 }
 
 TS3_EXPORT void ts3plugin_onClientKickFromChannelEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
@@ -1014,6 +1125,7 @@ TS3_EXPORT void ts3plugin_onClientKickFromChannelEvent(uint64 serverConnectionHa
     Q_UNUSED(kickerUniqueIdentifier);
     Q_UNUSED(kickMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+    musicClientMoved(serverConnectionHandlerID, clientID, newChannelID); // 2.3 live music
 }
 
 TS3_EXPORT void ts3plugin_onClientKickFromServerEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
@@ -1024,6 +1136,7 @@ TS3_EXPORT void ts3plugin_onClientKickFromServerEvent(uint64 serverConnectionHan
     Q_UNUSED(kickerUniqueIdentifier);
     Q_UNUSED(kickMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+    musicClientMoved(serverConnectionHandlerID, clientID, newChannelID); // 2.3 live music
 }
 
 TS3_EXPORT void ts3plugin_onClientBanFromServerEvent(uint64 serverConnectionHandlerID, anyID clientID, uint64 oldChannelID, uint64 newChannelID, int visibility, anyID kickerID,
@@ -1035,17 +1148,19 @@ TS3_EXPORT void ts3plugin_onClientBanFromServerEvent(uint64 serverConnectionHand
     Q_UNUSED(time);
     Q_UNUSED(kickMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+    musicClientMoved(serverConnectionHandlerID, clientID, newChannelID); // 2.3 live music
 }
 
 // Chat redesign (P2): TeamSpeak downloaded a client's avatar: Cozy heads draw it.
 TS3_EXPORT void ts3plugin_onAvatarUpdated(uint64 serverConnectionHandlerID, anyID clientID, const char* avatarPath)
 {
-    Q_UNUSED(avatarPath); // read from TeamSpeak's cache by the uid (the same file)
     // TeamSpeak's callbacks may come from its own thread: the chat is only touched on the GUI thread.
-    const uint64 sch = serverConnectionHandlerID;
-    onGuiThread([sch, clientID] {
+    // 2.3 chat-visuals: TeamSpeak's file is remembered for the client (empty: the avatar went).
+    const uint64  sch  = serverConnectionHandlerID;
+    const QString path = avatarPath ? QString::fromUtf8(avatarPath).left(1024) : QString();
+    onGuiThread([sch, clientID, path] {
         if (g_chat && g_chat->layout())
-            g_chat->layout()->avatarUpdated(sch, clientID);
+            g_chat->layout()->avatarUpdated(sch, clientID, path);
     });
 }
 

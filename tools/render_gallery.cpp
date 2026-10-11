@@ -1637,11 +1637,11 @@ void fill(QTextDocument& doc, const tschat::Skin& s, int width)
     const auto sys = [&](const char* time, const QString& html) { tschat::append(&doc, tschat::systemHtml(s, QString::fromLatin1(time), html)); };
     tschat::append(&doc, tschat::dayHtml(s, QStringLiteral("10/10/2026"), false));
     sys("15:56:16", QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(s, QStringLiteral("Home")));
-    msg("16:00:17", 7, kMe, QStringLiteral("Mehdi"), tschat::linkHtml(s, QStringLiteral("https://example.com/live/first-stream")), true);
-    msg("16:00:57", 7, kMe, QStringLiteral("Mehdi"), tschat::linkHtml(s, QStringLiteral("https://example.com/live/night-owl")), true);
-    msg("16:02:12", 7, kMe, QStringLiteral("Mehdi"), QStringLiteral("this one is live now, come watch"), true);
-    msg("17:45:37", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("@Mehdi are you coming tonight? The usual server, around nine."));
-    msg("17:49:28", 7, kMe, QStringLiteral("Mehdi"), QStringLiteral("yes, after 9. I'll bring the new map"), true);
+    msg("16:00:17", 7, kMe, QStringLiteral("Robin"), tschat::linkHtml(s, QStringLiteral("https://example.com/live/first-stream")), true);
+    msg("16:00:57", 7, kMe, QStringLiteral("Robin"), tschat::linkHtml(s, QStringLiteral("https://example.com/live/night-owl")), true);
+    msg("16:02:12", 7, kMe, QStringLiteral("Robin"), QStringLiteral("this one is live now, come watch"), true);
+    msg("17:45:37", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("@Robin are you coming tonight? The usual server, around nine."));
+    msg("17:49:28", 7, kMe, QStringLiteral("Robin"), QStringLiteral("yes, after 9. I'll bring the new map"), true);
     msg("18:06:56", 19, kSara, QStringLiteral("Sara"),
         QStringLiteral("\u0633\u0644\u0627\u0645 \u0628\u0686\u0647\u200c\u0647\u0627\u060c \u06a9\u06cc \u0622\u0646\u0644\u0627\u06cc\u0646 \u0645\u06cc\u200c\u0634\u06cc\u062f\u061f")); // a right-to-left message
     msg("18:07:10", 19, kSara, QStringLiteral("Sara"), tschat::linkHtml(s, QStringLiteral("ts3file://127.0.0.1?filename=lake.jpg"), QStringLiteral("lake.jpg")));
@@ -1668,7 +1668,7 @@ layoutdoc::Env envFor(layoutart::Mode mode, bool dark, qreal dpr, int width)
     env.today        = QDate(2026, 10, 10);
     env.tag          = QStringLiteral("g");
     env.mentions     = true;
-    env.ownNick      = QStringLiteral("Mehdi");
+    env.ownNick      = QStringLiteral("Robin");
     env.ownUid       = kMe;
     env.collapse     = true;
     return env;

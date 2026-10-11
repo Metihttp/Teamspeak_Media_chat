@@ -75,6 +75,42 @@ Palette paletteFor(bool dark)
             QColor(0xe3, 0xe5, 0xe8), QColor(0xdc, 0xde, 0xe2), QColor(0, 0, 0, 26)};
 }
 
+// 2.3: a card on a message bubble (style.bubbles): the bubble is its panel (no fill, no frame, no hover fill:
+// the action's ink says hover), and what is drawn on it keeps its contrast on every bubble colour.
+bool cardOnBubble(const PreviewStyle& style)
+{
+    return !style.bubbles.isEmpty();
+}
+
+Palette cardPaletteFor(const PreviewStyle& style)
+{
+    Palette pal = paletteFor(style.dark);
+    if (!cardOnBubble(style))
+        return pal;
+    const QVector<QColor>& backs = style.bubbles;
+    pal.background      = QColor(0, 0, 0, 0);
+    pal.backgroundHover = QColor(0, 0, 0, 0);
+    pal.border          = QColor(0, 0, 0, 0);
+    pal.title           = ui::readableOn(pal.title, backs, 7.0);
+    pal.link            = ui::readableOn(pal.link, backs, 4.5);
+    pal.muted           = ui::readableOn(pal.muted, backs, 4.5);
+    pal.errorText       = ui::readableOn(pal.errorText, backs, 4.5);
+    // Rings and bars: a translucent track (it shows the bubble through), the progress at 3:1 on it.
+    pal.track = style.dark ? QColor(255, 255, 255, 38) : QColor(6, 10, 22, 34);
+    QVector<QColor> tracks;
+    for (const QColor& back : backs)
+        tracks.append(ui::flatten(pal.track, back));
+    pal.progress = ui::readableOn(pal.progress, tracks, 3.0);
+    return pal;
+}
+
+// The card's content from its left and right edge: on a bubble it starts at the bubble's text column.
+constexpr qreal kCardPaddingOnBubble = 2.0;
+qreal cardPadding(const PreviewStyle& style)
+{
+    return cardOnBubble(style) ? kCardPaddingOnBubble : kCardPadding;
+}
+
 // ---- fonts / canvas ---------------------------------------------------------------------------
 
 // Everything is laid out in logical pixels, so fonts are sized in pixels too (independent of the
@@ -988,7 +1024,8 @@ void drawFileGlyph(QPainter& p, const QRectF& r, const QColor& color, const QStr
 
 QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDecodeFailed, QSize* logicalSize)
 {
-    const Palette pal  = paletteFor(style.dark);
+    const Palette pal  = cardPaletteFor(style); // 2.3: on a bubble, no panel of its own
+    const qreal   pad  = cardPadding(style);
     const QSize   size = cardSize(style);
     const qreal   w    = size.width();
     const qreal   h    = size.height();
@@ -1015,7 +1052,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     // state, and a click reveals it.
     const bool hiddenSpoiler = style.concealOpacity > 0.0 && spoiler::appliesTo(e.kind);
 
-    const QRectF glyph(kCardPadding, (h - 40.0) / 2.0, 32, 40);
+    const QRectF glyph(pad, (h - 40.0) / 2.0, 32, 40);
     drawFileGlyph(p, glyph, glyphColor(e), extensionLabel(e), style);
     if (failed && !hiddenSpoiler) {
         const QRectF badge(glyph.right() - 6, glyph.bottom() - 11, 15, 15);
@@ -1032,7 +1069,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     const bool          retry      = failed && isRetryableDownload(e);
     const bool          retryLabel = retry && w >= kRetryLabelMin;
     const qreal         slotWidth  = retryLabel ? 20.0 + 4.0 + actionFm.horizontalAdvance(i18n::t("Retry")) : kCardSlot;
-    const QRectF        slot(w - kCardPadding - slotWidth, (h - kCardSlot) / 2.0, slotWidth, kCardSlot);
+    const QRectF        slot(w - pad - slotWidth, (h - kCardSlot) / 2.0, slotWidth, kCardSlot);
     const QRectF        icon = slot.adjusted(1, 1, -1, -1);
     bool                hasAction = true;
     if (hiddenSpoiler) // 2.2 spoiler
@@ -1069,7 +1106,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     }
 
     const qreal textStart = glyph.right() + 12.0;
-    const qreal textEnd   = hasAction ? slot.left() - kCardGap : w - kCardPadding;
+    const qreal textEnd   = hasAction ? slot.left() - kCardGap : w - pad;
     const qreal textWidth = qMax(0.0, textEnd - textStart);
 
     // The text block sits at the same place in every state: the progress bar has its own row at the
@@ -1220,6 +1257,24 @@ Palette palette(bool dark)
     const ::Palette p = paletteFor(dark);
     return {p.background, p.backgroundHover, p.border, p.title, p.link, p.muted, p.errorText, p.errorFill,
             p.track, p.progress, p.placeholder, p.placeholderHover, p.hairline};
+}
+Palette palette(const PreviewStyle& style)
+{
+    const ::Palette p = cardPaletteFor(style);
+    return {p.background, p.backgroundHover, p.border, p.title, p.link, p.muted, p.errorText, p.errorFill,
+            p.track, p.progress, p.placeholder, p.placeholderHover, p.hairline};
+}
+bool onBubble(const PreviewStyle& style) { return cardOnBubble(style); }
+void drawInBackground(QPainter& p, const QColor& background, const std::function<void(const QColor&)>& draw)
+{
+    if (background.alpha() > 0) {
+        draw(background);
+        return;
+    }
+    p.save();
+    p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+    draw(QColor(0, 0, 0));
+    p.restore();
 }
 QColor  accent() { return kAccent; }
 qreal   cornerRadius() { return kRadius; }

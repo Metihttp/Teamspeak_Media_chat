@@ -1,7 +1,7 @@
 #pragma once
 
 // Chat redesign: Settings > General > "Chat layout", at the top: Cozy (the default), Compact or TeamSpeak
-// classic, and what the layout does (grouping, the action bar, avatars, mentions, collapsed events).
+// classic, and what the layout does (grouping, the action bar, bubbles, avatars, mentions, collapsed events).
 // Everything applies at once (OK / Apply).
 
 #include "settingssection.h"
@@ -31,4 +31,5 @@ class ChatLayoutSection : public SettingsSection
     QCheckBox*    m_avatars;  // P2
     QCheckBox*    m_mentions; // P2
     QCheckBox*    m_collapse; // P2
+    QCheckBox*    m_bubbles;  // 2.3 chat-visuals
 };

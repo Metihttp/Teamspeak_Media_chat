@@ -33,6 +33,11 @@ struct PreviewStyle {
     // it is hidden, falling to 0 during the reveal crossfade, 0 otherwise. The box never changes with it.
     // Cards of other files ignore it; a picture shown as a card (no size known) is named "Spoiler (image)".
     qreal concealOpacity = 0.0;
+    // 2.3: the preview sits on a message bubble (Cozy with bubbles, layoutbubbles.h): every flat colour the
+    // bubble can have (layoutart::bubbleSurfaces). Cards (files, audio, voice) then draw no panel or frame of
+    // their own, start at the bubble's text column and keep their texts readable on each of these colours.
+    // Empty: on the chat itself.
+    QVector<QColor> bubbles;
 };
 
 // Controls drawn on top of an inline video.

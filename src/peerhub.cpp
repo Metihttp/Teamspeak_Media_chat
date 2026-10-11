@@ -19,6 +19,7 @@
 #include "pluginlink.h"
 #include "presenceline.h"
 #include "settings.h"
+#include "textreacthub.h" // 2.3 text reactions
 #include "ts3api.h"
 #include "version.h"
 
@@ -162,6 +163,7 @@ PeerHub::PeerHub(Core* core, QObject* parent)
     m_link      = new PluginLink(*m_env, this);
     m_directory = new peers::PeerDirectory(*m_env, *m_link, this);
     m_store     = new ReactionStore(this);
+    m_text      = new TextReactHub(core, m_link, m_directory, this); // 2.3 text reactions: the same transport and presence
 
     // Member timers only (children): nothing of ours can be pending once the hub is gone.
     m_timer = new QTimer(this);
@@ -229,6 +231,8 @@ PeerHub::~PeerHub()
     g_queuedCommands = 0;
     compose::setPresenceLineFactory(nullptr);
     // Before m_env goes: they hold references to it.
+    delete m_text; // 2.3 text reactions: before the transport it sends with
+    m_text = nullptr;
     delete m_directory;
     m_directory = nullptr;
     delete m_link;
@@ -256,6 +260,7 @@ void PeerHub::start()
 {
     m_store->load(reactionsPath(), QDateTime::currentSecsSinceEpoch());
     m_dirty = false;
+    m_text->start(); // 2.3 text reactions: text-reactions.json
     applySettings();
     for (const uint64 sch : ts3::connections()) {
         if (!ts3::isConnected(sch))
@@ -289,6 +294,7 @@ void PeerHub::prepareShutdown()
     m_directory->sayGoodbye(); // BYE, without waiting for an answer
     m_saveTimer->stop();
     save();
+    m_text->prepareShutdown(); // 2.3 text reactions: unsent toggles taken back, text-reactions.json written
 }
 
 void PeerHub::applySettings()
@@ -304,7 +310,12 @@ void PeerHub::received(quint64 sch, quint16 from, const QString& uid, const QStr
     if (m_shuttingDown)
         return;
 #ifdef TSMEDIA_TESTHOOKS
-    ts3::log(QString::fromLatin1("[test] peer rx sch %1 from %2 type %3").arg(sch).arg(from).arg(QString::fromLatin1(message.type)));
+    // 2.3 poll: ballots and poll questions are anonymous; not even a test build's log says who sent one.
+    const bool anonymous = message.type == "PV" || message.type == "PQ";
+    ts3::log(QString::fromLatin1("[test] peer rx sch %1 from %2 type %3")
+                 .arg(sch)
+                 .arg(anonymous ? QString::fromLatin1("-") : QString::number(from))
+                 .arg(QString::fromLatin1(message.type)));
 #endif
     if (message.type == "HELLO" || message.type == "HI" || message.type == "BYE") {
         m_directory->received(sch, from, uid, name, message);
@@ -741,6 +752,12 @@ QStringList PeerHub::diagnosticLines() const
                  .arg(s.showReactions ? i18n::t("yes") : i18n::t("no"))
                  .arg(m_store ? m_store->keys().size() : 0)
                  .arg(m_store ? m_store->orphanCount() : 0);
+    if (m_text) // 2.3 text reactions
+        lines << i18n::t("Reactions on messages: %1 stored, %2 waiting for their message; %3 messages read in %4 chats")
+                     .arg(m_text->store()->keys().size())
+                     .arg(m_text->waitingCount())
+                     .arg(m_text->index().messageCount())
+                     .arg(m_text->index().chatCount());
     int number = 0;
     for (const uint64 sch : ts3::connections()) {
         if (!ts3::isConnected(sch))

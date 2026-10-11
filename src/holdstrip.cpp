@@ -11,6 +11,7 @@
 
 #include "audio/waveform.h"
 #include "i18n.h"
+#include "inputbars.h" // 2.3 live music: the bars stacked above the input
 #include "medialink.h"
 #include "replyart.h"
 #include "uiutil.h"
@@ -234,8 +235,11 @@ void HoldStrip::placeAbove(QWidget* input)
     if (this->font() != font)
         setFont(font);
     const int    height = heightFor(font);
-    const QPoint at     = input->mapTo(owner, QPoint(0, 0));
-    const QRect  place(at.x(), qMax(0, at.y() - height), input->width(), height);
+    const QPoint at = input->mapTo(owner, QPoint(0, 0));
+    QRect        bar;
+    const int    top = inputbars::stackTop(input, owner, this, &bar); // 2.3 live music: above the music bar and the reply bar
+    // On a bar of ours as wide as that bar (it may reach past the input, over TeamSpeak's emoticon button).
+    const QRect  place = bar.isEmpty() ? QRect(at.x(), qMax(0, top - height), input->width(), height) : QRect(bar.left(), qMax(0, top - height), bar.width(), height);
     if (geometry() != place)
         setGeometry(place);
     const QObjectList& siblings = owner->children();

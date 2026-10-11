@@ -19,9 +19,10 @@
 //             the cancel zone it is kept in the window instead (never sent while it says "Release to
 //             cancel").
 //   Lost      the button no longer held and no release came (TeamSpeak's window deactivated, a popup took
-//             the mouse, another server tab hid the input, the button disabled, Host::pointerHeld() up for
-//             kHoldUpTicks ticks), or another chat came up in the input's chat tabs (Host::visibleTarget(),
-//             checked every kHoldChatTicks ticks and at the release): stopped, never sent by itself,
+//             the mouse, the button hidden or disabled, Host::pointerHeld() up for kHoldUpTicks ticks), or
+//             another chat came up in the input's chat tabs (Host::visibleTarget(), checked every
+//             kHoldChatTicks ticks and at the release), or another server tab (2.3: serverTabChanged() at
+//             once, TeamSpeak's current connection on every tick): stopped, never sent by itself,
 //             kept in the window (Recording stopped … Send). A lost microphone, a saving error or no
 //             connection when sending hand over to the window the same way.
 //   Unload    (or the input gone while held): canceled quietly, the microphone given back.
@@ -167,6 +168,11 @@ class VoiceController : public QObject
     // timer while idle, and when the pointer comes onto a button.
     void updateMicButtons();
 
+    // 2.3 hold strip fix: another server tab came up (ts3plugin_currentServerConnectionChanged). Every
+    // server tab shares TeamSpeak's one chat input, so nothing of the input hides: a hold on the old tab
+    // ends as ChatChanged (kept in the window, never sent), and the strip and its notices go at once.
+    void serverTabChanged(uint64 sch);
+
   private:
     // Why a recording stopped by itself (kept in the window): HoldLost and ChatChanged end a hold, and
     // LimitWhileCanceling is a hold in the cancel zone at 5:00.
@@ -177,6 +183,7 @@ class VoiceController : public QObject
     void watchHold();
     void holdLost(Stopped why);
     bool visibleChatChanged() const; // the input shows another chat than the hold's (while connected)
+    bool onHoldTab() const;          // 2.3: the hold's server tab is the one on screen (or unknown)
     void endHold(HoldStrip::Icon icon, const QString& notice, bool quiet); // discards, then the notice
     void toWindow(); // a held recording goes on in the window (an error, kept)
     void refreshHold();

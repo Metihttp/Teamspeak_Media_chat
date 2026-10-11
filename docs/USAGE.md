@@ -2,11 +2,11 @@
 
 [← Back to README](../README.md)
 
-How to send files and voice messages, reply to messages, use HD emoji, what you see in the chat and how it looks, how the gallery viewer works, and the chat commands.
+How to send files, polls, voice messages and live music, reply to messages, use HD emoji, what you see in the chat and how it looks, how the gallery viewer works, and the chat commands.
 
-- [Sending files](#sending-files): [the send window](#the-send-window), [editing a picture](#editing-a-picture), [large videos](#large-videos), [upload progress](#upload-progress), [file names and folders](#file-names-and-folders)
+- [Sending files](#sending-files): [the paperclip](#the-paperclip), [the send window](#the-send-window), [editing a picture](#editing-a-picture), [large videos](#large-videos), [upload progress](#upload-progress), [file names and folders](#file-names-and-folders)
 - [Viewing media](#viewing-media): [albums](#albums), [spoilers](#spoilers), [audio](#audio-files), [reactions](#reactions), [file checks](#file-checks), [data saver](#data-saver)
-- [Voice messages](#voice-messages)
+- [Voice messages](#voice-messages), [live music](#live-music) and [polls](#polls)
 - [Chat layout](#chat-layout)
 - [Replies](#replies) and [emoji](#emoji)
 - [Dragging files out of the chat](#dragging-files-out-of-the-chat)
@@ -18,6 +18,7 @@ How to send files and voice messages, reply to messages, use HD emoji, what you 
 | --- | --- |
 | Drag & drop | Drop files on the chat messages or the chat input. The send window opens; hold <kbd>Ctrl</kbd> while dropping to send them right away. |
 | Paste | Press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the chat input. The send window opens. |
+| Paperclip | Click the paperclip at the left end of the chat input → **Photo or video** or **Document**, then pick files. The send window opens. |
 | Menu | **Plugins → TS Media chat → Send files to chat…** (greyed out while the current server tab is not connected) |
 | Hotkey | *Send files to the current chat* (see [hotkeys](#hotkeys)) |
 | Chat command | `/tsmedia send` |
@@ -28,6 +29,19 @@ How to send files and voice messages, reply to messages, use HD emoji, what you 
 Before the file picker opens, before the send window and when you drop files, the plugin checks that you are connected, that your channel has no password and that it knows who a private chat is with. If something is missing, it says why (next to where you are and in the chat), and nothing is sent.
 
 Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS.md#sending).
+
+### The paperclip
+
+The paperclip at the left end of the chat input opens a small menu (TeamSpeak's emoji button and the microphone stay at the right end):
+
+| Entry | What it does |
+| --- | --- |
+| **Photo or video** | The file chooser, showing pictures and videos first; the files go into the [send window](#the-send-window). |
+| **Document** | The file chooser for any file; the files go into the send window. |
+| **Poll** | The *New poll* window ([polls](#polls)). Channel chats only. |
+| **Live music** | Pick a music file to play to your channel ([live music](#live-music)). |
+
+While the send window is open, **Photo or video** and **Document** add the chosen files to it. The menu works with the keyboard too: the arrow keys, <kbd>Home</kbd> / <kbd>End</kbd>, <kbd>Enter</kbd> and <kbd>Esc</kbd>. Entries that can't be used right now (not connected, not in a channel) are greyed out; pointing at one says why. Without a mouse, `/tsmedia send`, `/tsmedia poll` and `/tsmedia music` do the same as its entries.
 
 ### Where a message goes
 
@@ -40,7 +54,7 @@ Drag & drop and Ctrl+V sending can each be turned off in the [settings](SETTINGS
 ### The send window
 
 <p align="center">
-  <img src="images/compose.png" width="560" alt="The Send to chat window with three photos: a list with thumbnails and spoiler and edit buttons, Send as an album ticked, a caption field, the line 3 of 5 people here will see it in the chat, and a Send 3 images button">
+  <img src="images/compose.png" width="560" alt="The Send to chat window for the channel Lobby with three photos as large tiles, one covered as a spoiler, the line 3 of 5 people here will see it in the chat with a Who? button, Send as an album switched on, a caption field, and the Add files…, Send 3 images and Cancel buttons">
 </p>
 
 Pasting, dropping and the file picker all open the same window. It names where the files go (*Send to the channel “Lobby”*, the whole server or a private chat) and shows what will be sent: a large preview for one picture or video, or a list with a thumbnail, the name and the size of each file. Nothing is sent until you click **Send** (or press <kbd>Enter</kbd>); <kbd>Esc</kbd> closes it, and asks first if you changed something.
@@ -48,7 +62,7 @@ Pasting, dropping and the file picker all open the same window. It names where t
 - **Caption:** one line of up to 300 characters, shown in the chat right above the file (above the first one, or above the album, when you send several). A counter appears from 250 characters. A caption that doesn't fit in the same chat message as the file is sent as its own message right above it; it is never shortened.
 - **Mark as spoiler:** pictures, GIFs and videos can be marked one by one (the eye button in the list, <kbd>S</kbd> on a focused row). People with TS Media chat see them blurred until they click. People on TS Media 2.1 or older, and people without the plugin, see them unblurred.
 - **Send as an album:** shown for two or more pictures and videos (on by default; the window remembers your choice). Up to 10 go into one album, so 12 pictures are sent as two albums (10 + 2). Other files are sent one by one.
-- **Who will see it:** a line counts who in your channel has TS Media, for example *3 of 5 people here will see it in the chat. The others get a download link.* **Who?** lists the names. In a private chat it names your partner; alone in a channel it says *You're the only one in this channel. No one else will get this message.* People on TS Media 2.1 or older can't answer and count as getting a link. The line is hidden when you turned off *Tell people in your channel that you have TS Media*.
+- **Who will see it:** a line counts who in your channel has TS Media, for example *3 of 5 people here will see it in the chat. The others get a download link.* The **Who?** button lists the names. In a private chat it names your partner; alone in a channel it says *You're the only one in this channel. No one else will get this message.* People on TS Media 2.1 or older can't answer and count as getting a link. The line is hidden when you turned off *Tell people in your channel that you have TS Media*.
 - **Edit…** (the pencil in the list, <kbd>E</kbd> on a focused row): crop and draw on a picture before you send it, see [editing a picture](#editing-a-picture). The item then says *Edited*; **Revert to original** (the arrow next to the pencil) brings the original back. Animated GIFs and pictures over 33 megapixels (16 in 32-bit TeamSpeak) can't be edited.
 - **Quality** (videos): see [large videos](#large-videos).
 - **Add files…** (<kbd>Ctrl</kbd>+<kbd>O</kbd>), dropping more files on the window, or <kbd>Ctrl</kbd>+<kbd>V</kbd> add files; the **×** button (or <kbd>Delete</kbd> on a focused row) removes one. Up to 100 files can be sent at once.
@@ -155,11 +169,12 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 ### Reactions
 
 - Pictures, GIFs, videos, albums, audio files and voice messages (spoilers too, which stay covered) can get reactions with any emoji, drawn as HD pictures.
+- 2.3: so can text messages, links, replies and polls in channel and private chats: point at the message and click **Add reaction** in its action bar, or right-click it → **Add reaction…**. The row of pills appears at the bottom of the message (inside its bubble when bubbles are on, like the row under media) and works like the one under media. People with TS Media 2.3 or later see these. Messages need TeamSpeak's timestamps (on by default).
 - Point at a picture without reactions and click the round button at its top right, or the **+** pill at the end of an existing row, or right-click → **Add reaction**. The quick row offers eight: 👍 ❤️ 😂 😮 😢 🔥 and your two most recent other emoji. Its **+** opens the [emoji picker](#emoji) for any other one; there, a pick adds or removes that reaction, and your reactions are marked. The quick row works with the keyboard too: arrows, <kbd>Home</kbd> / <kbd>End</kbd>, <kbd>1</kbd>–<kbd>8</kbd>, <kbd>+</kbd> for the picker, <kbd>Enter</kbd> or <kbd>Space</kbd>, <kbd>Esc</kbd>. The right-click menu's **Add reaction** lists the quick ones, your others and **More reactions…**.
 - The row under the media shows each reaction with its count, in the order they first appeared; yours are highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Bob and Carol*). Everyone can add up to 10 reactions to one item, and an item shows up to 20 different ones.
 - Reactions go through TeamSpeak, never to the server's files: people with TS Media 2.2 or later who are online in the same channel or private chat see them right away. Someone who comes in later sees the reactions of the people who are still there. They aren't available in the server chat.
 - If a reaction can't be sent (not connected, TeamSpeak limiting messages, plugin commands blocked on the server), it is taken back and the tooltip says why.
-- Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions on media* (Privacy & updates) turns reactions off: none are shown or sent.
+- Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions* (Privacy & updates) turns reactions off: none are shown or sent.
 
 ### File checks
 
@@ -198,28 +213,59 @@ Record a short message and send it to the chat you are looking at, like in Disco
 - **Receiving:** a voice message is a compact card with a play button, its waveform and its length. It downloads by itself while *Download images, GIFs and voice messages automatically* is on (up to that limit, at most 16 MB), so it plays at once. Click the waveform to jump to a point. **Save as…** suggests *Voice message 2026-10-09 18-02.m4a*.
 - The [FAQ](FAQ.md#voice-messages) lists the messages the window can show (*Microphone access is blocked*, *No microphone found*, *The microphone is busy*, …) with their fixes.
 
+## Live music
+
+Play a music file from your computer to everyone in your channel, through your own voice: everyone hears it, with or without the plugin, and you can keep talking over it.
+
+- **Start:** click the paperclip in the chat input and choose **Live music** (or type `/tsmedia music`), then pick a file: MP3, M4A / AAC, FLAC, WAV or WMA; Ogg and Opus once Windows has the *Web Media Extensions* from the Microsoft Store. It plays to the channel you are in on the server tab you are looking at.
+- **The music bar** sits right above the chat input while it plays, no extra window: a music note (grey while the channel doesn't hear it), the title and artist from the file's tags (else its name), play / pause, the elapsed time, a slider to drag forward or back (or click to jump), the length, the volume (click the speaker to mute, scroll on it to change) and **Stop**. Stop ends the music and the bar goes away; so does the end of the track. The reply bar and the hold-to-record strip stack with it, never over it.
+- **On another server tab** (TeamSpeak shares one chat input between them) the bar stays, compact: the title, *on Weekend Squad › Lobby* (the server and channel it plays on), play / pause and **Stop**. TeamSpeak doesn't send from a server tab in the background, so the music pauses while you're on another server tab (the bar says so) and plays on when you go back to its tab, unless you paused it yourself; play in the compact bar takes you back there.
+- **Keyboard:** <kbd>Tab</kbd> reaches the bar's buttons and sliders (clicking them leaves the cursor in the chat input). On the position slider the arrow keys move 5 seconds, <kbd>Page Up</kbd> / <kbd>Page Down</kbd> 30 seconds, <kbd>Home</kbd> / <kbd>End</kbd> to the start or the end. `/tsmedia music pause`, `/tsmedia music play` and `/tsmedia music stop` work too.
+- **The volume** is the music's level for the channel and for you alike (50% by default, so your voice stays on top), and it is remembered.
+- **Talking over it:** with voice activation, your voice goes out whenever TeamSpeak would send it anyway, mixed with the music; between words only the music goes. TeamSpeak doesn't start sending for the music alone while you are quiet, so when the music starts (or comes back after a pause) the plugin turns voice activation off for a moment, until TeamSpeak sends, with your microphone left out meanwhile; your own voice activation settings are not changed. With push-to-talk, TeamSpeak sends nothing while the key is up, so the plugin keeps your input open while the music plays on the tab you are looking at (and gives it back when you pause, stop, switch tabs or the track ends). The plugin can't see your push-to-talk key, so meanwhile your microphone is left out entirely: the channel hears only the music, and the bar says so.
+- **When the channel can't hear it** the bar says why on a second line: your microphone or sound is muted in TeamSpeak, TeamSpeak has no microphone open on this server, or you have no talk power in the channel (without talk power you can't start music at all). While your microphone or sound is muted in TeamSpeak, the plugin sends nothing at all (with your sound muted you don't hear it either); the music goes on to the channel once you unmute. Muting the music itself (the speaker in the bar, or volume 0) stops sending it too.
+- **It stops by itself** when you switch channels or get disconnected (the bar says so for a moment), and a file that can't be played shows why (*This file has no sound to play*, *Ogg and Opus audio need an extension…*).
+- **Sound quality depends on the channel's codec:** TeamSpeak encodes the music like your voice. Channels set to **Opus Music** sound best; with a voice codec (*Opus Voice*, Speex, CELT) music sounds thin, and the bar mentions it when the music starts. Your channel admin sets the codec in the channel's settings.
+- Nothing leaves your computer except your normal voice stream: the file itself is never uploaded.
+
+## Polls
+
+Ask your channel a question and let everyone with TS Media vote, like Telegram's anonymous polls.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/polls-music-dark.png">
+  <img src="images/polls-music-light.png" width="100%" alt="Left, under Anonymous polls: a poll in the chat after voting, Which map tonight?, with Harbor 25 percent, Desert Town 63 percent ticked as your choice and Night Market 12 percent, 8 votes, Retract vote and reactions under the card. Right, under The paperclip in the chat input: the paperclip menu open above the chat input with Photo or video, Document, Poll and Live music; under Live music: the music bar above the chat input with Morning Walk, pause, 1:23 of 3:45, a position slider, the volume and Stop">
+</picture>
+
+- **Make one:** click the paperclip in the chat input → **Poll** (or type `/tsmedia poll`). Type the question (up to 200 characters) and 2 to 10 answers (up to 100 characters each): <kbd>Enter</kbd> goes to the next answer or adds one, <kbd>Backspace</kbd> in an empty answer removes it, <kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>↓</kbd> or the grip moves one. Switch on *Allow multiple answers* to let people choose several. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> posts, <kbd>Esc</kbd> cancels. Polls go to the channel chat.
+- **Vote:** click an answer on the poll card (with multiple answers, tick them and click **Vote**). Then the card shows each answer's percentage, count and bar, a check on your choice and the total (*12 votes*). **Retract vote** takes it back, so you can vote again.
+- **Anonymous:** nobody, not even the person who made the poll, can see who voted for what; the card shows only counts. Votes are taken in the channel the poll was posted in, from people with TS Media 2.3 who are there; someone who comes in later gets the counts from the others.
+- **Without the plugin** people read the poll as text: the question, the numbered answers and a *Vote with TS Media chat* link to this project.
+- Polls can get reactions, be replied to (the reply quotes *📊 Poll: …*) and copied like any message.
+- How the anonymity works, and its limits: [polls](POLLS.md).
+
 ## Chat layout
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/chat-layout-dark.png">
-  <img src="images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy, the default: a day divider reading Today, October 10, 2026, join lines as small grey rows with an icon and their time, avatars with names and times above grouped messages, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
+  <img src="images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message tinted, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
 </picture>
 
 TS Media chat gives TeamSpeak's chat a Discord-like look in your own view. Nothing is sent and nobody else sees a difference. Choose the look in **Settings → General → Chat layout**:
 
-- **Cozy** (the default): names, avatars and times above the messages. Messages of one person within 7 minutes are grouped under one name; point at one to see its time. A reply always starts a new group and shows its reply row above the name.
+- **Cozy** (the default): names, avatars and times above the messages. Messages of one person within 7 minutes are grouped under one name; point at one to see its time. A reply always starts a new group and shows its reply row above the name. Every message sits in its own bubble, like in Telegram, yours tinted with the accent colour, with its pictures, file, audio and voice cards, polls and reactions inside (cards then have no box of their own). The bubbles can be turned off.
 - **Compact:** one line per message, with the time in front.
 - **TeamSpeak classic:** TeamSpeak's own look. Switching applies at once, and TeamSpeak's own chat comes back exactly as it was.
 
 In Cozy and Compact:
 
-- **Day dividers** read *Today, October 10, 2026*. Joins, leaves and other system lines become small rows with an icon and their time, and so do TeamSpeak's status lines in the server tab and in private chats (*You switched from channel …*, *Chat partner disconnected …*); where TeamSpeak's saved chat history begins, a *History* divider shows its day. Four or more in a row show their first with *+N more events*: click it to see them all, *Show fewer* folds them again. Pokes, kicks, bans, errors, welcome and host messages always show.
-- **Message actions:** point at a message for **Add reaction** (on media), **Reply**, **Copy text** and **More**. They are in the right-click menu too, and hidden when the chat is narrower than 240 px.
+- **Day dividers** read *Today, October 10, 2026*. Joins, leaves, TS Media's own notes and other system lines become small centred rows with an icon and their time (on small pills with bubbles), and so do TeamSpeak's status lines in the server tab and in private chats (*You switched from channel …*, *Chat partner disconnected …*); where TeamSpeak's saved chat history begins, a *History* divider shows its day. Four or more in a row show their first with *+N more events*: click it to see them all, *Show fewer* folds them again. Pokes, kicks, bans, errors, welcome and host messages always show.
+- **Message actions:** point at a message for **Add reaction**, **Reply**, **Copy text** and **More**. With bubbles they sit at the bubble's top right and keep off the message's text, also near the bottom of the chat. They are in the right-click menu too, and hidden when the chat is narrower than 240 px.
 - **Mentions:** a message from someone else with your nickname or *@nickname* in it gets a tint and a bar.
-- **Avatars** are the pictures TeamSpeak already has; nothing is downloaded, and people without one get their initials on a coloured disc.
+- **Avatars** are TeamSpeak's own pictures of people, yours included, also for people who have left; TS Media downloads nothing (TeamSpeak may fetch a missing picture from the server, as when you click someone), and people without one get their initials on a coloured disc.
 - Links keep their colour and underline. Copying gives TeamSpeak's own text.
 
-Grouping, message actions, avatars, mentions and folding can each be turned off in the [settings](SETTINGS.md#chat-layout).
+Grouping, message actions, bubbles, avatars, mentions and folding can each be turned off in the [settings](SETTINGS.md#chat-layout).
 
 ## Dragging files out of the chat
 
@@ -248,7 +294,7 @@ Right-click any preview or card. The item in bold is what a click on the preview
 | Copy image | downloaded images and GIFs (confirms *Image copied*) |
 | Copy link | always (copies the `ts3file://` link and confirms *Link copied*) |
 | Copy details | files that don't match what was sent (both checksums and the path) |
-| Add reaction | pictures, GIFs, videos, albums, audio and voice messages, outside the server chat (with counts and who reacted, and *More reactions…* for any emoji) |
+| Add reaction | pictures, GIFs, videos, albums, audio and voice messages, and (2.3) text messages, outside the server chat (with counts and who reacted, and *More reactions…* for any emoji) |
 | Reply / View N replies | at the top, for the message the preview is in ([replies](#replies)) |
 
 Right-click a message itself (not a preview) and TeamSpeak's own chat menu opens, with these at its top:
@@ -257,6 +303,7 @@ Right-click a message itself (not a preview) and TeamSpeak's own chat menu opens
 | --- | --- |
 | Reply | any message ([replies](#replies)) |
 | View 3 replies / View 1 reply | a message that has replies |
+| Add reaction… | 2.3: a text message, link or reply in a channel or private chat (the quick reactions at the pointer; disabled with the reason when reactions can't be sent) |
 | Copy text | any message: what was written, without the time and name (and without a reply's quote line), with emoji and smileys as text; the selection instead when you right-clicked inside it |
 | The emoji's name, Copy emoji, Use in the chat input | an HD emoji under the pointer ([emoji](#emoji)) |
 
@@ -342,6 +389,8 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 | --- | --- |
 | `/tsmedia send` | pick files and send them to the current chat (opens the send window) |
 | `/tsmedia voice` | record a voice message for the current chat |
+| `/tsmedia poll` | open the *New poll* window for your channel ([polls](#polls)) |
+| `/tsmedia music` | pick a music file and play it to your channel ([live music](#live-music)); `pause` pauses it, `play` plays it on (from another server tab it takes you back to the music's tab), `stop` stops it |
 | `/tsmedia cancel` | cancel all running uploads |
 | `/tsmedia settings` | open the settings |
 | `/tsmedia cache` | open the media cache folder |

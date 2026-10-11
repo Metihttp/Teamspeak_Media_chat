@@ -901,9 +901,9 @@ class TestChatLayout : public QObject
                 out << QStringLiteral("%1-%2").arg(r.first).arg(r.second);
             return out.join(QLatin1Char(','));
         };
-        QCOMPARE(R(QStringLiteral("@Mehdi are you coming?"), QStringLiteral("Mehdi")), QStringLiteral("0-6"));
-        QCOMPARE(R(QStringLiteral("hey mehdi! and MEHDI"), QStringLiteral("Mehdi")), QStringLiteral("4-9,15-20"));
-        QVERIFY(layoutdoc::mentionRanges(QStringLiteral("Mehdiz and xMehdi"), QStringLiteral("Mehdi")).isEmpty());
+        QCOMPARE(R(QStringLiteral("@Robin are you coming?"), QStringLiteral("Robin")), QStringLiteral("0-6"));
+        QCOMPARE(R(QStringLiteral("hey robin! and ROBIN"), QStringLiteral("Robin")), QStringLiteral("4-9,15-20"));
+        QVERIFY(layoutdoc::mentionRanges(QStringLiteral("Robinz and xRobin"), QStringLiteral("Robin")).isEmpty());
         QCOMPARE(R(QStringLiteral("@Al hi"), QStringLiteral("Al")), QStringLiteral("0-3"));
         QVERIFY(layoutdoc::mentionRanges(QStringLiteral("Al hi, also"), QStringLiteral("Al")).isEmpty()); // a word needs 3 characters
         QCOMPARE(R(QStringLiteral("ping Dex- now"), QStringLiteral("Dex-")), QStringLiteral("5-9"));
@@ -912,21 +912,21 @@ class TestChatLayout : public QObject
         QTextDocument doc;
         setup(doc);
         const tschat::Skin s = tschat::darkSkin();
-        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:45:37"), 17, kUidAlice, QStringLiteral("Alice"), QStringLiteral("@Mehdi are you coming tonight?")));
-        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:45:40"), 17, kUidAlice, QStringLiteral("Alice"), tschat::linkHtml(s, QStringLiteral("https://mehdi.example/"))));
-        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:46:00"), 7, kUidMe, QStringLiteral("Mehdi"), QStringLiteral("Mehdi here, yes"), true));
-        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:47:00"), 17, kUidAlice, QStringLiteral("Mehdi"), QStringLiteral("no mention in my header")));
+        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:45:37"), 17, kUidAlice, QStringLiteral("Alice"), QStringLiteral("@Robin are you coming tonight?")));
+        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:45:40"), 17, kUidAlice, QStringLiteral("Alice"), tschat::linkHtml(s, QStringLiteral("https://robin.example/"))));
+        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:46:00"), 7, kUidMe, QStringLiteral("Robin"), QStringLiteral("Robin here, yes"), true));
+        tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("17:47:00"), 17, kUidAlice, QStringLiteral("Robin"), QStringLiteral("no mention in my header")));
         const Snapshot plain = snapshot(doc);
         layoutdoc::Env env   = envFor(Mode::Cozy);
         env.mentions         = true;
-        env.ownNick          = QStringLiteral("Mehdi");
+        env.ownNick          = QStringLiteral("Robin");
         env.ownUid           = kUidMe;
         layoutdoc::styleAll(&doc, env);
         QVERIFY(layoutdoc::isMention(doc.findBlockByNumber(0)));
         QVERIFY(!layoutdoc::isMention(doc.findBlockByNumber(1))); // inside a link
         QVERIFY(!layoutdoc::isMention(doc.findBlockByNumber(2))); // your own message
         QVERIFY(!layoutdoc::isMention(doc.findBlockByNumber(3))); // the header is never read
-        // The pill: "@Mehdi" only, in the pill's colours, DemiBold.
+        // The pill: "@Robin" only, in the pill's colours, DemiBold.
         const QTextBlock first = doc.findBlockByNumber(0);
         const int        body  = layoutformat::bodyStart(first);
         QTextCursor      c(&doc);

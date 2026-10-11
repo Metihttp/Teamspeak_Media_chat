@@ -32,7 +32,8 @@
 namespace layoutformat {
 
 // Properties (other than the HD emoji's 0x7460-0x7463, the replies' 0x7470-0x7473, the previews' and albums'
-// 0x7453-0x7456).
+// 0x7453-0x7456). Our blocks may change TeamSpeak's left, right, top and bottom margins, text indent, line
+// height, layout direction, alignment and background (all given back on restore).
 constexpr int kKind      = QTextFormat::UserProperty + 0x7480; // int: Kind (char formats) or RowKind (block format)
 constexpr int kRuns      = QTextFormat::UserProperty + 0x7481; // QVariantList: text, QTextFormat, text, ... (TeamSpeak's form)
 constexpr int kOrigBlock = QTextFormat::UserProperty + 0x7482; // QTextFormat: the block format before ours (stored once)
@@ -44,6 +45,13 @@ constexpr int kApplied   = QTextFormat::UserProperty + 0x7487; // QVariantMap / 
 constexpr int kMention   = QTextFormat::UserProperty + 0x7488; // bool, block format: the message mentions you (P2)
 constexpr int kRunHead   = QTextFormat::UserProperty + 0x7489; // bool, block format: the row has chips; int 1 on a chip: it opens or closes the run (P2)
 constexpr int kChip      = QTextFormat::UserProperty + 0x748a; // QString, char format: a chip's text ("x3", "+5 more events"; P2)
+// 2.3 chat-visuals (0x74a0-0x74a3): message bubbles and centred system rows (layoutbubbles.h).
+constexpr int kOwn       = QTextFormat::UserProperty + 0x74a0; // bool, block format: your own message (its bubble is tinted)
+constexpr int kNameRow   = QTextFormat::UserProperty + 0x74a1; // qreal, a Cozy head's picture: its name row's width (the bubble is that wide at least)
+// bool, a picture's char format: on the last line(s) of a message block, it stays below the message's bubble
+// (a row of reactions under the bubble; give the picture some air at its top). Without it a picture at the
+// block's end is inside the bubble.
+constexpr int kBelowBubble = QTextFormat::UserProperty + 0x74a2;
 
 // Our pictures and texts (char formats).
 enum Kind { None = 0, Head = 1, Continuation = 2, CompactHead = 3, SystemPrefix = 4, Trailer = 5, Divider = 6, Separator = 7, Chip = 8 };

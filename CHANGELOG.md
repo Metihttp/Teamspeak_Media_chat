@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.3.0] - 2026-10-11
+
+### Added
+
+- **Paperclip in the chat input**: a button at the left end of the chat input opens a menu with **Photo or video**, **Document**, **Poll** and **Live music**. Photos, videos and documents open the file chooser and then the send window; while the send window is open, they are added to it.
+- **Anonymous polls**, like Telegram's: a question with 2 to 10 answers, one or several per person. Vote right on the poll card and see percentages, counts and the total; nobody, not even the poll's author, can see who voted for what. People without the plugin read the poll as text. Paperclip → **Poll**, or `/tsmedia poll` with the keyboard. [How polls work](docs/POLLS.md).
+- **Live music**: play a music file from your computer to everyone in your channel through your own voice, and keep talking over it (MP3, M4A / AAC, FLAC, WAV, WMA; Ogg and Opus with Windows' *Web Media Extensions*).
+  - A slim music bar above the chat input, no extra window: the title, play / pause, the time, a slider to move forward or back, the volume (remembered) and **Stop**, which ends the music and removes the bar.
+  - On another server tab the bar stays, compact, and says where the music plays. TeamSpeak only sends from the server tab in front, so the music pauses by itself while you're on another server tab and plays on when you go back to its tab, unless you paused it yourself. **Play** in the compact bar takes you back there; **Stop** works from any tab.
+  - Paperclip → **Live music**, or `/tsmedia music` with the keyboard; `/tsmedia music pause`, `/tsmedia music play` and `/tsmedia music stop` control the music that plays.
+  - The bar says when the channel can't hear the music (microphone or sound muted in TeamSpeak, no capture device, no talk power). Music sounds best in channels set to the Opus Music codec. With push-to-talk the channel hears only the music while it plays.
+- **Reactions on text messages**: links, replies, polls and any other message can get reactions too, from **Add reaction** when you point at a message or right-click → **Add reaction…**. People with TS Media 2.3 see them, and they come back after a restart. (Messages need TeamSpeak's timestamps.)
+- **Message bubbles** in the Cozy layout, like Telegram (**Settings → General → Chat layout**, on by default): every message on its own rounded bubble, yours tinted, with its pictures, cards, polls and reactions inside. The buttons that appear when you point at a message (**Add reaction**, **Reply**, **Copy text**, **More**) keep off its text, also near the bottom of the chat.
+
+### Changed
+
+- **A redesigned send window**: a large preview for one picture or video, a grid of tiles for several (edit, spoiler and remove on each), a **Quality** chip for videos, *Send as an album* as a switch, a rounded caption field, and a title bar that follows TeamSpeak's dark skin. **Who?** is now a button in the window's style.
+- System lines (joins, leaves, channel switches, kicks, TS Media's own notes) are centred, on small pills when bubbles are on. They never get bubbles or reactions.
+- Avatars come from TeamSpeak itself, your own included. People TeamSpeak has no avatar for get their initials.
+- Inside a bubble, file, audio and voice message cards and poll cards have no box of their own.
+- **Show reactions** (Settings → Privacy & updates) covers reactions on messages and media.
+
+### Fixed
+
+- **Add files…** in the send window did nothing.
+- Your own avatar showed your initials instead of your picture.
+- Switching server tabs while holding the microphone button, or right after, no longer leaves the recording strip or its notices over the other tab's chat (all server tabs share one chat input in TeamSpeak 3.6.2). A hold that is still going on is kept in the *Voice message* window, never sent to the other tab.
+
 ## [2.2.1] - 2026-10-11
 
 ### Added
@@ -210,6 +238,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.3.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.1.0

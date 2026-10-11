@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QDateTime>
+#include <QDir> // 2.3 chat-visuals: avatar files
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFontMetricsF>
@@ -35,10 +36,13 @@
 #include "chatemoji.h"
 #include "chatintegration.h"
 #include "chatreactions.h"
+#include "chattextreactions.h" // 2.3 text reactions
 #include "chatreplies.h"
 #include "chatscroll.h"
 #include "emojirender.h" // pictures the worker drew (emoji in names)
 #include "emojitext.h"   // emoji in names still on their way
+#include "chatavatars.h"   // 2.3 chat-visuals: avatars
+#include "layoutbubbles.h" // 2.3 chat-visuals: bubbles and pills
 #include "i18n.h"
 #include "replydoc.h"
 #include "settings.h"
@@ -253,13 +257,29 @@ int ChatLayout::indentFor(QTextBrowser* browser) const
     auto it = m_views.constFind(browser);
     if (it != m_views.constEnd() && it->env.tokens.G > 0)
         return m_mode == Mode::Compact ? it->env.tokens.L : it->env.tokens.G;
-    const layoutart::Tokens t = layoutart::tokensFor(m_mode, browser ? browser->document()->defaultFont() : QFont(), false);
+    const layoutart::Tokens t = layoutart::tokensFor(m_mode, browser ? browser->document()->defaultFont() : QFont(), false, Settings::instance().chatBubbles);
     return t.indent();
 }
 
 ActionBar* ChatLayout::bar() const
 {
     return m_bar.data();
+}
+
+QVector<QColor> ChatLayout::bubbleSurfaces(QTextBrowser* browser) const
+{
+    const auto it = m_views.constFind(browser);
+    if (it == m_views.constEnd() || m_mode != Mode::Cozy || !it->env.tokens.bubbles || it->styleKey.isEmpty())
+        return {};
+    return layoutart::bubbleSurfaces(it->env.colors);
+}
+
+int ChatLayout::bubbleRightFor(QTextBrowser* browser) const
+{
+    const auto it = m_views.constFind(browser);
+    if (it == m_views.constEnd() || m_mode != Mode::Cozy || !it->env.tokens.bubbles)
+        return 0;
+    return it->env.tokens.bubbleRight;
 }
 
 bool ChatLayout::overlayMode(QTextBrowser* browser) const
@@ -489,7 +509,15 @@ void ChatLayout::settingsChanged()
             delete v.overlayWidget.data();
         v.overlay = false;
         v.checked = false;
+        // The lines that arrived while we watched keep their day ("Today at 12:42") across the switch: it is
+        // the same document, so their cursors still point at them.
+        QVector<QPair<QTextCursor, qint64>> arrivals;
+        if (v.document && v.document == v.browser->document()) {
+            settleBurst(v);
+            arrivals.swap(v.arrivals);
+        }
         reset(v);
+        v.arrivals = arrivals;
     }
     schedule(0);
 }
@@ -516,7 +544,8 @@ layoutdoc::Env ChatLayout::envFor(View& v) const
         v.statsBlocks = doc->blockCount();
         v.statsMs     = now;
     }
-    env.tokens = layoutart::tokensFor(m_mode == Mode::Classic ? Mode::Cozy : m_mode, doc->defaultFont(), v.statAmPm);
+    // 2.3 chat-visuals: message bubbles (Cozy)
+    env.tokens = layoutart::tokensFor(m_mode == Mode::Classic ? Mode::Cozy : m_mode, doc->defaultFont(), v.statAmPm, m_mode == Mode::Cozy && Settings::instance().chatBubbles);
     QColor base = b->viewport()->palette().color(QPalette::Base);
     if ((base.lightness() < 128) != style.dark)
         base = QColor(); // a style sheet colours the chat: the theme's default
@@ -565,7 +594,8 @@ QString ChatLayout::styleKeyOf(const layoutdoc::Env& env) const
     const layoutart::Colors& c = env.colors;
     return QStringList{QString::number(static_cast<int>(env.mode)), QString::number(env.group), env.tokens.body.toString(), QString::number(env.tokens.ampm),
                        c.base.name(), c.text.name(), c.link.name(), QString::number(c.dark), QString::number(env.dpr), QString::number(env.contentWidth),
-                       env.today.toString(Qt::ISODate), QString::number(env.mentions), env.ownNick, env.ownUid, QString::number(env.collapse)}
+                       env.today.toString(Qt::ISODate), QString::number(env.mentions), env.ownNick, env.ownUid, QString::number(env.collapse),
+                       QString::number(env.tokens.bubbles)} // 2.3 chat-visuals
         .join(QLatin1Char('|'));
 }
 
@@ -592,6 +622,9 @@ void ChatLayout::refreshEnv(View& v)
     v.env      = env;
     v.styleKey = key;
     ++v.renderStamp;
+    // 2.3: the previews' cards and rows follow the bubbles (on: no panels of their own; off: back again).
+    // Nothing happens there when they look the same (ChatIntegration compares).
+    m_chat->scheduleRelayout(v.browser);
     ++v.epoch; // everything again, in steps (the screen first)
     v.historyNext = v.document ? v.document->blockCount() - 1 : -1;
     v.datesValid  = false;
@@ -1055,7 +1088,7 @@ void ChatLayout::renderVisible(View& v)
             look.replyHover = v.replyHover;
         if (lead.kind == layoutformat::Head && m_mode == Mode::Cozy && Settings::instance().chatAvatars) {
             const layoutdoc::Row row = layoutdoc::read(b); // avatars (P2): TeamSpeak's, else initials
-            look.avatar              = avatarFor(v, row.uid);
+            look.avatar              = avatarFor(v, row.uid, row.clientId);
             replyart::Header header;
             if (row.reply && v.env.replyHeader && v.env.replyHeader(n, &header))
                 look.replyAvatar = avatarFor(v, header.uid);
@@ -1138,8 +1171,17 @@ QRect ChatLayout::slotOf(View& v, int block) const
         bottom          = qMax(bottom, layout->blockBoundingRect(n).top() - gap);
         break;
     }
+    qreal rowTop = r.top();
+    // 2.3 chat-visuals: a bubble's or a pill's padding reaches out of its row (hover repaints all of it).
+    if (v.env.tokens.bubbles) {
+        const layoutbubbles::Item item = layoutbubbles::itemOf(b, v.env);
+        if (item.kind != layoutbubbles::Kind::None) {
+            rowTop = qMin(rowTop, item.rect.top() - 1);
+            bottom = qMax(bottom, item.rect.bottom() + 1);
+        }
+    }
     const int sy = browser->verticalScrollBar()->value();
-    const int top = static_cast<int>(std::floor(r.top())) - sy;
+    const int top = static_cast<int>(std::floor(rowTop)) - sy;
     return QRect(0, top, browser->viewport()->width(), qMax(1, static_cast<int>(std::ceil(bottom)) - sy - top));
 }
 
@@ -1166,10 +1208,24 @@ void ChatLayout::paintLayer(View& v, QPainter& p, const QRegion& region, bool ov
         }
         p.setClipRegion(clip);
     }
+    const int focus = m_chat->m_replies ? m_chat->m_replies->pendingBlock(browser) : -1;
+    // 2.3 chat-visuals: bubbles and pills first (their own mention, hover and focus looks).
+    QSet<int> shaped;
+    if (t.bubbles) {
+        const QVector<layoutbubbles::Item> items = layoutbubbles::itemsIn(doc, shown.first, shown.second, v.env);
+        layoutbubbles::State state;
+        state.hover = v.probing ? -1 : v.hover;
+        state.focus = focus;
+        layoutbubbles::paint(p, items, v.env, QPointF(-sx, -sy), state);
+        for (const layoutbubbles::Item& item : items)
+            shaped.insert(item.block);
+    }
+    if (v.probeFill && !over)
+        p.fillRect(v.probeRect, c.hover); // the paint-under check's pixel (no bubble reaches it)
     // Rows that mention you (P2): a tint and a 3 px bar on the left, under everything else.
     for (int n = shown.first; n <= shown.second && n >= 0; ++n) {
         const QTextBlock b = doc->findBlockByNumber(n);
-        if (!b.isVisible() || !layoutdoc::isMention(b))
+        if (!b.isVisible() || !layoutdoc::isMention(b) || shaped.contains(n))
             continue;
         const QRect r = slotOf(v, n);
         if (r.isEmpty() || !region.intersects(r))
@@ -1177,15 +1233,14 @@ void ChatLayout::paintLayer(View& v, QPainter& p, const QRegion& region, bool ov
         p.fillRect(r, c.mentionTint);
         p.fillRect(QRect(r.left(), r.top(), 3, r.height()), c.mentionBar);
     }
-    const int focus = m_chat->m_replies ? m_chat->m_replies->pendingBlock(browser) : -1;
-    if (focus >= 0) {
+    if (focus >= 0 && !shaped.contains(focus)) {
         const QRect r = slotOf(v, focus);
         if (!r.isEmpty()) {
             p.fillRect(r, c.hover);
             p.fillRect(QRect(r.left(), r.top(), 2, r.height()), c.focusBar);
         }
     }
-    if (v.hover >= 0 && v.hover != focus && !v.probing)
+    if (v.hover >= 0 && v.hover != focus && !v.probing && !shaped.contains(v.hover))
         p.fillRect(v.hoverSlot, c.hover);
 
     const auto lineBaseline = [&](const QTextBlock& b, int position, qreal* baseline) {
@@ -1207,10 +1262,13 @@ void ChatLayout::paintLayer(View& v, QPainter& p, const QRegion& region, bool ov
             const QString time = layoutart::shortTime(lead.format.stringProperty(layoutformat::kTime), t.ampm);
             qreal         base = 0;
             if (!time.isEmpty() && lineBaseline(b, lead.bodyStart, &base)) {
-                if (m_mode == Mode::Compact)
+                if (m_mode == Mode::Compact) {
                     layoutart::paintGutterTime(p, time, left, base, t, c, true);
-                else
-                    layoutart::paintGutterTime(p, time, left + t.G - 8, base, t, c, false);
+                } else {
+                    // 2.3 chat-visuals: left of its bubble (never on it), inside the viewport (x 0)
+                    const qreal right = left + layoutart::gutterTimeRight(t);
+                    layoutart::paintGutterTime(p, layoutart::gutterTimeText(time, t, right - 1), right, base, t, c, false);
+                }
             }
         }
     }
@@ -1246,6 +1304,7 @@ void ChatLayout::checkPaintUnder(View& v)
         return;
     }
     // A pixel of the hovered row where there is no text, with and without our tint (the viewport alone).
+    // 2.3 chat-visuals: tinted on purpose in the first paint (a bubble's hover never reaches that far).
     QWidget*    vp = browser->viewport();
     const QRect probe(vp->width() - 3, v.hoverSlot.center().y(), 1, 1);
     if (!vp->rect().contains(probe))
@@ -1254,8 +1313,11 @@ void ChatLayout::checkPaintUnder(View& v)
     QImage without(1, 1, QImage::Format_ARGB32_Premultiplied);
     with.fill(Qt::transparent);
     without.fill(Qt::transparent);
+    v.probeRect = probe;
+    v.probeFill = true;
     vp->render(&with, QPoint(), QRegion(probe), QWidget::DrawWindowBackground);
-    v.probing = true;
+    v.probeFill = false;
+    v.probing   = true;
     vp->render(&without, QPoint(), QRegion(probe), QWidget::DrawWindowBackground);
     v.probing = false;
     if (with.pixel(0, 0) == without.pixel(0, 0)) {
@@ -1511,21 +1573,41 @@ void ChatLayout::placeBar(View& v)
     if (m_barIn != browser || m_barBlock != v.hover)
         m_bar->setLook(v.env.colors, m_mode == Mode::Compact);
     const QString key = m_chat->reactableKeyIn(browser, v.hover);
-    m_bar->setReactVisible(!key.isEmpty() && Settings::instance().showReactions);
+    // 2.3 text reactions: a message without media gets the button too.
+    const bool text = key.isEmpty() && m_chat->m_textReactions && m_chat->m_textReactions->canReact(browser, v.hover);
+    m_bar->setReactVisible((!key.isEmpty() || text) && Settings::instance().showReactions);
     m_barIn    = browser;
     m_barBlock = v.hover;
-    const QRect box  = m_bar->barRect();
-    int         x    = vp->width() - kBarRight - box.width();
-    int         y    = v.hoverSlot.top() - box.height() / 2;
-    QRect       want(x, y, box.width(), box.height());
-    for (const QRectF& media : m_chat->mediaRectsIn(browser, v.hover)) {
-        if (media.toAlignedRect().intersects(want)) {
-            want.moveTop(v.hoverSlot.top() - box.height() - 2); // fully above the row, never over its media
-            break;
+    const QRect box = m_bar->barRect();
+    QRect       want;
+    // 2.3 chat-visuals: next to the hovered bubble's top right corner (on it when the bubble is that wide).
+    // 2.3 live test: never over a message's text where that can be helped (layoutbubbles::barPlace); near the
+    // chat's bottom it was pushed up over the bubble above.
+    if (v.env.tokens.bubbles) {
+        QTextDocument*            doc  = browser->document();
+        const layoutbubbles::Item item = layoutbubbles::itemOf(doc->findBlockByNumber(v.hover), v.env);
+        if (item.kind == layoutbubbles::Kind::Bubble) {
+            const QPoint scroll(browser->horizontalScrollBar()->value(), browser->verticalScrollBar()->value());
+            // What is on the rows the bar could reach must stay readable.
+            QVector<QRect> keep;
+            for (const QRectF& r : layoutbubbles::keepOutNear(doc, v.hover, box.height() + 8, v.env))
+                keep << r.translated(-scroll).toAlignedRect();
+            for (const QRectF& media : m_chat->mediaRectsIn(browser, v.hover))
+                keep << media.toAlignedRect();
+            want = layoutbubbles::barPlace(box.size(), vp->rect(), item.rect.translated(-scroll).toAlignedRect(), keep, kBarRight, v.env.tokens.bubblePadX);
         }
     }
-    want.moveTop(qBound(2, want.top(), qMax(2, vp->height() - box.height() - 2)));
-    want.moveLeft(qBound(2, want.left(), qMax(2, vp->width() - box.width() - 2)));
+    if (want.isNull()) {
+        want = QRect(vp->width() - kBarRight - box.width(), v.hoverSlot.top() - box.height() / 2, box.width(), box.height());
+        for (const QRectF& media : m_chat->mediaRectsIn(browser, v.hover)) {
+            if (media.toAlignedRect().intersects(want)) {
+                want.moveTop(v.hoverSlot.top() - box.height() - 2); // fully above the row, never over its media
+                break;
+            }
+        }
+        want.moveTop(qBound(2, want.top(), qMax(2, vp->height() - box.height() - 2)));
+        want.moveLeft(qBound(2, want.left(), qMax(2, vp->width() - box.width() - 2)));
+    }
     m_bar->move(want.topLeft() - box.topLeft());
     m_bar->showBar(true);
     m_bar->raise();
@@ -1551,6 +1633,8 @@ void ChatLayout::barAction(int action)
         QAbstractButton* button = m_bar ? m_bar->button(ActionBar::React) : nullptr;
         if (!key.isEmpty() && m_chat->m_reactions && button)
             m_chat->m_reactions->openPickerAt(browser, key, QRect(button->mapToGlobal(QPoint(0, 0)), button->size()));
+        else if (key.isEmpty() && m_chat->m_textReactions && button) // 2.3 text reactions: a message without media
+            m_chat->m_textReactions->openPickerAt(browser, block, QRect(button->mapToGlobal(QPoint(0, 0)), button->size()));
         break;
     }
     case ActionBar::Reply:
@@ -1685,58 +1769,18 @@ void ChatLayout::printIntro(QTextBrowser* browser)
 }
 
 // ============================================================================================
-// Avatars (P2)
+// Avatars (P2; 2.3 chat-visuals: chatavatars.h)
 // ============================================================================================
 
 namespace {
 
-constexpr int    kAvatarPixels   = 48;            // decoded at this size (24 px at 2x)
 constexpr int    kMaxAvatars     = 64;
-constexpr qint64 kMaxAvatarBytes = 1024 * 1024;
-constexpr qint64 kRecheckMs      = 5 * 60 * 1000; // a missing avatar is looked for again after this
-
-// TeamSpeak's cache file of a client's avatar: <config>/cache/<base64 server uid>/clients/avatar_<letters>,
-// the letters being the uid's bytes (20) in hex with 0-f written as a-p. Only a-p and base64 characters: no
-// way out of the cache folder.
-QString avatarPath(const QString& serverUid, const QString& uid)
-{
-    const QString config = ts3::configDir();
-    const QByteArray raw = QByteArray::fromBase64(uid.toLatin1());
-    if (config.isEmpty() || raw.isEmpty() || raw.size() > 64 || serverUid.isEmpty()) // (20 bytes for a real uid)
-        return {};
-    QByteArray letters = raw.toHex();
-    for (char& c : letters)
-        c = static_cast<char>('a' + (c <= '9' ? c - '0' : c - 'a' + 10));
-    return config + QLatin1String("/cache/") + QString::fromLatin1(serverUid.toUtf8().toBase64()) + QLatin1String("/clients/avatar_") + QString::fromLatin1(letters);
-}
-
-// On the worker: the first frame, cropped to a centred square, kAvatarPixels big (null if it can't be read).
-QImage decodeAvatar(const QString& path)
-{
-    const QFileInfo info(path);
-    if (!info.isFile() || info.size() <= 0 || info.size() > kMaxAvatarBytes)
-        return {};
-    QImageReader reader(path);
-    reader.setDecideFormatFromContent(true); // TeamSpeak's files have no extension
-    const QSize source = reader.size();
-    if (source.isValid() && (source.width() > 4096 || source.height() > 4096))
-        return {};
-    if (source.isValid() && source.width() > 0 && source.height() > 0) {
-        const qreal scale = qMax(kAvatarPixels / qreal(source.width()), kAvatarPixels / qreal(source.height()));
-        if (scale < 1.0)
-            reader.setScaledSize(QSize(qMax(1, qRound(source.width() * scale)), qMax(1, qRound(source.height() * scale))));
-    }
-    QImage image = reader.read();
-    if (image.isNull())
-        return {};
-    image = image.scaled(kAvatarPixels, kAvatarPixels, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    const QRect square((image.width() - kAvatarPixels) / 2, (image.height() - kAvatarPixels) / 2, kAvatarPixels, kAvatarPixels);
-    return image.copy(square).convertToFormat(QImage::Format_ARGB32_Premultiplied);
-}
+constexpr int    kMaxAvatarFiles = 512;           // files TeamSpeak told us about, remembered
+constexpr qint64 kRecheckMs      = 5 * 60 * 1000; // a missing avatar is looked for again after this (a found one: its file)
 
 } // namespace
 
-QImage ChatLayout::avatarFor(View& v, const QString& uid)
+QImage ChatLayout::avatarFor(View& v, const QString& uid, int clientId)
 {
     if (uid.isEmpty() || v.serverUid.isEmpty() || !Settings::instance().chatAvatars)
         return {};
@@ -1746,57 +1790,107 @@ QImage ChatLayout::avatarFor(View& v, const QString& uid)
     if (it != m_avatars.end()) {
         m_avatarOrder.removeOne(key);
         m_avatarOrder.append(key);
-        if (!it->image.isNull() || it->loading || now - it->checkedMs < kRecheckMs)
+        if (it->loading || now - it->checkedMs < kRecheckMs)
             return it->image;
+        if (!it->image.isNull()) {
+            // Now and then: still the same file (a new avatar replaces it)?
+            chatavatars::Found same;
+            same.file     = it->file;
+            same.modified = it->modified;
+            same.size     = it->size;
+            it->checkedMs = now;
+            if (chatavatars::unchanged(same))
+                return it->image;
+        }
     }
-    const QString path = avatarPath(v.serverUid, uid);
-    Avatar&       a    = m_avatars[key];
-    a.checkedMs        = now;
-    if (path.isEmpty())
-        return a.image;
-    a.loading = true;
+    // Where it may be (chatavatars.h): TeamSpeak's own file for the client while it is on the server (asked
+    // each time: it may just have arrived), the one TeamSpeak told us about, then the caches by uid.
+    QString       teamSpeak;
+    bool          none   = false;
+    const QString config = ts3::configDir();
+    const uint64  sch    = ts3::connectionForServerUid(v.serverUid);
+    if (sch) {
+        anyID id = 0;
+        if (uid == v.ownUid || uid == ts3::ownUid(sch))
+            id = ts3::ownClientId(sch); // your own (TeamSpeak may keep it in no cache folder)
+        else if (clientId > 0 && clientId <= 0xFFFF && ts3::clientUid(sch, static_cast<anyID>(clientId)) == uid)
+            id = static_cast<anyID>(clientId);
+        else
+            id = ts3::clientIdByUid(sch, uid);
+        if (id)
+            teamSpeak = chatavatars::fromTeamSpeak(sch, id, &none);
+    }
+    const chatavatars::Query query = chatavatars::queryFor(teamSpeak, none, m_avatarFiles.value(key), config, v.serverUid, uid);
     if (!m_avatarOrder.contains(key))
         m_avatarOrder.append(key);
-    m_pool->start(QRunnable::create([this, key, path] {
-        const QImage image = decodeAvatar(path); // untrusted file: bounded size, QImageReader only
-        QMetaObject::invokeMethod(this, [this, key, image] { avatarLoaded(key, image); }, Qt::QueuedConnection);
+    while (m_avatarOrder.size() > kMaxAvatars) // (key is the last: kept)
+        m_avatars.remove(m_avatarOrder.takeFirst());
+    Avatar& a   = m_avatars[key];
+    a.checkedMs = now;
+    if (query.isEmpty()) {
+        // Not a uid, or TeamSpeak says this person has no avatar: initials, not an old picture
+        // from a cache (another server's, or the one they removed).
+        if (!a.image.isNull()) {
+            a.image = QImage();
+            a.file.clear();
+            avatarsChanged();
+        }
+        return {};
+    }
+    a.loading = true;
+    m_pool->start(QRunnable::create([this, key, query] {
+        const chatavatars::Found found = chatavatars::find(query); // untrusted files: bounded size, QImageReader only
+        QMetaObject::invokeMethod(
+            this, [this, key, found] { avatarLoaded(key, found.image, found.file, found.modified, found.size); }, Qt::QueuedConnection);
     }));
     return a.image;
 }
 
-void ChatLayout::avatarLoaded(const QString& key, const QImage& image)
+void ChatLayout::avatarLoaded(const QString& key, const QImage& image, const QString& file, const QDateTime& modified, qint64 size)
 {
     auto it = m_avatars.find(key);
     if (it == m_avatars.end())
         return;
-    it->loading   = false;
-    it->image     = image;
-    it->checkedMs = QDateTime::currentMSecsSinceEpoch();
+    const bool changed = !(it->image.isNull() && image.isNull());
+    it->loading        = false;
+    it->image          = image;
+    it->file           = file;
+    it->modified       = modified;
+    it->size           = size;
+    it->checkedMs      = QDateTime::currentMSecsSinceEpoch();
     while (m_avatarOrder.size() > kMaxAvatars)
         m_avatars.remove(m_avatarOrder.takeFirst());
-    if (image.isNull())
-        return;
-    for (auto v = m_views.begin(); v != m_views.end(); ++v) {
-        ++v->renderStamp;
-        if (v->browser && v->browser->isVisible())
-            v->browser->viewport()->update(); // its heads are drawn again (the picture's signature changed)
-    }
+    if (changed)
+        avatarsChanged(); // its heads are drawn again (the picture's signature changed)
 }
 
-void ChatLayout::avatarUpdated(quint64 sch, int clientId)
+void ChatLayout::avatarsChanged()
 {
-    const QString uid    = ts3::clientUid(sch, static_cast<anyID>(clientId));
-    const QString server = ts3::serverUid(sch);
-    if (uid.isEmpty() || server.isEmpty())
-        return;
-    const QString key = server + QLatin1Char('|') + uid;
-    m_avatars.remove(key);
-    m_avatarOrder.removeOne(key);
     for (auto v = m_views.begin(); v != m_views.end(); ++v) {
         ++v->renderStamp;
         if (v->browser && v->browser->isVisible())
             v->browser->viewport()->update();
     }
+}
+
+void ChatLayout::avatarUpdated(quint64 sch, int clientId, const QString& path)
+{
+    const QString uid    = ts3::clientUid(sch, static_cast<anyID>(clientId));
+    const QString server = ts3::serverUid(sch);
+    if (uid.isEmpty() || server.isEmpty() || uid.size() > 128 || server.size() > 128)
+        return;
+    const QString key = server + QLatin1Char('|') + uid;
+    // 2.3 chat-visuals: TeamSpeak's file for this person, whatever its cache is called (empty: it went).
+    if (path.isEmpty() || path.size() > 1000) {
+        m_avatarFiles.remove(key);
+    } else {
+        if (m_avatarFiles.size() >= kMaxAvatarFiles && !m_avatarFiles.contains(key))
+            m_avatarFiles.clear();
+        m_avatarFiles.insert(key, QDir::cleanPath(path));
+    }
+    m_avatars.remove(key); // looked for again at once (a picture still being decoded is dropped when it comes)
+    m_avatarOrder.removeOne(key);
+    avatarsChanged();
 }
 
 // ============================================================================================
@@ -2067,5 +2161,10 @@ QString ChatLayout::describe(QTextBrowser* browser) const
         .arg(it->env.tokens.G)
         .arg(it->env.tokens.L)
         .arg(it->rendered.size())
-        .arg(it->historyNext);
+        .arg(it->historyNext)
+        + QString::fromLatin1(", bubbles %1, shapes %2, avatars %3/%4") // 2.3 chat-visuals
+              .arg(it->env.tokens.bubbles ? 1 : 0)
+              .arg(layoutbubbles::itemsIn(doc, 0, doc->blockCount() - 1, it->env).size())
+              .arg(std::count_if(m_avatars.cbegin(), m_avatars.cend(), [](const Avatar& a) { return !a.image.isNull(); }))
+              .arg(m_avatars.size());
 }

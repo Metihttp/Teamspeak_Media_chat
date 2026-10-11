@@ -15,6 +15,7 @@
 #include "albums.h"       // uidFromClientHref
 #include "emojiformat.h"  // 2.2 emoji: HD pictures read as what they stand for
 #include "layoutformat.h" // chat redesign: headers kept in TS Media's chat layout
+#include "polldoc.h"      // 2.3 poll: a poll card's text
 
 namespace replydoc {
 
@@ -182,6 +183,8 @@ QString textOf(const QString& text, const QTextCharFormat& format)
         const QString emoji = emojiformat::originalText(format);
         return (emoji.isEmpty() ? emoticonText(emojiformat::emoticonName(format)) : emoji).repeated(text.size());
     }
+    if (polldoc::isObject(format)) // 2.3 poll: a poll card reads as "📊 Poll: <question>" (a reply's quote)
+        return polldoc::summaryText(format);
     if (format.isImageFormat())
         return emoticonText(format.toImageFormat().name()).repeated(qMax(1, static_cast<int>(text.count(QChar::ObjectReplacementCharacter))));
     return text;

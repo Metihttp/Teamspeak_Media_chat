@@ -98,6 +98,7 @@ struct Settings {
     bool chatMentions         = true;  // messages that mention you are highlighted
     bool chatCollapseEvents   = true;  // runs of join and leave lines collapse
     bool chatLayoutIntroShown = false; // the one-time line about the new layout was shown
+    bool chatBubbles          = true;  // 2.3 chat-visuals: messages in bubbles (Cozy), system rows on pills
 
     static Settings& instance();
     void             load();

@@ -739,7 +739,7 @@ class TestUpdater : public QObject
             QVERIFY2(isAllowedUrl(QUrl(QString::fromLatin1(ok))), ok);
         for (const char* bad : {"http://github.com/x", "https://github.com:8443/x", "https://user@github.com/x", "https://u:p@github.com/x",
                                 "https://github.com.evil.com/x", "https://evilgithubusercontent.com/x", "https://githubusercontent.com.evil/x",
-                                "https://githubusercontent.com/x", "https://140.82.112.3/x", "https://[::1]/x", "ftp://github.com/x",
+                                "https://githubusercontent.com/x", "https://203.0.113.3/x", "https://[::1]/x", "ftp://github.com/x",
                                 "https://api.github.com/x", "https://a..githubusercontent.com/x", "https://-a.githubusercontent.com/x", "/relative",
                                 "https://github.com./x", "file:///C:/x"})
             QVERIFY2(!isAllowedUrl(QUrl(QString::fromLatin1(bad))), bad);
@@ -766,7 +766,7 @@ class TestUpdater : public QObject
                                 "https://evil.example.com\\@github.com/x", "https://github.com.evil.example.com/x", "https://raw.githubusercontent.com.evil.example.com/x",
                                 "https://github.com:80/x", "file:///C:/x", "javascript:alert(1)", "https://%67ithub.com.evil.example.com/x",
                                 "https://evil.example.com%2f@github.com/x", "https://evil.example.com%5c@github.com/x", "https://user:pw@github.com/x",
-                                "https://127.0.0.1/x", "https://[::ffff:140.82.112.3]/x", "  https://evil.example.com/x", ""}) {
+                                "https://127.0.0.1/x", "https://[::ffff:203.0.113.3]/x", "  https://evil.example.com/x", ""}) {
             const QUrl to = next(bad);
             const bool stays = to.host() == from.host() && to.port() == -1 && to.scheme() == from.scheme() && to.userInfo().isEmpty()
                                && to.path().startsWith(QStringLiteral("/Metihttp/Teamspeak_Media_chat/releases/"));

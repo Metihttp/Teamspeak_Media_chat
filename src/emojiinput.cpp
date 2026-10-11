@@ -26,6 +26,7 @@
 #include "emojirender.h"
 #include "i18n.h"
 #include "micbutton.h" // 2.2.1 mic
+#include "attachbutton.h" // 2.3 attach
 #include "settings.h"
 
 namespace {
@@ -33,6 +34,7 @@ namespace {
 constexpr int kButton = 24; // logical px (the fallback)
 constexpr int kMargin = 30; // the input's viewport gives this much room at the right per slot (reserveSlots)
 constexpr int kMicSlots = 1; // 2.2.1 mic: slot 0 is always the microphone button's (micbutton.h)
+constexpr int kAttachSlot = 30; // 2.3 attach: the paperclip's slot at the input's left edge (attachbutton.h)
 constexpr int kMaxFallbackButton = 48; // the last discovery rule: a button no larger than this
 constexpr int kIdleAlpha     = 230;
 constexpr int kDisabledAlpha = 110;
@@ -305,6 +307,7 @@ void EmojiInput::detach(Input& input)
     if (input.button)
         delete input.button.data();
     MicButton::removeFrom(input.edit); // 2.2.1 mic
+    AttachButton::removeFrom(input.edit); // 2.3 attach
     reserveSlots(input, 0);
 }
 
@@ -788,7 +791,8 @@ void EmojiInput::reserveSlots(Input& input, int count)
         input.ours     = true;
     }
     input.slotCount = count;
-    const QMargins mine(input.original.left(), input.original.top(), input.original.right() + count * kMargin, input.original.bottom());
+    // 2.3 attach: the paperclip's slot at the left edge, while any of ours is reserved.
+    const QMargins mine(input.original.left() + kAttachSlot, input.original.top(), input.original.right() + count * kMargin, input.original.bottom());
     if (ScrollAreaAccess::get(edit) != mine)
         ScrollAreaAccess::set(edit, mine);
 }
@@ -825,6 +829,11 @@ void EmojiInput::layout(Input& input)
     // 2.2.1 mic: the microphone in slot 0, the input's right edge, on every path (micbutton.h). The slots
     // are kMicSlots + (the fallback shown ? 1 : 0); showFallback / hideFallback reserved them.
     MicButton::placeIn(edit, slotRect(input, 0));
+    // 2.3 attach: the paperclip in the left slot, left of TeamSpeak's "Enter Chat Message...".
+    if (input.slotCount > 0) {
+        const QRect area = edit->viewport()->geometry();
+        AttachButton::placeIn(edit, QRect(area.left() - kAttachSlot, area.top(), kAttachSlot, area.height()));
+    }
 }
 
 bool EmojiInput::hasInput() const

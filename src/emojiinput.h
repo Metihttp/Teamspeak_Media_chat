@@ -16,6 +16,8 @@
 //    room for our buttons at the input's right edge, slot 0 the rightmost.
 //  * 2.2.1 mic: slot 0 always holds the microphone button (micbutton.h), placed by layout() on every
 //    path, also with Settings::emojiButton off; the fallback smiley, when shown, is in slot 1 left of it.
+//  * 2.3 attach: the same margin at the input's left edge holds the paperclip (attachbutton.h), left of
+//    TeamSpeak's "Enter Chat Message...", whenever any of our slots is reserved; detach() removes it too.
 //  * The send window's caption field: the same picker from a button inside the field (addPickerButton).
 // The face is grey like TeamSpeak's icons (tinted with the tone of TeamSpeak's own icon) and shows a
 // random face in colour under the pointer, as in Discord. Turning Settings::emojiButton off gives

@@ -13,9 +13,11 @@
 
 class ComposeDialog; // 2.2 compose
 class ChatReactions; // 2.2 reactions
+class ChatTextReactions; // 2.3 text reactions
 class ChatReplies;   // 2.2 reply
 class ChatEmoji;     // 2.2 emoji
 class ChatLayout;    // chat redesign
+class ChatPolls;     // 2.3 poll
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -56,6 +58,10 @@ class ChatIntegration : public QObject
     QWidget*   mainWindow() const;
 
     void    pickAndSendFiles();
+    // 2.3 attach: the attach menu's "Photo or video" (media: pictures and videos) and "Document" (any file):
+    // the file chooser for the chat of source (the chat input the paperclip is in), then the send window.
+    void    pickFiles(QWidget* source, bool media);
+    ChatPolls* polls() const { return m_polls; } // 2.3 poll
     void    refreshAll(); // after settings changes
     QString dumpWidgetTree() const;
 
@@ -105,8 +111,10 @@ class ChatIntegration : public QObject
     // ---- implementation (owned by chatintegration.cpp; may be reorganised freely) --------------
   private:
     friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
+    friend class ChatTextReactions; // 2.3 text reactions: the reaction row under messages without media (chattextreactions.cpp)
     friend class ChatReplies;   // 2.2 reply: reply lines, the reply bar and menu items (chatreplies.cpp)
     friend class ChatLayout;    // chat redesign: the chat layout (chatlayout.cpp)
+    friend class ChatPolls;     // 2.3 poll: poll cards in the chat (chatpolls.cpp)
 #ifdef TSMEDIA_TESTHOOKS
     friend class SelfTest; // test builds: the scripted live-test driver (selftest.cpp)
 #endif
@@ -124,6 +132,7 @@ class ChatIntegration : public QObject
         int                     layoutWidth    = 0;     // maxWidth the previews were laid out for
         qreal                   layoutDpr      = 0.0;   // ... the device pixel ratio they were rendered at
         bool                    layoutDark     = false; // ... and the theme
+        QString                 layoutBubbles;          // 2.3: ... and the bubbles they sit on (surfacesKey)
 
         // Our preview objects in document order; rebuilt lazily after the document changed.
         bool                         positionsValid = false;
@@ -181,6 +190,7 @@ class ChatIntegration : public QObject
     QRectF       previewRect(QTextBrowser* browser, int position, const QSizeF& size) const;
     bool         onScreen(QTextBrowser* browser, View& view, const QString& key);
     PreviewStyle styleFor(QTextBrowser* browser) const;
+    static QString surfacesKey(const PreviewStyle& style); // 2.3: the bubbles under the previews, as a key
     int          previewAreaWidth(QTextBrowser* browser) const;
     void         activate(const Hit& hit, const QPointF& viewportPos, bool controlsVisible);
     void         openKey(const QString& key);
@@ -338,7 +348,9 @@ class ChatIntegration : public QObject
     QTimer*                                 m_albumTimer  = nullptr; // redraws albums with new GIF frames, ~30 per second
     QHash<QTextBrowser*, QSet<QString>>     m_albumDirty;
     ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
+    ChatTextReactions*                      m_textReactions = nullptr; // 2.3 text reactions
     ChatReplies*                            m_replies   = nullptr; // 2.2 reply
     ChatEmoji*                              m_emoji     = nullptr; // 2.2 emoji: HD emoji in the chats, the input's emoji button
     ChatLayout*                             m_layout    = nullptr; // chat redesign: the Cozy / Compact layout
+    ChatPolls*                              m_polls     = nullptr; // 2.3 poll
 };

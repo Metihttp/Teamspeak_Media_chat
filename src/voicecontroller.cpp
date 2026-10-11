@@ -575,6 +575,10 @@ void VoiceController::watchHold()
             holdLost(Stopped::HoldLost);
             return;
         }
+        if (!onHoldTab()) { // 2.3 hold strip fix: another server tab (serverTabChanged should have come first)
+            holdLost(Stopped::ChatChanged);
+            return;
+        }
         // The input's chat tabs share it: another chat may have come up (a key, the wheel on the tabs).
         if (++m_holdTicks % kHoldChatTicks == 0 && visibleChatChanged()) {
             holdLost(Stopped::ChatChanged);
@@ -585,8 +589,27 @@ void VoiceController::watchHold()
         m_strip->placeAbove(m_stripInput); // TeamSpeak's window resized meanwhile
 }
 
+// 2.3 hold strip fix: TeamSpeak 3.6.2 shows every server tab's chat above the same input, so the input
+// never hides on a tab switch; the server tab on screen is TeamSpeak's current connection.
+bool VoiceController::onHoldTab() const
+{
+    const uint64 visible = ts3::currentConnection();
+    return !visible || !m_target.sch || visible == m_target.sch;
+}
+
+void VoiceController::serverTabChanged(uint64 sch)
+{
+    Q_UNUSED(sch); // onHoldTab() reads it again (the queued call may be late)
+    if (m_hold && m_holdDown && !onHoldTab())
+        holdLost(Stopped::ChatChanged); // kept in the window, never sent to the other tab
+    if (m_strip && !m_strip->isHidden() && !onHoldTab())
+        hideStrip(); // "Sending…", a notice: not over the other tab's chat
+}
+
 bool VoiceController::visibleChatChanged() const
 {
+    if (!onHoldTab()) // 2.3: another server tab
+        return true;
     // Disconnected, TeamSpeak's tabs tell nothing reliable (and the release keeps the recording anyway).
     if (!m_host.visibleTarget || !ts3::isConnected(m_target.sch))
         return false;
@@ -630,7 +653,7 @@ void VoiceController::refreshHold()
     if (!m_hold || !m_stripInput)
         return;
     QWidget* input = m_stripInput.data();
-    if (!input->isVisible()) { // another server tab hid it (the hold is lost): never over another chat
+    if (!input->isVisible() || !onHoldTab()) { // hidden, or another server tab (2.3): never over another chat
         hideStrip();
         return;
     }
@@ -667,7 +690,7 @@ void VoiceController::refreshHold()
 void VoiceController::showNotice(HoldStrip::Icon icon, const QString& text)
 {
     QWidget* input = m_stripInput.data();
-    if (!input || !input->isVisible())
+    if (!input || !input->isVisible() || !onHoldTab()) // 2.3: not on another server tab
         return;
     if (!m_strip)
         m_strip = new HoldStrip(input->window());

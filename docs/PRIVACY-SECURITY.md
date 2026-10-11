@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Where your files go, what other people learn about you, what stays on your computer, and how the plugin protects you from what others post. This page describes version 2.2.
+Where your files go, what other people learn about you, what stays on your computer, and how the plugin protects you from what others post. This page describes version 2.3.
 
 ## At a glance
 
@@ -10,6 +10,8 @@ Where your files go, what other people learn about you, what stays on your compu
 - The only web request the plugin makes is the update check, to GitHub, and only after you agree.
 - People in your channel learn that you have TS Media chat and its version, and see your reactions. Both go through TeamSpeak and can be turned off.
 - A reply is an ordinary chat message that quotes the start of the original and names its author.
+- Poll votes are anonymous ballots: nobody, not even the poll's author, sees who voted for what ([limits](#polls)).
+- Live music goes out through your own TeamSpeak voice, like your microphone; the file itself is never uploaded.
 - The microphone is used only while you hold the microphone button in the chat input, or while the *Voice message* window shows *Recording*.
 - No telemetry, no accounts, no analytics.
 
@@ -31,9 +33,21 @@ Where your files go, what other people learn about you, what stays on your compu
 TS Media chat talks to other copies of itself with TeamSpeak's plugin commands. They go through your TeamSpeak server to the people in your channel, or to one private-chat partner, never to the whole server and never to the internet. Clients without TS Media chat ignore them.
 
 - **Presence.** When you enter a channel, the plugin says hello to the people there, and to a private-chat partner when you send them something: *I have TS Media chat*, its version (for example `2.2.0`) and which features it supports. That is how the send window can say *3 of 5 people here will see it in the chat*. When you turn it off, or the plugin unloads, it says goodbye. Turn it off with **Settings → Privacy & updates → Tell people in your channel that you have TS Media**.
-- **Reactions.** Your reactions go to the people with TS Media who are online in the same channel or private chat: which emoji you picked on which media item (named by a hash of its link). Someone who comes in later asks the people present for their own reactions; nobody ever passes on someone else's. Reactions are not stored on the server. Turn them off with **Settings → Privacy & updates → Show reactions on media**: none are then shown or sent.
+- **Reactions.** Your reactions go to the people with TS Media who are online in the same channel or private chat: which emoji you picked on which media item (named by a hash of its link) or, from 2.3, on which message (named by a hash of its sender and text, and how long ago you received it). When you enter a channel, the plugin asks the people there for their reactions on the newest messages of your channel chat, named the same way (TeamSpeak's channel tab keeps the lines of earlier channels, so these hashes can include messages from the channel you came from; someone who knows a sender and guesses a short message could test it against them). Someone who comes in later asks the people present for their own reactions; nobody ever passes on someone else's. Reactions are not stored on the server. Turn them off with **Settings → Privacy & updates → Show reactions**: none are then shown or sent.
 - **Who sent it** is always the identity the TeamSpeak server reports, never something written inside a message, so nobody can react or say hello in your name.
 - What others see comes from their messages, checked the same way: reactions on channel media are accepted only from people in your channel, private ones only from the partner of that private chat, and nothing from ServerQuery clients.
+
+## Polls
+
+- **A poll is an ordinary chat message** (the question, the answers and a link), readable by everyone in the channel. Votes travel as TeamSpeak plugin commands to the people with TS Media in that channel. With presence turned off, your plugin sends nothing about polls except the votes you cast: it doesn't ask the channel for earlier votes and doesn't answer others who ask.
+- **A vote is a ballot, not a person.** Your plugin makes a random secret per poll; the ballot only carries hashes of it, so nothing in it names you, and only you can change or retract it. TS Media checks that a command comes from someone in your channel, then drops who sent it; `polls.json` keeps the ballots and your own secret, never a name or an ID.
+- **Honest limits:** the TeamSpeak server tells every receiver who sent each plugin command. TS Media ignores that, but a modified client could log it and link a live vote to its voter. A modified client can also invent ballots, so the counts are only as trustworthy as the people with the plugin in the channel. The details are in [polls](POLLS.md#honest-limits).
+
+## Live music
+
+- **It goes out through your own voice.** The music is mixed into what TeamSpeak sends from your microphone, so the channel hears it like your voice, with or without the plugin, at the quality of the channel's codec. The file is never uploaded, and nothing else leaves your computer.
+- **Your microphone:** with voice activation your voice is mixed in whenever TeamSpeak would send it anyway. With push-to-talk the plugin keeps your input open while the music plays on the tab you are looking at and sends **only the music** meanwhile (it can't see your key, so the microphone is left out). While your microphone or sound is muted in TeamSpeak nothing is sent. Stopping the music, switching tabs or unloading the plugin gives TeamSpeak's input back as it was.
+- **Remembered:** only the music volume, in `music.ini`. File names are not logged by the music code.
 
 ## Web requests
 
@@ -49,7 +63,8 @@ Everything below is in `%APPDATA%\TS3Client\plugins\tsmedia` (a portable TeamSpe
 - **Local cache** (`cache`): downloaded media, limited by the cache size you choose. You can clear it at any time in the settings.
 - **Temporary copies:** files being sent are staged in the `upload` and `paste` folders. Pictures edited in the send window are written to `edit`, and voice recordings to `voice`. They are deleted once they have been sent or dismissed, and at the latest at the next start (voice recordings after a day).
 - **Dragged and copied files** (`export`): dragging a file out of the chat or using *Copy file* makes a copy with a clean name (a hard link where possible). These copies are removed after 24 hours, even if the cache limit removed the cached file earlier.
-- **Saved reactions** (`reactions.json`): the reactions you have seen, with the TeamSpeak unique ID and nickname of each person who reacted, for at most 30 days and 500 media items. **Clear cache** deletes them.
+- **Polls** (`polls.json`): the ballots of polls your chats showed (hashes and chosen answers, no names or IDs), your own secret per poll, at most 300 polls. **Live music** (`music.ini`): the volume.
+- **Saved reactions** (`reactions.json`): the reactions you have seen, with the TeamSpeak unique ID and nickname of each person who reacted, for at most 30 days and 500 media items. **Clear cache** deletes them. Reactions on text messages (2.3) are kept the same way in `text-reactions.json` (at most 1000 messages), with a 16-digit hash of each message instead of its text.
 - **The plugin's log** (`logs\tsmedia.log`, up to 256 KB, plus one older copy `tsmedia.1.log`): the same lines TeamSpeak's own log gets from the plugin, so it contains the names of files you send and receive, local paths, and server, channel and nicknames where a line mentions them. Those values are marked in the file, so the diagnostic info can leave them out. The log never leaves your computer by itself.
 - **Diagnostic info** (`/tsmedia diag`) is built only when you open it and leaves your computer only if you paste it somewhere. It shows exactly what *Copy* copies: plugin, Qt, TeamSpeak and Windows versions, which video and audio codecs Windows has, your settings (custom folders and links only as "changed"), counts of this session's transfers, file checks, presence and reactions, and the recent TS Media lines of the log. File names and paths in those lines read `<file 1>`, `<path 1>` unless you tick *Include file names* (your user folder then shows as `%USERPROFILE%`). Server addresses, server and channel names, unique IDs and nicknames are never included. *Copy and open bug report* opens GitHub's form in your browser with only the version fields filled in.
 - **Settings** (`settings.ini`), including the servers you gave their own settings, by their ID and name, and the emoji picker's recently used emoji and skin tone (`emoji.ini`).

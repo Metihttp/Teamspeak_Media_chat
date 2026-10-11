@@ -17,6 +17,7 @@
 
 #include <QColor>
 #include <QDate>
+#include <QDateTime> // 2.3 chat-visuals: avatars
 #include <QHash>
 #include <QObject>
 #include <QPointer>
@@ -64,12 +65,19 @@ class ChatLayout : public QObject
     void visibilityChanged(QTextBrowser* browser, const QSet<int>& blocks);
     // ChatReplies: the reply being written changed (its row gets the focus look).
     void pendingChanged();
-    // P2: TeamSpeak downloaded a client's avatar (ts3plugin_onAvatarUpdated): heads draw it from its cache.
-    void avatarUpdated(quint64 sch, int clientId);
+    // P2: TeamSpeak downloaded a client's avatar (ts3plugin_onAvatarUpdated): heads draw it. 2.3 chat-visuals:
+    // path is TeamSpeak's file (empty: the avatar went), remembered for the client's uid on that server.
+    void avatarUpdated(quint64 sch, int clientId, const QString& path = QString());
 
     layoutart::Mode mode() const;
     // The content column (previews are that much narrower): G (Cozy), L (Compact) or 0 (classic).
     int indentFor(QTextBrowser* browser) const;
+    // 2.3: the flat colours of this chat's message bubbles (layoutart::bubbleSurfaces), empty without bubbles:
+    // previews, poll cards and reaction rows on a bubble draw no panel of their own (PreviewStyle::bubbles).
+    QVector<QColor> bubbleSurfaces(QTextBrowser* browser) const;
+    // 2.3: a message's right margin with bubbles (the bubble's padding and some air), 0 without: what a picture
+    // in a message keeps free at the right so it stays inside its bubble.
+    int bubbleRightFor(QTextBrowser* browser) const;
 
     // ---- tests and the live-test driver ----------------------------------------------------------------
     void    processNow(QTextBrowser* browser); // everything waiting, now
@@ -128,6 +136,8 @@ class ChatLayout : public QObject
         bool                    overlay   = false; // the skin paints over the viewport: the overlay paints instead
         bool                    checked   = false; // the paint-under check ran
         bool                    probing   = false; // ... is running (no tint in that paint)
+        bool                    probeFill = false; // 2.3 chat-visuals: ... its first paint tints probeRect
+        QRect                   probeRect;
         QPointer<QWidget>       overlayWidget;
         int                     pendingWidth = 0; // a new chat width, applied once resizing pauses
         // mentions (P2): your nickname and uid on this chat's server, learned while it is shown
@@ -194,14 +204,23 @@ class ChatLayout : public QObject
     void keyboardMenu(QTextBrowser* browser);
     void printIntro(QTextBrowser* browser);
 
-    // avatars (P2): TeamSpeak's cached avatar files, decoded on a worker at the head's size, 64 kept
+#ifdef TSMEDIA_TESTHOOKS
+    friend class SelfTest; // test builds: the live-test driver logs the avatars (selftest.cpp "avatar")
+#endif
+    // avatars (P2; 2.3 chat-visuals: chatavatars.h): TeamSpeak's avatar files, decoded on a worker at the
+    // head's size, 64 kept
     struct Avatar {
-        QImage image;
-        qint64 checkedMs = 0;
-        bool   loading   = false;
+        QImage    image;
+        qint64    checkedMs = 0;
+        bool      loading   = false;
+        QString   file; // what it was read from (looked at again now and then: a new avatar)
+        QDateTime modified;
+        qint64    size = 0;
     };
-    QImage avatarFor(View& view, const QString& uid);
-    void   avatarLoaded(const QString& key, const QImage& image);
+    QImage avatarFor(View& view, const QString& uid, int clientId = 0);
+    void   avatarLoaded(const QString& key, const QImage& image, const QString& file, const QDateTime& modified, qint64 size);
+    void   avatarsChanged();
+    QHash<QString, QString>   m_avatarFiles; // 2.3 chat-visuals: "<server uid>|<uid>" -> TeamSpeak's file (onAvatarUpdated)
 
     ChatIntegration*          m_chat;
     Core*                     m_core;

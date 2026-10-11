@@ -86,8 +86,10 @@ struct RowColors {
     QColor mine, mineHover, minePressed, mineBorder, mineCount;
     QColor addIcon;
 };
-// base: the chat's background (the dark pills are translucent white over it).
-RowColors rowColors(bool dark, const QColor& base);
+// base: the chat's background (the dark pills are translucent white over it). onBubble (2.3): the row is
+// inside a message bubble (Cozy with bubbles; media and text rows alike): translucent pills that take the
+// bubble's colour, yours or someone else's.
+RowColors rowColors(bool dark, const QColor& base, bool onBubble = false);
 
 struct RowPaint {
     int  hoverReaction   = -1; // pill under the pointer
@@ -112,6 +114,7 @@ struct ObjectState {
     bool   canAdd   = false; // reacting is possible here: add button / add pill while hovered
     bool   noButton = false; // no add button on the picture (audio and voice cards: the add pill and the menu only)
     bool   keep     = false; // keep an empty row (the last reaction was just removed under the pointer)
+    QVector<QColor> bubbles;  // 2.3: the object sits on a message bubble (PreviewStyle::bubbles): rowColors(..., true)
     Zone   hoverZone  = Zone::None;
     int    hoverIndex = -1;
     Zone   pressZone  = Zone::None; // held down there (drawn pressed while the pointer stays on it)

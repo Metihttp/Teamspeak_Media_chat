@@ -119,7 +119,7 @@ QString firstGrapheme(const QString& text)
 // Tokens
 // ============================================================================================
 
-Tokens tokensFor(Mode mode, const QFont& chatFont, bool ampm)
+Tokens tokensFor(Mode mode, const QFont& chatFont, bool ampm, bool bubbles)
 {
     Tokens t;
     t.mode = mode;
@@ -163,6 +163,28 @@ Tokens tokensFor(Mode mode, const QFont& chatFont, bool ampm)
     t.compactHeadTop   = scaled(4, f);
     t.compactSystemTop = scaled(2, f);
     t.compactNameGap   = scaled(7, f);
+
+    // 2.3 chat-visuals: bubbles (Cozy only) and centred system rows.
+    t.bubbles            = bubbles && mode == Mode::Cozy;
+    t.bubblePadX         = scaled(10, f);
+    t.bubblePadTop       = scaled(4, f);
+    t.bubblePadHead      = 0;
+    t.bubblePadBottom    = scaled(5, f);
+    t.bubbleGap          = qMax(2, scaled(3, f));
+    t.bubbleHeadTop      = scaled(16, f);
+    t.bubbleRight        = scaled(18, f);
+    t.bubbleRadius       = scaled(12, f);
+    t.bubbleRadiusJoined = qMax(3, scaled(5, f));
+    t.bubbleMinWidth     = scaled(44, f);
+    t.pillPadX           = scaled(10, f);
+    t.pillPadY           = qMax(1, scaled(2, f));
+    t.pillInset          = mode == Mode::Compact ? scaled(16, f) : scaled(24, f);
+    t.systemPrefixWidth  = scaled(22, f);
+    if (t.bubbles) {
+        t.G += even(f / 3.0); // the bubble's padding goes left of the text: the avatar keeps its air
+        t.systemTop    = scaled(12, f);
+        t.systemRunTop = scaled(8, f);
+    }
     return t;
 }
 
@@ -244,7 +266,81 @@ Colors colorsFor(bool dark, const QColor& baseIn, const QColor& skinText, const 
         c.barPressed   = QColor(0xe3, 0xe5, 0xe8);
     }
     c.barShadow = QColor(0, 0, 0, 61);
+
+    // 2.3 chat-visuals: bubbles a step lighter than a dark chat (a raised surface) and a step darker than a
+    // light one, yours tinted with the accent; translucent, so the same colours work over the text too.
+    if (dark) {
+        c.bubble      = QColor(255, 255, 255, 13);
+        c.bubbleOwn   = alpha(c.accent, 0.16);
+        c.bubbleHover = QColor(255, 255, 255, 9);
+        c.bubbleEdge  = QColor(255, 255, 255, 0);
+        c.pill        = QColor(255, 255, 255, 9);
+    } else {
+        c.bubble      = QColor(6, 10, 22, 14);
+        c.bubbleOwn   = alpha(c.accent, 0.12);
+        c.bubbleHover = QColor(6, 10, 22, 9);
+        c.bubbleEdge  = QColor(6, 10, 22, 16);
+        c.pill        = QColor(6, 10, 22, 10);
+    }
+    // TeamSpeak's body text isn't ours to recolour: on a skin where it barely reads, the bubbles get fainter.
+    for (int step = 0; step < 4; ++step) {
+        double low = 99;
+        for (const bool own : {false, true})
+            low = qMin(low, ui::contrastRatio(c.text, bubbleBack(c, own, true, true)));
+        if (low >= 4.5)
+            break;
+        for (QColor* tint : {&c.bubble, &c.bubbleOwn, &c.bubbleHover, &c.pill})
+            tint->setAlpha(tint->alpha() / 2);
+    }
+    QVector<QColor> bubbles;
+    for (const bool own : {false, true}) {
+        for (const bool hovered : {false, true}) {
+            for (const bool mentioned : {false, true})
+                bubbles.append(bubbleBack(c, own, hovered, mentioned));
+        }
+    }
+    const QVector<QColor> pills = {pillBack(c, false), pillBack(c, true)};
+    c.mutedOnBubble = nudge(c.muted, bubbles + pills, 4.5);
+    c.linkOnBubble  = nudge(c.link, bubbles, 4.5);
+    c.dangerOnPill  = nudge(c.danger, pills, 4.5);
+    // A mention's pill on a bubble too.
+    QVector<QColor> mentionPills = {ui::flatten(c.pillBack, base), ui::flatten(c.pillBack, mention)};
+    for (const QColor& back : qAsConst(bubbles))
+        mentionPills.append(ui::flatten(c.pillBack, back));
+    c.pillText = nudge(c.pillText, mentionPills, 4.5);
+    // The system icons on their pills too (a no-op where they read already).
+    c.join     = nudge(c.join, QVector<QColor>{base} + pills, 3.0);
+    c.leave    = nudge(c.leave, QVector<QColor>{base} + pills, 3.0);
+    c.announce = nudge(c.announce, QVector<QColor>{base} + pills, 3.0);
     return c;
+}
+
+QColor bubbleBack(const Colors& colors, bool own, bool hover, bool mention)
+{
+    QColor back = ui::flatten(own ? colors.bubbleOwn : colors.bubble, colors.base);
+    if (mention)
+        back = ui::flatten(colors.mentionTint, back);
+    if (hover)
+        back = ui::flatten(colors.bubbleHover, back);
+    return back;
+}
+
+QColor pillBack(const Colors& colors, bool hover)
+{
+    const QColor back = ui::flatten(colors.pill, colors.base);
+    return hover ? ui::flatten(colors.bubbleHover, back) : back;
+}
+
+QVector<QColor> bubbleSurfaces(const Colors& colors)
+{
+    QVector<QColor> out;
+    for (const bool own : {false, true}) {
+        for (const bool hovered : {false, true}) {
+            for (const bool mentioned : {false, true})
+                out.append(bubbleBack(colors, own, hovered, mentioned));
+        }
+    }
+    return out;
 }
 
 QColor hoverRow(const Colors& colors)
@@ -261,7 +357,8 @@ QColor nameColorFor(const Colors& colors, const QColor& nickColor, const QColor&
 {
     if (!nickColor.isValid() || !usualNickColor.isValid() || near(nickColor, usualNickColor))
         return colors.name;
-    return nudge(nickColor, {colors.base, hoverRow(colors)}, 4.5);
+    // 2.3 chat-visuals: and on the bubbles (a head's name is drawn on one)
+    return nudge(nickColor, {colors.base, hoverRow(colors), bubbleBack(colors, false), bubbleBack(colors, true), bubbleBack(colors, false, true), bubbleBack(colors, true, true)}, 4.5);
 }
 
 QVector<Pair> contrastPairs(const Colors& c)
@@ -292,6 +389,31 @@ QVector<Pair> contrastPairs(const Colors& c)
     pairs.append({QStringLiteral("bar icon hovered"), c.barHoverIcon, c.barHoverBack, 3.0});
     pairs.append({QStringLiteral("bar icon pressed"), c.barHoverIcon, c.barPressed, 3.0});
     pairs.append({QStringLiteral("initials"), QColor(Qt::white), initialsColor(QStringLiteral("a")), 4.5});
+    // 2.3 chat-visuals: everything drawn on a bubble or a pill, in every state
+    for (const bool own : {false, true}) {
+        for (const bool hovered : {false, true}) {
+            for (const bool mentioned : {false, true}) {
+                const QColor  back = bubbleBack(c, own, hovered, mentioned);
+                const QString what = QStringLiteral(" on %1%2%3bubble").arg(own ? QStringLiteral("own ") : QString(), hovered ? QStringLiteral("hovered ") : QString(),
+                                                                           mentioned ? QStringLiteral("mention ") : QString());
+                pairs.append({QStringLiteral("body") + what, c.text, back, 4.5});
+                pairs.append({QStringLiteral("name") + what, c.name, back, 4.5});
+                pairs.append({QStringLiteral("muted") + what, c.mutedOnBubble, back, 4.5});
+                pairs.append({QStringLiteral("link") + what, c.linkOnBubble, back, 4.5});
+                pairs.append({QStringLiteral("pill text") + what, c.pillText, ui::flatten(c.pillBack, back), 4.5});
+            }
+        }
+    }
+    for (const bool hovered : {false, true}) {
+        const QColor  back = pillBack(c, hovered);
+        const QString what = hovered ? QStringLiteral(" on hovered pill") : QStringLiteral(" on pill");
+        pairs.append({QStringLiteral("muted") + what, c.mutedOnBubble, back, 4.5});
+        pairs.append({QStringLiteral("name") + what, c.name, back, 4.5});
+        pairs.append({QStringLiteral("danger") + what, c.dangerOnPill, back, 4.5});
+        pairs.append({QStringLiteral("icon") + what, c.join, back, 3.0});
+        pairs.append({QStringLiteral("leave icon") + what, c.leave, back, 3.0});
+        pairs.append({QStringLiteral("announce icon") + what, c.announce, back, 3.0});
+    }
     return pairs;
 }
 
@@ -527,13 +649,19 @@ ReplyFit fitReply(const HeadSpec& spec, const Tokens& t, qreal width)
 
 } // namespace
 
-QSize headSize(const HeadSpec& spec, const Tokens& t, int maxWidth)
+qreal headNameRowWidth(const HeadSpec& spec, const Tokens& t)
 {
     const QFontMetricsF nm(t.name);
     const QFontMetricsF tm(t.time);
     qreal               w = t.G + nm.horizontalAdvance(spec.nick) + 2;
     if (!spec.timeLabel.isEmpty())
         w += t.nameGap + tm.horizontalAdvance(spec.timeLabel);
+    return w;
+}
+
+QSize headSize(const HeadSpec& spec, const Tokens& t, int maxWidth)
+{
+    qreal w = headNameRowWidth(spec, t);
     if (spec.reply)
         w = qMax(w, fitReply(spec, t, 0).width);
     const int width  = qMax(t.G + 8, qMin(maxWidth > 0 ? maxWidth : 100000, static_cast<int>(std::ceil(w))));
@@ -816,34 +944,29 @@ void drawSystemIcon(QPainter& p, SystemKind kind, const QRectF& box, const QColo
 
 QSize systemPrefixSize(const Tokens& t)
 {
+    // 2.3 chat-visuals: the icon in front of a centred row's text.
     if (t.mode == Mode::Compact) {
         const QFontMetricsF bm(t.body);
-        return QSize(t.L + 20, qMax(1, static_cast<int>(std::ceil(bm.ascent() + bm.descent()))));
+        return QSize(t.systemPrefixWidth, qMax(1, static_cast<int>(std::ceil(bm.ascent() + bm.descent()))));
     }
-    return QSize(t.G, t.lineMin);
+    return QSize(t.systemPrefixWidth, t.lineMin);
 }
 
-QImage renderSystemPrefix(SystemKind kind, const QString& time, const Tokens& t, const Colors& c, qreal dpr)
+QImage renderSystemPrefix(SystemKind kind, const Tokens& t, const Colors& c, qreal dpr)
 {
     const QSize size = systemPrefixSize(t);
     QImage      img  = canvas(size, dpr);
     QPainter    p(&img);
     prepare(p);
     const QColor color = systemIconColor(kind, c);
+    const qreal  side  = qMin<qreal>(qMin(16, size.height()), size.width() - 4);
     if (t.mode == Mode::Compact) {
-        const qreal         base = bodyAscent(t);
+        // Bottom-aligned on the line: the icon around the middle of the text's x-height.
         const QFontMetricsF bm(t.body);
-        if (!time.isEmpty()) {
-            p.setFont(t.compactTime);
-            p.setPen(c.muted);
-            p.drawText(QPointF(0, base), time);
-        }
-        const qreal mid = base - bm.xHeight() / 2.0;
-        drawSystemIcon(p, kind, QRectF(t.L, mid - 6, 16, 12), color);
+        const qreal         mid = bodyAscent(t) - bm.xHeight() / 2.0;
+        drawSystemIcon(p, kind, QRectF(0, mid - side / 2.0, side, side), color);
     } else {
-        const qreal side = qMin(16, size.height());
-        const qreal cx   = t.avatarX + t.avatar / 2.0;
-        drawSystemIcon(p, kind, QRectF(cx - side / 2.0, (size.height() - side) / 2.0, side, side), color);
+        drawSystemIcon(p, kind, QRectF(0, (size.height() - side) / 2.0, side, side), color);
     }
     p.end();
     return img;
@@ -920,6 +1043,22 @@ void paintGutterTime(QPainter& p, const QString& text, qreal right, qreal baseli
     const qreal x = compact ? right : right - fm.horizontalAdvance(text);
     p.drawText(QPointF(x, baseline), text);
     p.restore();
+}
+
+qreal gutterTimeRight(const Tokens& t)
+{
+    // 8 px left of the text; with bubbles left of the bubble (its padding is in front of the text), with air.
+    return t.bubbles ? t.G - t.bubblePadX - qMax(3, scaled(4, t.f)) : t.G - 8;
+}
+
+QString gutterTimeText(const QString& time, const Tokens& t, qreal room)
+{
+    const QFontMetricsF fm(t.time);
+    if (fm.horizontalAdvance(time) <= room)
+        return time;
+    // "12:59 PM" wider than the gutter: the clock alone (the group's head shows AM or PM).
+    const int space = time.lastIndexOf(QLatin1Char(' '));
+    return space > 0 ? time.left(space) : time;
 }
 
 // ============================================================================================

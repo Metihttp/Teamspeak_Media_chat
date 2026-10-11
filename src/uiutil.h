@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QString>
+#include <QVector>
 
 namespace ui {
 
@@ -23,6 +24,10 @@ double contrastRatio(const QColor& a, const QColor& b);
 
 // A translucent colour drawn over an opaque background, as the screen shows it.
 QColor flatten(const QColor& color, const QColor& background);
+
+// 2.3: color moved towards white (dark backgrounds) or black in small steps until it keeps minimum:1 on
+// every one of backs (opaque; the first decides the direction). color itself when it reads already.
+QColor readableOn(const QColor& color, const QVector<QColor>& backs, double minimum);
 
 // The confirmation after saving a file: "Saved to Pictures" (the folder's name; a drive root is
 // shown as "C:\"). Shared by the viewer and the chat so both say the same.

@@ -93,7 +93,7 @@ void TestFoundation::logSubstitution()
              QStringLiteral("-5 18446744073709551615 2.5 9"));
     QCOMPARE(ts3::formatLog("%9", {ts3::pub(1), ts3::pub(2), ts3::pub(3), ts3::pub(4), ts3::pub(5), ts3::pub(6), ts3::pub(7), ts3::pub(8), ts3::pub(9)}).plain, QStringLiteral("9"));
     QCOMPARE(ts3::formatLog(nullptr, {}).plain, QString());
-    QCOMPARE(ts3::formatLog("non-ASCII format: “%1”", {ts3::name(QStringLiteral("Mehdi"))}).plain, QStringLiteral("non-ASCII format: “Mehdi”"));
+    QCOMPARE(ts3::formatLog("non-ASCII format: “%1”", {ts3::name(QStringLiteral("Robin"))}).plain, QStringLiteral("non-ASCII format: “Robin”"));
 }
 
 void TestFoundation::logMarksOnlyPrivateValues()

@@ -36,10 +36,11 @@ How TeamSpeak's chat looks in your own view. Nothing is sent and nobody else see
 
 | Setting | Default | Range and notes |
 | --- | --- | --- |
-| Cozy / Compact / TeamSpeak classic | Cozy | *Cozy*: names, avatars and times above the messages, like Discord, with day dividers and system lines as small rows with an icon. *Compact*: one line per message with the time in front. *TeamSpeak classic*: TeamSpeak's own look. Switching applies at once; TeamSpeak's own chat is given back exactly. |
+| Cozy / Compact / TeamSpeak classic | Cozy | *Cozy*: names, avatars and times above the messages, like Discord, in bubbles like Telegram, with day dividers and system lines as small centred rows with an icon. *Compact*: one line per message with the time in front. *TeamSpeak classic*: TeamSpeak's own look. Switching applies at once; TeamSpeak's own chat is given back exactly. |
 | Group messages from the same person under one name | on | Messages of one person within 7 minutes share one name and time; point at one to see its time. A reply always starts a new group. |
-| Show message actions on hover | on | Add reaction (on media), Reply, Copy text and More over the message under the pointer. Every action is also in the chat's right-click menu. Hidden when the chat is narrower than 240 px. |
-| Show people's avatars (Cozy) | on | The pictures TeamSpeak already has in its cache. Nothing is downloaded; initials on a coloured disc otherwise. |
+| Show message actions on hover | on | Add reaction, Reply, Copy text and More over the message under the pointer. Every action is also in the chat's right-click menu. Hidden when the chat is narrower than 240 px. |
+| Show messages in bubbles (Cozy) | on | Every message on its own rounded background a step off the chat's, yours tinted with the accent, like Telegram; the messages of one group meet with small corners. Pictures, file, audio and voice cards, polls and reaction rows sit inside the bubble (cards then without a box of their own). System lines sit centred on small pills and never get a bubble. Off: Discord's flat rows. |
+| Show people's avatars (Cozy) | on | TeamSpeak's own pictures of people, yours too: the one TeamSpeak keeps for someone on the server, else its cache (people who left included); initials on a coloured disc otherwise, and for anyone TeamSpeak says has no avatar. TS Media downloads nothing; TeamSpeak may fetch a missing picture from the server you are on, as it does when you click someone. |
 | Highlight messages that mention you | on | Your nickname (three letters or more) or *@nickname* in someone else's message: the row gets a tint and a bar, the name a pill. Never in links or your own messages. |
 | Fold runs of join and leave events into one row | on | The same event shows once with a count (*×3*); four or more events in a row show their first with *+N more events* (a click opens them, *Show fewer* closes them). Pokes, kicks, bans, errors, welcome and host messages always show. |
 
@@ -190,8 +191,8 @@ For server admins: creates and repairs the `tsmediachat` server group whose memb
 
 | Setting | Default | Range and notes |
 | --- | --- | --- |
-| Show reactions on media | on | Reaction rows, the add button and *Add reaction*. Off: no reactions are shown or sent. |
-| Tell people in your channel that you have TS Media | on | Lets the send window show who will see your media in the chat. Your TS Media version is shared with people in your channel and with private-chat partners you send to. Off: the plugin says goodbye to them, and the send window shows no count. |
+| Show reactions | on | Reaction rows (under media and, from 2.3, under text messages), the add button and *Add reaction*. Off: no reactions are shown or sent. |
+| Tell people in your channel that you have TS Media | on | Lets the send window show who will see your media in the chat. Your TS Media version is shared with people in your channel and with private-chat partners you send to. Off: the plugin says goodbye to them, and the send window shows no count. Polls then send only the votes you cast (no questions about earlier votes, no answers to others). |
 
 Both travel through TeamSpeak's plugin commands only; nothing leaves TeamSpeak. Details: [privacy & security](PRIVACY-SECURITY.md#what-your-channel-sees).
 
@@ -201,7 +202,7 @@ Both travel through TeamSpeak's plugin commands only; nothing leaves TeamSpeak. 
 | --- | --- | --- |
 | Check for updates automatically | off until you agree | The plugin asks once (*Keep TS Media chat up to date?*). On: about once a day it asks GitHub whether there is a new version. Nothing is installed until you click **Update**. |
 
-- The status line shows your version and the last check (*Version 2.2.1 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
+- The status line shows your version and the last check (*Version 2.3.0 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
 - **Check now** checks once, also while automatic checks are off.
 - Versions you build yourself show *Updates are turned off in versions you build yourself* instead.
 - What is sent and how updates are checked: [updates](UPDATES.md).
@@ -217,9 +218,10 @@ For reference, the keys 2.2 added. Values outside their range are corrected when
 | `compressVideos`, `compressVideosOverMB`, `compressVideoQuality` (480, 720 or 1080), `convertUnplayableVideos`, `compressUseGpu` | Videos |
 | `editorColor`, `editorStroke`, `editorHideMode` | the picture editor's last colour, size and *Hide details* mode |
 | `hdEmoji`, `jumboEmoji`, `emojiButton` | Emoji |
-| `chatLayout` (0 = TeamSpeak classic, 1 = Cozy, 2 = Compact), `chatGroupMessages`, `chatHoverActions`, `chatAvatars`, `chatMentions`, `chatCollapseEvents`, `chatLayoutIntroShown` | Chat layout |
+| `chatLayout` (0 = TeamSpeak classic, 1 = Cozy, 2 = Compact), `chatGroupMessages`, `chatHoverActions`, `chatAvatars`, `chatMentions`, `chatCollapseEvents`, `chatLayoutIntroShown`, `chatBubbles` | Chat layout |
 | `dataSaver`, `revealSpoilers` | data saver, *Show spoilers without blurring* |
 | `showReactions`, `sharePresence` | Privacy |
+| (no keys) | Polls and live music have no settings. The music volume is remembered in `music.ini`, votes in `polls.json`, both next to `settings.ini`. |
 | `updateCheck` (0 = not asked, 1 = on, 2 = off), `updateConsentAsked`, `updateSkipVersion` | Updates |
 | `[server_<id>]` groups: `name`, `dataSaver`, `uploadDirectory`, `uploadMaxMB`, `addRequiredNotice` | Servers (`<id>` is 12 hex digits derived from the server's unique ID) |
 | `[accessGroups]` | the `tsmediachat` group id remembered per server (Server access) |

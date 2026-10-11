@@ -14,8 +14,10 @@
 //
 // A view only: VoiceController decides what it shows (setView) and where (placeAbove). It never takes the
 // mouse or the focus (the button keeps the press, the input the keys). A child of the input's window,
-// raised over the bottom of the chat, as wide as the input, its bottom edge on the input's top edge:
-// TeamSpeak's layouts are never touched, and it hides with its input (another server tab). Never a
+// raised over the bottom of the chat, as wide as the input, its bottom edge on the top of the input's
+// stack (the input, or the music and reply bars on it: inputbars.h): TeamSpeak's layouts are never
+// touched. It hides with its input; every server tab shares that one input in TeamSpeak 3.6.2, so
+// VoiceController hides it when another server tab comes up (2.3: serverTabChanged). Never a
 // window of its own (no Qt::WA_QuitOnClose either: it can't keep TeamSpeak running). Drawn with QPainter
 // (render() for the harness and the tests); colours from the input's palette (light and dark), texts
 // through i18n::t. objectName "tsmediaHoldStrip", so plugin shutdown's sweep finds it among TeamSpeak's

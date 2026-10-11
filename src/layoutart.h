@@ -13,6 +13,7 @@
 #include <QRectF>
 #include <QSize>
 #include <QString>
+#include <QVector>
 
 #include "replyart.h"
 
@@ -57,11 +58,29 @@ struct Tokens {
     QFont divider;  // 0.88 f, DemiBold
     QFont reply;    // 0.92 f
     QFont chip;     // 0.84 f
+    // 2.3 chat-visuals: message bubbles (Cozy with the "Message bubbles" setting; layoutbubbles.h) and centred
+    // system rows (every modern look).
+    bool bubbles            = false; // G is 4 px wider (the avatar keeps its air), the margins below apply
+    int  bubblePadX         = 10;    // the text to the bubble's left and right edge
+    int  bubblePadTop       = 4;     // a body line's top to the bubble's top
+    int  bubblePadHead      = 0;     // a head's name row top to the bubble's top (the row has its own air)
+    int  bubblePadBottom    = 5;
+    int  bubbleGap          = 3;     // between the bubbles of one group
+    int  bubbleHeadTop      = 16;    // a group's first message: its top margin
+    int  bubbleRight        = 18;    // a message's right margin (the bubble's padding and some air)
+    int  bubbleRadius       = 12;
+    int  bubbleRadiusJoined = 5;     // the corners where the bubbles of one group meet
+    int  bubbleMinWidth     = 44;
+    int  pillPadX           = 10;    // a centred system row's pill around its text
+    int  pillPadY           = 2;
+    int  pillInset          = 24;    // left and right margin of a centred system row
+    int  systemPrefixWidth  = 22;    // its icon and the space after it
 
     int indent() const { return mode == Mode::Compact ? L : G; }
 };
-// chatFont: the header's font (resolved). ampm: the headers' times have AM/PM.
-Tokens tokensFor(Mode mode, const QFont& chatFont, bool ampm);
+// chatFont: the header's font (resolved). ampm: the headers' times have AM/PM. bubbles (2.3 chat-visuals):
+// Cozy with message bubbles.
+Tokens tokensFor(Mode mode, const QFont& chatFont, bool ampm, bool bubbles = false);
 
 // ---- colours ------------------------------------------------------------------------------------------
 struct Colors {
@@ -90,9 +109,25 @@ struct Colors {
     QColor chipHover;  // text at 8 %
     // the action bar
     QColor barBack, barBorder, barIcon, barHoverBack, barHoverIcon, barPressed, barShadow;
+    // 2.3 chat-visuals: bubbles and pills, translucent like hover (painted under the text; over it where the
+    // skin paints over ours), and what reads on them at 4.5:1.
+    QColor bubble;        // someone's message
+    QColor bubbleOwn;     // yours: the accent's tint
+    QColor bubbleHover;   // over a bubble or a pill when the pointer is on its row
+    QColor bubbleEdge;    // a hairline round bubbles on light skins (they would melt into white)
+    QColor pill;          // a system row
+    QColor mutedOnBubble; // times and system words on bubbles and pills
+    QColor linkOnBubble;
+    QColor dangerOnPill;  // kicks, bans and errors on their pill
 };
 // skinLink: the skin's link colour (invalid: none known); skinText: the viewport's Text.
 Colors colorsFor(bool dark, const QColor& base, const QColor& skinText, const QColor& skinLink);
+// 2.3 chat-visuals: the flat colour under a bubble's text (own: yours; hover, mention: those layers too).
+QColor bubbleBack(const Colors& colors, bool own, bool hover = false, bool mention = false);
+QColor pillBack(const Colors& colors, bool hover = false);
+// 2.3: every flat colour a bubble can have (yours and others', hovered, mentioning you): what a preview,
+// a poll card or a reaction row drawn on a bubble reads on (PreviewStyle::bubbles).
+QVector<QColor> bubbleSurfaces(const Colors& colors);
 // A nickname's colour as TeamSpeak showed it: the usual one becomes the name colour; another (the skin's
 // friend / blocked markings) keeps its hue at 4.5:1.
 QColor nameColorFor(const Colors& colors, const QColor& nickColor, const QColor& usualNickColor);
@@ -157,6 +192,8 @@ struct HeadGeometry {
 };
 // The head picture's size: as wide as name and time (or the reply row), at most maxWidth.
 QSize        headSize(const HeadSpec& spec, const Tokens& tokens, int maxWidth);
+// 2.3 chat-visuals: the name row's width alone (from x 0: the avatar column, the name, the time).
+qreal        headNameRowWidth(const HeadSpec& spec, const Tokens& tokens);
 HeadGeometry headGeometry(const HeadSpec& spec, const Tokens& tokens, const QSize& size);
 QImage       renderHead(const HeadSpec& spec, const Tokens& tokens, const Colors& colors, const QSize& size, qreal dpr);
 
@@ -171,9 +208,10 @@ qreal  bodyAscent(const Tokens& tokens);
 enum class SystemKind { Info, Join, Leave, Danger, Group, Edit, Announce, Poke, TsMedia, Warning };
 QColor systemIconColor(SystemKind kind, const Colors& colors);
 void   drawSystemIcon(QPainter& p, SystemKind kind, const QRectF& box, const QColor& color);
-// Cozy: G wide, lineMin high, the icon centred at the avatar's x; compact: L + 20 wide with the time first.
+// 2.3 chat-visuals: system rows are centred, the icon in front of the text: systemPrefixWidth wide, lineMin
+// high (Cozy) or the body font's ascent + descent (Compact, bottom-aligned on the text's baseline).
 QSize  systemPrefixSize(const Tokens& tokens);
-QImage renderSystemPrefix(SystemKind kind, const QString& time, const Tokens& tokens, const Colors& colors, qreal dpr);
+QImage renderSystemPrefix(SystemKind kind, const Tokens& tokens, const Colors& colors, qreal dpr);
 
 // Dividers: a hairline, the centred label, the hairline again.
 QImage renderDivider(const QString& label, int width, const Tokens& tokens, const Colors& colors, qreal dpr);
@@ -186,6 +224,10 @@ QImage renderChip(const QString& text, bool hovered, const Tokens& tokens, const
 // The time painted in the gutter (a hovered continuation, a compact reply head): right-aligned at right,
 // on baseline.
 void paintGutterTime(QPainter& p, const QString& text, qreal right, qreal baseline, const Tokens& tokens, const Colors& colors, bool compact);
+// 2.3 chat-visuals: where a hovered Cozy continuation's time ends, from the text's left edge (left of its
+// bubble, with bubbles), and the time as it fits in room (its AM/PM left out when it doesn't).
+qreal   gutterTimeRight(const Tokens& tokens);
+QString gutterTimeText(const QString& time, const Tokens& tokens, qreal room);
 
 // ---- the action bar ------------------------------------------------------------------------------------
 enum class Glyph { React, Reply, Copy, More, Check };

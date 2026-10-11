@@ -209,8 +209,8 @@ void TestDragOutServers::groupNames()
 
 void TestDragOutServers::sanitizeName()
 {
-    const QString hostile = QStringLiteral("  Mehdi's ") + QChar(0x202E) + QStringLiteral("revreS\n\t") + QChar(0x200F) + QStringLiteral(" x  ");
-    QCOMPARE(serversettings::sanitizeName(hostile), QStringLiteral("Mehdi's revreS x"));
+    const QString hostile = QStringLiteral("  Robin's ") + QChar(0x202E) + QStringLiteral("revreS\n\t") + QChar(0x200F) + QStringLiteral(" x  ");
+    QCOMPARE(serversettings::sanitizeName(hostile), QStringLiteral("Robin's revreS x"));
     QCOMPARE(serversettings::sanitizeName(QString(100, QLatin1Char('s'))).size(), 64);
 }
 
@@ -323,7 +323,7 @@ void TestDragOutServers::iniRoundTrip()
     Settings written;
     written.dataSaver = true;
     ServerOverrides a;
-    a.name            = QStringLiteral("Mehdi's Server");
+    a.name            = QStringLiteral("Robin's Server");
     a.dataSaver       = false;
     a.uploadDirectory = QStringLiteral("/media");
     a.uploadMaxMB     = 50;

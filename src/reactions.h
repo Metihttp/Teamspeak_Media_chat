@@ -64,6 +64,10 @@ class ReactionStore : public QObject
     // the reaction came from). Without a check every key counts as known.
     using KnownKey = std::function<bool(const QString& key, const QString& serverUid)>;
     void setKnownKey(KnownKey check);
+    // 2.3 text reactions: what a valid key looks like (proto::isMediaKey by default; a store for messages
+    // takes textreact::isLocalKey). Set it before anything is stored or loaded.
+    using KeyCheck = bool (*)(const QString& key);
+    void setKeyCheck(KeyCheck check);
 
     // A reactor's complete set on key (from a message): replaces what they had; an empty set removes them.
     Apply applyRemote(const QString& serverUid, const QString& key, const QString& uid, const QString& name, const proto::ReactionSet& set, qint64 nowMs);
@@ -128,6 +132,8 @@ class ReactionStore : public QObject
 
     Limits                m_limits;
     KnownKey              m_known;
+    KeyCheck              m_keyCheck = nullptr; // 2.3 text reactions (nullptr: proto::isMediaKey)
+    bool                  validKey(const QString& key) const;
     QHash<QString, Media> m_media;
     QVector<Orphan>       m_orphans;
 };

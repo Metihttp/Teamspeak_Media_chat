@@ -139,7 +139,7 @@ void TestDiagnostics::redactIncludeNames()
     QCOMPARE(redactor.apply(marked('l', "c:/users/BOB/Pictures/a.png")), QString::fromLatin1("%USERPROFILE%/Pictures/a.png"));
     QCOMPARE(redactor.apply(marked('l', "C:\\Users\\Bob\\Pictures\\a.png")), QString::fromLatin1("%USERPROFILE%\\Pictures\\a.png"));
     // Other names are never shown.
-    QCOMPARE(redactor.apply(marked('n', "Mehdi")), QString::fromLatin1("<name 1>"));
+    QCOMPARE(redactor.apply(marked('n', "Robin")), QString::fromLatin1("<name 1>"));
     // A name can't start a new report line or reorder it.
     QCOMPARE(redactor.apply(marked('f', "a\nb\xE2\x80\xAE" "c.jpg")), QString::fromLatin1("a bc.jpg"));
 }
@@ -209,7 +209,7 @@ void TestDiagnostics::legacyLines_data()
     row("unknown, local paths", "[test] self-test upload of C:\\x\\a.mp4, C:\\y.mp4", "[test] self-test upload of <path 1>");
     row("unknown, remote path", "Something about /tsmedia/new file.jpg here", "Something about <file 1>");
     row("unknown, file name", "Saw holiday.jpg twice", "Saw <file 1> twice");
-    row("unknown, address", "Connected to 192.168.1.20:9987 fine", "Connected to <name 1> fine");
+    row("unknown, address", "Connected to 192.0.2.20:9987 fine", "Connected to <name 1> fine");
     row("unknown, IPv6", "Host ::1 answered", "Host <name 1> answered");
     row("unknown, curly quotes", "Sent to the channel “Lobby”", "Sent to the channel “<name 1>”");
     row("unknown, unbalanced quote", "Sent to “Lobby", "Sent to “<name 1>");
@@ -230,7 +230,7 @@ void TestDiagnostics::safetyNetOnMarkedLines()
     diag::Redactor redactor(false, QString());
     const QString  line = QString::fromLatin1("Uploaded ") + marked('f', "/x.jpg") + QString::fromLatin1(" from C:\\Users\\Bob\\x.jpg");
     QCOMPARE(redactor.apply(diag::markSafetyNet(line)), QString::fromLatin1("Uploaded <file 1> from <path 1>"));
-    QCOMPARE(redactor.apply(diag::markSafetyNet(QString::fromLatin1("peer 10.0.0.7 said hi"))), QString::fromLatin1("peer <name 1> said hi"));
+    QCOMPARE(redactor.apply(diag::markSafetyNet(QString::fromLatin1("peer 198.51.100.7 said hi"))), QString::fromLatin1("peer <name 1> said hi"));
     // A file name in public text of a marked source is trusted (only the plugin's own log is marked).
     QCOMPARE(redactor.apply(diag::markSafetyNet(QString::fromLatin1("Loaded mfplat.dll"))), QString::fromLatin1("Loaded mfplat.dll"));
 }
@@ -272,7 +272,7 @@ void TestDiagnostics::teamSpeakLog()
 {
     const QByteArray log = "2026-10-09 19:22:30.100000|INFO    |ClientUI      |   |Connect to server: SecretServer 127.0.0.1\r\n"
                            "2026-10-09 19:22:31.200000|INFO    |TSMedia       |   |TS Media chat 2.2.0 loaded\r\n"
-                           "2026-10-09 19:22:32.300000|INFO    |ClientUI      |1  |Nickname Mehdi joined\r\n"
+                           "2026-10-09 19:22:32.300000|INFO    |ClientUI      |1  |Nickname Robin joined\r\n"
                            "2026-10-09 19:22:33.400000|WARNING |TSMedia       |1  |Download of /tsmedia/a.jpg failed: x | y\r\n"
                            "2026-10-09 19:22:34.500000|DEBUG   |TSMedia       |   |Probed a.jpg: 1x1, 0 ms, blurhash no, preview none\r\n"
                            "garbage line without columns\r\n"
@@ -289,7 +289,7 @@ void TestDiagnostics::teamSpeakLog()
     QCOMPARE(tail.lines.at(1).text, QString::fromLatin1("Download of /tsmedia/a.jpg failed: x | y")); // a '|' in the message stays
     for (const diag::LogLine& line : qAsConst(tail.lines)) {
         QVERIFY(!line.text.contains(QLatin1String("SecretServer")));
-        QVERIFY(!line.text.contains(QLatin1String("Mehdi")));
+        QVERIFY(!line.text.contains(QLatin1String("Robin")));
     }
 
     tail = diag::parseTeamSpeakLog(log, 2);
@@ -411,12 +411,12 @@ void TestDiagnostics::reportNeverShowsServerOrPeople()
 {
     diag::Facts f                = sampleFacts();
     f.settings.uploadDirectory   = QString::fromLatin1("/SecretServer uploads");
-    f.settings.pluginDownloadUrl = QString::fromLatin1("https://example.com/Mehdi");
+    f.settings.pluginDownloadUrl = QString::fromLatin1("https://example.com/Robin");
     f.serverVersions             = QStringList{QString::fromUtf8("3.13.7\n  Plugin: fake line")};
     f.log.marked                 = false;
     f.log.source                 = diag::LogTail::Source::TeamSpeakLog;
     f.log.lines = {
-        {QString(), QString::fromLatin1("WARN"), QString::fromUtf8("Couldn't send “Mehdi's photo.jpg”: denied")},
+        {QString(), QString::fromLatin1("WARN"), QString::fromUtf8("Couldn't send “Robin's photo.jpg”: denied")},
         {QString(), QString::fromLatin1("INFO"), QString::fromUtf8("Sent to the channel “SecretServer”")},
         {QString(), QString::fromLatin1("INFO"), QString::fromLatin1("uid abc+def/ghi= at 127.0.0.1:9987")},
     };
@@ -428,7 +428,7 @@ void TestDiagnostics::reportNeverShowsServerOrPeople()
         QVERIFY2(!report.contains(QLatin1String("example.com")), qPrintable(report));
         QVERIFY2(!report.contains(QLatin1String("\n  Plugin: fake line")), qPrintable(report));
         if (!includeNames)
-            QVERIFY2(!report.contains(QLatin1String("Mehdi")), qPrintable(report));
+            QVERIFY2(!report.contains(QLatin1String("Robin")), qPrintable(report));
         QVERIFY(report.contains(QLatin1String("folder changed")));
         QVERIFY(report.contains(QLatin1String("link changed")));
     }

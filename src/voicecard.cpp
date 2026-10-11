@@ -51,6 +51,17 @@ WaveColors waveColors(bool dark)
     return {QColor(0x47, 0x52, 0xc4), QColor(0x80, 0x84, 0x8e)};
 }
 
+// 2.3: on a bubble, both still 3:1 on every bubble colour.
+WaveColors waveColors(const PreviewStyle& style)
+{
+    WaveColors c = waveColors(style.dark);
+    if (pp::onBubble(style)) {
+        c.played   = ui::readableOn(c.played, style.bubbles, 3.0);
+        c.unplayed = ui::readableOn(c.unplayed, style.bubbles, 3.0);
+    }
+    return c;
+}
+
 struct VoiceGeometry {
     QRectF card;
     QRectF disc;
@@ -60,19 +71,27 @@ struct VoiceGeometry {
     QRectF time;    // empty when hidden
 };
 
-VoiceGeometry geometryFor(const QSizeF& size)
+// onBubble (2.3): the card starts at the bubble's text column (the bubble is its panel).
+qreal rightPadOf(bool onBubble)
+{
+    return onBubble ? 2.0 : kRightPad;
+}
+
+VoiceGeometry geometryFor(const QSizeF& size, bool onBubble = false)
 {
     VoiceGeometry g;
-    const qreal   w = size.width();
+    const qreal   w        = size.width();
+    const qreal   shift    = onBubble ? -kDiscX : 0.0;
+    const qreal   waveLeft = kWaveLeft + shift;
     g.card          = QRectF(QPointF(0, 0), size);
-    g.disc          = QRectF(kDiscX, (size.height() - kDisc) / 2.0, kDisc, kDisc);
+    g.disc          = QRectF(kDiscX + shift, (size.height() - kDisc) / 2.0, kDisc, kDisc);
     g.discHit       = g.disc.adjusted(-kDiscHitPad, -kDiscHitPad, kDiscHitPad, kDiscHitPad);
-    qreal right     = w - kRightPad;
+    qreal right     = w - rightPadOf(onBubble);
     if (w >= kNoTimeBelow) {
         g.time = QRectF(right - kTimeWidth, kCenterY - 10.0, kTimeWidth, 20.0);
         right  = g.time.left() - kGap;
     }
-    g.wave    = QRectF(kWaveLeft, kCenterY - (kBarMin + kBarRange) / 2.0, qMax(0.0, right - kWaveLeft), kBarMin + kBarRange);
+    g.wave    = QRectF(waveLeft, kCenterY - (kBarMin + kBarRange) / 2.0, qMax(0.0, right - waveLeft), kBarMin + kBarRange);
     g.seekHit = QRectF(g.wave.left() - 4.0, kSeekTop, g.wave.width() + 8.0, kSeekBottom - kSeekTop);
     return g;
 }
@@ -182,19 +201,23 @@ void drawButton(QPainter& p, const VoiceGeometry& g, const MediaEntry& e, const 
 
     if (failed) {
         const QRectF badge = badgeRect(disc);
-        p.setPen(Qt::NoPen);
-        p.setBrush(cardBackground);
-        p.drawEllipse(badge.adjusted(-2.0, -2.0, 2.0, 2.0));
+        pp::drawInBackground(p, cardBackground, [&](const QColor& color) { // 2.3: cut out on a bubble
+            p.setPen(Qt::NoPen);
+            p.setBrush(color);
+            p.drawEllipse(badge.adjusted(-2.0, -2.0, 2.0, 2.0));
+        });
         pp::drawAlertIcon(p, badge, pal.errorFill, Qt::white);
     } else if (e.state == MediaState::Idle && !o.busy && !o.externalOnly && !isStarted(o)) {
         // Not downloaded yet (voice messages normally are): pressing play fetches it first.
         const QRectF badge = badgeRect(disc);
-        p.setPen(Qt::NoPen);
-        p.setBrush(cardBackground);
-        p.drawEllipse(badge.adjusted(-2.0, -2.0, 2.0, 2.0));
+        pp::drawInBackground(p, cardBackground, [&](const QColor& color) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(color);
+            p.drawEllipse(badge.adjusted(-2.0, -2.0, 2.0, 2.0));
+        });
         p.setBrush(pal.title);
         p.drawEllipse(badge);
-        pp::drawDownloadIcon(p, badge.adjusted(3.0, 3.0, -3.0, -3.0), cardBackground);
+        pp::drawInBackground(p, cardBackground, [&](const QColor& color) { pp::drawDownloadIcon(p, badge.adjusted(3.0, 3.0, -3.0, -3.0), color); });
     }
 }
 
@@ -261,7 +284,7 @@ int voiceBarCount(qreal waveWidth)
 
 QImage renderVoiceCard(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, QSize* logicalSize)
 {
-    const pp::Palette pal  = pp::palette(style.dark);
+    const pp::Palette pal  = pp::palette(style); // 2.3: on a bubble, no panel of its own
     const QSize       size = voiceCardSize(style);
     if (logicalSize)
         *logicalSize = size;
@@ -273,7 +296,7 @@ QImage renderVoiceCard(const MediaEntry& entry, const PlaybackOverlay& overlay, 
     pp::prepare(p);
     p.setLayoutDirection(Qt::LeftToRight);
 
-    const VoiceGeometry g          = geometryFor(QSizeF(size));
+    const VoiceGeometry g          = geometryFor(QSizeF(size), pp::onBubble(style));
     const bool          actionable = isPreviewActionable(entry) || overlay.externalOnly;
     const bool          hovered    = style.hovered && actionable;
     const QColor        background = hovered ? pal.backgroundHover : pal.background;
@@ -289,12 +312,12 @@ QImage renderVoiceCard(const MediaEntry& entry, const PlaybackOverlay& overlay, 
     const QStringList status = statusTexts(entry, overlay);
     if (!status.isEmpty()) {
         // The message takes the waveform's and the time's room.
-        const QRectF area(g.wave.left(), kCenterY - 10.0, w - kRightPad - g.wave.left(), 20.0);
+        const QRectF area(g.wave.left(), kCenterY - 10.0, w - rightPadOf(pp::onBubble(style)) - g.wave.left(), 20.0);
         p.setPen(showsFailure(entry, overlay) ? pal.errorText : pal.muted);
         p.drawText(area, Qt::AlignVCenter | Qt::AlignLeft | Qt::AlignAbsolute, pp::fitText(fm, status, area.width()));
         return out;
     }
-    drawWave(p, g, entry, overlay, waveColors(style.dark));
+    drawWave(p, g, entry, overlay, waveColors(style));
     if (!g.time.isEmpty()) {
         p.setPen(pal.muted);
         p.drawText(g.time, Qt::AlignVCenter | Qt::AlignRight | Qt::AlignAbsolute, timeText(entry, overlay));
@@ -304,11 +327,10 @@ QImage renderVoiceCard(const MediaEntry& entry, const PlaybackOverlay& overlay, 
 
 VideoZone voiceZoneAt(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, const QSize& logicalSize, const QPointF& pos)
 {
-    Q_UNUSED(style);
     const QRectF bounds(QPointF(0, 0), QSizeF(logicalSize));
     if (logicalSize.isEmpty() || !bounds.contains(pos))
         return VideoZone::None;
-    const VoiceGeometry g = geometryFor(bounds.size());
+    const VoiceGeometry g = geometryFor(bounds.size(), pp::onBubble(style));
     if (g.discHit.contains(pos))
         return VideoZone::PlayPause;
     if (seekable(entry, overlay) && g.seekHit.contains(pos))
@@ -319,7 +341,7 @@ VideoZone voiceZoneAt(const MediaEntry& entry, const PlaybackOverlay& overlay, c
 QRectF voiceZoneRect(const MediaEntry& entry, const PlaybackOverlay& overlay, const PreviewStyle& style, const QSize& logicalSize, const QPointF& pos)
 {
     const QRectF        bounds(QPointF(0, 0), QSizeF(logicalSize));
-    const VoiceGeometry g = geometryFor(bounds.size());
+    const VoiceGeometry g = geometryFor(bounds.size(), pp::onBubble(style));
     switch (voiceZoneAt(entry, overlay, style, logicalSize, pos)) {
     case VideoZone::None:
         return {};
@@ -339,8 +361,7 @@ double voiceSeekFractionAt(const MediaEntry& entry, const PlaybackOverlay& overl
 {
     Q_UNUSED(entry);
     Q_UNUSED(overlay);
-    Q_UNUSED(style);
-    const VoiceGeometry g = geometryFor(QSizeF(logicalSize));
+    const VoiceGeometry g = geometryFor(QSizeF(logicalSize), pp::onBubble(style));
     if (g.wave.width() <= 0.0)
         return 0.0;
     return qBound(0.0, (pos.x() - g.wave.left()) / g.wave.width(), 1.0);

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.2.1 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.3.0 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -113,6 +113,7 @@ add_library(tsmedia SHARED
     src/composemodel.cpp      src/composemodel.h
     src/composedialog.cpp     src/composedialog.h
     src/composesettings.cpp   src/composesettings.h
+    src/composewidgets.cpp    src/composewidgets.h  # 2.3 compose-v2: the send window's own controls
     # 2.2 sha
     src/fileverify.cpp        src/fileverify.h
     # 2.2 spoiler
@@ -135,6 +136,11 @@ add_library(tsmedia SHARED
     src/composehooks.cpp      src/composehooks.h
     src/peerhub.cpp           src/peerhub.h
     src/chatreactions.cpp     src/chatreactions.h
+    # 2.3 text reactions: reactions on messages without media
+    src/textreact.cpp         src/textreact.h
+    src/textreactdoc.cpp      src/textreactdoc.h
+    src/textreacthub.cpp      src/textreacthub.h
+    src/chattextreactions.cpp src/chattextreactions.h
     # 2.4 compress: video compression before upload
     src/videocompress.cpp     src/videocompress.h
     src/video/mftranscode.cpp src/video/mftranscode.h
@@ -158,6 +164,14 @@ add_library(tsmedia SHARED
     src/voicecontroller.cpp     src/voicecontroller.h
     src/micbutton.cpp           src/micbutton.h # 2.2.1 mic: the chat input's microphone button
     src/holdstrip.cpp           src/holdstrip.h # 2.2.1 hold to record: the strip above the chat input
+    # 2.3 live music: the bars stacked above the input, music into the voice (its paperclip entry: attachmenu)
+    src/inputbars.cpp             src/inputbars.h
+    src/video/mfmusicreader.cpp   src/video/mfmusicreader.h
+    src/music/musicmix.cpp        src/music/musicmix.h
+    src/music/musicengine.cpp     src/music/musicengine.h
+    src/music/musicbar.cpp        src/music/musicbar.h
+    src/music/musiccontroller.cpp src/music/musiccontroller.h
+    src/servertabs.cpp            src/servertabs.h # its server tab brought to the front (TeamSpeak's tab bar)
     # 2.2 reply
     src/replies.cpp           src/replies.h
     src/replydoc.cpp          src/replydoc.h
@@ -183,6 +197,21 @@ add_library(tsmedia SHARED
     src/chatlayout.cpp        src/chatlayout.h      src/chatscroll.h
     src/actionbar.cpp         src/actionbar.h
     src/chatlayoutsection.cpp src/chatlayoutsection.h
+    # 2.3 attach: the paperclip in the chat input and its menu
+    src/attachmenu.cpp        src/attachmenu.h
+    src/attachart.cpp         src/attachart.h
+    src/attachpopup.cpp       src/attachpopup.h
+    src/attachbutton.cpp      src/attachbutton.h
+    # 2.3 poll: anonymous polls (format and store, votes over plugin commands, the card, the window, the chat)
+    src/polls.cpp             src/polls.h
+    src/pollhub.cpp           src/pollhub.h
+    src/polldoc.cpp           src/polldoc.h
+    src/pollart.cpp           src/pollart.h
+    src/polldialog.cpp        src/polldialog.h
+    src/chatpolls.cpp         src/chatpolls.h
+    # 2.3 chat-visuals: message bubbles, centred system rows, avatars from TeamSpeak
+    src/layoutbubbles.cpp     src/layoutbubbles.h
+    src/chatavatars.cpp       src/chatavatars.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -203,6 +232,7 @@ option(TSMEDIA_TESTHOOKS "Build with test hooks" OFF)
 if(TSMEDIA_TESTHOOKS)
     target_compile_definitions(tsmedia PRIVATE TSMEDIA_TESTHOOKS)
     target_sources(tsmedia PRIVATE src/selftest.cpp src/selftest.h) # the scripted live-test driver
+    target_sources(tsmedia PRIVATE src/selftestmusic.cpp) # 2.3 live music: its live-test commands
 endif()
 
 # 2.2 updater (docs/UPDATES.md). The install/rollback/manifest parts are always built (a DLL installed by
@@ -301,6 +331,12 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_compose.cpp
         src/composemodel.cpp
         src/composehooks.cpp
+        # 2.3 compose-v2: the send window itself with a fake host (Add files, keys, tiles, drops, colours)
+        tests/tst_composedialog.cpp
+        src/composedialog.cpp
+        src/composewidgets.cpp
+        src/imageeditor.cpp
+        src/imageeditorcanvas.cpp
         # 2.2 sha
         tests/tst_fileverify.cpp
         src/fileverify.cpp src/fileverify.h
@@ -344,6 +380,16 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_emojibutton.cpp # TeamSpeak's emoticon button taken over (a fake MainWindowChatWidget)
         src/layoutdoc.cpp
         src/layoutart.cpp
+        # 2.3 chat-visuals: bubbles and pills on TeamSpeak-like documents, avatar lookups (fake TeamSpeak)
+        tests/tst_chatvisuals.cpp
+        src/layoutbubbles.cpp
+        src/chatavatars.cpp
+        src/chatlayoutsection.cpp src/emojisection.cpp src/settingssection.cpp # the General tab's access keys
+        # 2.3 text reactions: message keys across clients, TR and TSYNC, the store, rows in the chat document
+        tests/tst_textreact.cpp
+        src/textreact.cpp
+        src/textreactdoc.cpp
+        tests/tst_chatdoc23.cpp   # 2.3 cross review: every layer in one chat (keys, jumbo, copying, replies, restore)
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
@@ -385,6 +431,35 @@ if(TSMEDIA_BUILD_TESTS)
         src/voicecontroller.cpp
         src/voicepanel.cpp
         src/holdstrip.cpp         # 2.2.1 hold to record: the strip above the chat input
+        # 2.3 attach: the paperclip (EmojiInput places it) and its menu
+        tests/tst_attach.cpp
+        src/attachmenu.cpp
+        src/attachart.cpp
+        src/attachpopup.cpp
+        src/attachbutton.cpp
+        # 2.3 poll: the format, ballots and store, the hub with a fake transport, the chat document, the card, the window
+        tests/tst_polls.cpp
+        src/polls.cpp
+        src/pollhub.cpp
+        src/polldoc.cpp
+        src/pollart.cpp
+        src/polldialog.cpp
+        # 2.3 live music: decode -> 48 kHz, the mixing math, the edited flags, the engine with generated
+        # sound (nothing is played, no microphone), the bar's states, the stack above the input, the controller
+        tests/tst_music.cpp       tests/musicfakes.h
+        tests/tst_musicbar.cpp    # the bar, the stack above the input, the controller (fake TeamSpeak)
+        tests/tst_holdtab.cpp     # the hold strip on another server tab (fixed in 2.3)
+        src/inputbars.cpp
+        src/video/mfmusicreader.cpp
+        src/music/musicmix.cpp
+        src/music/musicengine.cpp
+        src/music/musicbar.cpp
+        src/music/musiccontroller.cpp
+        src/servertabs.cpp
+        # 2.3 integration: the features together (bubbles with cards, polls and rows; poll reaction keys;
+        # system rows; the bars above the input; the send window's presence line)
+        tests/tst_wiring23.cpp
+        tests/tst_unload23.cpp    # 2.3 cross review (lifetime): every layer given back, menus and music at unload
     )
     target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h

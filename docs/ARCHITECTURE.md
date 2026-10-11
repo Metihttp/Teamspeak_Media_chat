@@ -49,17 +49,23 @@ How TS Media chat is put together: the modules, the link format it posts, how up
 | `src/filedrag.*`, `src/dragpixmap.*` | Dragging files out of the chat and the viewer, *Copy file*, the drag picture, refusing our own drags |
 | `src/mediaviewer.*`, `src/spoilercover.*` | Gallery viewer: zoom, video player, full screen, shortcuts, the spoiler cover |
 | `src/uploadtoast.*` | Upload progress panel |
+| `src/layoutdoc.*`, `src/layoutart.*`, `src/layoutformat.h`, `src/chatlayout.*`, `src/actionbar.*` | The Cozy / Compact chat layout: styling TeamSpeak's blocks in steps (reversible), the pictures (heads, avatars, dividers, system prefixes), painting under the text, the hover action bar |
+| `src/layoutbubbles.*`, `src/chatavatars.*` | 2.3: message bubbles and the pills of centred system rows (shapes from the laid-out blocks, painted under the text); avatars through TeamSpeak's `getAvatar` and its caches. Previews, cards, poll cards and reaction rows on a bubble draw no panel of their own (`PreviewStyle::bubbles`, `layoutart::bubbleSurfaces`). Where the hover action bar goes on a bubble without covering text (`layoutbubbles::barPlace`) |
+| `src/attachbutton.*`, `src/attachpopup.*`, `src/attachart.*` | 2.3: the paperclip in the chat input's left slot (EmojiInput reserves it) and its menu of `attachmenu` entries |
+| `src/polls.*`, `src/pollhub.*`, `src/polldoc.*`, `src/pollart.*`, `src/polldialog.*`, `src/chatpolls.*` | 2.3: anonymous polls: the message format, ballots with hash chains and `polls.json` (pure), `PV` / `PQ` over plugin commands, the poll message as one card picture in the chat document, the card, the *New poll* window and the chat side ([polls](POLLS.md)) |
 
 ### Sending and recording
 
 | Path | Purpose |
 | --- | --- |
-| `src/composedialog.*`, `src/composemodel.*` | The send window (paste, drop, picker): caption, spoilers, albums, what can't be sent, one `Core::send` request; its rules without widgets |
+| `src/composedialog.*`, `src/composemodel.*`, `src/composewidgets.*` | The send window (paste, drop, picker, the paperclip): caption, spoilers, albums, what can't be sent, one `Core::send` request; its rules without widgets; 2.3: its own buttons, chips, switch and theme |
 | `src/composehooks.*`, `src/composesettings.*` | Where other features plug into the send window (presence line, albums, own-drag marker), and its Sending setting |
 | `src/imageeditmodel.*`, `src/imageeditor.*`, `src/imageeditorcanvas.cpp` | The crop & annotate editor: the model without widgets (rotation, crop, shapes, undo, export) and its window |
 | `src/videocompress.*`, `src/video/mftranscode.*`, `src/compresssettings.*` | The compression planner (pure), the Source Reader to Sink Writer transcode to H.264/AAC MP4 with its verification, and Settings → Sending → Videos |
 | `src/audio/*` | Voice messages without UI: WASAPI capture, a generated test source, the microphone choice, the recorder thread, the AAC `.m4a` writer, waveform levels, the TeamSpeak mic mute guard and the start / stop sounds |
 | `src/voicecontroller.*`, `src/voicepanel.*`, `src/micbutton.*`, `src/holdstrip.*` | Recording and sending of a voice message (no settings, no review), its window (Plugins menu, `/tsmedia voice`), the chat input's microphone button (in the right-edge slot EmojiInput reserves; hold to record, release to send) and the strip above the input while it is held |
+| `src/music/*`, `src/video/mfmusicreader.*`, `src/inputbars.*`, `src/attachmenu.*` | 2.3 live music: a music file decoded by Media Foundation (48 kHz stereo) on a worker, mixed into the outgoing voice (`ts3plugin_onEditCapturedVoiceDataEvent`, with the *edited* flags set so it is sent) and into this computer's playback (`ts3plugin_onEditMixedPlaybackVoiceDataEvent`); the music bar above the chat input (compact on another server tab); the stacking of the bars above the input (music bar, reply bar, hold strip); the paperclip menu's entries. TeamSpeak sends only from the server tab in front, so the controller pauses the music while its tab is in the background and plays on when that tab is in front again (not after the user's own pause) |
+| `src/servertabs.*` | 2.3: TeamSpeak's server tab bar in its main window (the plugin API can't bring a tab to the front): finding it, which tab shows a connection (by its label, or its place among the connections), bringing that tab to the front for **Play** in the compact music bar and `/tsmedia music play`. GUI thread, nothing kept between calls |
 | `src/video/mfvideo.*`, `src/video/mfcommon.*` | Media Foundation probing and playback; shared helpers (COM and platform scopes, error texts, D3D11 device, MPEG-4 sink writer) |
 
 ### Between plugins
@@ -71,6 +77,7 @@ How TS Media chat is put together: the modules, the link format it posts, how up
 | `src/peers.*`, `src/presenceline.*` | Presence: who in your channel or private chat has TS Media, and the send window's line |
 | `src/reactions.*` | Who reacted how to which media, and `reactions.json` |
 | `src/peerhub.*` | Connects transport, presence and reactions to TeamSpeak and Core and owns them |
+| `src/textreact.*`, `src/textreactdoc.*`, `src/textreacthub.*`, `src/chattextreactions.*` | 2.3: reactions on messages without media: the message identity and `TR` / `TSYNC` (pure), the row at the end of a message block, the transport side and `text-reactions.json`, and the chat side (rows, pickers, menus) |
 
 ### Settings, servers and support
 
@@ -161,6 +168,8 @@ BYE                                               presence switched off, or the 
 R     s=c|p [y=1] i=<key>:<codes>,... [e=<key>:<emoji>.<emoji>,...]
                                                   my complete reaction set on each media item (idempotent)
 SYNC  s=c m=<key>,...                             a late joiner asks present members for their own reactions
+TR    s=c|p [y=1] i=<hash>-<age>:<codes>,... [e=...] 2.3: the same for messages without media
+TSYNC s=c m=<hash>-<age>,...                      2.3: the same as SYNC for those messages
 ```
 
 - Unknown types and fields are ignored, and so is `tsm2` and later, so newer versions can add to the protocol. A command we send is at most 900 bytes; a received one above 2048 bytes is dropped before it is copied. Values are limited to `[A-Za-z0-9._,:-]`.
@@ -168,6 +177,7 @@ SYNC  s=c m=<key>,...                             a late joiner asks present mem
 - **PluginLink** keeps one queue per connection (presence before reactions before background work). Each command carries its own return code; no answer within about 3 s counts as not sent, and a late `Ok` is still delivered. A permission error marks the server as blocking plugin commands, and presence and reactions stay off there. Commands share the connection's `FloodGovernor` with chat posts.
 - **Presence** (`PeerDirectory`): entering a channel starts an 800 ms settle time, then one `HELLO` with `rr=1` goes to the channel. Members answer with one `HI` after a random 150–900 ms (answers to several joiners merge). A member without an answer within 4 s (6 s for someone who just joined) counts as without TS Media; 2.1 and older can't answer and count the same. Private chats get one `HELLO` per partner at most once a minute; the server chat never asks anyone. Nothing is kept on disk. Turning presence off drops queued `HELLO`/`HI` and sends `BYE`.
 - **Reactions** (`ReactionStore`): one ordered set of emoji per reactor and media key (at most 10); `i=` lists every item with the six classic codes (`up heart lol wow sad fire`) it has, and `e=` carries the whole set as emoji wire codes (`1f923`, `2764-fe0f`) when it holds any other emoji, so older 2.2 builds still see the six. Pills are shown in the order the reactions first appeared, at most 20 different ones per media. A new `R` replaces a set, an empty set removes it. Your own clicks are applied at once, sent debounced, and taken back if they couldn't be sent. After entering a channel a `SYNC` asks the present members; each answers with its own reactions only, never anyone else's. `reactions.json` keeps at most 500 media and 100 reactors each for 30 days and is always saved within the 2 MB its loader accepts.
+- **Reactions on messages** (2.3, `textreact.h`): TeamSpeak messages have no ids, so each client works one out from its own chat: `<hash>` is 16 hex digits of SHA-256 over the sender's unique ID (from the header's client link) and the message text, normalized so that what differs between clients doesn't count (only letters, digits and emoji, case-folded; TeamSpeak's emoticon codes left out, as text and as pictures, since icon packs and settings differ; spacing and line breaks left out). The time is when this client received it (the header's time and the day of its day lines). On the wire `<age>` is how many seconds ago the sender of the command received the message, so clocks and time zones don't matter: the receiver takes the message with that hash it received nearest to now − age, within 6 s. Repeats of the same text are told apart by their time (header times are whole seconds, so repeats less than about 2 s apart may share where a reaction lands). The rules, limits and debouncing are those of `R` and `SYNC`; a private reaction counts only on the reactor's own message outside the channel chat, or on ours in the private chat known to be with the reactor (anyone on the server can send `s=p`). After entering a channel, `TSYNC` names the newest messages of the channel chat by their hash and age. 2.2 builds ignore both types. The row is a picture of ours at the end of the message's block, after a line break of ours; both carry properties every other module skips, and a row that comes, changes or goes keeps what the reader looks at in place. `text-reactions.json` keeps at most 1000 messages for 30 days.
 
 ## Untrusted input
 
