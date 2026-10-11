@@ -99,6 +99,7 @@ struct Settings {
     bool chatCollapseEvents   = true;  // runs of join and leave lines collapse
     bool chatLayoutIntroShown = false; // the one-time line about the new layout was shown
     bool chatBubbles          = true;  // 2.3 chat-visuals: messages in bubbles (Cozy), system rows on pills
+    bool chatOwnRight         = true;  // 2.3.1: your messages on the right, like Telegram (Cozy with bubbles)
 
     static Settings& instance();
     void             load();

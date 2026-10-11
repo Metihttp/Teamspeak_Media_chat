@@ -20,6 +20,8 @@
 #include <QMap>
 #include <QPixmap>
 #include <QSet>
+#include <QPointF>
+#include <QRectF>
 #include <QSizeF>
 #include <QString>
 #include <QStringList>
@@ -63,6 +65,7 @@ struct Row {
     // a day or history line
     QDate   date;
     QString dayText; // after "*** "
+    qreal   timeRow = 0; // 2.3.1: a styled own message on the right: the height of its time's own row (0: none)
     // what is taken into our picture (document positions; for a block that isn't styled)
     int headerStart = -1;
     int headerEnd   = -1;
@@ -95,6 +98,8 @@ struct Plan {
     int        tag  = 0; // kBlockTag
     qreal      nameRow = 0;   // 2.3 chat-visuals: a Cozy head's name row width (kNameRow)
     bool       own     = false; // 2.3 chat-visuals: your message (kOwn)
+    bool       ownRight = false; // 2.3.1: your message on the right (kOwnRight; settle() fits it)
+    qreal      topExtra = 0;     // 2.3.1: top's part for the time row of the visible block above (kTopExtra)
 };
 
 struct Env {
@@ -118,6 +123,9 @@ struct Env {
     QSet<int>  expandedRuns;
     // 2.3 chat-visuals: tokens.bubbles is message bubbles (Cozy): wider margins, links and muted text that
     // read on the bubbles, system rows on pills (layoutbubbles.h). System rows are centred in every look.
+    // 2.3.1: your messages on the right, like Telegram (only with tokens.bubbles in Cozy): no avatar and no name,
+    // each bubble as wide as what it holds and flush right, its time on it (settle() fits them).
+    bool ownRight = false;
 };
 
 // Mentions (P2): where text mentions nick: "@Nick" (any case), or the nickname as a whole word of three or
@@ -156,6 +164,55 @@ int restoreAll(QTextDocument* doc, QStringList* names = nullptr);
 int giveBack(QTextDocument* doc);
 // New sizes for the pictures of block n (a narrower chat, a new day label); positions never move.
 bool resizeObject(QTextDocument* doc, int n, const QSizeF& size);
+
+// ---- 2.3.1: your messages on the right ---------------------------------------------------------------------
+// apply() lays such a message out over the whole column first; settle() then reads its laid-out lines and gives it
+// its place: as wide as its widest line (and its time), flush right at ownRightEdge(env), its text left-aligned
+// (right-aligned when it is right-to-left), its time after the last line when there is room, else on a row of its
+// own (the next visible block's top margin grows by that row: kTopExtra). Call it outside an edit block (it reads
+// the layout). blocks: the ones just styled (the visible blocks after them get their top margins checked too);
+// refit: blocks another module changed since (measured again; laid out again only when their place changed).
+// Returns how many blocks changed.
+int settle(QTextDocument* doc, const QVector<int>& blocks, const Env& env, const QSet<int>& refit = QSet<int>());
+// The right edge of your messages' text (relative to the root frame's content; the bubble's padding is outside it),
+// the widest their text may be (the content column, at most 36 f in a wide chat, like Telegram's bubbles), and
+// the room block gets for it (wider for a wider picture: pictures are never broken).
+qreal ownRightEdge(const Env& env);
+qreal ownMaxContent(const Env& env);
+qreal ownRoom(const QTextBlock& block, const Env& env);
+// The right margin of such a message in doc as it is laid out now (wider than env.contentWidth while the chat's
+// scroll bar is hidden): its lines end at ownRightEdge(env) (rtl: right-to-left text, right-aligned), or ownSlack
+// past it (left-to-right text: a fitted line never wraps again), so its left margin alone gives its lines their
+// width. alignOwnRight() gives every such message of doc its margin when the chat's width changed under the same
+// env (its lines keep their width: nothing wraps again); returns how many changed.
+qreal ownRightMargin(QTextDocument* doc, const Env& env, bool rtl);
+int   alignOwnRight(QTextDocument* doc, const Env& env);
+// What a laid-out own message on the right shows (document coordinates; valid: it is one and is laid out): its
+// content's left and right edge (its lines on the bubble and its time), those lines, its time.
+struct OwnPlace {
+    bool    valid  = false;
+    int     first  = 0; // the first line on the bubble (1 under a reply row)
+    int     lines  = 0; // lines on the bubble: first .. lines - 1
+    qreal   left   = 0;
+    qreal   right  = 0;
+    qreal   top    = 0; // the first line's top
+    qreal   bottom = 0; // the last line's bottom, the time's row included
+    int     time   = layoutformat::TimeNone;
+    QString timeText;
+    QPointF timeBaseline;
+    QRectF  timeRect;
+};
+OwnPlace ownPlace(const QTextBlock& block, const Env& env);
+
+// ---- 2.3.1: the chat's room at its ends ----------------------------------------------------------------------
+// The root frame's top and bottom margins get tokens.chatTop and chatBottom on top of what they are (the bottom
+// also the time row of your message when it is the last one: Qt leaves the last block's bottom margin out); true if
+// they changed. restoreAll() gives them back (only what still has our values).
+bool applyEndGap(QTextDocument* doc, const Env& env);
+bool removeEndGap(QTextDocument* doc);
+bool hasEndGap(QTextDocument* doc);
+// How much room under the last line is ours (0: none): a chat scrolled that close to its end is at its end.
+qreal endGapExtra(QTextDocument* doc);
 
 // ---- pictures ---------------------------------------------------------------------------------------------
 // What block n's picture shows (the head, compact head, system prefix or divider), drawn at env's ratio.

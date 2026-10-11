@@ -492,6 +492,17 @@ RowLayout layoutRow(const ReactionView& view, int pictureWidth, int maxWidth, co
     return row;
 }
 
+RowLayout mirrored(const RowLayout& row)
+{
+    RowLayout   out   = row;
+    const qreal width = row.size.width();
+    for (QRectF& r : out.pills)
+        r.moveLeft(width - r.right());
+    if (!out.addPill.isNull())
+        out.addPill.moveLeft(width - out.addPill.right());
+    return out;
+}
+
 QRectF addButtonRect(const QSizeF& picture)
 {
     return QRectF(picture.width() - kAddButtonInset - kAddButton, kAddButtonInset, kAddButton, kAddButton);

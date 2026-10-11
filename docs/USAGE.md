@@ -248,24 +248,26 @@ Ask your channel a question and let everyone with TS Media vote, like Telegram's
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/chat-layout-dark.png">
-  <img src="images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message tinted, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
+  <img src="images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message on the right in a tinted bubble with its time and without a name or avatar, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
 </picture>
 
 TS Media chat gives TeamSpeak's chat a Discord-like look in your own view. Nothing is sent and nobody else sees a difference. Choose the look in **Settings → General → Chat layout**:
 
 - **Cozy** (the default): names, avatars and times above the messages. Messages of one person within 7 minutes are grouped under one name; point at one to see its time. A reply always starts a new group and shows its reply row above the name. Every message sits in its own bubble, like in Telegram, yours tinted with the accent colour, with its pictures, file, audio and voice cards, polls and reactions inside (cards then have no box of their own). The bubbles can be turned off.
+- **Your messages on the right** (Cozy with bubbles, 2.3.1): like in Telegram, your own messages sit on the right and everyone else's on the left. Yours show no name or avatar; each bubble is as wide as what it holds and shows its time, after the last line or under a picture or card. Right-to-left text such as Persian is right-aligned in its bubble, and so are its reactions. A reply's row sits above your bubble, flush right. Turn it off with **Show my messages on the right**.
 - **Compact:** one line per message, with the time in front.
 - **TeamSpeak classic:** TeamSpeak's own look. Switching applies at once, and TeamSpeak's own chat comes back exactly as it was.
 
 In Cozy and Compact:
 
 - **Day dividers** read *Today, October 10, 2026*. Joins, leaves, TS Media's own notes and other system lines become small centred rows with an icon and their time (on small pills with bubbles), and so do TeamSpeak's status lines in the server tab and in private chats (*You switched from channel …*, *Chat partner disconnected …*); where TeamSpeak's saved chat history begins, a *History* divider shows its day. Four or more in a row show their first with *+N more events*: click it to see them all, *Show fewer* folds them again. Pokes, kicks, bans, errors, welcome and host messages always show.
-- **Message actions:** point at a message for **Add reaction**, **Reply**, **Copy text** and **More**. With bubbles they sit at the bubble's top right and keep off the message's text, also near the bottom of the chat. They are in the right-click menu too, and hidden when the chat is narrower than 240 px.
+- **Message actions:** point at a message for **Add reaction**, **Reply**, **Copy text** and **More**. With bubbles they sit at the bubble's top right (top left for your messages on the right) and keep off the message's text, also near the bottom of the chat. They are in the right-click menu too, and hidden when the chat is narrower than 240 px.
 - **Mentions:** a message from someone else with your nickname or *@nickname* in it gets a tint and a bar.
 - **Avatars** are TeamSpeak's own pictures of people, yours included, also for people who have left; TS Media downloads nothing (TeamSpeak may fetch a missing picture from the server, as when you click someone), and people without one get their initials on a coloured disc.
 - Links keep their colour and underline. Copying gives TeamSpeak's own text.
+- The chat keeps a little room under its newest message, so it never touches the chat tabs below, and stays at its end when new messages come in.
 
-Grouping, message actions, bubbles, avatars, mentions and folding can each be turned off in the [settings](SETTINGS.md#chat-layout).
+Grouping, message actions, bubbles, your messages on the right, avatars, mentions and folding can each be turned off in the [settings](SETTINGS.md#chat-layout).
 
 ## Dragging files out of the chat
 

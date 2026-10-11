@@ -113,6 +113,8 @@ class ChatLayout : public QObject
         QVector<QPair<QTextCursor, qint64>> burst;    // ... in the current turn of the event loop (settleBurst)
         QVector<QPair<QTextCursor, QTextCursor>> dirty; // ranges TeamSpeak changed
         QSet<int>               restyle;       // block numbers to style again
+        QSet<int>               fitDirty;      // 2.3.1: your messages on the right another module changed (measured again)
+        qreal                   ownMargin = -1; // 2.3.1: the right margin of yours on the right for the chat's width (alignOwnRight), -1: not yet
         int                     historyNext = -1; // the next block going backwards (-1: done)
         int                     blocksSeen  = 0;  // the document's block count at its last change
         QVector<QDate>          dates;

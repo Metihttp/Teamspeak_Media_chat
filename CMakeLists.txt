@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.3.0 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.3.1 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -390,6 +390,7 @@ if(TSMEDIA_BUILD_TESTS)
         src/textreact.cpp
         src/textreactdoc.cpp
         tests/tst_chatdoc23.cpp   # 2.3 cross review: every layer in one chat (keys, jumbo, copying, replies, restore)
+        tests/tst_ownright.cpp    # 2.3.1: your messages on the right, the chat's room at its end
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp

@@ -525,14 +525,17 @@ ChatTextReactions::Look ChatTextReactions::lookOf(QTextBrowser* browser) const
     return look;
 }
 
-rx::RowLayout ChatTextReactions::layoutFor(const View&, const QString& key, const Look& look, bool keep) const
+rx::RowLayout ChatTextReactions::layoutFor(const View&, const QString& key, const Look& look, bool keep, bool mirrored) const
 {
     if (!m_hub)
         return {};
     const QFontMetricsF   normal(rx::countFont(look.font, false));
     const QFontMetricsF   bold(rx::countFont(look.font, true));
     const rx::MeasureText measure = [&](const QString& text, bool isBold) { return (isBold ? bold : normal).horizontalAdvance(text); };
-    return rx::layoutRow(m_hub->view(key), 0, look.maxWidth, measure, keep);
+    const rx::RowLayout   row     = rx::layoutRow(m_hub->view(key), 0, look.maxWidth, measure, keep);
+    // 2.3.1: right-aligned under right-to-left text of yours: the pills from the right, flush with the text (the add
+    // pill's slot, empty until the row is hovered, on the left).
+    return mirrored ? rx::mirrored(row) : row;
 }
 
 void ChatTextReactions::reconcileAll(View& v)
@@ -750,12 +753,14 @@ bool ChatTextReactions::renderRow(View& v, int n, bool force)
     QTextDocument* doc     = v.document;
     if (!browser || !doc || !m_hub)
         return false;
-    const textreactdoc::Row row = textreactdoc::rowOf(doc->findBlockByNumber(n));
+    const QTextBlock        block = doc->findBlockByNumber(n);
+    const textreactdoc::Row row   = textreactdoc::rowOf(block);
     if (!row.exists())
         return false;
-    const Look         look = lookOf(browser);
-    const ReactionView view = m_hub->view(row.key);
-    const bool         keep = view.isEmpty();
+    const Look         look     = lookOf(browser);
+    const ReactionView view     = m_hub->view(row.key);
+    const bool         keep     = view.isEmpty();
+    const bool         mirrored = layoutformat::isOwnRightAligned(block); // 2.3.1
     rx::RowPaint       paint;
     paint.showAdd = m_hoverIn == browser && m_hoverBlock == n && canAddIn(v);
     if (m_hover.browser == browser && m_hover.block == n) {
@@ -770,7 +775,7 @@ bool ChatTextReactions::renderRow(View& v, int n, bool force)
     }
     QString signature = QString::fromLatin1("%1|%2|%3|%4|%5|%6|%7|%8|%9")
                             .arg(row.key)
-                            .arg((look.dark ? 1 : 0) + (look.onBubble ? 2 : 0))
+                            .arg((look.dark ? 1 : 0) + (look.onBubble ? 2 : 0) + (mirrored ? 4 : 0))
                             .arg(look.base.rgba())
                             .arg(look.dpr)
                             .arg(look.maxWidth)
@@ -783,7 +788,7 @@ bool ChatTextReactions::renderRow(View& v, int n, bool force)
     const QString name = row.format.name();
     if (!force && v.rendered.value(name) == signature)
         return false;
-    const rx::RowLayout layout = layoutFor(v, row.key, look, keep);
+    const rx::RowLayout layout = layoutFor(v, row.key, look, keep, mirrored);
     const QSize         size(qMax(1, qRound(row.format.width())), qMax(1, qRound(row.format.height())));
     QImage              image(size * look.dpr, QImage::Format_ARGB32_Premultiplied);
     image.setDevicePixelRatio(look.dpr);
@@ -841,9 +846,10 @@ ChatTextReactions::Hit ChatTextReactions::hitAt(View& v, const QPoint& pos) cons
     const QRectF rect = objectRect(v.browser, n);
     if (!rect.isValid() || !rect.contains(pos))
         return hit;
-    const textreactdoc::Row row = textreactdoc::rowOf(v.document->findBlockByNumber(n));
-    const Look              look = lookOf(v.browser);
-    const rx::RowLayout     layout = layoutFor(v, row.key, look, m_hub->view(row.key).isEmpty());
+    const QTextBlock        block  = v.document->findBlockByNumber(n);
+    const textreactdoc::Row row    = textreactdoc::rowOf(block);
+    const Look              look   = lookOf(v.browser);
+    const rx::RowLayout     layout = layoutFor(v, row.key, look, m_hub->view(row.key).isEmpty(), layoutformat::isOwnRightAligned(block));
     hit.block  = n;
     hit.object = rect;
     hit.zone   = rx::zoneAt(QSizeF(0, 0), layout, false, QPointF(pos) - rect.topLeft());
@@ -1229,8 +1235,9 @@ QRect ChatTextReactions::pillRect(QTextBrowser* browser, int block, int reaction
     const QRectF rect = objectRect(browser, block);
     if (!rect.isValid())
         return {};
-    const textreactdoc::Row row    = textreactdoc::rowOf(browser->document()->findBlockByNumber(block));
-    const rx::RowLayout     layout = layoutFor(*v, row.key, lookOf(browser), m_hub->view(row.key).isEmpty());
+    const QTextBlock        b      = browser->document()->findBlockByNumber(block);
+    const textreactdoc::Row row    = textreactdoc::rowOf(b);
+    const rx::RowLayout     layout = layoutFor(*v, row.key, lookOf(browser), m_hub->view(row.key).isEmpty(), layoutformat::isOwnRightAligned(b));
     for (int i = 0; i < layout.pills.size(); ++i) {
         if (layout.reactions.at(i) == reaction)
             return layout.pills.at(i).translated(rect.topLeft()).toAlignedRect();

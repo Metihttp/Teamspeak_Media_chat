@@ -10,10 +10,13 @@
 // A bubble holds the whole message block: its name row (a reply head's reply row stays above it, Discord's
 // connector reaching into it), the text, previews, albums, voice cards and anything a module appends at the
 // block's end (a reaction row), so a block may grow and its bubble follows. The avatar stays outside, left.
+// 2.3.1: your messages on the right (layoutdoc::ownPlace): no avatar and no name row, the bubble as wide as its
+// content and flush right, its time on it, its small corners on the right where its group's bubbles meet.
 
 #include <QPainterPath>
 #include <QPointF>
 #include <QRectF>
+#include <QString>
 #include <QVector>
 
 #include "layoutdoc.h"
@@ -34,6 +37,11 @@ struct Item {
     bool   mention   = false;  // it mentions you
     bool   joinAbove = false;  // the bubble right above is the same group's: their corners meet small
     bool   joinBelow = false;
+    // 2.3.1: your message on the right, with its time (document coordinates; empty: none).
+    bool    right = false;
+    QString time;
+    QPointF timeBaseline;
+    QRectF  timeRect;
 };
 
 // The shape of a laid-out block (kind None: none). Bubbles for styled Cozy messages and pills for styled
@@ -41,13 +49,14 @@ struct Item {
 Item itemOf(const QTextBlock& block, const layoutdoc::Env& env);
 // The shapes of the visible blocks from..to (one more on each side: a neighbour's padding reaches in).
 QVector<Item> itemsIn(QTextDocument* doc, int from, int to, const layoutdoc::Env& env);
-// Its outline (rounded; small corners where it meets its group).
+// Its outline (rounded; small corners where it meets its group: on the left, or on the right for item.right).
 QPainterPath pathOf(const Item& item, const layoutart::Tokens& tokens);
 
 // 2.3 live test: what the action bar must not cover near a hovered message (document coordinates): the lines of
 // the visible message and system rows from..to, so their text, pictures and reaction rows. A Cozy head's line
 // is its picture: its name row counts as wide as the name and time are (the rest is the bubble's empty top
-// right), a reply row above it as wide as the picture.
+// right), a reply row above it as wide as the picture. 2.3.1: an own message on the right: its lines (a reply
+// row's picture as it is) and its time.
 QVector<QRectF> keepOut(QTextDocument* doc, int from, int to, const layoutdoc::Env& env);
 // ... of the rows that reach within reach above or below block's bubble (its row without one), block's own too.
 QVector<QRectF> keepOutNear(QTextDocument* doc, int block, qreal reach, const layoutdoc::Env& env);
@@ -60,14 +69,16 @@ QVector<QRectF> keepOutNear(QTextDocument* doc, int block, qreal reach, const la
 // the bubble first (within 4 px of it), then further right, then into the bubble's top right corner; where
 // nothing is free, it takes the place that covers the least. textPad: what is round a text (a bubble's
 // padding): moved right past a text, the bar keeps that much more air (it clears the text's bubble too).
-QRect barPlace(const QSize& bar, const QRect& area, const QRect& bubble, const QVector<QRect>& keepOut, int right, int textPad = 0);
+// 2.3.1: left (your message on the right): all of it mirrored: beside the bubble's top left corner, right then
+// being its inset from the left edge.
+QRect barPlace(const QSize& bar, const QRect& area, const QRect& bubble, const QVector<QRect>& keepOut, int right, int textPad = 0, bool left = false);
 
 struct State {
     int hover = -1; // the block under the pointer
     int focus = -1; // the message being replied to
 };
 // Paints the items, offset added (document to painter coordinates): the surface, a mention's tint and bar,
-// the hover layer, the focus ring.
+// the hover layer, the focus ring; 2.3.1: an own message's time on the right.
 void paint(QPainter& p, const QVector<Item>& items, const layoutdoc::Env& env, const QPointF& offset, const State& state);
 
 } // namespace layoutbubbles

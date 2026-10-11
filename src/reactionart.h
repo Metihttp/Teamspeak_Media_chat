@@ -66,6 +66,9 @@ using MeasureText = std::function<qreal(const QString& text, bool bold)>;
 // at most maxWidth, wrapping onto more lines when narrower. keep: a row (with only the add pill) even
 // without reactions (the pointer is still on it after the last one was removed).
 RowLayout layoutRow(const ReactionView& view, int pictureWidth, int maxWidth, const MeasureText& measure, bool keep = false);
+// 2.3.1: the same row mirrored (every line from the right, the add pill's slot on the left): the row of your
+// right-to-left message on the right, which sits right-aligned, its pills then flush with the text's right edge.
+RowLayout mirrored(const RowLayout& row);
 
 // The fonts the counts are drawn in (from the chat font, like the preview texts).
 QFont countFont(const QFont& chatFont, bool bold);

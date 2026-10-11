@@ -51,6 +51,10 @@
 #include "voicecontroller.h" // 2.2 voice
 #ifdef TSMEDIA_TESTHOOKS
 #include <QElapsedTimer>
+#include <QTextBlock>    // 2.3.1 live test: the chats after the chat layer went
+#include <QTextDocument>
+#include <QTextFrame>
+#include "layoutdoc.h"
 
 #include "selftest.h" // test builds: the scripted live-test driver
 void selfTestMusicShutdown(); // 2.3 live music (selftestmusic.cpp)
@@ -596,7 +600,37 @@ TS3_EXPORT void ts3plugin_shutdown()
         for (const QPointer<QWidget>& w : windows)
             delete w.data();
 
+#ifdef TSMEDIA_TESTHOOKS
+        // 2.3.1 live test: what TeamSpeak's chats hold once the chat layer is gone (nothing of ours, its own margins).
+        QList<QPointer<QTextBrowser>> chatsShown;
+        if (g_chat && g_chat->mainWindow()) {
+            for (QTextBrowser* tb : g_chat->mainWindow()->findChildren<QTextBrowser*>())
+                chatsShown.append(tb);
+        }
+#endif
         delete g_chat.data(); // destroys the inline players
+#ifdef TSMEDIA_TESTHOOKS
+        for (const QPointer<QTextBrowser>& tb : chatsShown) {
+            QTextDocument* doc = tb ? tb->document() : nullptr;
+            if (!doc || doc->isEmpty())
+                continue;
+            int ours = 0, sides = 0;
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+                ours += layoutdoc::hasOurs(b) ? 1 : 0;
+                const QTextBlockFormat f = b.blockFormat();
+                sides += f.leftMargin() != 0 || f.rightMargin() != 0 || f.textIndent() != 0 ? 1 : 0;
+            }
+            const QTextFrameFormat ff = doc->rootFrame()->frameFormat();
+            ts3::log(QString::fromLatin1("[test] shutdown: chat %1 blocks, %2 with ours, %3 with side margins or indent; frame margin %4 top %5 bottom %6, end gap ours %7")
+                         .arg(doc->blockCount())
+                         .arg(ours)
+                         .arg(sides)
+                         .arg(ff.margin())
+                         .arg(ff.topMargin())
+                         .arg(ff.bottomMargin())
+                         .arg(layoutdoc::hasEndGap(doc) ? 1 : 0));
+        }
+#endif
 
         // Anything of ours still living inside TeamSpeak's widgets (e.g. the upload toast in a chat
         // browser) would outlive the DLL's code.

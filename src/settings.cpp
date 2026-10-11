@@ -174,6 +174,7 @@ void Settings::load(const QString& file)
     chatCollapseEvents   = readBool(s, "chatCollapseEvents", d.chatCollapseEvents);
     chatLayoutIntroShown = readBool(s, "chatLayoutIntroShown", d.chatLayoutIntroShown);
     chatBubbles          = readBool(s, "chatBubbles", d.chatBubbles); // 2.3 chat-visuals
+    chatOwnRight         = readBool(s, "chatOwnRight", d.chatOwnRight); // 2.3.1
 }
 
 void Settings::save() const
@@ -242,6 +243,7 @@ void Settings::save(const QString& file) const
     s.setValue(key("chatCollapseEvents"), chatCollapseEvents);
     s.setValue(key("chatLayoutIntroShown"), chatLayoutIntroShown);
     s.setValue(key("chatBubbles"), chatBubbles); // 2.3 chat-visuals
+    s.setValue(key("chatOwnRight"), chatOwnRight); // 2.3.1
     s.sync();
 }
 

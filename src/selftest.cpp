@@ -44,7 +44,7 @@
 //                                   (getAvatar, the flag) and the chat layout's avatars
 //   textrow {text, nth, emoji, add, tip, click, hover}   the reaction row of a message (newest containing text):
 //                                   hover the message, then the pill of emoji (or the add pill): its tool tip, a click
-//   setting {key: chatBubbles}      also the 2.3 bubbles
+//   setting {key: chatBubbles}      also the 2.3 bubbles (2.3.1: chatOwnRight, your messages on the right)
 //   winsize {w, h, chat}            the main window's size and the chat pane's height (the second test client only)
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -72,6 +72,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMainWindow>
 #include <QMenu>
 #include <QPushButton>
@@ -112,6 +113,7 @@
 #include "actionbar.h"     // part 4: the chat redesign's action bar
 #include "chatlayout.h"    // part 4
 #include "emojiinput.h"    // part 4: TeamSpeak's emoji button taken over
+#include "layoutbubbles.h" // 2.3.1 live test: the bubbles as laid out (ownplaces)
 #include "layoutdoc.h"     // part 4: chips
 #include "layoutformat.h"  // part 4
 #include "micbutton.h"     // part 5: the chat input's microphone
@@ -1042,6 +1044,8 @@ bool SelfTest::run(const QJsonObject& c)
             s.chatAvatars = v.toBool();
         else if (key == QLatin1String("chatBubbles")) // 2.3 chat-visuals
             s.chatBubbles = v.toBool();
+        else if (key == QLatin1String("chatOwnRight")) // 2.3.1
+            s.chatOwnRight = v.toBool();
         else if (key == QLatin1String("chatMentions"))
             s.chatMentions = v.toBool();
         else if (key == QLatin1String("chatCollapseEvents"))
@@ -3059,6 +3063,149 @@ bool SelfTest::runPart6(const QString& cmd, const QJsonObject& c, bool* handled)
         next(800);
         return false;
     }
+    if (cmd == QLatin1String("ownplaces")) { // 2.3.1: the visible chat's bubbles as laid out (viewport x), the scroll bars, its end
+        ChatLayout* lay = m_chat->layout();
+        const auto  it  = lay && b ? lay->m_views.constFind(b) : decltype(lay->m_views.constFind(b))();
+        if (!lay || !b || it == lay->m_views.constEnd()) {
+            say(QString::fromLatin1("ownplaces: no visible chat"));
+            return true;
+        }
+        const layoutdoc::Env& env  = it->env;
+        QTextDocument*        doc  = b->document();
+        QWidget*              vp   = b->viewport();
+        QScrollBar*           vb   = b->verticalScrollBar();
+        QScrollBar*           hb   = b->horizontalScrollBar();
+        const int             last = c.value(QString::fromLatin1("last")).toInt(12);
+        const int             from = qMax(0, doc->blockCount() - last);
+        const qreal           sx   = hb->value();
+        const qreal           sy   = vb->value();
+        say(QString::fromLatin1("ownplaces: viewport %1x%2, vbar %3 %4/%5, hbar %6 max %7, textWidth %8, contentWidth %9, own right %10, edge %11, margins ltr %12 rtl %13 (kept %14), end gap %15")
+                .arg(vp->width())
+                .arg(vp->height())
+                .arg(vb->isVisible() ? QString::fromLatin1("shown") : QString::fromLatin1("hidden"))
+                .arg(vb->value())
+                .arg(vb->maximum())
+                .arg(hb->isVisible() ? QString::fromLatin1("shown") : QString::fromLatin1("hidden"))
+                .arg(hb->maximum())
+                .arg(doc->textWidth())
+                .arg(env.contentWidth)
+                .arg(env.ownRight ? 1 : 0)
+                .arg(layoutdoc::ownRightEdge(env))
+                .arg(layoutdoc::ownRightMargin(doc, env, false))
+                .arg(layoutdoc::ownRightMargin(doc, env, true))
+                .arg(it->ownMargin)
+                .arg(layoutdoc::endGapExtra(doc)));
+        QMap<int, int> rightEdges; // bubble right edge (viewport x) -> how many
+        int            own = 0, others = 0, overflow = 0;
+        qreal          othersLeft = 1e9, maxRight = -1e9;
+        ChatTextReactions* tr = m_chat->m_textReactions;
+        for (QTextBlock tb = doc->findBlockByNumber(from); tb.isValid(); tb = tb.next()) {
+            if (!tb.isVisible())
+                continue;
+            const layoutbubbles::Item item = layoutbubbles::itemOf(tb, env);
+            if (item.kind == layoutbubbles::Kind::None)
+                continue;
+            const QRectF bubble = item.rect.translated(-sx, -sy);
+            maxRight            = qMax(maxRight, bubble.right());
+            // the block's widest line on the bubble (a reply row above it is not), past its right edge: overflow
+            qreal              lineRight = -1e9;
+            const QTextLayout* tl        = tb.layout();
+            const QRectF       br        = doc->documentLayout()->blockBoundingRect(tb);
+            for (int i = 0; tl && i < tl->lineCount(); ++i) {
+                const QRectF r = tl->lineAt(i).naturalTextRect().translated(br.topLeft() - QPointF(sx, sy));
+                if (r.bottom() > bubble.top() + 0.5)
+                    lineRight = qMax(lineRight, r.right());
+            }
+            const bool over = lineRight > bubble.right() + 0.5;
+            overflow += over ? 1 : 0;
+            const QString text = visible(replydoc::parseBlock(tb).text.left(28));
+            if (item.kind == layoutbubbles::Kind::Pill) {
+                continue;
+            }
+            if (!item.right) {
+                ++others;
+                othersLeft = qMin(othersLeft, bubble.left());
+                say(QString::fromLatin1("ownplaces: block %1 LEFT own %2 bubble x %3..%4 y %5..%6 widest line %7%8 \"%9\"")
+                        .arg(tb.blockNumber())
+                        .arg(item.own ? 1 : 0)
+                        .arg(bubble.left(), 0, 'f', 1)
+                        .arg(bubble.right(), 0, 'f', 1)
+                        .arg(bubble.top(), 0, 'f', 1)
+                        .arg(bubble.bottom(), 0, 'f', 1)
+                        .arg(lineRight, 0, 'f', 1)
+                        .arg(over ? QString::fromLatin1(" OVERFLOW") : QString(), text));
+                continue;
+            }
+            ++own;
+            rightEdges[qRound(bubble.right())] += 1;
+            const layoutdoc::OwnPlace p   = layoutdoc::ownPlace(tb, env);
+            const QTextBlockFormat    bf  = tb.blockFormat();
+            QString                   row = QString::fromLatin1("none");
+            const textreactdoc::Row   rr  = textreactdoc::rowOf(tb);
+            if (tr && rr.exists()) {
+                ChatTextReactions::View* tv  = tr->viewFor(b);
+                const QRectF             obj = tr->objectRect(b, tb.blockNumber());
+                if (tv && obj.isValid()) {
+                    const rx::RowLayout rl = tr->layoutFor(*tv, rr.key, tr->lookOf(b), true, layoutformat::isOwnRightAligned(tb));
+                    QStringList         pills;
+                    for (const QRectF& pill : rl.pills)
+                        pills << QString::fromLatin1("%1..%2").arg(obj.left() + pill.left(), 0, 'f', 1).arg(obj.left() + pill.right(), 0, 'f', 1);
+                    row = QString::fromLatin1("object x %1..%2, pills [%3], add pill %4..%5")
+                              .arg(obj.left(), 0, 'f', 1)
+                              .arg(obj.right(), 0, 'f', 1)
+                              .arg(pills.join(QString::fromLatin1(" ")))
+                              .arg(obj.left() + rl.addPill.left(), 0, 'f', 1)
+                              .arg(obj.left() + rl.addPill.right(), 0, 'f', 1);
+                }
+            }
+            say(QString::fromLatin1("ownplaces: block %1 RIGHT rtl %2 fitted %3 lines %4 (from %5) content x %6..%7 bubble x %8..%9 y %10..%11 time %12 \"%13\" x %14..%15 widest line %16%17; row %18 \"%19\"")
+                    .arg(tb.blockNumber())
+                    .arg(layoutformat::isOwnRightAligned(tb) ? 1 : 0)
+                    .arg(bf.doubleProperty(layoutformat::kOwnFit), 0, 'f', 1)
+                    .arg(p.lines)
+                    .arg(p.first)
+                    .arg(p.left - sx, 0, 'f', 1)
+                    .arg(p.right - sx, 0, 'f', 1)
+                    .arg(bubble.left(), 0, 'f', 1)
+                    .arg(bubble.right(), 0, 'f', 1)
+                    .arg(bubble.top(), 0, 'f', 1)
+                    .arg(bubble.bottom(), 0, 'f', 1)
+                    .arg(p.time)
+                    .arg(p.timeText)
+                    .arg(p.timeRect.left() - sx, 0, 'f', 1)
+                    .arg(p.timeRect.right() - sx, 0, 'f', 1)
+                    .arg(lineRight, 0, 'f', 1)
+                    .arg(over ? QString::fromLatin1(" OVERFLOW") : QString())
+                    .arg(row, text));
+        }
+        // the chat's end: the newest visible block's bubble (or row) bottom against the viewport's bottom
+        QTextBlock lastShown = doc->lastBlock();
+        while (lastShown.isValid() && !lastShown.isVisible())
+            lastShown = lastShown.previous();
+        qreal bottom = -1;
+        if (lastShown.isValid()) {
+            const layoutbubbles::Item item = layoutbubbles::itemOf(lastShown, env);
+            bottom = item.kind != layoutbubbles::Kind::None ? item.rect.bottom() : doc->documentLayout()->blockBoundingRect(lastShown).bottom();
+        }
+        QStringList edges;
+        for (auto e = rightEdges.cbegin(); e != rightEdges.cend(); ++e)
+            edges << QString::fromLatin1("%1 x%2").arg(e.key()).arg(e.value());
+        say(QString::fromLatin1("ownplaces: %1 right, %2 left (leftmost %3), right edges [%4], rightmost bubble %5 of viewport %6, overflow %7; last block %8 bottom %9 -> room under it %10 px (scroll %11/%12, document height %13)")
+                .arg(own)
+                .arg(others)
+                .arg(others ? othersLeft : -1, 0, 'f', 1)
+                .arg(edges.join(QString::fromLatin1(", ")))
+                .arg(maxRight, 0, 'f', 1)
+                .arg(vp->width())
+                .arg(overflow)
+                .arg(lastShown.blockNumber())
+                .arg(bottom, 0, 'f', 1)
+                .arg(bottom >= 0 ? vp->height() - (bottom - sy) : -1, 0, 'f', 1)
+                .arg(vb->value())
+                .arg(vb->maximum())
+                .arg(doc->documentLayout()->documentSize().height(), 0, 'f', 1));
+        return true;
+    }
     if (cmd == QLatin1String("textrow")) {
         ChatTextReactions* tr = m_chat->m_textReactions;
         if (!b || !tr || !tr->m_hub) {
@@ -3097,7 +3244,9 @@ bool SelfTest::runPart6(const QString& cmd, const QJsonObject& c, bool* handled)
                 ChatTextReactions::View* v   = tr->viewFor(b);
                 const QRectF             obj = tr->objectRect(b, block);
                 if (v && obj.isValid() && row.exists())
-                    zone = tr->layoutFor(*v, row.key, tr->lookOf(b), true).addPill.translated(obj.topLeft()).toAlignedRect();
+                    zone = tr->layoutFor(*v, row.key, tr->lookOf(b), true, layoutformat::isOwnRightAligned(b->document()->findBlockByNumber(block))) // 2.3.1: mirrored
+                               .addPill.translated(obj.topLeft())
+                               .toAlignedRect();
             } else {
                 zone = tr->pillRect(b, block, which);
             }
@@ -3126,7 +3275,12 @@ bool SelfTest::runPart6(const QString& cmd, const QJsonObject& c, bool* handled)
                 sendMouse(vp, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
                 sendMouse(vp, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
                 QWidget* popup = QApplication::activePopupWidget();
-                say(QString::fromLatin1("textrow: clicked; popup %1").arg(popup ? popup->objectName() : QString::fromLatin1("none")));
+                QString  where;
+                if (popup) { // 2.3.1 live test: where it opened (viewport coordinates), against the pill clicked
+                    const QPoint tl = vp->mapFromGlobal(popup->mapToGlobal(QPoint(0, 0)));
+                    where           = QString::fromLatin1(" at %1,%2 %3x%4 (viewport)").arg(tl.x()).arg(tl.y()).arg(popup->width()).arg(popup->height());
+                }
+                say(QString::fromLatin1("textrow: clicked; popup %1%2").arg(popup ? popup->objectName() : QString::fromLatin1("none"), where));
             }
             const QString grab = c.value(QString::fromLatin1("grab")).toString();
             if (!grab.isEmpty())

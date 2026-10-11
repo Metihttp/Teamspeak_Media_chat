@@ -185,6 +185,18 @@ Tokens tokensFor(Mode mode, const QFont& chatFont, bool ampm, bool bubbles)
         t.systemTop    = scaled(12, f);
         t.systemRunTop = scaled(8, f);
     }
+    // 2.3.1: own messages on the right and the chat's room at its ends.
+    const QFontMetricsF om(t.time);
+    t.ownTimeGap = qMax(6, scaled(8, f));
+    t.ownTimeRow = static_cast<int>(std::ceil(om.ascent() + om.descent()));
+    t.ownSlack   = 2;
+    t.chatTop    = scaled(4, f);
+    t.chatBottom = mode == Mode::Compact ? scaled(12, f) : scaled(14, f);
+    // 2.3.1: a body line is ascent + descent high (QTextLine::height); Qt puts one lower than lineMin at
+    // the bottom of its line, lift lower.
+    const QFontMetricsF bm(chatFont);
+    const int           lift = qMax(0, t.lineMin - static_cast<int>(std::ceil(bm.ascent() + bm.descent() - 0.01)));
+    t.ownHeadTop             = qMax(0, t.bubblePadTop - t.bubblePadHead - lift);
     return t;
 }
 
@@ -617,23 +629,37 @@ QFont replyNameFont(const Tokens& t, bool underline)
     return f;
 }
 
+// 2.3.1: an own reply row's connector on its right: the room it takes, its radius.
+qreal spineRadius(const Tokens& t)
+{
+    return qMax(3.0, t.f / 2.0);
+}
+
+qreal ownSpineRoom(const Tokens& t)
+{
+    return 4 + spineRadius(t) + 6;
+}
+
 ReplyFit fitReply(const HeadSpec& spec, const Tokens& t, qreal width)
 {
     ReplyFit            r;
     const QFontMetricsF nm(replyNameFont(t, false));
     const QFontMetricsF sm(t.reply);
+    // 2.3.1: an own reply row starts at the picture's left edge and leaves room for its connector on the right.
+    const qreal lead  = spec.ownRight ? 0 : t.G;
+    const qreal tail  = spec.ownRight ? ownSpineRoom(t) : 0;
     r.mini            = qMax(10, qRound(t.f * 14 / 12.0));
-    r.nameX           = t.G + r.mini + 4;
+    r.nameX           = lead + r.mini + 4;
     const QString at  = QLatin1Char('@') + spec.replyHeader.nick;
     const qreal   clip = spec.replyHeader.media ? 12 + 3 : 0;
     const qreal   gap  = 6;
     r.nameW           = nm.horizontalAdvance(at);
-    r.width           = r.nameX + r.nameW + 2;
+    r.width           = r.nameX + r.nameW + 2 + tail;
     if (!spec.replyHeader.snippet.isEmpty())
         r.width += gap + clip + sm.horizontalAdvance(spec.replyHeader.snippet);
     if (width <= 0)
         width = r.width;
-    const qreal avail = qMax(0.0, width - r.nameX - 2);
+    const qreal avail = qMax(0.0, width - r.nameX - 2 - tail);
     qreal       nameW = r.nameW;
     if (!spec.replyHeader.snippet.isEmpty() && avail - nameW - gap - clip < 48)
         nameW = qMin(nameW, qMax(avail * 0.4, avail - gap - clip - 48));
@@ -647,10 +673,55 @@ ReplyFit fitReply(const HeadSpec& spec, const Tokens& t, qreal width)
     return r;
 }
 
+// 2.3.1: an own reply head: the reply row right-aligned before its connector, which comes down from the row's
+// middle at the right into the bubble's top below the picture.
+void renderOwnReply(QPainter& p, const HeadSpec& spec, const Tokens& t, const Colors& c, const QSize& size, qreal dpr)
+{
+    const ReplyFit      fit      = fitReply(spec, t, size.width());
+    const bool          live     = spec.replyHeader.found && (spec.replyHover || spec.replyPressed);
+    const QFont         nameFont = replyNameFont(t, live);
+    const QFontMetricsF nm(nameFont);
+    const QFontMetricsF sm(t.reply);
+    const qreal         clip  = spec.replyHeader.media && !fit.snippet.isEmpty() ? 12 + 3 : 0;
+    const qreal         end   = fit.snippet.isEmpty() ? fit.nameX + fit.nameW : fit.snippetX + clip + sm.horizontalAdvance(fit.snippet);
+    const qreal         right = size.width() - ownSpineRoom(t);
+    const qreal         shift = qMax(0.0, right - end); // flush against the connector
+    const qreal         r     = spineRadius(t);
+    const qreal         mid   = std::floor(t.replyRow / 2.0) + 0.5;
+    const qreal         sx    = size.width() - 6.5;
+    QPainterPath        spine;
+    spine.moveTo(right + 4, mid);
+    spine.lineTo(sx - r, mid);
+    spine.quadTo(sx, mid, sx, mid + r);
+    spine.lineTo(sx, size.height() + 1); // into the bubble's top (under the picture)
+    p.setPen(QPen(live ? c.muted : c.spine, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(spine);
+    const QRectF miniRect(shift, (t.replyRow - fit.mini) / 2.0, fit.mini, fit.mini);
+    p.drawImage(miniRect, avatarImage(spec.replyHeader.nick, spec.replyHeader.uid, spec.replyAvatar, qRound(fit.mini), dpr));
+    const qreal base = std::round(t.replyRow / 2.0 + (nm.ascent() - nm.descent()) / 2.0);
+    p.setFont(nameFont);
+    p.setPen(spec.replyName.isValid() ? spec.replyName : c.muted);
+    replyart::drawRun(p, shift + fit.nameX, base, nm, fit.name);
+    if (!fit.snippet.isEmpty()) {
+        const QColor color = live ? c.text : c.muted;
+        qreal        x     = shift + fit.snippetX;
+        if (spec.replyHeader.media) {
+            replyart::drawGlyph(p, replyart::Glyph::Clip, QRectF(x, base - sm.xHeight() / 2.0 - 6, 12, 12), color);
+            x += 12 + 3;
+        }
+        p.setFont(t.reply);
+        p.setPen(color);
+        replyart::drawRun(p, x, base, sm, fit.snippet);
+    }
+}
+
 } // namespace
 
 qreal headNameRowWidth(const HeadSpec& spec, const Tokens& t)
 {
+    if (spec.ownRight)
+        return 0; // 2.3.1: no name row on the right
     const QFontMetricsF nm(t.name);
     const QFontMetricsF tm(t.time);
     qreal               w = t.G + nm.horizontalAdvance(spec.nick) + 2;
@@ -661,6 +732,13 @@ qreal headNameRowWidth(const HeadSpec& spec, const Tokens& t)
 
 QSize headSize(const HeadSpec& spec, const Tokens& t, int maxWidth)
 {
+    if (spec.ownRight) {
+        // 2.3.1: the reply row alone, its connector reaching the bubble's top padding below it (nothing without one).
+        if (!spec.reply)
+            return QSize(0, 0);
+        const int width = qMax(t.G, qMin(maxWidth > 0 ? maxWidth : 100000, static_cast<int>(std::ceil(fitReply(spec, t, 0).width))));
+        return QSize(width, t.replyRow + t.bubblePadTop + 2);
+    }
     qreal w = headNameRowWidth(spec, t);
     if (spec.reply)
         w = qMax(w, fitReply(spec, t, 0).width);
@@ -671,7 +749,13 @@ QSize headSize(const HeadSpec& spec, const Tokens& t, int maxWidth)
 
 HeadGeometry headGeometry(const HeadSpec& spec, const Tokens& t, const QSize& size)
 {
-    HeadGeometry        g;
+    HeadGeometry g;
+    if (spec.ownRight) {
+        // 2.3.1: no avatar, name or time (the time is on the bubble); the reply row is the click target.
+        if (spec.reply)
+            g.replyRow = QRectF(0, 0, size.width(), t.replyRow);
+        return g;
+    }
     const QFontMetricsF nm(t.name);
     const QFontMetricsF tm(t.time);
     const qreal         top = spec.reply ? t.replyRow : 0;
@@ -702,6 +786,12 @@ QImage renderHead(const HeadSpec& spec, const Tokens& t, const Colors& c, const 
     QImage   img = canvas(size, dpr);
     QPainter p(&img);
     prepare(p);
+    if (spec.ownRight) {
+        if (spec.reply)
+            renderOwnReply(p, spec, t, c, size, dpr); // 2.3.1
+        p.end();
+        return img;
+    }
     const HeadGeometry g = headGeometry(spec, t, size);
 
     if (spec.reply) {
@@ -1028,6 +1118,28 @@ QImage renderChip(const QString& text, bool hovered, const Tokens& t, const Colo
     p.drawText(QPointF(1 + 6, std::round(size.height() / 2.0 + (fm.ascent() - fm.descent()) / 2.0)), text);
     p.end();
     return img;
+}
+
+QString ownTimeText(const QString& headerTime, bool ampm)
+{
+    return shortTime(headerTime, ampm || hasAmPm(headerTime));
+}
+
+qreal ownTimeWidth(const QString& text, const Tokens& t)
+{
+    return text.isEmpty() ? 0.0 : std::ceil(QFontMetricsF(t.time).horizontalAdvance(text));
+}
+
+void paintOwnTime(QPainter& p, const QString& text, const QPointF& baseline, const Tokens& t, const QColor& color)
+{
+    if (text.isEmpty())
+        return;
+    p.save();
+    p.setFont(t.time);
+    p.setPen(color);
+    p.setRenderHint(QPainter::TextAntialiasing);
+    p.drawText(baseline, text);
+    p.restore();
 }
 
 void paintGutterTime(QPainter& p, const QString& text, qreal right, qreal baseline, const Tokens& t, const Colors& c, bool compact)

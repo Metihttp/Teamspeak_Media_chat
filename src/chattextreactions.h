@@ -129,7 +129,8 @@ class ChatTextReactions : public QObject
     void    refreshKey(const QString& key);
     bool    wantsRow(const View& view, int block) const;
     Look    lookOf(QTextBrowser* browser) const;
-    rx::RowLayout layoutFor(const View& view, const QString& key, const Look& look, bool keep) const;
+    // mirrored (2.3.1): the row of your right-to-left message on the right (layoutformat::isOwnRightAligned).
+    rx::RowLayout layoutFor(const View& view, const QString& key, const Look& look, bool keep, bool mirrored = false) const;
     void    renderVisible(View& view);
     bool    renderRow(View& view, int block, bool force); // true if it was drawn now
     QPair<int, int> blocksShown(QTextBrowser* browser, qreal margin) const;

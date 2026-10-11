@@ -11,9 +11,12 @@
 #include <QTextDocument>
 #include <QTextFragment>
 #include <QTextFrame>
+#include <QTextLayout>
 #include <QTextObject>
 #include <QUrl>
 #include <QVariantList>
+
+#include <cmath>
 
 #include "albums.h"      // uidFromClientHref
 #include "emojiformat.h" // HD emoji: read and stored as TeamSpeak showed them
@@ -244,13 +247,16 @@ QTextBlockFormat revertedBlock(QTextBlockFormat format)
     format.clearProperty(kMention);
     format.clearProperty(kRunHead);
     format.clearProperty(kOwn); // 2.3 chat-visuals
+    for (const int id : {kOwnRight, kOwnFit, kOwnTime, kOwnTimeRow, kTopExtra}) // 2.3.1
+        format.clearProperty(id);
     return format;
 }
 
 bool blockHasOurs(const QTextBlockFormat& format)
 {
     return format.hasProperty(kOrigBlock) || format.hasProperty(kBlockTag) || format.hasProperty(kKind) || format.hasProperty(kCollapsed) || format.hasProperty(kMention)
-           || format.hasProperty(kRunHead) || format.hasProperty(kOwn);
+           || format.hasProperty(kRunHead) || format.hasProperty(kOwn) || format.hasProperty(kOwnRight) || format.hasProperty(kOwnFit) || format.hasProperty(kOwnTime)
+           || format.hasProperty(kOwnTimeRow) || format.hasProperty(kTopExtra);
 }
 
 bool wordChar(const QChar c)
@@ -489,6 +495,7 @@ Row readStyled(const QTextBlock& block, const Lead& lead)
     row.lead      = lead.kind;
     row.bodyStart = lead.bodyStart;
     row.reply     = lead.reply >= 0;
+    row.timeRow   = block.blockFormat().doubleProperty(kOwnTimeRow); // 2.3.1
     const QVariantList runs = runsOf(lead.format);
     switch (lead.kind) {
     case Head:
@@ -784,6 +791,45 @@ Row read(const QTextBlock& block)
 
 namespace {
 
+// 2.3.1: whether a message reads right to left. TeamSpeak shows a message that starts right-to-left (Persian, Arabic,
+// Hebrew) as LRM, RLE, the text, PDF, LRM (U+200E U+202B ... U+202C U+200E), where QString::isRightToLeft() stops at
+// the LRM. A left-to-right mark is passed over; an embedding or override decides, else the first strong character
+// does (isolates skipped, as Qt reads it).
+bool startsRightToLeft(const QString& text)
+{
+    int isolates = 0;
+    for (const uint c : text.toUcs4()) {
+        if (c == 0x200E) // TeamSpeak's LRM in front of its embedding
+            continue;
+        switch (QChar::direction(c)) {
+        case QChar::DirRLI:
+        case QChar::DirLRI:
+        case QChar::DirFSI:
+            ++isolates;
+            break;
+        case QChar::DirPDI:
+            isolates = qMax(0, isolates - 1);
+            break;
+        case QChar::DirRLE:
+        case QChar::DirRLO:
+        case QChar::DirR:
+        case QChar::DirAL:
+            if (isolates == 0)
+                return true;
+            break;
+        case QChar::DirLRE:
+        case QChar::DirLRO:
+        case QChar::DirL:
+            if (isolates == 0)
+                return false;
+            break;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 bool sameAuthor(const Row& a, const Row& b)
 {
     if (a.nick != b.nick)
@@ -793,9 +839,10 @@ bool sameAuthor(const Row& a, const Row& b)
     return true;
 }
 
-layoutart::HeadSpec headSpecFor(const Env& env, int blockNumber, const Row& row, const QDate& date)
+layoutart::HeadSpec headSpecFor(const Env& env, int blockNumber, const Row& row, const QDate& date, bool ownRight = false)
 {
     layoutart::HeadSpec spec;
+    spec.ownRight  = ownRight; // 2.3.1
     spec.nick      = row.nick;
     spec.uid       = row.uid;
     spec.nameColor = layoutart::nameColorFor(env.colors, row.nickColor, env.usualNickColor);
@@ -844,9 +891,11 @@ Plan plan(const Env& env, const QTextBlock& block, const Row& row, const Neighbo
         // 2.3 chat-visuals: your own messages get their own bubble colour; bubbles need room around them.
         p.own    = row.outgoing || (!env.ownUid.isEmpty() && row.uid == env.ownUid);
         p.bottom = t.bubbles ? t.bubblePadBottom + 1 : 0;
+        // 2.3.1: on the right (Cozy with bubbles): no avatar, no name row (settle() gives it its place).
+        p.ownRight = p.own && env.ownRight && t.bubbles && !compact;
         if (join) {
             p.name = blankName();
-            p.size = compact ? QSizeF(t.L, 1) : QSizeF(t.G, 0);
+            p.size = compact ? QSizeF(t.L, 1) : (p.ownRight ? QSizeF(0, 0) : QSizeF(t.G, 0));
             p.top  = t.bubbles ? t.bubblePadBottom + t.bubbleGap + t.bubblePadTop : 0;
             break;
         }
@@ -854,6 +903,16 @@ Plan plan(const Env& env, const QTextBlock& block, const Row& row, const Neighbo
             p.name = nameFor(env, "head", serial);
             p.size = QSizeF(layoutart::compactHeadSize(row.nick, t, row.reply, env.contentWidth));
             p.top  = afterDivider ? t.afterDivider : t.compactHeadTop;
+        } else if (p.ownRight) {
+            // 2.3.1: the picture is the reply row alone (above the bubble), or nothing.
+            const layoutart::HeadSpec spec = headSpecFor(env, block.blockNumber(), row, date, true);
+            p.size = QSizeF(layoutart::headSize(spec, t, qRound(ownMaxContent(env))));
+            p.name = p.size.isEmpty() ? blankName() : nameFor(env, "head", serial);
+            p.top  = afterDivider ? t.afterDivider : t.bubbleHeadTop;
+            // Without a reply row the bubble starts bubblePadTop over the first line's text, where someone else's
+            // starts bubblePadHead over the name row: the same room over both groups (it was 4 px less over yours).
+            if (p.size.isEmpty())
+                p.top += t.ownHeadTop;
         } else {
             const layoutart::HeadSpec spec = headSpecFor(env, block.blockNumber(), row, date);
             // 2.3 chat-visuals: with bubbles the line is bubbleRight narrower (a wider head would stick out
@@ -892,6 +951,11 @@ Plan plan(const Env& env, const QTextBlock& block, const Row& row, const Neighbo
         break;
     case RowType::Unknown:
         break;
+    }
+    // 2.3.1: room under the time row of an own message right above.
+    if (previous.valid && previous.row.timeRow > 0 && row.type != RowType::Unknown) {
+        p.topExtra = previous.row.timeRow;
+        p.top += qRound(p.topExtra);
     }
     return p;
 }
@@ -997,7 +1061,7 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
         const int at = (kind == Head && row.reply) ? bpos : row.headerStart;
         c.setPosition(at);
         c.insertImage(image);
-        if (kind == Head && !row.reply) {
+        if (kind == Head && !row.reply && !plan.ownRight) { // 2.3.1: no name row on the right, no line of its own
             QTextCharFormat separator;
             QFont           tiny = baseFont;
             tiny.setPixelSize(1);
@@ -1130,6 +1194,23 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
             bf.setLeftMargin(t.L);
             bf.setTextIndent(replyLine ? 0 : -t.L);
             bf.setLineHeight(t.compactLeading, QTextBlockFormat::LineDistanceHeight);
+        } else if (plan.ownRight) {
+            // 2.3.1: over the whole column first (settle() reads its lines there, then moves it right). Right-to-left
+            // text is right-aligned (in the left-to-right block every styled one is); a reply row's picture
+            // is flush right too (its text indent).
+            const QString body = block.text().mid(bodyStart - block.position());
+            const bool    rtl  = startsRightToLeft(body); // (TeamSpeak's bidi marks around it)
+            const qreal   room = ownRoom(block, env);
+            bf.setLeftMargin(qMax(0.0, ownRightEdge(env) - room));
+            bf.setRightMargin(ownRightMargin(doc, env, rtl)); // (from the chat's width now: its scroll bar may be hidden)
+            qreal indent = 0;
+            if (!rtl && !plan.continuation && row.reply && plan.size.width() > 0)
+                indent = room - plan.size.width();
+            bf.setTextIndent(indent);
+            bf.setAlignment(rtl ? (Qt::AlignRight | Qt::AlignAbsolute) : (Qt::AlignLeft | Qt::AlignAbsolute));
+            bf.setLineHeight(t.lineMin, QTextBlockFormat::MinimumHeight);
+            bf.setProperty(kOwnRight, true);
+            bf.setProperty(kOwnFit, -1.0);
         } else {
             bf.setLeftMargin(t.G);
             bf.setTextIndent(-t.G);
@@ -1166,6 +1247,8 @@ bool apply(QTextDocument* doc, int n, const Plan& plan, const Env& env)
     }
     bf.setProperty(kBlockTag, plan.tag);
     bf.setProperty(kKind, rowKind);
+    if (plan.topExtra > 0)
+        bf.setProperty(kTopExtra, plan.topExtra); // 2.3.1: settle() keeps it the time row's above
     if (mentioned)
         bf.setProperty(kMention, true); // ChatLayout paints the row's tint and bar under it
     QTextCursor bc(block);
@@ -1329,6 +1412,7 @@ int restoreAll(QTextDocument* doc, QStringList* names)
             sanitize(doc, n); // anything left (a format TeamSpeak copied from ours)
         b = doc->findBlockByNumber(n);
     }
+    removeEndGap(doc); // 2.3.1: the root frame's margins too
     batch.endEditBlock();
     return done;
 }
@@ -1379,7 +1463,8 @@ static QImage renderImpl(const Env& env, const QTextBlock& block, const QDate& d
     QImage out;
     switch (lead.kind) {
     case Head: {
-        layoutart::HeadSpec spec = headSpecFor(env, block.blockNumber(), row, date);
+        layoutart::HeadSpec spec = headSpecFor(env, block.blockNumber(), row, date, isOwnRight(block)); // 2.3.1: on the right
+        sig += QLatin1String(spec.ownRight ? "|R" : "|L");
         spec.avatar              = look.avatar;
         spec.replyAvatar         = look.replyAvatar;
         spec.replyHover          = look.replyHover;
@@ -1620,6 +1705,11 @@ int styleAll(QTextDocument* doc, const Env& env, int firstSerial)
         done += apply(doc, n, p, env) ? 1 : 0;
     }
     batch.endEditBlock();
+    // 2.3.1: your messages on the right get their place (it reads the laid-out lines: after the edit).
+    QVector<int> all(doc->blockCount());
+    for (int n = 0; n < all.size(); ++n)
+        all[n] = n;
+    settle(doc, all, env);
     return done;
 }
 
@@ -1705,7 +1795,7 @@ bool headGeometry(const Env& env, const QTextBlock& block, const QDate& date, la
     const QSize            s(qRound(image.width()), qRound(image.height()));
     const Row              row = read(block);
     if (geometry)
-        *geometry = layoutart::headGeometry(headSpecFor(env, block.blockNumber(), row, date), env.tokens, s);
+        *geometry = layoutart::headGeometry(headSpecFor(env, block.blockNumber(), row, date, isOwnRight(block)), env.tokens, s);
     if (size)
         *size = QSizeF(s);
     return true;
@@ -1940,6 +2030,423 @@ bool applyRun(QTextDocument* doc, const RunPlan& run, const Env& env, int* seria
         }
     }
     return changed;
+}
+
+// ============================================================================================
+// 2.3.1: your messages on the right
+// ============================================================================================
+
+namespace {
+
+struct OwnFit {
+    bool  valid   = false;
+    qreal content = 0; // the widest line on the bubble, or the last one and the time after it
+    int   time    = TimeNone;
+    qreal row     = 0; // the time's own row
+};
+
+// Right-to-left text: right-aligned (apply() decided it from the message's text).
+bool ownRtl(const QTextBlockFormat& format)
+{
+    return format.hasProperty(QTextFormat::BlockAlignment) && (format.alignment() & Qt::AlignRight);
+}
+
+// The block's lines, laid out (Qt lays out lazily: asking for its rect does it); null if it has none.
+const QTextLayout* laidOut(const QTextBlock& block)
+{
+    if (!block.isValid() || !block.isVisible() || !block.document())
+        return nullptr;
+    block.document()->documentLayout()->blockBoundingRect(block);
+    const QTextLayout* tl = block.layout();
+    return tl && tl->lineCount() > 0 ? tl : nullptr;
+}
+
+// The first line on an own message's bubble: 1 under a reply row (its picture's own line), else 0.
+int ownFirstLine(const QTextBlock& block, const QTextLayout* tl)
+{
+    const Lead lead = leadOf(block);
+    return lead.styled && lead.kind == Head && lead.reply >= 0 && tl->lineCount() > 1 ? 1 : 0;
+}
+
+QString ownTimeOf(const QTextBlock& block, const Env& env)
+{
+    const Lead lead = leadOf(block);
+    return lead.styled ? layoutart::ownTimeText(lead.format.stringProperty(kTime), env.tokens.ampm) : QString();
+}
+
+// A reply row's picture flush right with content (left-to-right text: the first line's text indent).
+qreal ownIndent(const QTextBlock& block, bool rtl, qreal content)
+{
+    if (rtl)
+        return 0; // right-aligned anyway
+    const Lead lead = leadOf(block);
+    if (!lead.styled || lead.kind != Head || lead.reply < 0)
+        return 0;
+    const qreal picture = lead.format.toImageFormat().width();
+    return picture > 0 ? content - picture : 0;
+}
+
+// What the laid-out lines need: as wide as the widest line on the bubble; the time after the last line when
+// that line is text (not a picture taller than two lines) and there is room, else on a row of its own.
+OwnFit measureOwn(const QTextBlock& block, const Env& env)
+{
+    OwnFit             fit;
+    const QTextLayout* tl = laidOut(block);
+    if (!tl)
+        return fit;
+    const layoutart::Tokens& t     = env.tokens;
+    const int                first = ownFirstLine(block, tl);
+    const int                lines = tl->lineCount();
+    qreal                    widest = 0;
+    for (int i = first; i < lines; ++i)
+        widest = qMax(widest, tl->lineAt(i).naturalTextWidth());
+    const QTextLine last  = tl->lineAt(lines - 1);
+    const qreal     lastW = last.naturalTextWidth();
+    const QString   time  = ownTimeOf(block, env);
+    const qreal     timeW = layoutart::ownTimeWidth(time, t);
+    fit.valid             = true;
+    if (time.isEmpty()) {
+        fit.content = widest;
+    } else if (last.height() <= 2 * t.lineMin && lastW + t.ownTimeGap + timeW <= ownRoom(block, env)) {
+        fit.time    = TimeInline;
+        fit.content = qMax(widest, lastW + t.ownTimeGap + timeW);
+    } else {
+        fit.time    = TimeRow;
+        fit.content = qMax(widest, timeW);
+        fit.row     = t.ownTimeRow;
+    }
+    fit.content = std::ceil(fit.content - 0.02);
+    return fit;
+}
+
+} // namespace
+
+qreal ownRightEdge(const Env& env)
+{
+    return env.contentWidth - env.tokens.bubbleRight - env.tokens.ownSlack;
+}
+
+qreal ownRightMargin(QTextDocument* doc, const Env& env, bool rtl)
+{
+    // The root frame's content as laid out now: TeamSpeak's viewport without the document margin. Without its
+    // scroll bar it is wider than env.contentWidth (that is the width with the bar).
+    qreal frame = env.contentWidth;
+    if (doc && doc->textWidth() > 0) {
+        const QTextFrameFormat f = doc->rootFrame()->frameFormat();
+        frame                    = doc->textWidth() - f.leftMargin() - f.rightMargin() - 2 * (f.padding() + f.border());
+    }
+    return qMax(0.0, frame - ownRightEdge(env) - (rtl ? 0.0 : qreal(env.tokens.ownSlack)));
+}
+
+int alignOwnRight(QTextDocument* doc, const Env& env)
+{
+    if (!doc)
+        return 0;
+    const qreal                           ltr = ownRightMargin(doc, env, false);
+    const qreal                           rtl = ownRightMargin(doc, env, true);
+    QVector<QPair<int, QTextBlockFormat>> formats;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+        QTextBlockFormat bf   = b.blockFormat();
+        const qreal      want = ownRtl(bf) ? rtl : ltr;
+        if (!bf.boolProperty(kOwnRight) || qAbs(bf.rightMargin() - want) < 0.01 || !leadOf(b).styled) // (a copy TeamSpeak made: not ours)
+            continue;
+        bf.setRightMargin(want); // its lines keep their width (the left margin stays): nothing wraps again
+        formats.append({b.blockNumber(), bf});
+    }
+    if (formats.isEmpty())
+        return 0;
+    QTextCursor batch(doc);
+    batch.beginEditBlock();
+    for (const auto& f : qAsConst(formats))
+        QTextCursor(doc->findBlockByNumber(f.first)).setBlockFormat(f.second);
+    batch.endEditBlock();
+    return formats.size();
+}
+
+qreal ownMaxContent(const Env& env)
+{
+    // The content column (G from the left), at most as wide as Telegram's bubbles in a wide chat.
+    return qMax(40.0, qMin(ownRightEdge(env) - env.tokens.G, 36.0 * env.tokens.f));
+}
+
+qreal ownRoom(const QTextBlock& block, const Env& env)
+{
+    qreal widest = 0; // a picture is never broken: the column is at least as wide (previews have their own limit)
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextCharFormat cf = it.fragment().charFormat();
+        if (cf.isImageFormat())
+            widest = qMax(widest, cf.toImageFormat().width());
+    }
+    return qMin(qMax(ownMaxContent(env), std::ceil(widest)), qMax(40.0, ownRightEdge(env)));
+}
+
+int settle(QTextDocument* doc, const QVector<int>& blocks, const Env& env, const QSet<int>& refit)
+{
+    if (!doc)
+        return 0;
+    const int                count = doc->blockCount();
+    int                      changed = 0;
+    QVector<int>             all     = blocks;
+    for (const int n : refit) {
+        if (!blocks.contains(n))
+            all.append(n);
+    }
+    // 1. What another module changed: measured where it is; over the whole column again when its place changed
+    // (measured there next: a line that grew may fit on fewer lines then).
+    QVector<int> again;
+    for (const int n : refit) {
+        const QTextBlock       b  = doc->findBlockByNumber(n);
+        const QTextBlockFormat bf = b.blockFormat();
+        if (!isOwnRight(b) || !b.isVisible() || bf.doubleProperty(kOwnFit) < 0 || !leadOf(b).styled) // (a copy TeamSpeak made: not ours)
+            continue;
+        const OwnFit now = measureOwn(b, env);
+        if (now.valid
+            && (qAbs(now.content - bf.doubleProperty(kOwnFit)) > 0.5 || now.time != bf.intProperty(kOwnTime) || qAbs(now.row - bf.doubleProperty(kOwnTimeRow)) > 0.5))
+            again.append(n);
+    }
+    if (!again.isEmpty()) {
+        QTextCursor batch(doc);
+        batch.beginEditBlock();
+        for (const int n : qAsConst(again)) {
+            const QTextBlock b  = doc->findBlockByNumber(n);
+            QTextBlockFormat bf = b.blockFormat();
+            const qreal room = ownRoom(b, env);
+            bf.setLeftMargin(qMax(0.0, ownRightEdge(env) - room));
+            if (!ownRtl(bf))
+                bf.setTextIndent(ownIndent(b, false, room));
+            bf.setProperty(kOwnFit, -1.0);
+            QTextCursor(b).setBlockFormat(bf);
+        }
+        batch.endEditBlock(); // laid out again now
+        changed += again.size();
+    }
+    // 2. Their place, from their lines over the whole column: flush right, as wide as they need.
+    QVector<QPair<int, QTextBlockFormat>> formats;
+    QSet<int>                             done;
+    for (const int n : qAsConst(all)) {
+        if (n < 0 || n >= count || done.contains(n))
+            continue;
+        done.insert(n);
+        const QTextBlock b  = doc->findBlockByNumber(n);
+        QTextBlockFormat bf = b.blockFormat();
+        if (!isOwnRight(b) || !b.isVisible() || bf.doubleProperty(kOwnFit) >= 0 || !leadOf(b).styled)
+            continue;
+        const OwnFit fit = measureOwn(b, env);
+        if (!fit.valid)
+            continue;
+        const bool  rtl    = ownRtl(bf);
+        const qreal oldRow = bf.doubleProperty(kOwnTimeRow);
+        if (!rtl) {
+            // Left-aligned text from the left margin: as far right as its width allows (a picture wider than the
+            // column may start further left).
+            bf.setLeftMargin(qMax(0.0, ownRightEdge(env) - fit.content));
+            bf.setTextIndent(ownIndent(b, false, fit.content));
+        }
+        bf.setBottomMargin(qMax(0.0, bf.bottomMargin() - oldRow + fit.row));
+        bf.setProperty(kOwnFit, fit.content);
+        bf.setProperty(kOwnTime, fit.time);
+        if (fit.row > 0)
+            bf.setProperty(kOwnTimeRow, fit.row);
+        else
+            bf.clearProperty(kOwnTimeRow);
+        formats.append({n, bf});
+    }
+    QTextCursor batch(doc);
+    batch.beginEditBlock();
+    for (const auto& f : qAsConst(formats))
+        QTextCursor(doc->findBlockByNumber(f.first)).setBlockFormat(f.second);
+    changed += formats.size();
+    // 3. The visible block after each: its top margin has the time row above it (kTopExtra), no more, no less.
+    QSet<int> tops;
+    for (const int n : qAsConst(all)) {
+        const QTextBlock b = n >= 0 && n < count ? doc->findBlockByNumber(n) : QTextBlock();
+        if (!b.isValid() || !b.isVisible())
+            continue;
+        QTextBlock next = b.next();
+        while (next.isValid() && !next.isVisible())
+            next = next.next();
+        if (!next.isValid() || tops.contains(next.blockNumber()))
+            continue;
+        QTextBlockFormat nf = next.blockFormat();
+        if (!nf.hasProperty(kKind) || !nf.hasProperty(kOrigBlock))
+            continue; // not ours: TeamSpeak's margins stay
+        const qreal row   = b.blockFormat().hasProperty(kKind) ? b.blockFormat().doubleProperty(kOwnTimeRow) : 0.0;
+        const qreal extra = nf.doubleProperty(kTopExtra);
+        if (qAbs(extra - row) < 0.01)
+            continue;
+        tops.insert(next.blockNumber());
+        nf.setTopMargin(qMax(0.0, nf.topMargin() - extra + row));
+        if (row > 0)
+            nf.setProperty(kTopExtra, row);
+        else
+            nf.clearProperty(kTopExtra);
+        QTextCursor(next).setBlockFormat(nf);
+        ++changed;
+    }
+    batch.endEditBlock();
+    return changed;
+}
+
+OwnPlace ownPlace(const QTextBlock& block, const Env& env)
+{
+    OwnPlace p;
+    if (!isOwnRight(block) || !leadOf(block).styled)
+        return p;
+    const QTextLayout* tl = laidOut(block);
+    if (!tl)
+        return p;
+    const layoutart::Tokens& t      = env.tokens;
+    const QTextBlockFormat   bf     = block.blockFormat();
+    const QPointF            origin = block.document()->documentLayout()->blockBoundingRect(block).topLeft();
+    p.first                         = ownFirstLine(block, tl);
+    p.lines                         = tl->lineCount();
+    qreal left                      = 1e9;
+    qreal right                     = -1e9;
+    for (int i = p.first; i < p.lines; ++i) {
+        const QRectF r = tl->lineAt(i).naturalTextRect();
+        left           = qMin(left, r.left());
+        right          = qMax(right, r.right());
+    }
+    const QTextLine last   = tl->lineAt(p.lines - 1);
+    const QRectF    lastR  = last.naturalTextRect();
+    const bool      rtl    = ownRtl(bf);
+    const bool      fitted = bf.doubleProperty(kOwnFit) >= 0;
+    int             mode   = TimeNone;
+    qreal           row    = 0;
+    if (fitted) {
+        mode = bf.intProperty(kOwnTime);
+        row  = bf.doubleProperty(kOwnTimeRow);
+        // Exactly where settle() put the content (every bubble of yours ends at the same x): left-to-right text
+        // from the left margin, right-to-left text at the column's right edge. A line wider than that (changed
+        // since; fitted again soon) still counts.
+        // (Within the slack: a right-to-left line's natural rect may reach a pixel past where it is aligned.)
+        const qreal content      = bf.doubleProperty(kOwnFit);
+        const qreal contentRight = rtl ? last.x() + last.width() : bf.leftMargin() + content;
+        const qreal slack        = t.ownSlack + 1;
+        right                    = right <= contentRight + slack ? contentRight : right;
+        left                     = left >= contentRight - content - slack ? contentRight - content : left;
+    } else {
+        mode = measureOwn(block, env).time; // not fitted yet (settle() comes right after the styling)
+    }
+    p.timeText = ownTimeOf(block, env);
+    if (p.timeText.isEmpty())
+        mode = TimeNone;
+    const qreal         timeW = layoutart::ownTimeWidth(p.timeText, t);
+    const QFontMetricsF fm(t.time);
+    qreal               x = 0, baseline = 0;
+    if (mode == TimeInline) {
+        // After the last line: at the content's right edge (left edge for right-to-left text, where it ends), on
+        // its text's baseline; low on a taller line (a reaction row: by the pills' bottom).
+        baseline = std::round(qMax(last.y() + last.ascent(), last.y() + last.height() - fm.descent() - 4));
+        x        = rtl ? qMin(left, lastR.left() - t.ownTimeGap - timeW) : qMax(right, lastR.right() + t.ownTimeGap + timeW) - timeW;
+    } else if (mode == TimeRow) {
+        baseline = last.y() + last.height() + std::round(fm.ascent());
+        x        = rtl ? left : qMax(right, left + timeW) - timeW;
+    }
+    if (mode != TimeNone) {
+        left             = qMin(left, x);
+        right            = qMax(right, x + timeW);
+        p.time           = mode;
+        p.timeBaseline   = origin + QPointF(x, baseline);
+        p.timeRect       = QRectF(origin.x() + x, origin.y() + baseline - fm.ascent(), timeW, fm.ascent() + fm.descent());
+    }
+    p.left   = origin.x() + left;
+    p.right  = origin.x() + right;
+    p.top    = origin.y() + tl->lineAt(p.first).y();
+    p.bottom = origin.y() + last.y() + last.height() + (mode == TimeRow ? qMax(row, qreal(t.ownTimeRow)) : 0.0);
+    p.valid  = true;
+    return p;
+}
+
+// ============================================================================================
+// 2.3.1: the chat's room at its ends (the root frame's top and bottom margins)
+// ============================================================================================
+
+namespace {
+
+QTextFrameFormat frameOriginal(const QTextFrameFormat& f)
+{
+    return qvariant_cast<QTextFormat>(f.property(kFrameOrig)).toFrameFormat();
+}
+
+} // namespace
+
+bool hasEndGap(QTextDocument* doc)
+{
+    return doc && doc->rootFrame()->frameFormat().hasProperty(kFrameOurs);
+}
+
+qreal endGapExtra(QTextDocument* doc)
+{
+    if (!hasEndGap(doc))
+        return 0;
+    const QTextFrameFormat f = doc->rootFrame()->frameFormat();
+    return qMax(0.0, f.bottomMargin() - frameOriginal(f).bottomMargin());
+}
+
+bool applyEndGap(QTextDocument* doc, const Env& env)
+{
+    if (!doc)
+        return false;
+    QTextFrame*      root = doc->rootFrame();
+    QTextFrameFormat f    = root->frameFormat();
+    QTextFrameFormat original;
+    const QVariantList ours = f.property(kFrameOurs).toList();
+    if (ours.size() == 2 && qFuzzyCompare(1.0 + f.topMargin(), 1.0 + ours.at(0).toReal()) && qFuzzyCompare(1.0 + f.bottomMargin(), 1.0 + ours.at(1).toReal())) {
+        original = frameOriginal(f); // ours still: on the same margins as before
+    } else {
+        // Not ours, or someone set the margins since (TeamSpeak's document margin): those are the original ones now.
+        f.clearProperty(kFrameOrig);
+        f.clearProperty(kFrameOurs);
+        for (const int id : {QTextFormat::FrameMargin, QTextFormat::FrameTopMargin, QTextFormat::FrameBottomMargin}) {
+            if (f.hasProperty(id))
+                original.setProperty(id, f.property(id));
+        }
+    }
+    // Qt leaves the last block's bottom margin out at the document's end: the time row of your message there (its
+    // bubble reaches that much further down) is added here (changed only when the last message's row does).
+    qreal lastRow = 0;
+    for (QTextBlock b = doc->lastBlock(); b.isValid(); b = b.previous()) {
+        if (!b.isVisible())
+            continue;
+        if (b.blockFormat().hasProperty(kKind))
+            lastRow = b.blockFormat().doubleProperty(kOwnTimeRow);
+        break;
+    }
+    const qreal top    = original.topMargin() + env.tokens.chatTop;
+    const qreal bottom = original.bottomMargin() + env.tokens.chatBottom + lastRow;
+    if (f.hasProperty(kFrameOurs) && qFuzzyCompare(1.0 + f.topMargin(), 1.0 + top) && qFuzzyCompare(1.0 + f.bottomMargin(), 1.0 + bottom))
+        return false;
+    f.setTopMargin(top);
+    f.setBottomMargin(bottom);
+    f.setProperty(kFrameOrig, QVariant::fromValue<QTextFormat>(original));
+    f.setProperty(kFrameOurs, QVariantList{top, bottom});
+    root->setFrameFormat(f);
+    return true;
+}
+
+bool removeEndGap(QTextDocument* doc)
+{
+    if (!hasEndGap(doc))
+        return false;
+    QTextFrame*            root     = doc->rootFrame();
+    QTextFrameFormat       f        = root->frameFormat();
+    const QTextFrameFormat original = frameOriginal(f);
+    const QVariantList     ours     = f.property(kFrameOurs).toList();
+    const auto             giveBack = [&](int id, int index) {
+        if (ours.size() != 2 || !f.hasProperty(id) || !qFuzzyCompare(1.0 + f.doubleProperty(id), 1.0 + ours.at(index).toReal()))
+            return; // someone set it since: theirs stays
+        if (original.hasProperty(id))
+            f.setProperty(id, original.property(id));
+        else
+            f.clearProperty(id);
+    };
+    giveBack(QTextFormat::FrameTopMargin, 0);
+    giveBack(QTextFormat::FrameBottomMargin, 1);
+    f.clearProperty(kFrameOrig);
+    f.clearProperty(kFrameOurs);
+    root->setFrameFormat(f);
+    return true;
 }
 
 } // namespace layoutdoc

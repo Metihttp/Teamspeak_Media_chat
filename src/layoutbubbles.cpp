@@ -114,6 +114,32 @@ Item itemOf(const QTextBlock& block, const layoutdoc::Env& env)
     if (row != RowMessage || (lead.kind != Head && lead.kind != Continuation))
         return Item();
 
+    if (isOwnRight(block)) {
+        // 2.3.1: your message on the right: round what it shows (its lines, its time), flush right; at least
+        // bubbleMinWidth wide (to the left).
+        const layoutdoc::OwnPlace place = layoutdoc::ownPlace(block, env);
+        if (!place.valid)
+            return Item();
+        const qreal right  = place.right + t.bubblePadX;
+        const qreal left   = qMin(place.left - t.bubblePadX, right - t.bubbleMinWidth);
+        const qreal top    = place.top - t.bubblePadTop;
+        const qreal bottom = place.bottom + t.bubblePadBottom;
+        if (right <= left || bottom <= top)
+            return Item();
+        item.kind  = Kind::Bubble;
+        item.rect  = QRectF(QPointF(std::floor(left), std::floor(top)), QPointF(std::ceil(right), std::ceil(bottom)));
+        item.own   = true;
+        item.right = true;
+        if (place.time != TimeNone) {
+            item.time         = place.timeText;
+            item.timeBaseline = place.timeBaseline;
+            item.timeRect     = place.timeRect;
+        }
+        item.joinAbove = lead.kind == Continuation && !endsBelowBubble(previousVisible(block));
+        item.joinBelow = isContinuation(nextVisible(block));
+        return item;
+    }
+
     // Lines at the end that hold only pictures marked kBelowBubble (a reaction row) stay outside.
     int inside = lines;
     while (inside > 1 && belowBubble(block, tl->lineAt(inside - 1)))
@@ -182,7 +208,12 @@ QVector<QRectF> keepOut(QTextDocument* doc, int from, int to, const layoutdoc::E
         const QPointF origin = doc->documentLayout()->blockBoundingRect(b).topLeft();
         const Lead    lead   = leadOf(b);
         int           first  = 0;
-        if (row == RowMessage && lead.styled && lead.kind == Head) {
+        if (row == RowMessage && isOwnRight(b)) {
+            // 2.3.1: on the right: every line as it is (a reply row's picture too), and the time.
+            const layoutdoc::OwnPlace place = layoutdoc::ownPlace(b, env);
+            if (place.valid && place.time != TimeNone && !place.timeRect.isEmpty())
+                out.append(place.timeRect);
+        } else if (row == RowMessage && lead.styled && lead.kind == Head) {
             // The head's line holds only its picture: [reply row] name row. The name row's text is the name and
             // the time (kNameRow wide); a reply row above it, as wide as the picture.
             const QTextLine        line    = tl->lineAt(0);
@@ -252,8 +283,17 @@ qint64 coveredBy(const QRect& r, const QVector<QRect>& keepOut)
 
 } // namespace
 
-QRect barPlace(const QSize& bar, const QRect& area, const QRect& bubble, const QVector<QRect>& keepOut, int right, int textPad)
+QRect barPlace(const QSize& bar, const QRect& area, const QRect& bubble, const QVector<QRect>& keepOut, int right, int textPad, bool left)
 {
+    if (left) {
+        // 2.3.1: your message on the right: the same search on the area mirrored (x -> area's left + right - x).
+        const auto mirror = [&area](const QRect& r) { return QRect(area.left() + area.right() - r.right(), r.top(), r.width(), r.height()); };
+        QVector<QRect> keep;
+        keep.reserve(keepOut.size());
+        for (const QRect& k : keepOut)
+            keep << mirror(k);
+        return mirror(barPlace(bar, area, mirror(bubble), keep, right, textPad, false));
+    }
     const int w = bar.width(), h = bar.height();
     const int minX = area.left() + kBarEdge, maxX = qMax(minX, area.right() + 1 - kBarEdge - w);
     const int minY = area.top() + kBarEdge, maxY = qMax(minY, area.bottom() + 1 - kBarEdge - h);
@@ -342,10 +382,13 @@ QPainterPath pathOf(const Item& item, const layoutart::Tokens& t)
     const qreal limit = qMin(r.width(), r.height()) / 2.0;
     const qreal big   = qMin(qreal(t.bubbleRadius), limit);
     const qreal small = qMin(qreal(t.bubbleRadiusJoined), limit);
-    const qreal tl    = item.joinAbove ? small : big;
-    const qreal bl    = item.joinBelow ? small : big;
-    const qreal tr    = big;
-    const qreal br    = big;
+    // Small where the group's bubbles meet: on the left, on the right for yours on the right (2.3.1).
+    const qreal above = item.joinAbove ? small : big;
+    const qreal below = item.joinBelow ? small : big;
+    const qreal tl    = item.right ? big : above;
+    const qreal bl    = item.right ? big : below;
+    const qreal tr    = item.right ? above : big;
+    const qreal br    = item.right ? below : big;
     path.moveTo(r.left() + tl, r.top());
     path.lineTo(r.right() - tr, r.top());
     path.arcTo(QRectF(r.right() - 2 * tr, r.top(), 2 * tr, 2 * tr), 90, -90);
@@ -391,17 +434,20 @@ void paint(QPainter& p, const QVector<Item>& items, const layoutdoc::Env& env, c
         }
         if (hovered)
             p.fillPath(path, c.bubbleHover);
+        const auto inset = [&item](qreal d) {
+            Item in = item;
+            in.rect = item.rect.adjusted(d, d, -d, -d);
+            return in;
+        };
         if (c.bubbleEdge.alpha() > 0) {
             // Light skins: a hairline keeps a near-white bubble apart from the white chat.
-            const QPainterPath inner = pathOf(Item{item.block, item.kind, item.rect.adjusted(0.5, 0.5, -0.5, -0.5), item.own, item.mention, item.joinAbove, item.joinBelow}, t)
-                                           .translated(offset);
-            p.strokePath(inner, QPen(c.bubbleEdge, 1.0));
+            p.strokePath(pathOf(inset(0.5), t).translated(offset), QPen(c.bubbleEdge, 1.0));
         }
-        if (item.block == state.focus) {
-            const QPainterPath ring = pathOf(Item{item.block, item.kind, item.rect.adjusted(0.75, 0.75, -0.75, -0.75), item.own, item.mention, item.joinAbove, item.joinBelow}, t)
-                                          .translated(offset);
-            p.strokePath(ring, QPen(c.focusBar, 1.5));
-        }
+        if (item.block == state.focus)
+            p.strokePath(pathOf(inset(0.75), t).translated(offset), QPen(c.focusBar, 1.5));
+        // 2.3.1: your message's time on its bubble (never on its text: settle() made room for it).
+        if (!item.time.isEmpty())
+            layoutart::paintOwnTime(p, item.time, item.timeBaseline + offset, t, c.mutedOnBubble);
     }
     p.restore();
 }

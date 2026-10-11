@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.3.1] - 2026-10-12
+
+### Added
+
+- **Your messages on the right**, like Telegram (Cozy with bubbles, on by default): your messages sit on the right without your name or avatar, each bubble as wide as what it holds, with its time on it (after the last line, or under a picture or card). Right-to-left text such as Persian is right-aligned in its bubble, and so are its reactions. Pictures, albums, voice and file cards, polls, reactions and replies come along; the buttons that appear when you point at your message sit on its left. Turn it off in **Settings → General → Chat layout → Show my messages on the right**.
+
+### Fixed
+
+- The newest message no longer touches the chat tabs under the chat: the chat keeps some room under its last message (Cozy and Compact), and stays at its end when new messages arrive.
+
 ## [2.3.0] - 2026-10-11
 
 ### Added
@@ -238,6 +248,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.3.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.1.0...v2.2.0

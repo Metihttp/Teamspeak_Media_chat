@@ -75,6 +75,17 @@ struct Tokens {
     int  pillPadY           = 2;
     int  pillInset          = 24;    // left and right margin of a centred system row
     int  systemPrefixWidth  = 22;    // its icon and the space after it
+    // 2.3.1: your own messages on the right (Cozy with bubbles; layoutdoc::settle fits them) and the chat's room
+    // above its first and below its last line (every modern look).
+    int ownTimeGap = 8;  // the text to the time after it
+    int ownTimeRow = 14; // the time's own row under a message whose last line has no room for it
+    int ownSlack   = 2;  // a fitted line is this much wider than its text (it never wraps again)
+    int chatTop    = 4;  // the chat's room above its first line (on top of TeamSpeak's document margin)
+    int chatBottom = 14; // ... and below its last line
+    // 2.3.1: more top margin for a group of yours without a reply row, so the room over it is the room over
+    // someone else's (their bubble starts at the name row, yours bubblePadTop over the text, which sits at the
+    // bottom of a line lower than lineMin).
+    int ownHeadTop = 4;
 
     int indent() const { return mode == Mode::Compact ? L : G; }
 };
@@ -180,6 +191,9 @@ struct HeadSpec {
     QImage           replyAvatar;
     bool             replyHover   = false;
     bool             replyPressed = false;
+    // 2.3.1: your message on the right: no avatar and no name row; the picture is the reply row alone (right-aligned,
+    // its connector on the right reaching down into the bubble).
+    bool ownRight = false;
 };
 struct HeadGeometry {
     QRectF  avatar;
@@ -220,6 +234,11 @@ int    dividerHeight(const Tokens& tokens);
 // Chips ("×3", "+5 more events", "Show fewer").
 QSize  chipSize(const QString& text, const Tokens& tokens);
 QImage renderChip(const QString& text, bool hovered, const Tokens& tokens, const Colors& colors, qreal dpr);
+
+// 2.3.1: an own message's time on the right ("16:00" on its bubble, after its last line or on a row of its own).
+QString ownTimeText(const QString& headerTime, bool ampm);
+qreal   ownTimeWidth(const QString& text, const Tokens& tokens);
+void    paintOwnTime(QPainter& p, const QString& text, const QPointF& baseline, const Tokens& tokens, const QColor& color);
 
 // The time painted in the gutter (a hovered continuation, a compact reply head): right-aligned at right,
 // on baseline.

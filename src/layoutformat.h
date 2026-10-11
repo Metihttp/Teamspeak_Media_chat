@@ -52,6 +52,18 @@ constexpr int kNameRow   = QTextFormat::UserProperty + 0x74a1; // qreal, a Cozy 
 // (a row of reactions under the bubble; give the picture some air at its top). Without it a picture at the
 // block's end is inside the bubble.
 constexpr int kBelowBubble = QTextFormat::UserProperty + 0x74a2;
+// 2.3.1 (0x74a4-0x74aa): your own messages on the right (Cozy with bubbles and "Show my messages on the right";
+// layoutdoc::settle fits them) and the chat's room above its first and below its last line (the root frame).
+constexpr int kOwnRight   = QTextFormat::UserProperty + 0x74a4; // bool, block format: your message, on the right
+constexpr int kOwnFit     = QTextFormat::UserProperty + 0x74a5; // qreal, block format: its content's width as fitted (-1: not yet)
+constexpr int kOwnTime    = QTextFormat::UserProperty + 0x74a6; // int, block format: where its time is (OwnTime)
+constexpr int kOwnTimeRow = QTextFormat::UserProperty + 0x74a7; // qreal, block format: the height of its time's own row
+constexpr int kTopExtra   = QTextFormat::UserProperty + 0x74a8; // qreal, block format: its top margin's part for the time row above
+constexpr int kFrameOrig  = QTextFormat::UserProperty + 0x74a9; // QTextFormat, the root frame: its margins before ours
+constexpr int kFrameOurs  = QTextFormat::UserProperty + 0x74aa; // QVariantList, the root frame: the top and bottom margins we set
+
+// 2.3.1: where an own message's time is (kOwnTime): none (no timestamps), after its last line, or on a row of its own.
+enum OwnTime { TimeNone = 0, TimeInline = 1, TimeRow = 2 };
 
 // Our pictures and texts (char formats).
 enum Kind { None = 0, Head = 1, Continuation = 2, CompactHead = 3, SystemPrefix = 4, Trailer = 5, Divider = 6, Separator = 7, Chip = 8 };
@@ -94,6 +106,47 @@ class MutatingScope
   private:
     bool m_was;
 };
+
+// 2.3.1: true while ChatLayout itself edits (other modules use MutatingScope too): their edits of your messages
+// on the right make ChatLayout fit those again, its own never do.
+inline bool& layoutEditingFlag()
+{
+    static bool flag = false;
+    return flag;
+}
+
+class LayoutEditScope
+{
+  public:
+    LayoutEditScope()
+        : m_was(layoutEditingFlag())
+    {
+        layoutEditingFlag() = true;
+    }
+    ~LayoutEditScope() { layoutEditingFlag() = m_was; }
+    LayoutEditScope(const LayoutEditScope&)            = delete;
+    LayoutEditScope& operator=(const LayoutEditScope&) = delete;
+
+  private:
+    MutatingScope m_mutating;
+    bool          m_was;
+};
+
+// 2.3.1: a message of yours laid out on the right.
+inline bool isOwnRight(const QTextBlock& block)
+{
+    return block.isValid() && block.blockFormat().boolProperty(kOwnRight);
+}
+
+// 2.3.1: ... with right-to-left text, so right-aligned: a reaction row at its end is drawn mirrored (its pills
+// flush with the text's right edge).
+inline bool isOwnRightAligned(const QTextBlock& block)
+{
+    if (!isOwnRight(block))
+        return false;
+    const QTextBlockFormat format = block.blockFormat();
+    return format.hasProperty(QTextFormat::BlockAlignment) && (format.alignment() & Qt::AlignRight);
+}
 
 // One of our pictures or texts.
 inline bool isOurs(const QTextCharFormat& format)

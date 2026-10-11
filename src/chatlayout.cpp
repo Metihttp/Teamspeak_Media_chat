@@ -219,7 +219,7 @@ ChatLayout::~ChatLayout()
     }
     for (const QPointer<QTextDocument>& doc : qAsConst(m_retired)) {
         if (doc && !shown.contains(doc.data())) {
-            layoutformat::MutatingScope mutating;
+            layoutformat::LayoutEditScope editing;
             layoutdoc::giveBack(doc.data());
         }
     }
@@ -354,6 +354,8 @@ void ChatLayout::reset(View& v)
     v.burst.clear();
     v.dirty.clear();
     v.restyle.clear();
+    v.fitDirty.clear(); // 2.3.1
+    v.ownMargin = -1;
     v.rendered.clear();
     v.dates.clear();
     v.datesValid = false;
@@ -386,6 +388,12 @@ void ChatLayout::dropFirst(View& v, int dropped)
             restyle.insert(moved(n));
     }
     v.restyle = restyle;
+    QSet<int> fit; // 2.3.1
+    for (const int n : qAsConst(v.fitDirty)) {
+        if (moved(n) >= 0)
+            fit.insert(moved(n));
+    }
+    v.fitDirty = fit;
     // The days of the lines left stay theirs (the day line above them may have gone with the first lines).
     if (v.datesValid && dropped <= v.dates.size()) {
         v.dates.remove(0, dropped);
@@ -428,8 +436,28 @@ void ChatLayout::watch(View& view)
         const int blocks  = doc->blockCount();
         const int dropped = v->blocksSeen - blocks;
         v->blocksSeen     = blocks;
-        if (layoutformat::mutating() || ChatEmoji::isMutating() || m_chat->m_mutating)
-            return; // our own edits, or another module's (they tell us what we need)
+        if (layoutformat::layoutEditingFlag())
+            return; // our own edits
+        if (layoutformat::mutating() || ChatEmoji::isMutating() || m_chat->m_mutating) {
+            // Another module's (they tell us what we need). 2.3.1: what it changed in your messages on the right
+            // (a preview, a reaction row, HD emoji) is measured again before TeamSpeak paints it.
+            // (Every one: a relayout of all previews at once may touch hundreds; one left out would keep its old fit.)
+            if (v->env.ownRight) {
+                const int last = qMax(0, doc->characterCount() - 1);
+                bool      any  = false;
+                for (QTextBlock b = doc->findBlock(qBound(0, position, last)); b.isValid() && b.position() <= position + added; b = b.next()) {
+                    if (layoutformat::isOwnRight(b)) {
+                        v->fitDirty.insert(b.blockNumber());
+                        any = true;
+                    }
+                }
+                if (any && !m_quickPosted) {
+                    m_quickPosted = true;
+                    QMetaObject::invokeMethod(this, [this] { quickStep(); }, Qt::QueuedConnection);
+                }
+            }
+            return;
+        }
         if (removed > 0 && doc->characterCount() <= 1) {
             reset(*v); // TeamSpeak cleared the chat (its resources went with it)
             return;
@@ -580,6 +608,8 @@ layoutdoc::Env ChatLayout::envFor(View& v) const
     env.ownNick                  = v.ownNick;
     env.ownUid                   = v.ownUid;
     env.collapse                 = Settings::instance().chatCollapseEvents;
+    // 2.3.1: your messages on the right (Cozy with bubbles)
+    env.ownRight = m_mode == Mode::Cozy && env.tokens.bubbles && Settings::instance().chatOwnRight;
     env.expandedRuns             = v.expandedRuns;
     const QPointer<QTextBrowser> guard(b);
     ChatIntegration*             chat = m_chat;
@@ -595,7 +625,7 @@ QString ChatLayout::styleKeyOf(const layoutdoc::Env& env) const
     return QStringList{QString::number(static_cast<int>(env.mode)), QString::number(env.group), env.tokens.body.toString(), QString::number(env.tokens.ampm),
                        c.base.name(), c.text.name(), c.link.name(), QString::number(c.dark), QString::number(env.dpr), QString::number(env.contentWidth),
                        env.today.toString(Qt::ISODate), QString::number(env.mentions), env.ownNick, env.ownUid, QString::number(env.collapse),
-                       QString::number(env.tokens.bubbles)} // 2.3 chat-visuals
+                       QString::number(env.tokens.bubbles), QString::number(env.ownRight)} // 2.3 chat-visuals; 2.3.1
         .join(QLatin1Char('|'));
 }
 
@@ -888,7 +918,7 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
     bool         more    = false;
     QVector<int> styled; // blocks this step styled: their runs of events are planned again
     {
-        layoutformat::MutatingScope mutating;
+        layoutformat::LayoutEditScope editing; // 2.3.1: ours (not another module's)
         QTextCursor                 batch(doc);
         batch.beginEditBlock();
         const auto run = [&](int n) {
@@ -942,6 +972,28 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
         if (!styled.isEmpty() && v.env.collapse)
             collapseRuns(v, styled, floor);
         batch.endEditBlock(); // TeamSpeak's view hears of it (contentsChange) while we are still mutating
+        // 6. 2.3.1: your messages on the right keep their right edge when the chat's own width changed under the same
+        // look (its scroll bar came or went: the look's width is the one with the bar), before they are measured. A
+        // resize restyles once it pauses, and a restyle under way gives each of them its margin itself.
+        if (v.env.ownRight && v.pendingWidth == 0 && v.historyNext < 0) {
+            const qreal margin = layoutdoc::ownRightMargin(doc, v.env, true);
+            if (qAbs(margin - v.ownMargin) > 0.01) {
+                v.ownMargin = margin;
+                if (layoutdoc::alignOwnRight(doc, v.env) > 0)
+                    changed = true;
+            }
+        }
+        // 7. 2.3.1: your messages on the right get their place (from their laid-out lines: after the edit), and
+        // those another module changed are measured again; the blocks under them get room for a time row.
+        if (!styled.isEmpty() || !v.fitDirty.isEmpty()) {
+            QSet<int> refit;
+            refit.swap(v.fitDirty);
+            if (layoutdoc::settle(doc, styled, v.env, refit) > 0)
+                changed = true;
+        }
+        // 8. 2.3.1: room under the chat's last line (and a little over its first)
+        if (layoutdoc::applyEndGap(doc, v.env))
+            changed = true;
     }
     more = !v.restyle.isEmpty() || !v.dirty.isEmpty() || v.historyNext >= 0;
     if (changed) {
@@ -971,9 +1023,12 @@ void ChatLayout::restoreView(View& v, bool dropPictures)
     const chatscroll::Place a = chatscroll::capture(browser);
     int            done = 0;
     {
-        layoutformat::MutatingScope mutating;
+        layoutformat::LayoutEditScope editing; // 2.3.1: ours (not another module's)
         QStringList                 names;
-        done = layoutdoc::restoreAll(doc, &names);
+        // 2.3.1: the chat's room at its ends goes too (restoreAll, in its one edit: a margin of the root frame lays
+        // the whole chat out again).
+        done = layoutdoc::hasEndGap(doc) ? 1 : 0;
+        done += layoutdoc::restoreAll(doc, &names);
         for (auto it = v.rendered.constBegin(); it != v.rendered.constEnd(); ++it)
             names.append(it.key());
         for (const QString& name : qAsConst(names))
@@ -996,7 +1051,7 @@ void ChatLayout::unstyle(QTextBrowser* browser, int block)
     View* v = viewFor(browser);
     if (!v || v->document != browser->document())
         return;
-    layoutformat::MutatingScope mutating;
+    layoutformat::LayoutEditScope editing; // 2.3.1: ours (not another module's)
     QTextDocument*              doc = browser->document();
     const QTextBlock            b   = doc->findBlockByNumber(block);
     if (!b.isValid() || !layoutdoc::hasOurs(b))
@@ -1088,7 +1143,8 @@ void ChatLayout::renderVisible(View& v)
             look.replyHover = v.replyHover;
         if (lead.kind == layoutformat::Head && m_mode == Mode::Cozy && Settings::instance().chatAvatars) {
             const layoutdoc::Row row = layoutdoc::read(b); // avatars (P2): TeamSpeak's, else initials
-            look.avatar              = avatarFor(v, row.uid, row.clientId);
+            if (!layoutformat::isOwnRight(b))                 // (2.3.1: none on the right; a reply's small one only)
+                look.avatar = avatarFor(v, row.uid, row.clientId);
             replyart::Header header;
             if (row.reply && v.env.replyHeader && v.env.replyHeader(n, &header))
                 look.replyAvatar = avatarFor(v, header.uid);
@@ -1258,7 +1314,8 @@ void ChatLayout::paintLayer(View& v, QPainter& p, const QRegion& region, bool ov
     if (v.hover >= 0) {
         const QTextBlock         b    = doc->findBlockByNumber(v.hover);
         const layoutformat::Lead lead = layoutformat::leadOf(b);
-        if (lead.styled && lead.kind == layoutformat::Continuation) {
+        // (2.3.1: your messages on the right show their time on their bubble)
+        if (lead.styled && lead.kind == layoutformat::Continuation && !layoutformat::isOwnRight(b)) {
             const QString time = layoutart::shortTime(lead.format.stringProperty(layoutformat::kTime), t.ampm);
             qreal         base = 0;
             if (!time.isEmpty() && lineBaseline(b, lead.bodyStart, &base)) {
@@ -1594,7 +1651,8 @@ void ChatLayout::placeBar(View& v)
                 keep << r.translated(-scroll).toAlignedRect();
             for (const QRectF& media : m_chat->mediaRectsIn(browser, v.hover))
                 keep << media.toAlignedRect();
-            want = layoutbubbles::barPlace(box.size(), vp->rect(), item.rect.translated(-scroll).toAlignedRect(), keep, kBarRight, v.env.tokens.bubblePadX);
+            // 2.3.1: beside the top left corner of your message on the right (never over its text).
+            want = layoutbubbles::barPlace(box.size(), vp->rect(), item.rect.translated(-scroll).toAlignedRect(), keep, kBarRight, v.env.tokens.bubblePadX, item.right);
         }
     }
     if (want.isNull()) {
@@ -1708,6 +1766,18 @@ bool ChatLayout::toolTip(View& v, QEvent* event)
         return false;
     const QTextBlock         b    = doc->findBlock(hit);
     const layoutformat::Lead lead = layoutformat::leadOf(b);
+    if (lead.styled && layoutformat::isOwnRight(b)) {
+        // 2.3.1: the time on your message's bubble: the full date and time.
+        const layoutdoc::OwnPlace place = layoutdoc::ownPlace(b, v.env);
+        const QString             time  = lead.format.stringProperty(layoutformat::kTime);
+        if (place.valid && place.time != layoutformat::TimeNone && !time.isEmpty() && place.timeRect.adjusted(-2, -2, 2, 2).contains(docPos)) {
+            const QString text = layoutart::fullTimeLabel(dateFor(v, b.blockNumber()), time).toHtmlEscaped();
+            const QPoint  shift(-browser->horizontalScrollBar()->value(), -browser->verticalScrollBar()->value());
+            QToolTip::showText(he->globalPos(), QString::fromLatin1("<div style='white-space:pre'>%1</div>").arg(text), browser->viewport(),
+                               place.timeRect.translated(shift).toAlignedRect());
+            return true;
+        }
+    }
     if (!lead.styled || (lead.kind != layoutformat::Head && lead.kind != layoutformat::CompactHead && lead.kind != layoutformat::SystemPrefix))
         return false;
     const QTextImageFormat image = lead.format.toImageFormat();
@@ -1966,7 +2036,7 @@ void ChatLayout::toggleRun(View& v, int block)
     // The clicked row stays where it is (the rows below it come or go); a chat at the bottom stays there.
     const chatscroll::RowPlace place = chatscroll::captureRow(browser, block);
     {
-        layoutformat::MutatingScope mutating;
+        layoutformat::LayoutEditScope editing; // 2.3.1: ours (not another module's)
         QTextCursor                 batch(doc);
         batch.beginEditBlock();
         int serial = v.chipSerial;
@@ -2138,11 +2208,17 @@ QString ChatLayout::describe(QTextBrowser* browser) const
     QTextDocument* doc = browser->document();
     int            kinds[9] = {0};
     int            tagged   = 0;
+    int            ownRight = 0; // 2.3.1
+    int            fitted   = 0;
     for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
         const layoutformat::Lead lead = layoutformat::leadOf(b);
         if (lead.styled)
             ++kinds[qBound(0, static_cast<int>(lead.kind), 8)];
         tagged += b.blockFormat().hasProperty(layoutformat::kBlockTag) ? 1 : 0;
+        if (layoutformat::isOwnRight(b)) {
+            ++ownRight;
+            fitted += b.blockFormat().doubleProperty(layoutformat::kOwnFit) >= 0 ? 1 : 0;
+        }
     }
     return QString::fromLatin1("layout: mode %1, %2 blocks, %3 tagged, heads %4, continuations %5, compact heads %6, system %7, dividers %8, epoch %9, overlay %10, "
                                "undo %11, f %12, G %13, L %14, pictures %15, history %16")
@@ -2166,5 +2242,10 @@ QString ChatLayout::describe(QTextBrowser* browser) const
               .arg(it->env.tokens.bubbles ? 1 : 0)
               .arg(layoutbubbles::itemsIn(doc, 0, doc->blockCount() - 1, it->env).size())
               .arg(std::count_if(m_avatars.cbegin(), m_avatars.cend(), [](const Avatar& a) { return !a.image.isNull(); }))
-              .arg(m_avatars.size());
+              .arg(m_avatars.size())
+        + QString::fromLatin1(", own right %1 (%2 blocks, %3 fitted), end gap %4") // 2.3.1
+              .arg(it->env.ownRight ? 1 : 0)
+              .arg(ownRight)
+              .arg(fitted)
+              .arg(layoutdoc::endGapExtra(doc));
 }

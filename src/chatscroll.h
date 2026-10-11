@@ -17,10 +17,12 @@
 
 namespace chatscroll {
 
+// 2.3.1: the room we keep under the last line counts as the end too (TeamSpeak may scroll only as far as its last
+// line): a chat that close to its end stays at its very end.
 inline bool atBottom(QTextBrowser* browser)
 {
     const QScrollBar* bar = browser->verticalScrollBar();
-    return bar->value() >= bar->maximum() - 4;
+    return bar->value() >= bar->maximum() - 4 - qCeil(layoutdoc::endGapExtra(browser->document()));
 }
 
 // The scroll range for the document as it is now. QTextEdit takes a new range when the layout reports a new

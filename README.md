@@ -33,7 +33,7 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 - **Anonymous polls.** Ask the channel, vote on the card, see the results; nobody sees who voted for what.
 - **Live music.** Play a song to your channel through your own voice and keep talking over it.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
-- **A modern chat.** Names, avatars and times above grouped messages, Telegram-like bubbles and centred system lines, only in your own view.
+- **A modern chat.** Names, avatars and times above grouped messages, Telegram-like bubbles with yours on the right, and centred system lines, only in your own view.
 - **Reply and react.** Reply to any message, Discord-style, and react to any message or media with any emoji.
 - **HD emoji.** Sharp Windows 11 emoji in the chat, TeamSpeak's own emoji button opening an HD picker, and big emoji for messages of only emoji.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
@@ -129,10 +129,10 @@ Press and hold the **microphone** at the right end of the chat input: recording 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-layout-dark.png">
-  <img src="docs/images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message tinted, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
+  <img src="docs/images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message on the right in a tinted bubble with its time and without a name or avatar, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
 </picture>
 
-TeamSpeak's chat gets a modern look in your own view: names, avatars and times above the messages, messages of one person grouped, each message in its own bubble like Telegram (yours tinted), day dividers, and join or leave lines as small centred rows with an icon (runs of them fold into *+N more events*). Point at a message for **Add reaction**, **Reply**, **Copy text** and **More**; messages that mention you are highlighted. Choose *Cozy* (the default), *Compact* (one line per message) or *TeamSpeak classic* in **Settings → General → Chat layout**. Nobody else sees a difference.
+TeamSpeak's chat gets a modern look in your own view: names, avatars and times above the messages, messages of one person grouped, each message in its own bubble like Telegram (yours on the right, tinted, with their time), day dividers, and join or leave lines as small centred rows with an icon (runs of them fold into *+N more events*). Point at a message for **Add reaction**, **Reply**, **Copy text** and **More**; messages that mention you are highlighted. Choose *Cozy* (the default), *Compact* (one line per message) or *TeamSpeak classic* in **Settings → General → Chat layout**. Nobody else sees a difference.
 
 ## Replies and emoji
 
