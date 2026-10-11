@@ -3,6 +3,10 @@
 // Public keys that may sign tsmedia-update.json (ECDSA P-256, X||Y). Plain constexpr data that is never
 // handed to Qt. The private keys never come near this repository: see docs/UPDATES.md.
 //
+// Since 2.2.1 updates don't need a signature (tsmedia-update-v2.json is unsigned and every file is
+// checked against its SHA-256). The keys stay for the format 1 file that 2.2.0 reads: a signed
+// manifest is still verified, and refused if its signature is wrong.
+//
 //   1  daily release key (build PC)
 //   2  recovery key, kept offline. A manifest signed with it must revoke every daily key
 //      (see updatemanifest.cpp), so using it always retires a lost or leaked key 1.

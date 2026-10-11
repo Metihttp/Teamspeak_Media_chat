@@ -39,17 +39,16 @@ struct TeamSpeakCapture {
 
 struct DeviceChoice {
     enum class Source {
-        Setting,               // the microphone picked in TS Media's settings
         TeamSpeak,             // the one TeamSpeak captures from
         DefaultCommunications, // Windows' default communications microphone (no match / TeamSpeak uses "Default")
     };
     Source  source = Source::DefaultCommunications;
-    QString endpointId;             // empty: ask Windows for the default communications endpoint
-    bool    settingMissing = false; // a microphone was picked in the settings but isn't connected
+    QString endpointId;        // empty: ask Windows for the default communications endpoint
+    bool    unmatched = false; // TeamSpeak named a microphone Windows doesn't list (or that fits two)
 };
 
-// setting: Settings::voiceMicrophone (an endpoint id, empty = same as TeamSpeak).
-DeviceChoice chooseCaptureDevice(const QString& setting, const TeamSpeakCapture& teamSpeak, const EndpointList& list);
+// 2.2.1: always TeamSpeak's own capture device; there is no microphone setting any more.
+DeviceChoice chooseCaptureDevice(const TeamSpeakCapture& teamSpeak, const EndpointList& list);
 
 // The endpoint id inside a string such as TeamSpeak's device id ("{0.0.1.00000000}.{guid}", maybe with
 // a prefix); empty if there is none.

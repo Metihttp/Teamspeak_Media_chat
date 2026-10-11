@@ -134,9 +134,10 @@ ErrorCopy networkError(http::Error error)
     }
 }
 
-ErrorCopy signatureError()
+// A manifest that isn't valid, or a download that doesn't match it (size, SHA-256, signature, CPU).
+ErrorCopy checkError()
 {
-    return {i18n::t("The update failed the signature check"),
+    return {i18n::t("The update failed its safety check"),
             i18n::t("The downloaded file was deleted and nothing was changed. The download may have been damaged or altered. Try again "
                     "later, or download the update from GitHub yourself."),
             OpenPage};
@@ -529,8 +530,8 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
                                        "the file."),
                                OpenPage};
             } else {
-                m_lastError = i18n::t("the update information failed the signature check");
-                copy        = signatureError();
+                m_lastError = i18n::t("the update information from GitHub failed its safety check");
+                copy        = checkError();
             }
         }
         setPhase(restPhase);
@@ -543,7 +544,7 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
         return;
     }
 
-    // A valid, signed manifest.
+    // A valid manifest: unsigned (format 2, every file is checked against its SHA-256) or signed (format 1).
     const Manifest& m = outcome.manifest;
     const QSet<int> revoke = honouredRevocations(m, trustedKeys());
     if (!revoke.isEmpty()) {
@@ -557,7 +558,8 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
     m_lastError.clear();
 
     const Offer o = offerFor(m, effectiveInstalled(m_layout, m_current), m_settings.skipped, m_layout.arch);
-    log(latin("latest release ") + m.version.toString() + latin(" (host ") + outcome.host + latin(")"));
+    log(latin("latest release ") + m.version.toString() + latin(" (") + outcome.file + latin(", ")
+        + (m.isSigned() ? latin("signed with key ") + QString::number(m.signedBy) : latin("unsigned")) + latin(", host ") + outcome.host + latin(")"));
     switch (o) {
     case Offer::No:
         st.setValue(kCheck, "lastResult", latin("upToDate"));
@@ -779,7 +781,7 @@ void Updater::startDownload()
             if (m_phase != Phase::Downloading || !m_dialog)
                 return;
             if (all > 0 && done >= all) // downloaded: the worker now checks the files (about 2 s)
-                m_dialog->showWorking(m_manifest.version.toString(), i18n::t("Checking the signature…"));
+                m_dialog->showWorking(m_manifest.version.toString(), i18n::t("Checking the files…"));
             else
                 m_dialog->showDownloading(m_manifest.version.toString(), done, all);
         },
@@ -823,7 +825,7 @@ void Updater::onPrepareDone(const PrepareOutcome& outcome)
     case F::Mismatch:
     case F::WrongMachine: {
         log(latin("a downloaded file failed its check: ") + outcome.fileName, LogLevel_WARNING);
-        const ErrorCopy copy = signatureError();
+        const ErrorCopy copy = checkError();
         showError(copy.heading, copy.body, copy.action);
         return;
     }

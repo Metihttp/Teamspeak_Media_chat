@@ -48,6 +48,9 @@ class ChatReactions : public QObject
     bool filterEvent(QObject* watched, QEvent* event);
     // "Add reaction" in the preview's context menu.
     void addMenu(QMenu* menu, QTextBrowser* browser, const QString& key);
+    // Chat redesign: the action bar's "Add reaction" (rows with a media key that can get reactions now).
+    bool canReactTo(QTextBrowser* browser, const QString& key);
+    void openPickerAt(QTextBrowser* browser, const QString& key, const QRect& anchor); // anchor: the button (global)
 
     // Which chat a browser shows (decided while it is visible: its tab is the current one).
     enum class Kind { Unknown, Server, Channel, Private };

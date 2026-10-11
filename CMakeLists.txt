@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.2.0 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.2.1 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -156,7 +156,8 @@ add_library(tsmedia SHARED
     src/voicecard.cpp           src/voicecard.h
     src/voicepanel.cpp          src/voicepanel.h
     src/voicecontroller.cpp     src/voicecontroller.h
-    src/voicesection.cpp        src/voicesection.h
+    src/micbutton.cpp           src/micbutton.h # 2.2.1 mic: the chat input's microphone button
+    src/holdstrip.cpp           src/holdstrip.h # 2.2.1 hold to record: the strip above the chat input
     # 2.2 reply
     src/replies.cpp           src/replies.h
     src/replydoc.cpp          src/replydoc.h
@@ -171,9 +172,17 @@ add_library(tsmedia SHARED
     src/emojiprefs.cpp        src/emojiprefs.h
     src/emojipicker.cpp       src/emojipicker.h
     src/emojiinput.cpp        src/emojiinput.h
+    src/chatinput.cpp         src/chatinput.h       # 2.2.1: TeamSpeak's placeholder in the chat input
     src/chatemoji.cpp         src/chatemoji.h       src/emojiformat.h
     src/emojitext.cpp         src/emojitext.h
     src/emojisection.cpp      src/emojisection.h
+    # chat redesign: the Cozy / Compact chat layout, the action bar, TeamSpeak's emoji button taken over
+                              src/layoutformat.h
+    src/layoutdoc.cpp         src/layoutdoc.h
+    src/layoutart.cpp         src/layoutart.h
+    src/chatlayout.cpp        src/chatlayout.h      src/chatscroll.h
+    src/actionbar.cpp         src/actionbar.h
+    src/chatlayoutsection.cpp src/chatlayoutsection.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -198,9 +207,9 @@ endif()
 
 # 2.2 updater (docs/UPDATES.md). The install/rollback/manifest parts are always built (a DLL installed by
 # an update must be able to settle or roll back its state). The network part and the checks are only
-# built with TSMEDIA_UPDATER=ON, which scripts/build.ps1 sets for signed release builds: a copy you build
-# yourself never replaces itself with the author's build, and never loads winhttp.dll.
-option(TSMEDIA_UPDATER "Build the GitHub update check (official signed releases)" OFF)
+# built with TSMEDIA_UPDATER=ON, which scripts/build.ps1 sets for release builds (-Release): a copy you
+# build yourself never replaces itself with the author's build, and never loads winhttp.dll.
+option(TSMEDIA_UPDATER "Build the GitHub update check (official releases)" OFF)
 set(TSMEDIA_UPDATE_SOURCES
     src/crypto.cpp                    src/crypto.h
     src/update/updatekeys.h
@@ -225,7 +234,7 @@ if(TSMEDIA_UPDATER)
     target_compile_definitions(tsmedia PRIVATE TSMEDIA_UPDATER)
 endif()
 
-# The restart helper (tools/update_helper): Win32 only, static CRT, published as a signed release asset
+# The restart helper (tools/update_helper): Win32 only, static CRT, published as a release asset
 # (TSMedia-<ver>-helper-<arch>.update), never embedded in the DLL.
 add_executable(tsmedia_update_helper WIN32 tools/update_helper/main.cpp)
 target_compile_definitions(tsmedia_update_helper PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -323,9 +332,18 @@ if(TSMEDIA_BUILD_TESTS)
         src/emojiprefs.cpp
         src/chatemoji.cpp         # the document part (QTextDocument only in the tests)
         src/emojiinput.cpp
+        src/micbutton.cpp         # 2.2.1 mic: in the input's right-edge slot (EmojiInput places it)
         src/emojipicker.cpp
         src/emojitext.cpp         # HD emoji in the reply line, bar and popup
+        # 2.2.1: TeamSpeak's "Enter Chat Message..." placeholder: inserting into and reading the chat input
+        tests/tst_chatinput.cpp
+        src/chatinput.cpp
         tests/tst_replyemoji.cpp  # 2.2 integration: replies and HD emoji in the same chat
+        # chat redesign: the chat layout on TeamSpeak-like documents (tests/tschat.h)
+        tests/tst_chatlayout.cpp  tests/tschat.h  src/chatscroll.h
+        tests/tst_emojibutton.cpp # TeamSpeak's emoticon button taken over (a fake MainWindowChatWidget)
+        src/layoutdoc.cpp
+        src/layoutart.cpp
         # 2.2 sha: Core itself (the real core.cpp and ts3api.cpp) against a fake TeamSpeak (tests/fakets3.*):
         # downloads checked against their sha, mismatches blocked, made-up hashes refused, sent links hashed
         tests/tst_coresha.cpp
@@ -360,11 +378,19 @@ if(TSMEDIA_BUILD_TESTS)
         src/audio/fakecapture.cpp
         src/audio/wasapicapture.cpp # only lists endpoints in the tests; never opens one
         src/voicecard.cpp
+        # 2.2.1 voice: the recorder's flow (send at once, cancel, too short, 5:00) with a fake chat and
+        # generated sound, its window, and the chat input's mic button
+        tests/tst_voiceflow.cpp   tests/voicefakes.h
+        tests/tst_voicehold.cpp   # 2.2.1 hold to record: press, release, tap, cancel zone, Esc, 5:00, lost grab, unload
+        src/voicecontroller.cpp
+        src/voicepanel.cpp
+        src/holdstrip.cpp         # 2.2.1 hold to record: the strip above the chat input
     )
     target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
-        TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update") # 2.2 updater: signed test vectors
+        TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update" # 2.2 updater: test manifests
+        TSMEDIA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}") # chat redesign: the sources (one header parser)
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
@@ -443,8 +469,9 @@ if(TSMEDIA_BUILD_TOOLS)
         src/emojidata.cpp
         src/emojisegment.cpp
         src/emojitext.cpp
+        src/layoutdoc.cpp src/layoutart.cpp # chat redesign: the chat layout pages
     )
-    target_include_directories(render_gallery PRIVATE src third_party/ts3client-pluginsdk/include)
+    target_include_directories(render_gallery PRIVATE src tests third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
     if(MSVC)
         target_compile_options(render_gallery PRIVATE /W4 /utf-8 /permissive- /wd4100)

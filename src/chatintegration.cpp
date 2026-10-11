@@ -50,6 +50,8 @@
 #include "filedrag.h" // 2.2 drag-out
 #include "albums.h" // 2.2 album
 #include "chatemoji.h"     // 2.2 emoji
+#include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
+#include "chatlayout.h"    // chat redesign
 #include "chatreactions.h" // 2.2 reactions
 #include "chatreplies.h"   // 2.2 reply
 #include "i18n.h"
@@ -243,6 +245,8 @@ bool videoStarted(const PlaybackOverlay& o, bool hasFrame)
     return hasFrame || o.playing || o.ended || o.positionMs > 0;
 }
 
+VoiceController::Host voiceHostFor(ChatIntegration* chat, Core* core); // 2.2.1 voice (the voice part below)
+
 } // namespace
 
 ChatIntegration::ChatIntegration(Core* core, QObject* parent)
@@ -262,6 +266,10 @@ ChatIntegration::~ChatIntegration()
     // 2.2 album: the chats stay with TeamSpeak: messages we hid are shown and collapsed album links
     // given back (the grids stay, like single previews). m_mutating stays set: no rescan is queued now.
     m_mutating = true;
+    // Chat redesign: the outermost layer goes first (every block back as TeamSpeak made it, the action bar
+    // and overlays gone), while the replies, the emoji and the albums it sits on are still there.
+    delete m_layout;
+    m_layout = nullptr;
     // 2.2 reply: quote lines given back, the reply bar out of TeamSpeak's layout, our menu items gone.
     delete m_replies;
     m_replies = nullptr;
@@ -318,12 +326,21 @@ void ChatIntegration::start()
     m_reveals = new RevealFades(this);
     connect(m_reveals, &RevealFades::changed, this, &ChatIntegration::onFrameChanged);
     m_reactions = new ChatReactions(this, m_core); // 2.2 reactions
-    m_voice = new VoiceController(this, m_core, this); // 2.2 voice
+    m_voice = new VoiceController(voiceHostFor(this, m_core), this); // 2.2 voice
+    connect(this, &ChatIntegration::playbackStarted, m_voice, &VoiceController::onPlaybackStarted);
     m_replies   = new ChatReplies(this, m_core);   // 2.2 reply
     m_emoji     = new ChatEmoji(this);             // 2.2 emoji
     // 2.2 integration: HD emoji move positions inside a chat's blocks without a rescan; the replies'
     // index of that chat is read again.
     connect(m_emoji, &ChatEmoji::documentEdited, m_replies, &ChatReplies::documentEdited);
+    // Chat redesign: the layout moves positions inside blocks too (never blocks).
+    m_layout = new ChatLayout(this, m_core);
+    connect(m_layout, &ChatLayout::documentEdited, m_replies, &ChatReplies::documentEdited);
+    connect(m_layout, &ChatLayout::documentEdited, this, [this](QTextBrowser* browser) {
+        if (View* view = viewFor(browser))
+            view->positionsValid = false; // previews moved
+        scheduleVisibilityUpdate();
+    });
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -390,8 +407,12 @@ void ChatIntegration::discover()
             scheduleScan(v.browser);
             if (m_emoji) // 2.2 emoji
                 m_emoji->documentSwapped(v.browser);
+            if (m_layout) // chat redesign: the new document styled newest first, the old one given back on unload
+                m_layout->documentSwapped(v.browser);
         }
     }
+    if (m_emoji) // chat redesign: TeamSpeak's emoticon button may come after its input
+        m_emoji->rediscover();
 
     // Lines Core prints (upload results, warnings) use prefix colours for the chat's theme.
     if (QTextBrowser* chat = visibleChatBrowser())
@@ -426,6 +447,8 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
     scheduleScan(browser);
     if (m_emoji) // 2.2 emoji (its event filter goes before ours: it only takes events on its own emoji)
         m_emoji->attach(browser);
+    if (m_layout) // chat redesign
+        m_layout->attach(browser);
 }
 
 void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* document)
@@ -434,7 +457,8 @@ void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* docume
         auto it = m_views.find(browser);
         if (it != m_views.end())
             it->positionsValid = false;
-        if (!m_mutating && !ChatEmoji::isMutating()) // 2.2 emoji: its own edits need no rescan
+        // 2.2 emoji / chat redesign: their own edits need no rescan.
+        if (!m_mutating && !ChatEmoji::isMutating() && !ChatLayout::isMutating())
             scheduleScan(browser);
     });
 }
@@ -658,6 +682,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
             browser->viewport()->update();
         if (m_replies) // 2.2 reply: quote lines become reply lines
             m_replies->afterScan(browser);
+        if (m_layout) // chat redesign: the layout goes on last
+            m_layout->afterScan(browser);
         return;
     }
 
@@ -694,6 +720,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
     }
     if (m_replies) // 2.2 reply: quote lines become reply lines
         m_replies->afterScan(browser);
+    if (m_layout) // chat redesign: the layout goes on last
+        m_layout->afterScan(browser);
     scheduleVisibilityUpdate();
 }
 
@@ -708,7 +736,9 @@ PreviewStyle ChatIntegration::styleFor(QTextBrowser* browser) const
     if (style.font.pointSizeF() <= 0 && style.font.pixelSize() <= 0)
         style.font.setPointSizeF(9);
     style.dpr       = browser->devicePixelRatioF();
-    style.maxWidth  = qMin(s.previewMaxWidth, qMax(160, previewAreaWidth(browser) - 48));
+    // Chat redesign: previews sit in the layout's content column (G or L narrower).
+    const int indent = m_layout ? m_layout->indentFor(browser) : 0;
+    style.maxWidth  = qMin(s.previewMaxWidth, qMax(160, previewAreaWidth(browser) - 48 - indent));
     style.maxHeight = s.previewMaxHeight;
     style.animate   = ui::animationsEnabled();
     return style;
@@ -928,6 +958,8 @@ void ChatIntegration::refreshAll()
 {
     if (m_emoji) // 2.2 emoji
         m_emoji->settingsChanged();
+    if (m_layout) // chat redesign: a new layout (everything back first, then the new one in steps)
+        m_layout->settingsChanged();
     const bool previewsOn = Settings::instance().inlinePreviews;
     if (m_media) {
         m_media->settingsChanged();
@@ -1917,6 +1949,10 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     // 2.2 reply: first, so it sees every context menu (it only notes where, the menus open as before).
     if (m_replies && m_replies->filterEvent(watched, event))
         return true;
+    // Chat redesign: pictures and what goes under the text before the chat paints, hover, the action bar,
+    // a Cozy head's reply row (taken before TeamSpeak's link click).
+    if (m_layout && m_layout->filterEvent(watched, event))
+        return true;
     if (m_reactions && m_reactions->filterEvent(watched, event)) // 2.2 reactions: pills, add button
         return true;
     // 2.2 audio: the seek position under the pointer, on a video player or an audio card.
@@ -2286,7 +2322,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         QTextEdit* input = qobject_cast<QTextEdit*>(widget);
         if (!input && widget)
             input = qobject_cast<QTextEdit*>(widget->parentWidget()); // the input's viewport
-        const QString typed   = input ? input->toPlainText() : QString();
+        const QString typed   = typedText(input); // 2.2.1: never TeamSpeak's placeholder
         const QString trimmed = typed.trimmed();
         const bool    oneLine = !trimmed.contains(QLatin1Char('\n')) && !trimmed.contains(QChar::LineSeparator) && !trimmed.contains(QChar::ParagraphSeparator);
         const bool    prefill = !trimmed.isEmpty() && oneLine && trimmed.size() <= kCaptionMaxChars;
@@ -2705,6 +2741,45 @@ void ChatIntegration::pauseAllPlayback()
         m_viewer->pausePlayback();
 }
 
+// 2.2.1 mic: the mic button's state; the same checks as voiceTarget(), without saying anything.
+QString ChatIntegration::voiceBlockReason() const
+{
+    ChatTarget target;
+    QWidget*   source = nullptr;
+    resolveCurrentTarget(&target, &source);
+    switch (checkSend(source, &target)) {
+    case SendBlock::None:
+        break;
+    case SendBlock::NotConnected:
+        return i18n::t("Connect to a server to send voice messages.");
+    case SendBlock::Password:
+        return i18n::t("Voice messages can't be sent from password-protected channels. Join another channel.");
+    case SendBlock::NoRecipient:
+        return i18n::t("Can't tell who this private chat is with (they may have left the server).");
+    }
+    return {};
+}
+
+namespace {
+
+// 2.2.1: what the recorder needs from the chat. The controller is deleted first in ~ChatIntegration, so
+// chat and core outlive every call.
+VoiceController::Host voiceHostFor(ChatIntegration* chat, Core* core)
+{
+    VoiceController::Host host;
+    host.target           = [chat](ChatTarget* t, QString* description, QWidget** anchor) { return chat->voiceTarget(t, description, anchor); };
+    host.blockReason      = [chat] { return chat->voiceBlockReason(); };
+    host.describe         = [chat](const ChatTarget& t) { return chat->voiceTargetText(t); };
+    host.pauseAllPlayback = [chat] { chat->pauseAllPlayback(); };
+    host.send             = [core](const SendRequest& request) { core->send(request); };
+    host.microphone       = &VoiceController::teamSpeakMicrophone; // TeamSpeak's own capture device
+    host.pointerHeld      = &VoiceController::primaryButtonHeld;   // hold to record: a release TeamSpeak never saw
+    host.visibleTarget    = [chat] { return chat->currentTarget(); }; // ... and another chat tab come up meanwhile
+    return host;
+}
+
+} // namespace
+
 // ---- end 2.2 voice ---------------------------------------------------------------------------------
 
 ChatTarget ChatIntegration::currentTarget() const
@@ -2771,8 +2846,16 @@ void ChatIntegration::onCaptionSettled(int batch, bool posted)
 {
     const CaptionClear clear = m_captionClears.take(batch);
     auto*              input = qobject_cast<QTextEdit*>(clear.input.data());
-    if (posted && input && input->toPlainText() == clear.text)
+    if (posted && input && typedText(input) == clear.text) // the send window has the focus: read past a placeholder
         input->clear();
+}
+
+QString ChatIntegration::typedText(QTextEdit* input) const
+{
+    if (!input)
+        return {};
+    ChatInputs* inputs = m_emoji ? m_emoji->inputs() : nullptr;
+    return inputs ? inputs->typedText(input) : input->toPlainText();
 }
 
 void ChatIntegration::onUploadChanged(int id)
@@ -2908,4 +2991,43 @@ void ChatIntegration::replyToLatest()
 {
     if (m_replies)
         m_replies->replyToLatest();
+}
+
+// ============================================================================================
+// Chat redesign
+// ============================================================================================
+
+QString ChatIntegration::reactableKeyIn(QTextBrowser* browser, int block)
+{
+    if (!browser || !m_reactions)
+        return {};
+    const QTextBlock b = browser->document()->findBlockByNumber(block);
+    for (auto it = b.begin(); !it.atEnd(); ++it) {
+        const QString key = previewKeyOf(it.fragment().charFormat());
+        if (!key.isEmpty() && m_reactions->canReactTo(browser, key))
+            return key;
+    }
+    return {};
+}
+
+QVector<QRectF> ChatIntegration::mediaRectsIn(QTextBrowser* browser, int block) const
+{
+    QVector<QRectF> rects;
+    if (!browser)
+        return rects;
+    const QTextBlock b = browser->document()->findBlockByNumber(block);
+    if (!b.isValid() || !b.isVisible())
+        return rects;
+    for (auto it = b.begin(); !it.atEnd(); ++it) {
+        const QTextFragment   f  = it.fragment();
+        const QTextCharFormat cf = f.charFormat();
+        if (!f.isValid() || previewKeyOf(cf).isEmpty())
+            continue;
+        for (int i = 0; i < f.length(); ++i) {
+            const QRectF r = previewRect(browser, f.position() + i, contentSizeOf(cf.toImageFormat()));
+            if (r.isValid())
+                rects.append(r);
+        }
+    }
+    return rects;
 }

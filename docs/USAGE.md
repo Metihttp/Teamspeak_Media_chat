@@ -2,11 +2,12 @@
 
 [← Back to README](../README.md)
 
-How to send files and voice messages, reply to messages, use HD emoji, what you see in the chat, how the gallery viewer works, and the chat commands.
+How to send files and voice messages, reply to messages, use HD emoji, what you see in the chat and how it looks, how the gallery viewer works, and the chat commands.
 
 - [Sending files](#sending-files): [the send window](#the-send-window), [editing a picture](#editing-a-picture), [large videos](#large-videos), [upload progress](#upload-progress), [file names and folders](#file-names-and-folders)
 - [Viewing media](#viewing-media): [albums](#albums), [spoilers](#spoilers), [audio](#audio-files), [reactions](#reactions), [file checks](#file-checks), [data saver](#data-saver)
 - [Voice messages](#voice-messages)
+- [Chat layout](#chat-layout)
 - [Replies](#replies) and [emoji](#emoji)
 - [Dragging files out of the chat](#dragging-files-out-of-the-chat)
 - [Right-click menu](#right-click-menu), [gallery viewer](#gallery-viewer), [chat commands](#chat-commands) and [hotkeys](#hotkeys)
@@ -128,7 +129,7 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/album-dark.png">
-  <img src="images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat under the sender's caption, one of them covered as a spoiler, with a row of reactions below it; next to it an MP3 playing inline with its own reactions, a PDF file card, and a reply to the album">
+  <img src="images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat under the sender's caption, one of them covered as a spoiler, with a row of reactions below it; next to it an MP3 playing inline with its own reactions, a PDF file card, a reply to the album and two more messages">
 </picture>
 
 - Pictures, GIFs and videos sent as an album appear as one grid below the sender's line: 2 side by side, 3 as one large tile with two stacked, 4 as 2 × 2, 5 as 2 + 3, and 6 or more as 3 + 3 with *+N* on the sixth tile. In a narrow chat the grid has two columns and four tiles. It is as wide as your *Maximum preview size* and keeps its size while the pictures load.
@@ -155,7 +156,7 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 
 - Pictures, GIFs, videos, albums, audio files and voice messages (spoilers too, which stay covered) can get reactions with any emoji, drawn as HD pictures.
 - Point at a picture without reactions and click the round button at its top right, or the **+** pill at the end of an existing row, or right-click → **Add reaction**. The quick row offers eight: 👍 ❤️ 😂 😮 😢 🔥 and your two most recent other emoji. Its **+** opens the [emoji picker](#emoji) for any other one; there, a pick adds or removes that reaction, and your reactions are marked. The quick row works with the keyboard too: arrows, <kbd>Home</kbd> / <kbd>End</kbd>, <kbd>1</kbd>–<kbd>8</kbd>, <kbd>+</kbd> for the picker, <kbd>Enter</kbd> or <kbd>Space</kbd>, <kbd>Esc</kbd>. The right-click menu's **Add reaction** lists the quick ones, your others and **More reactions…**.
-- The row under the media shows each reaction with its count, in the order they first appeared; yours are highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Sara and Reza*). Everyone can add up to 10 reactions to one item, and an item shows up to 20 different ones.
+- The row under the media shows each reaction with its count, in the order they first appeared; yours are highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Bob and Carol*). Everyone can add up to 10 reactions to one item, and an item shows up to 20 different ones.
 - Reactions go through TeamSpeak, never to the server's files: people with TS Media 2.2 or later who are online in the same channel or private chat see them right away. Someone who comes in later sees the reactions of the people who are still there. They aren't available in the server chat.
 - If a reaction can't be sent (not connected, TeamSpeak limiting messages, plugin commands blocked on the server), it is taken back and the tooltip says why.
 - Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions on media* (Privacy & updates) turns reactions off: none are shown or sent.
@@ -178,21 +179,47 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/voice-dark.png">
-  <img src="images/voice-light.png" width="100%" alt="A voice message card in the chat with a play button, its waveform and length, next to the Voice message window while recording: a red dot, a live waveform, 0:07 of 5:00, and Cancel, Stop and Send buttons">
+  <img src="images/voice-light.png" width="100%" alt="Left, under Hold the microphone, let go to send: a voice message card in the chat with a play button, its waveform, its length and reactions, and below it the microphone in the chat input held to record, red, with the strip above the input showing a red dot, 0:04 of 5:00, a live waveform and Release to send · Move away to cancel. Right, under Plugins menu or /tsmedia voice: the Voice message window while recording, with a red dot, a live waveform, 0:07 of 5:00, and Cancel and Send buttons">
 </picture>
 
 Record a short message and send it to the chat you are looking at, like in Discord or Telegram.
 
-- **Start:** **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice`, or the hotkey *Record a voice message* (see [hotkeys](#hotkeys); the plugin's settings have a **Set up hotkeys…** button).
-- **While recording** a small *Voice message* window shows a red dot and *Recording*, who the message goes to, a live waveform of the last 3 seconds, and the time out of 5:00. A short sound plays when recording starts and stops (TeamSpeak plays it on your own speakers or headset; others don't hear it). The window stays on screen for as long as the microphone is in use; closing it cancels the recording.
-- **Your TeamSpeak microphone is muted** while you record, so people in your channel don't hear you live (others see you as muted until you finish). It is unmuted again as soon as recording stops, however it stops. If you unmute it yourself meanwhile, the plugin leaves it alone.
-- **Stop** (<kbd>Space</kbd>) lets you listen first: play it back, then **Send** (<kbd>Enter</kbd>), **Re-record** or **Discard** (<kbd>Esc</kbd>). **Send** while recording sends it straight away. Discarding 3 seconds or more asks first.
-- **With the hotkey:** the first press starts, the second stops so you can listen (or sends, if *Let me listen before sending* is off in the settings), the third sends. Opened by the hotkey, the window doesn't take the focus away from a game.
-- **Limits:** at 4:30 the time turns red and the window says *30 seconds left*; at 5:00 recording stops and you get the review. Under half a second, nothing is sent. Voice messages can't be sent from password-protected channels.
-- **The microphone** is the one TeamSpeak uses when the plugin can tell which one that is; otherwise Windows' default communications microphone, and the window says so. You can pick a microphone in the [settings](SETTINGS.md#voice-messages). The recording is the raw microphone, without TeamSpeak's noise suppression.
+- **Hold to record:** press and hold the **microphone** at the right end of the chat input. Recording starts the moment you press it, so your first word isn't cut off. Where nothing can be sent (not connected, a password-protected channel, a private chat whose partner left), the microphone is greyed out and its tooltip says why.
+- **While you hold it** a strip right above the chat input shows a pulsing red dot, the time out of 5:00, a live waveform and *Release to send · Move away to cancel*; the microphone turns red. A short sound plays when recording starts and stops (TeamSpeak plays it on your own speakers or headset; others don't hear it).
+- **Send:** let go of the mouse button. Recording stops and the message is sent at once; there is no listening step.
+- **Cancel:** move the pointer away from the microphone (about two centimetres, in any direction) before you let go: the strip turns red and says *Release to cancel*, and letting go there discards the recording. Move back to the microphone and it sends again. <kbd>Esc</kbd> while you hold also cancels.
+- **A click isn't a recording:** let go within half a second and nothing is recorded or sent; the strip says *Hold to record, release to send* for a moment. A double click doesn't start anything either.
+- **With the keyboard** (or if you'd rather not hold the button): **Plugins → TS Media chat → Record voice message…** or `/tsmedia voice` records in a small *Voice message* window instead, with a red dot and *Recording*, who the message goes to, the waveform and the time. The big **Send** (or <kbd>Enter</kbd>, or a click on the red microphone) sends it; **Cancel** (<kbd>Esc</kbd>) discards it, from 3 seconds on after asking (recording goes on while it asks). The window stays on screen for as long as the microphone is in use; closing it cancels the recording.
+- **Your TeamSpeak microphone is muted** while you record, so people in your channel don't hear you live (others see you as muted until you finish). It is unmuted again as soon as recording stops, however it stops; if the connection dropped meanwhile, as soon as TeamSpeak is connected there again. If you unmute it yourself meanwhile, the plugin leaves it alone.
+- **Limits:** at 4:30 the time turns red (the window says *30 seconds left*, the strip *Sent by itself at 5:00*); at 5:00 recording stops and the message is sent by itself, even while you still hold the button, and the strip or the window says so (held with the pointer away from the microphone, ready to cancel, it is kept in the window instead). Under half a second of sound, nothing is sent (*Too short to send*). Voice messages can't be sent from password-protected channels.
+- **Kept for you:** if recording stops by itself (the microphone was unplugged, or the window was hidden), you aren't connected when it is sent, TeamSpeak never saw you let go of the microphone (you switched to another window with <kbd>Alt</kbd>+<kbd>Tab</kbd>, or a menu or another window took the mouse), or another chat came up while you held it, the *Voice message* window keeps the recording instead of sending it: press **Send** (once you are connected again), or close the window to discard it (from 3 seconds on it asks first). The microphone button in the chat input shows the window again.
+- **The microphone** is the one TeamSpeak uses (**Tools → Options → Capture**) when the plugin can tell which one that is; otherwise Windows' default communications microphone, and the window says so. The recording is the raw microphone, without TeamSpeak's noise suppression.
 - **Sent as** an `.m4a` file (AAC, about 0.73 MB a minute) through the normal upload, with the upload panel showing *Voice message*. People without the plugin get a *Voice message (0:12)* link that downloads a file any player can play.
 - **Receiving:** a voice message is a compact card with a play button, its waveform and its length. It downloads by itself while *Download images, GIFs and voice messages automatically* is on (up to that limit, at most 16 MB), so it plays at once. Click the waveform to jump to a point. **Save as…** suggests *Voice message 2026-10-09 18-02.m4a*.
 - The [FAQ](FAQ.md#voice-messages) lists the messages the window can show (*Microphone access is blocked*, *No microphone found*, *The microphone is busy*, …) with their fixes.
+
+## Chat layout
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/chat-layout-dark.png">
+  <img src="images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy, the default: a day divider reading Today, October 10, 2026, join lines as small grey rows with an icon and their time, avatars with names and times above grouped messages, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
+</picture>
+
+TS Media chat gives TeamSpeak's chat a Discord-like look in your own view. Nothing is sent and nobody else sees a difference. Choose the look in **Settings → General → Chat layout**:
+
+- **Cozy** (the default): names, avatars and times above the messages. Messages of one person within 7 minutes are grouped under one name; point at one to see its time. A reply always starts a new group and shows its reply row above the name.
+- **Compact:** one line per message, with the time in front.
+- **TeamSpeak classic:** TeamSpeak's own look. Switching applies at once, and TeamSpeak's own chat comes back exactly as it was.
+
+In Cozy and Compact:
+
+- **Day dividers** read *Today, October 10, 2026*. Joins, leaves and other system lines become small rows with an icon and their time, and so do TeamSpeak's status lines in the server tab and in private chats (*You switched from channel …*, *Chat partner disconnected …*); where TeamSpeak's saved chat history begins, a *History* divider shows its day. Four or more in a row show their first with *+N more events*: click it to see them all, *Show fewer* folds them again. Pokes, kicks, bans, errors, welcome and host messages always show.
+- **Message actions:** point at a message for **Add reaction** (on media), **Reply**, **Copy text** and **More**. They are in the right-click menu too, and hidden when the chat is narrower than 240 px.
+- **Mentions:** a message from someone else with your nickname or *@nickname* in it gets a tint and a bar.
+- **Avatars** are the pictures TeamSpeak already has; nothing is downloaded, and people without one get their initials on a coloured disc.
+- Links keep their colour and underline. Copying gives TeamSpeak's own text.
+
+Grouping, message actions, avatars, mentions and folding can each be turned off in the [settings](SETTINGS.md#chat-layout).
 
 ## Dragging files out of the chat
 
@@ -239,7 +266,7 @@ When TeamSpeak shows no menu of its own there, a small menu with the same items 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/replies-emoji-dark.png">
-  <img src="images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat with HD emoji in the messages, two replies with a reply line above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input, and the emoji picker open above the input's emoji button with a search for heart">
+  <img src="images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat in the Cozy layout with HD emoji in the messages, two replies with a reply row above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input with the microphone at the input's right end, and the emoji picker open above TeamSpeak's own emoji button next to the input, with a search for heart">
 </picture>
 
 Reply to any message in a channel, server or private chat, yours or someone else's, with or without the plugin on their side.
@@ -304,7 +331,7 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 - Everyone with TS Media sees them like this; people without it see TeamSpeak's own rendering. Nothing about the message changes: it is plain text with Unicode emoji.
 - Left as they are: links (also nicknames and file names), the TS Media link with its *plugin required* note, and characters that are text unless marked as emoji (©, ™, arrows, digits). Windows draws no country flags, so those stay letters.
 - **Copying** (<kbd>Ctrl</kbd>+<kbd>C</kbd> or TeamSpeak's own *Copy*) gives the text with the emoji and smiley codes in place. Right-clicking an emoji opens TeamSpeak's chat menu with the emoji's name, *Copy emoji* and *Use in the chat input* at the top, followed by *Reply* and *Copy text* (the message, or the selection when you right-clicked inside it); see the [right-click menu](#right-click-menu).
-- **The emoji picker.** Click the smiley at the right end of the chat input, or press <kbd>Ctrl</kbd>+<kbd>E</kbd> there (Windows' own panel, <kbd>Win</kbd>+<kbd>.</kbd>, works too). About 1,600 emoji in eight groups, with *Recently used* first, a search by name or word (`joy`, `+1`, `:fire:` …), a skin-tone choice and a preview with the name. Typing searches right away; <kbd>↓</kbd> or <kbd>Tab</kbd> moves into the grid, the arrows move there, <kbd>Page Up</kbd> / <kbd>Page Down</kbd> jump a group, <kbd>Enter</kbd> inserts and closes, <kbd>Shift</kbd>+<kbd>Enter</kbd> or <kbd>Shift</kbd>+click inserts and keeps it open, <kbd>Esc</kbd> clears the search or closes; <kbd>Ctrl</kbd>+<kbd>E</kbd> or the button again closes it too. The send window's caption field has the same button.
+- **The emoji picker.** Click TeamSpeak's emoticon button next to the chat input (it shows an HD face), or press <kbd>Ctrl</kbd>+<kbd>E</kbd> there (Windows' own panel, <kbd>Win</kbd>+<kbd>.</kbd>, works too). If TeamSpeak hides its button, a smiley inside the chat input, left of the microphone, takes its place. About 1,600 emoji in eight groups, with *Recently used* first, a search by name or word (`joy`, `+1`, `:fire:` …), a skin-tone choice and a preview with the name. Typing searches right away; <kbd>↓</kbd> or <kbd>Tab</kbd> moves into the grid, the arrows move there, <kbd>Page Up</kbd> / <kbd>Page Down</kbd> jump a group, <kbd>Enter</kbd> inserts and closes, <kbd>Shift</kbd>+<kbd>Enter</kbd> or <kbd>Shift</kbd>+click inserts and keeps it open, <kbd>Esc</kbd> clears the search or closes; <kbd>Ctrl</kbd>+<kbd>E</kbd> or the button again closes it too. The send window's caption field has the same button.
 - **Reactions** use the same HD emoji, and any emoji can be one ([reactions](#reactions)).
 - Reply lines, the reply bar and *View replies* show emoji in HD too ([replies](#replies)).
 - The options are under [Settings → General → Emoji](SETTINGS.md#emoji).
@@ -334,7 +361,8 @@ In **Tools → Options → Hotkeys**, click **Add**, then **Show Advanced Action
 | --- | --- |
 | Send files to the current chat | opens the file picker for the chat you are looking at |
 | Cancel all uploads | stops every running upload |
-| Record a voice message (press to start, press again to stop) | starts a voice message; the next press stops it for a listen (or sends it), the one after sends |
 | Reply to the last message in the current chat | starts a reply to the newest message of the chat you are looking at ([replies](#replies)) |
+
+2.2.0's *Record a voice message* hotkey is gone since 2.2.1 (use the microphone in the chat input). If you had bound it, it no longer does anything; you can remove it from TeamSpeak's hotkey list.
 
 The **Plugins → TS Media chat** menu also has **Pause automatic downloads on this server** / **Resume automatic downloads on this server**, **Check for updates…** (official builds), **Settings…** and **Open media cache folder**. Server admins find **Give TS Media chat access** and **Remove TS Media chat access** in a client's right-click menu ([server admin guide](SERVER-ADMIN.md#one-click-ts-media-chat-group)).

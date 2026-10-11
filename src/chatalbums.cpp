@@ -17,7 +17,9 @@
 #include <algorithm>
 
 #include "albums.h"
+#include "chatlayout.h"   // chat redesign: albums show or hide messages
 #include "i18n.h"
+#include "layoutformat.h" // chat redesign: headers kept in TS Media's chat layout
 #include "chatreactions.h" // 2.2 reactions: the album's row
 #include "inlinemedia.h"
 #include "ownedtimer.h"
@@ -197,6 +199,8 @@ ChatIntegration::AlbumPlan ChatIntegration::planAlbums(QTextBrowser* browser) co
             const int             start = f.position();
             const int             end   = start + f.length();
             const QString         id    = objectIdOf(cf);
+            if (layoutformat::isOurs(cf))
+                continue; // chat redesign: our head keeps TeamSpeak's header (read below)
             if (!id.isEmpty()) {
                 for (int p = start; p < end; ++p) {
                     if (albums::isObjectId(id))
@@ -260,14 +264,22 @@ ChatIntegration::AlbumPlan ChatIntegration::planAlbums(QTextBrowser* browser) co
             const QString  text      = block.text();
             const int      firstLink = at.links.first().start - block.position();
             albums::Header header;
-            if (nickStart >= 0 && nickEnd - block.position() <= firstLink) {
-                const int from = nickStart - block.position();
-                const int to   = nickEnd - block.position();
-                header         = albums::parseHeader(text.left(from), text.mid(from, to - from), nickHref, text.mid(to, firstLink - to));
+            // Chat redesign: a block in TS Media's chat layout keeps TeamSpeak's header in our picture.
+            const layoutformat::Header styled = layoutformat::headerOf(block);
+            if (styled.valid) {
+                const int body = styled.bodyStart - block.position();
+                header         = albums::parseHeader(styled.lead, styled.nickText, styled.nickHref, styled.after + text.mid(body, qMax(0, firstLink - body)));
+                message.bare   = header.valid && body <= firstLink && text.mid(body, firstLink - body).trimmed().isEmpty();
+            } else {
+                if (nickStart >= 0 && nickEnd - block.position() <= firstLink) {
+                    const int from = nickStart - block.position();
+                    const int to   = nickEnd - block.position();
+                    header         = albums::parseHeader(text.left(from), text.mid(from, to - from), nickHref, text.mid(to, firstLink - to));
+                }
+                if (!header.valid)
+                    header = albums::parseHeaderText(text.left(firstLink));
+                message.bare = header.valid && header.length <= firstLink && text.mid(header.length, firstLink - header.length).trimmed().isEmpty();
             }
-            if (!header.valid)
-                header = albums::parseHeaderText(text.left(firstLink));
-            message.bare = header.valid && header.length <= firstLink && text.mid(header.length, firstLink - header.length).trimmed().isEmpty();
             if (!header.uid.isEmpty())
                 message.sender = QStringLiteral("u:") + header.uid;
             for (int i = 0; i < message.links.size() && message.sender.isEmpty(); ++i) {
@@ -441,6 +453,8 @@ void ChatIntegration::applyAlbums(QTextBrowser* browser, const AlbumPlan& plan)
     for (const int number : qAsConst(unhide))
         setBlockHidden(doc, number, false);
     m_mutating = false;
+    if (m_layout && (!hide.isEmpty() || !unhide.isEmpty())) // chat redesign: the next visible message is grouped again
+        m_layout->visibilityChanged(browser, hide + unhide);
 
     QSet<QString> stillShown;
     for (const AlbumPlan::Object& object : plan.objects)

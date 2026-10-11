@@ -4,13 +4,12 @@
 #include <QAccessible>
 #include <QApplication>
 #include <QCloseEvent>
-#include <QElapsedTimer>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
@@ -20,7 +19,6 @@
 #include <QtMath>
 
 #include <cmath>
-#include <functional>
 
 #include "audio/waveform.h"
 #include "i18n.h"
@@ -38,7 +36,8 @@ constexpr int   kSpacing    = 8;
 constexpr int   kWaveHeight = 48;
 constexpr qreal kBar        = 3.0;
 constexpr qreal kBarGap     = 2.0;
-constexpr int   kSeekStepMs = 5000;
+constexpr int   kButtonHeight = 36; // the big Send, and Cancel next to it
+constexpr int   kSendWidth    = 120;
 
 const QColor kAccent(0x58, 0x65, 0xf2);
 const QColor kAccentHover(0x47, 0x52, 0xc4);
@@ -60,8 +59,9 @@ struct Colors {
     QColor focus;    // focus rings, 3:1
     QColor record;   // the red dot
     QColor live;     // live bars, 3:1
-    QColor played;   // review: played bars (3:1)
-    QColor unplayed; // review: bars still to play (3:1)
+    QColor quiet;    // places not recorded yet
+    QColor disabledFill; // the Send button while sending
+    QColor disabledText; // ... its text, 4.5:1 on that
 };
 
 Colors colorsFor(const QPalette& pal)
@@ -79,14 +79,13 @@ Colors colorsFor(const QPalette& pal)
     c.focus = c.dark ? QColor(0x94, 0x9c, 0xf7) : QColor(0x47, 0x52, 0xc4);
     if (ui::contrastRatio(c.focus, c.window) < 3.0)
         c.focus = c.text;
-    c.record   = c.dark ? QColor(0xf2, 0x3f, 0x43) : QColor(0xda, 0x37, 0x3c);
-    c.live     = c.dark ? QColor(0x94, 0x9c, 0xf7) : kAccent;
-    c.played   = c.dark ? QColor(0xc9, 0xcd, 0xfb) : QColor(0x47, 0x52, 0xc4);
-    c.unplayed = QColor(0x80, 0x84, 0x8e);
-    for (QColor* bars : {&c.live, &c.played, &c.unplayed}) {
-        if (ui::contrastRatio(*bars, c.window) < 3.0)
-            *bars = c.text;
-    }
+    c.record = c.dark ? QColor(0xf2, 0x3f, 0x43) : QColor(0xda, 0x37, 0x3c);
+    c.live   = c.dark ? QColor(0x94, 0x9c, 0xf7) : kAccent;
+    if (ui::contrastRatio(c.live, c.window) < 3.0)
+        c.live = c.text;
+    c.quiet        = QColor(0x80, 0x84, 0x8e);
+    c.disabledFill = c.dark ? QColor(0x3f, 0x41, 0x47) : QColor(0xe3, 0xe5, 0xe8);
+    c.disabledText = c.dark ? QColor(0xb5, 0xba, 0xc1) : QColor(0x5c, 0x5e, 0x66);
     return c;
 }
 
@@ -123,6 +122,40 @@ QPixmap alertPixmap(int size, qreal dpr, const QColor& fill)
     p.setRenderHint(QPainter::Antialiasing);
     pp::drawAlertIcon(p, QRectF(0, 0, size, size), fill, Qt::white);
     return pixmap;
+}
+
+// The Send button's paper plane at the window's scale: white on the accent, the disabled text colour on
+// the disabled fill.
+QPixmap planePixmap(qreal dpr, const QColor& color)
+{
+    const int size = 16;
+    QPixmap   pixmap(QSize(size, size) * dpr);
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+    QPainter p(&pixmap);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    QPainterPath plane;
+    plane.moveTo(1.5, 2.0);
+    plane.lineTo(14.8, 8.0);
+    plane.lineTo(1.5, 14.0);
+    plane.lineTo(3.6, 8.9);
+    plane.lineTo(9.0, 8.0);
+    plane.lineTo(3.6, 7.1);
+    plane.closeSubpath();
+    p.drawPath(plane);
+    return pixmap;
+}
+
+QIcon sendIcon(qreal dpr, const QColor& disabled)
+{
+    QIcon         icon;
+    const QPixmap white = planePixmap(dpr, Qt::white);
+    icon.addPixmap(white, QIcon::Normal);
+    icon.addPixmap(white, QIcon::Active);
+    icon.addPixmap(planePixmap(dpr, disabled), QIcon::Disabled);
+    return icon;
 }
 
 } // namespace
@@ -163,84 +196,17 @@ class VoicePanel::Dot : public QWidget
     qreal  m_opacity = 1.0;
 };
 
-// ---- the review's round play button --------------------------------------------------------------------
-
-class VoicePanel::PlayButton : public QAbstractButton
-{
-  public:
-    explicit PlayButton(QWidget* parent)
-        : QAbstractButton(parent)
-    {
-        setFixedSize(40, 40); // the 36 px disc plus room for the focus ring
-        setFocusPolicy(Qt::TabFocus);
-        setCursor(Qt::PointingHandCursor);
-    }
-    void setPlaying(bool playing)
-    {
-        if (playing == m_playing && !toolTip().isEmpty())
-            return;
-        m_playing = playing;
-        setToolTip(playing ? i18n::t("Pause (Space)") : i18n::t("Play (Space)"));
-        setAccessibleName(playing ? i18n::t("Pause") : i18n::t("Play"));
-        update();
-    }
-    void setFocusColor(const QColor& color)
-    {
-        m_focus = color;
-        update();
-    }
-
-  protected:
-    void paintEvent(QPaintEvent*) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        const QRectF disc = QRectF(rect()).adjusted(2.0, 2.0, -2.0, -2.0);
-        if (hasFocus()) {
-            p.setPen(QPen(m_focus, 2.0));
-            p.setBrush(Qt::NoBrush);
-            p.drawEllipse(QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0));
-        }
-        p.setPen(Qt::NoPen);
-        p.setBrush(isDown() ? kAccentPressed : underMouse() ? kAccentHover : kAccent);
-        p.drawEllipse(disc.adjusted(1.0, 1.0, -1.0, -1.0));
-        const QRectF icon = disc.adjusted(11.0, 11.0, -11.0, -11.0);
-        if (m_playing)
-            pp::drawPauseIcon(p, icon, Qt::white);
-        else
-            pp::drawPlayIcon(p, icon.translated(1.0, 0.0), Qt::white);
-    }
-    void enterEvent(QEvent* event) override
-    {
-        QAbstractButton::enterEvent(event);
-        update();
-    }
-    void leaveEvent(QEvent* event) override
-    {
-        QAbstractButton::leaveEvent(event);
-        update();
-    }
-
-  private:
-    bool   m_playing = false;
-    QColor m_focus   = kAccentHover;
-};
-
-// ---- the waveform: live while recording, seekable in the review ------------------------------------------
+// ---- the live waveform (the level meter) -------------------------------------------------------------
 
 class VoicePanel::WaveStrip : public QWidget
 {
   public:
-    std::function<void(double)> onSeek;
-    std::function<void(qint64)> onSeekBy;
-
     explicit WaveStrip(QWidget* parent)
         : QWidget(parent)
     {
         setMinimumHeight(kWaveHeight);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setMouseTracking(true);
-        setAccessibleName(i18n::t("Voice message waveform"));
+        setAccessibleName(i18n::t("Microphone level"));
     }
 
     void setColors(const Colors& colors)
@@ -250,20 +216,7 @@ class VoicePanel::WaveStrip : public QWidget
     }
     void setLive(const QVector<float>& bins)
     {
-        m_review = false;
-        m_bins   = bins;
-        setFocusPolicy(Qt::NoFocus);
-        setCursor(Qt::ArrowCursor);
-        update();
-    }
-    void setReview(const QByteArray& levels, double fraction, bool started)
-    {
-        m_review   = true;
-        m_levels   = levels;
-        m_fraction = qBound(0.0, fraction, 1.0);
-        m_started  = started;
-        setFocusPolicy(Qt::StrongFocus);
-        setCursor(Qt::PointingHandCursor);
+        m_bins = bins;
         update();
     }
 
@@ -277,133 +230,20 @@ class VoicePanel::WaveStrip : public QWidget
         const qreal  center = area.center().y();
         const qreal  range  = area.height() - 3.0;
         p.setPen(Qt::NoPen);
-        if (!m_review) {
-            // Newest at the right; places not recorded yet are small dots.
-            const int have = m_bins.size();
-            for (int i = 0; i < count; ++i) {
-                const int  bin = have - count + i;
-                const bool on  = bin >= 0;
-                const qreal h  = on ? 3.0 + range * waveform::liveHeight(m_bins.at(bin)) : 3.0;
-                p.setBrush(on ? m_colors.live : withAlpha(m_colors.unplayed, 0.6));
-                p.drawRoundedRect(QRectF(area.left() + i * (kBar + kBarGap), center - h / 2.0, kBar, h), kBar / 2.0, kBar / 2.0);
-            }
-        } else {
-            const QVector<quint8> bars  = waveform::resample(m_levels, count);
-            const qreal           split = area.left() + area.width() * m_fraction;
-            auto paint = [&](const QColor& color) {
-                p.setBrush(color);
-                for (int i = 0; i < count; ++i) {
-                    const qreal h = 3.0 + range * bars.at(i) / 15.0;
-                    p.drawRoundedRect(QRectF(area.left() + i * (kBar + kBarGap), center - h / 2.0, kBar, h), kBar / 2.0, kBar / 2.0);
-                }
-            };
-            paint(m_colors.unplayed);
-            if (m_started && m_fraction > 0.0) {
-                p.save();
-                p.setClipRect(QRectF(area.left() - 1.0, 0.0, split - area.left() + 1.0, height()));
-                paint(m_colors.played);
-                p.restore();
-            }
-            if (m_started) {
-                p.setBrush(m_colors.played);
-                p.drawRoundedRect(QRectF(qBound(area.left(), split - 1.0, area.right() - 2.0), center - range / 2.0 - 2.0, 2.0, range + 4.0), 1.0, 1.0);
-            }
-            if (m_hoverX >= 0) { // where a click would jump to
-                p.setBrush(m_colors.text);
-                p.drawRect(QRectF(qBound(area.left(), m_hoverX, area.right()) - 0.5, area.top(), 1.0, area.height()));
-            }
-            if (hasFocus()) {
-                p.setBrush(Qt::NoBrush);
-                p.setPen(QPen(m_colors.focus, 2.0));
-                p.drawRoundedRect(QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0), 4.0, 4.0);
-            }
+        // Newest at the right; places not recorded yet are small dots.
+        const int have = m_bins.size();
+        for (int i = 0; i < count; ++i) {
+            const int   bin = have - count + i;
+            const bool  on  = bin >= 0;
+            const qreal h   = on ? 3.0 + range * waveform::liveHeight(m_bins.at(bin)) : 3.0;
+            p.setBrush(on ? m_colors.live : withAlpha(m_colors.quiet, 0.6));
+            p.drawRoundedRect(QRectF(area.left() + i * (kBar + kBarGap), center - h / 2.0, kBar, h), kBar / 2.0, kBar / 2.0);
         }
-    }
-    void mousePressEvent(QMouseEvent* event) override
-    {
-        if (m_review && event->button() == Qt::LeftButton) {
-            m_dragging = true;
-            seekTo(event->localPos().x());
-        }
-        QWidget::mousePressEvent(event);
-    }
-    void mouseMoveEvent(QMouseEvent* event) override
-    {
-        if (!m_review)
-            return;
-        m_hoverX = event->localPos().x();
-        update();
-        if (m_dragging && (!m_seekClock.isValid() || m_seekClock.elapsed() >= 60))
-            seekTo(event->localPos().x());
-    }
-    void mouseReleaseEvent(QMouseEvent* event) override
-    {
-        if (m_dragging && event->button() == Qt::LeftButton) {
-            m_dragging = false;
-            seekTo(event->localPos().x());
-        }
-    }
-    void leaveEvent(QEvent*) override
-    {
-        m_hoverX = -1;
-        update();
-    }
-    void keyPressEvent(QKeyEvent* event) override
-    {
-        if (m_review) {
-            switch (event->key()) {
-            case Qt::Key_Left:
-                if (onSeekBy)
-                    onSeekBy(-kSeekStepMs);
-                return;
-            case Qt::Key_Right:
-                if (onSeekBy)
-                    onSeekBy(kSeekStepMs);
-                return;
-            case Qt::Key_Home:
-                if (onSeek)
-                    onSeek(0.0);
-                return;
-            case Qt::Key_End:
-                if (onSeek)
-                    onSeek(1.0);
-                return;
-            default:
-                break;
-            }
-        }
-        QWidget::keyPressEvent(event);
-    }
-    void focusInEvent(QFocusEvent* event) override
-    {
-        QWidget::focusInEvent(event);
-        update();
-    }
-    void focusOutEvent(QFocusEvent* event) override
-    {
-        QWidget::focusOutEvent(event);
-        update();
     }
 
   private:
-    void seekTo(qreal x)
-    {
-        const QRectF area = QRectF(rect()).adjusted(2.0, 4.0, -2.0, -4.0);
-        if (area.width() <= 0.0 || !onSeek)
-            return;
-        m_seekClock.restart();
-        onSeek(qBound(0.0, (x - area.left()) / area.width(), 1.0));
-    }
-
-    Colors          m_colors;
-    bool            m_review   = false;
-    QVector<float>  m_bins;
-    QByteArray      m_levels;
-    double          m_fraction = 0.0;
-    bool            m_started  = false;
-    bool            m_dragging = false;
-    qreal           m_hoverX   = -1;
-    QElapsedTimer   m_seekClock;
+    Colors         m_colors;
+    QVector<float> m_bins;
 };
 
 // ---- the window --------------------------------------------------------------------------------------
@@ -413,6 +253,10 @@ VoicePanel::VoicePanel(QWidget* parent)
 {
     // fromLatin1: plugin shutdown finds it by this name; it lives among TeamSpeak's windows.
     setObjectName(QString::fromLatin1("tsmediaVoiceRecorder"));
+    // Never a window that keeps TeamSpeak running: Qt quits TeamSpeak when its main window closes and no
+    // other window without a parent is open, and this one can stay open then (the discard question refuses
+    // to close). That left TeamSpeak running without any window after Quit.
+    setAttribute(Qt::WA_QuitOnClose, false);
     setWindowTitle(i18n::t("Voice message"));
     setLayoutDirection(Qt::LeftToRight);
     setFocusPolicy(Qt::StrongFocus); // keys go to the window unless a button was tabbed to
@@ -433,7 +277,6 @@ VoicePanel::VoicePanel(QWidget* parent)
     header->addWidget(m_target, 1);
 
     m_mainRow = new QWidget(this);
-    m_play    = new PlayButton(m_mainRow);
     m_wave    = new WaveStrip(m_mainRow);
     m_time    = new QLabel(m_mainRow);
     m_time->setTextFormat(Qt::PlainText);
@@ -446,7 +289,6 @@ VoicePanel::VoicePanel(QWidget* parent)
     auto* main = new QHBoxLayout(m_mainRow);
     main->setContentsMargins(0, 0, 0, 0);
     main->setSpacing(kSpacing);
-    main->addWidget(m_play, 0, Qt::AlignVCenter);
     main->addWidget(m_wave, 1);
     main->addWidget(m_time, 0, Qt::AlignVCenter);
     main->addWidget(m_limit, 0, Qt::AlignVCenter);
@@ -483,21 +325,22 @@ VoicePanel::VoicePanel(QWidget* parent)
     m_question->setTextFormat(Qt::PlainText);
     m_question->setFont(scaledFont(font(), 1.0, true));
 
-    m_left   = new QPushButton(this);
-    m_middle = new QPushButton(this);
-    m_right  = new QPushButton(this);
-    for (QPushButton* b : {m_left, m_middle, m_right}) {
+    m_left = new QPushButton(this);
+    m_send = new QPushButton(this);
+    for (QPushButton* b : {m_left, m_send}) {
         b->setAutoDefault(false);
         b->setDefault(false);
         b->setFocusPolicy(Qt::TabFocus); // a click doesn't take the keys away from the window
-        b->setMinimumSize(80, 32);
     }
+    m_left->setMinimumSize(88, kButtonHeight);
+    m_send->setMinimumSize(kSendWidth, kButtonHeight);
+    m_send->setFont(scaledFont(font(), 1.0, true));
+    m_send->setIconSize(QSize(16, 16));
     auto* buttons = new QHBoxLayout;
     buttons->setSpacing(kSpacing);
     buttons->addWidget(m_left);
     buttons->addStretch(1);
-    buttons->addWidget(m_middle);
-    buttons->addWidget(m_right);
+    buttons->addWidget(m_send);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(kPadding, kPadding - 4, kPadding, kPadding);
@@ -508,15 +351,10 @@ VoicePanel::VoicePanel(QWidget* parent)
     layout->addWidget(m_hint);
     layout->addWidget(m_hint2);
     layout->addWidget(m_question);
+    layout->addSpacing(4);
     layout->addLayout(buttons);
-    setTabOrder(m_play, m_wave);
-    setTabOrder(m_wave, m_left);
-    setTabOrder(m_left, m_middle);
-    setTabOrder(m_middle, m_right);
+    setTabOrder(m_left, m_send);
 
-    m_wave->onSeek   = [this](double fraction) { emit seekRequested(fraction); };
-    m_wave->onSeekBy = [this](qint64 delta) { emit seekByRequested(delta); };
-    connect(m_play, &QAbstractButton::clicked, this, &VoicePanel::playToggled);
     connect(m_left, &QPushButton::clicked, this, [this] {
         if (m_view.confirmDiscard)
             emit keepRequested();
@@ -525,13 +363,7 @@ VoicePanel::VoicePanel(QWidget* parent)
         else
             emit cancelRequested();
     });
-    connect(m_middle, &QPushButton::clicked, this, [this] {
-        if (m_view.mode == Mode::Review)
-            emit rerecordRequested();
-        else
-            emit stopRequested();
-    });
-    connect(m_right, &QPushButton::clicked, this, [this] {
+    connect(m_send, &QPushButton::clicked, this, [this] {
         if (m_view.confirmDiscard)
             emit discardConfirmed();
         else if (m_view.mode == Mode::Error)
@@ -554,16 +386,16 @@ bool VoicePanel::buttonHasFocus() const
 
 void VoicePanel::setView(const View& view)
 {
-    // The buttons change meaning with the state (Stop becomes Re-record, Keep becomes Discard): a button
-    // that had the keyboard focus gives it back to the window, so Enter / Space / Esc keep their
-    // documented meaning instead of pressing whatever now sits there.
+    // The buttons change meaning with the state (Send becomes a fix, Cancel becomes Keep): a button that
+    // had the keyboard focus gives it back to the window, so Enter / Esc keep their documented meaning
+    // instead of pressing whatever now sits there.
     const bool newButtons = view.mode != m_view.mode || view.confirmDiscard != m_view.confirmDiscard;
     if (newButtons && buttonHasFocus() && !view.confirmDiscard)
         setFocus(Qt::OtherFocusReason);
     m_view            = view;
     const Mode   mode = view.mode;
     const Colors c    = colorsFor(palette());
-    const bool   main = mode == Mode::Starting || mode == Mode::Recording || mode == Mode::Saving || mode == Mode::Review;
+    const bool   main = mode == Mode::Starting || mode == Mode::Recording || mode == Mode::Saving;
 
     // Header: the red dot and "Recording" (never colour alone), or what the window shows now.
     QString status;
@@ -575,10 +407,7 @@ void VoicePanel::setView(const View& view)
         status = i18n::t("Recording");
         break;
     case Mode::Saving:
-        status = view.savingShown ? i18n::t("Saving…") : i18n::t("Recording");
-        break;
-    case Mode::Review:
-        status = i18n::t("Review");
+        status = !view.sendingShown ? i18n::t("Recording") : view.sending ? i18n::t("Sending…") : i18n::t("Saving…");
         break;
     case Mode::TooShort:
     case Mode::Error:
@@ -601,19 +430,9 @@ void VoicePanel::setView(const View& view)
 
     // The waveform row.
     m_mainRow->setVisible(main);
-    m_play->setVisible(mode == Mode::Review);
-    m_play->setPlaying(view.playing);
-    if (mode == Mode::Review) {
-        const double fraction = view.lengthMs > 0 ? static_cast<double>(view.timeMs) / static_cast<double>(view.lengthMs) : 0.0;
-        m_wave->setReview(view.levels, fraction, view.started);
-        m_time->setText(formatDuration(view.started ? view.timeMs : view.lengthMs));
-        m_limit->hide();
-    } else {
-        m_wave->setLive(view.liveBins);
-        m_time->setText(formatDuration(view.timeMs));
-        m_limit->setText(i18n::t(" / %1").arg(formatDuration(view.limitMs)));
-        m_limit->show();
-    }
+    m_wave->setLive(view.liveBins);
+    m_time->setText(formatDuration(view.timeMs));
+    m_limit->setText(i18n::t(" / %1").arg(formatDuration(view.limitMs)));
     const QString timeSheet = view.timeWarning ? QString::fromLatin1("color:%1;").arg(c.error.name()) : QString();
     if (m_time->styleSheet() != timeSheet)
         m_time->setStyleSheet(timeSheet);
@@ -673,15 +492,18 @@ bool VoicePanel::event(QEvent* event)
 void VoicePanel::rebuildButtons()
 {
     const Mode mode = m_view.mode;
-    auto set = [](QPushButton* b, const QString& text, const QString& tip, bool visible, bool enabled = true, const char* name = "") {
+    // look: "voicePrimary" (the accent, white text), "voiceDanger" (the error colour) or plain.
+    auto set = [this](QPushButton* b, const QString& text, const QString& tip, bool visible, bool enabled, const char* look, bool withIcon) {
         if (b->text() != text)
             b->setText(text);
         if (b->toolTip() != tip)
             b->setToolTip(tip);
         b->setVisible(visible);
         b->setEnabled(enabled);
-        const QString objectName = QString::fromLatin1(name);
-        if (b->objectName() != objectName) { // "voiceDanger": the error colour (style sheet)
+        if (withIcon != !b->icon().isNull())
+            b->setIcon(withIcon ? sendIcon(devicePixelRatioF(), colorsFor(palette()).disabledText) : QIcon());
+        const QString objectName = QString::fromLatin1(look);
+        if (b->objectName() != objectName) { // the style sheet picks the new look
             b->setObjectName(objectName);
             b->style()->unpolish(b);
             b->style()->polish(b);
@@ -689,43 +511,37 @@ void VoicePanel::rebuildButtons()
     };
     if (m_view.confirmDiscard) {
         // Keep (focused) at the left, the destructive Discard apart at the right, in the error colour.
-        set(m_left, i18n::t("&Keep"), i18n::t("Keep the recording (Esc)"), true);
-        set(m_middle, QString(), QString(), false);
-        set(m_right, i18n::t("&Discard"), i18n::t("Delete the recording"), true, true, "voiceDanger");
+        set(m_left, i18n::t("&Keep"), i18n::t("Keep the recording (Esc)"), true, true, "", false);
+        set(m_send, i18n::t("&Discard"), i18n::t("Delete the recording"), true, true, "voiceDanger", false);
         if (!m_left->hasFocus())
             m_left->setFocus(Qt::OtherFocusReason);
         return;
     }
+    const QString cancel    = i18n::t("&Cancel");
+    const QString cancelTip = i18n::t("Discard the recording (Esc)");
     switch (mode) {
     case Mode::Starting:
-        set(m_left, i18n::t("&Cancel"), i18n::t("Discard the recording (Esc)"), true);
-        set(m_middle, QString(), QString(), false);
-        set(m_right, QString(), QString(), false);
+        set(m_left, cancel, cancelTip, true, true, "", false);
+        set(m_send, i18n::t("&Send"), i18n::t("Stop and send (Enter)"), true, false, "voicePrimary", true);
         break;
     case Mode::Recording:
-        set(m_left, i18n::t("&Cancel"), i18n::t("Discard the recording (Esc)"), true);
-        set(m_middle, i18n::t("&Stop"), i18n::t("Stop and listen before sending (Space)"), true);
-        set(m_right, i18n::t("&Send"), i18n::t("Send now (Enter)"), true, m_view.canSend);
+        set(m_left, cancel, cancelTip, true, true, "", false);
+        set(m_send, i18n::t("&Send"), i18n::t("Stop and send (Enter)"), true, true, "voicePrimary", true);
         break;
     case Mode::Saving:
-        set(m_left, i18n::t("&Cancel"), i18n::t("Discard the recording (Esc)"), true);
-        set(m_middle, QString(), QString(), false);
-        set(m_right, i18n::t("&Send"), i18n::t("Send now (Enter)"), true, false);
-        break;
-    case Mode::Review:
-        set(m_left, i18n::t("&Discard"), i18n::t("Discard the recording (Esc)"), true);
-        set(m_middle, i18n::t("&Re-record"), i18n::t("Discard and record again"), true);
-        set(m_right, i18n::t("&Send"), i18n::t("Send (Enter)"), true, m_view.canSend);
+        set(m_left, cancel, cancelTip, true, true, "", false);
+        if (m_view.sending)
+            set(m_send, i18n::t("Sending…"), QString(), true, false, "voicePrimary", false);
+        else
+            set(m_send, i18n::t("&Send"), i18n::t("Send (Enter)"), true, true, "voicePrimary", true);
         break;
     case Mode::TooShort:
-        set(m_left, QString(), QString(), false);
-        set(m_middle, QString(), QString(), false);
-        set(m_right, i18n::t("&Close"), QString(), true);
+        set(m_left, QString(), QString(), false, true, "", false);
+        set(m_send, i18n::t("&Close"), QString(), true, true, "", false);
         break;
     case Mode::Error:
-        set(m_left, i18n::t("&Close"), QString(), true);
-        set(m_middle, QString(), QString(), false);
-        set(m_right, m_view.fixText, QString(), m_view.fix != Fix::None && !m_view.fixText.isEmpty());
+        set(m_left, i18n::t("&Close"), m_view.fix == Fix::Send ? i18n::t("Discard the recording (Esc)") : QString(), true, true, "", false);
+        set(m_send, m_view.fixText, QString(), m_view.fix != Fix::None && !m_view.fixText.isEmpty(), true, "voicePrimary", m_view.fix == Fix::Send);
         break;
     }
 }
@@ -738,14 +554,24 @@ void VoicePanel::applyTheme()
     const Colors c = colorsFor(palette());
     m_dark         = c.dark;
     m_wave->setColors(c);
-    m_play->setFocusColor(c.focus);
+    if (!m_send->icon().isNull()) // the disabled plane follows the theme
+        m_send->setIcon(sendIcon(devicePixelRatioF(), c.disabledText));
 
     // TeamSpeak's skins colour labels by style sheet, which beats a palette. fromLatin1, never
     // QStringLiteral: TeamSpeak's style keeps the parsed text after the plugin is unloaded.
+    // The primary button: the accent with white text (4.6:1 and more); its focus ring in the text colour
+    // (3:1 on the window), so it shows on the accent too.
     QString sheet = QString::fromLatin1("#tsmediaVoiceRecorder QLabel[role=\"hint\"]{color:%1;}"
                                         "#tsmediaVoiceRecorder QLabel[role=\"error\"]{color:%2;}"
-                                        "#tsmediaVoiceRecorder QPushButton#voiceDanger{color:%2;}")
-                        .arg(c.muted.name(), c.error.name());
+                                        "#tsmediaVoiceRecorder QPushButton#voiceDanger{color:%2;}"
+                                        "#tsmediaVoiceRecorder QPushButton#voicePrimary{background:%3;color:#ffffff;border:2px solid %3;"
+                                        "border-radius:4px;padding:0px 16px;}"
+                                        "#tsmediaVoiceRecorder QPushButton#voicePrimary:hover{background:%4;border-color:%4;}"
+                                        "#tsmediaVoiceRecorder QPushButton#voicePrimary:pressed{background:%5;border-color:%5;}"
+                                        "#tsmediaVoiceRecorder QPushButton#voicePrimary:focus{border-color:%6;}"
+                                        "#tsmediaVoiceRecorder QPushButton#voicePrimary:disabled{background:%7;border-color:%7;color:%8;}")
+                        .arg(c.muted.name(), c.error.name(), kAccent.name(), kAccentHover.name(), kAccentPressed.name(), c.text.name(), c.disabledFill.name(),
+                             c.disabledText.name());
     if (c.dark && !qApp->styleSheet().isEmpty()) // dark skins switch focus indicators off
         sheet += QString::fromLatin1("#tsmediaVoiceRecorder QPushButton:focus{border:2px solid %1;}").arg(c.focus.name());
     if (sheet != styleSheet())
@@ -799,9 +625,9 @@ void VoicePanel::keepPlaced()
 
 void VoicePanel::keyPressEvent(QKeyEvent* event)
 {
-    const int  key    = event->key();
-    const bool enter  = key == Qt::Key_Return || key == Qt::Key_Enter;
-    const Mode mode   = m_view.mode;
+    const int  key   = event->key();
+    const bool enter = key == Qt::Key_Return || key == Qt::Key_Enter;
+    const Mode mode  = m_view.mode;
     if (enter && buttonHasFocus()) {
         if (auto* button = qobject_cast<QAbstractButton*>(focusWidget()); button && button->isEnabled())
             button->click();
@@ -826,16 +652,9 @@ void VoicePanel::keyPressEvent(QKeyEvent* event)
                 emit fixRequested();
         } else if (mode == Mode::TooShort) {
             emit closeRequested();
-        } else if ((mode == Mode::Recording || mode == Mode::Review) && m_view.canSend) {
+        } else if (mode == Mode::Recording || (mode == Mode::Saving && !m_view.sending)) {
             emit sendRequested();
         }
-        return;
-    }
-    if (key == Qt::Key_Space && event->modifiers() == Qt::NoModifier) {
-        if (mode == Mode::Recording)
-            emit stopRequested();
-        else if (mode == Mode::Review)
-            emit playToggled();
         return;
     }
     QDialog::keyPressEvent(event);

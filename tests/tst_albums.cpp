@@ -610,8 +610,8 @@ void TestAlbums::headerFromFragments_data()
     QTest::addColumn<int>("length");
 
     const QString icon = QString(QChar::ObjectReplacementCharacter);
-    const QString href = QStringLiteral("client://17/KpNqZMq7js/JajRo+3zOFPViX1E=~TesterB");
-    const QString uid  = QStringLiteral("KpNqZMq7js/JajRo+3zOFPViX1E=");
+    const QString href = QStringLiteral("client://17/TX9dkL2PT/zT4sK2RHejI+ISAww=~TesterB");
+    const QString uid  = QStringLiteral("TX9dkL2PT/zT4sK2RHejI+ISAww=");
     // S0: icon, "<20:02:13>", " ", "\"TesterB\"" (the link), ": ", the message.
     QTest::newRow("S0 header") << icon + QStringLiteral("<20:02:13> ") << QStringLiteral("\"TesterB\"") << href << QStringLiteral(": hello") << true << "TesterB" << uid << 23;
     QTest::newRow("no time") << icon << QStringLiteral("\"TesterB\"") << href << QStringLiteral(": x") << true << "TesterB" << uid << 12;
@@ -680,7 +680,7 @@ void TestAlbums::uidFromHref_data()
 {
     QTest::addColumn<QString>("href");
     QTest::addColumn<QString>("uid");
-    QTest::newRow("S0") << QStringLiteral("client://17/KpNqZMq7js/JajRo+3zOFPViX1E=~TesterB") << QStringLiteral("KpNqZMq7js/JajRo+3zOFPViX1E=");
+    QTest::newRow("S0") << QStringLiteral("client://17/TX9dkL2PT/zT4sK2RHejI+ISAww=~TesterB") << QStringLiteral("TX9dkL2PT/zT4sK2RHejI+ISAww=");
     QTest::newRow("percent-encoded") << QStringLiteral("client://17/KpNq%2BZ%3D~x") << QStringLiteral("KpNq+Z=");
     QTest::newRow("upper-case scheme") << QStringLiteral("CLIENT://2/abc=~n") << QStringLiteral("abc=");
     QTest::newRow("no tilde") << QStringLiteral("client://17/abc=") << QString();

@@ -39,6 +39,7 @@ struct Header {
     bool    media = false;
     bool    found = false; // the original is in this chat: the name in its colour, a click jumps there
     QColor  nickColor;     // the original's nickname colour in the chat (invalid: unknown)
+    QString uid;           // chat redesign: the original's author (a Cozy reply row's mini avatar); empty: unknown
 };
 
 struct HeaderStyle {

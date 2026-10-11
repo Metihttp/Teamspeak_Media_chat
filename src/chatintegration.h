@@ -15,6 +15,7 @@ class ComposeDialog; // 2.2 compose
 class ChatReactions; // 2.2 reactions
 class ChatReplies;   // 2.2 reply
 class ChatEmoji;     // 2.2 emoji
+class ChatLayout;    // chat redesign
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -62,6 +63,10 @@ class ChatIntegration : public QObject
     void openViewer(const QString& key);
 
     InlineMediaController* media() const { return m_media; }
+    // Chat redesign: the modules on the chat (tests, tools and the live-test driver).
+    ChatLayout*  layout() const { return m_layout; }
+    ChatEmoji*   emoji() const { return m_emoji; }
+    ChatReplies* replies() const { return m_replies; }
 
     // 2.2 reply: the "Reply to the last message" hotkey (chatreplies.h).
     void replyToLatest();
@@ -86,6 +91,9 @@ class ChatIntegration : public QObject
     // The destination as the recorder window names it ("the channel “Lobby”"); for the channel it
     // follows a channel switch (the message goes to the channel the user is in when it is sent).
     QString voiceTargetText(const ChatTarget& target) const { return describeTarget(target); }
+    // 2.2.1 mic: why the visible chat can't take a voice message now (the mic button's tool tip), or
+    // empty. Nothing is shown or printed.
+    QString voiceBlockReason() const;
 
   signals:
     // 2.2 voice: an inline player or the viewer started playing (the recorder pauses it again).
@@ -98,6 +106,7 @@ class ChatIntegration : public QObject
   private:
     friend class ChatReactions; // 2.2 reactions: the reaction row under previews (chatreactions.cpp)
     friend class ChatReplies;   // 2.2 reply: reply lines, the reply bar and menu items (chatreplies.cpp)
+    friend class ChatLayout;    // chat redesign: the chat layout (chatlayout.cpp)
 #ifdef TSMEDIA_TESTHOOKS
     friend class SelfTest; // test builds: the scripted live-test driver (selftest.cpp)
 #endif
@@ -211,6 +220,9 @@ class ChatIntegration : public QObject
     void          warnCantSend(QWidget* widget, SendBlock block) const; // tooltip at the widget + chat line
     QString       describeTarget(const ChatTarget& target) const;
     QTextBrowser* chatBrowserFor(QWidget* widget) const; // the chat a drop on widget goes to
+    // 2.2.1: what was typed into a chat input: nothing while it holds TeamSpeak's "Enter Chat Message..."
+    // placeholder (chatinput.h), which must never become a caption or a reply.
+    QString       typedText(QTextEdit* input) const;
     void          showDropOverlay(QWidget* widget, const QMimeData* mime);
     void          hideDropOverlay();
     void          showFeedback(QWidget* widget, const QString& text, bool error) const; // brief tooltip at the pointer
@@ -270,6 +282,12 @@ class ChatIntegration : public QObject
     static bool    isFileAnchor(const QTextCharFormat& format);
     static bool    atBottom(QTextBrowser* browser);
 
+    // ---- chat redesign (chatlayout.cpp) -------------------------------------------------------------------
+    // The first preview of block that can get reactions (an album: its grid), or empty.
+    QString         reactableKeyIn(QTextBrowser* browser, int block);
+    // The viewport rects of the pictures (previews, albums, cards) in block.
+    QVector<QRectF> mediaRectsIn(QTextBrowser* browser, int block) const;
+
     Core*                      m_core;
     InlineMediaController*     m_media         = nullptr;
     VoiceController*           m_voice         = nullptr; // 2.2 voice
@@ -322,4 +340,5 @@ class ChatIntegration : public QObject
     ChatReactions*                          m_reactions = nullptr; // 2.2 reactions
     ChatReplies*                            m_replies   = nullptr; // 2.2 reply
     ChatEmoji*                              m_emoji     = nullptr; // 2.2 emoji: HD emoji in the chats, the input's emoji button
+    ChatLayout*                             m_layout    = nullptr; // chat redesign: the Cozy / Compact layout
 };

@@ -47,6 +47,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDateTime>
+#include <QElapsedTimer>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -72,6 +75,7 @@
 #include <QTextLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QTextEdit>
@@ -82,11 +86,20 @@
 #include <functional>
 
 #include "chatemoji.h"     // part 3: HD emoji counts
+#include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatintegration.h"
 #include "chatreactions.h" // part 3: the add-reaction button
 #include "composedialog.h"
 #include "emojiformat.h"   // part 3
+#include "actionbar.h"     // part 4: the chat redesign's action bar
+#include "chatlayout.h"    // part 4
+#include "emojiinput.h"    // part 4: TeamSpeak's emoji button taken over
+#include "layoutdoc.h"     // part 4: chips
+#include "layoutformat.h"  // part 4
+#include "micbutton.h"     // part 5: the chat input's microphone
 #include "reactionart.h"   // part 3: rx::addButtonRect
+#include "voicecontroller.h" // part 5
+#include "voicepanel.h"      // part 5
 #include "replydoc.h"      // part 3: messages and reply lines as the plugin reads them
 #include "core.h"
 #include "emojidata.h" // 2.2 emoji: reactions with any emoji
@@ -633,10 +646,13 @@ bool SelfTest::run(const QJsonObject& c)
         int       seen  = 0;
         if (QWidget* mw = m_chat->mainWindow()) {
             const bool serverTabs = c.value(QString::fromLatin1("server")).toBool(false); // only the server tab bar
+            const bool chatTabs   = c.value(QString::fromLatin1("chat")).toBool(false);   // only the chat tab bar (part 5)
             for (QTabBar* bar : mw->findChildren<QTabBar*>()) {
                 if (!bar->isVisible())
                     continue; // a hidden server tab's chat tabs
                 if (serverTabs && bar->objectName() == QLatin1String("ChatTabBar"))
+                    continue;
+                if (chatTabs && bar->objectName() != QLatin1String("ChatTabBar"))
                     continue;
                 for (int i = 0; i < bar->count() && !found; ++i) {
                     if (bar->tabText(i).contains(name, Qt::CaseInsensitive) && seen++ < index)
@@ -989,6 +1005,25 @@ bool SelfTest::run(const QJsonObject& c)
             s.uploadMaxMB = v.toInt();
         else if (key == QLatin1String("uploadDirectory"))
             s.uploadDirectory = Settings::normalizeUploadDirectory(v.toString()); // Qt-allocated (from the JSON)
+        // chat redesign
+        else if (key == QLatin1String("chatLayout"))
+            s.chatLayout = qBound(Settings::chatLayoutRange.min, v.toInt(), Settings::chatLayoutRange.max);
+        else if (key == QLatin1String("chatGroupMessages"))
+            s.chatGroupMessages = v.toBool();
+        else if (key == QLatin1String("chatHoverActions"))
+            s.chatHoverActions = v.toBool();
+        else if (key == QLatin1String("chatAvatars"))
+            s.chatAvatars = v.toBool();
+        else if (key == QLatin1String("chatMentions"))
+            s.chatMentions = v.toBool();
+        else if (key == QLatin1String("chatCollapseEvents"))
+            s.chatCollapseEvents = v.toBool();
+        else if (key == QLatin1String("chatLayoutIntroShown"))
+            s.chatLayoutIntroShown = v.toBool();
+        else if (key == QLatin1String("emojiButton"))
+            s.emojiButton = v.toBool();
+        else if (key == QLatin1String("hdEmoji"))
+            s.hdEmoji = v.toBool();
         else {
             say(QString::fromLatin1("setting: unknown key ") + key);
             return true;
@@ -1037,6 +1072,9 @@ bool SelfTest::run(const QJsonObject& c)
     const bool result3 = runPart3(cmd, c, &handled);
     if (handled)
         return result3;
+    const bool result4 = runPart4(cmd, c, &handled); // chat redesign
+    if (handled)
+        return result4;
     say(QString::fromLatin1("unknown command ") + cmd);
     return true;
 }
@@ -1265,7 +1303,8 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
 //   grabwidget {object, up, name}   grabs a visible widget by objectName (prefix), or its up-th parent
 //   replyline.click {nth, name}     clicks the nth newest reply line of the visible chat; logs the jump, grabs the flash
 //   pm {nick, text}                 a private message to a client of this (localhost) server
-//   scrollchat {to: top|bottom|<px>}
+//   scrollchat {to: top|bottom|<px>, block, offset}   (block: that block's top, plus offset px, at the view's top)
+//   where                           the visible chat's scroll position and the block on top (part 5)
 //   react.add {name}                hovers the newest preview named so, then clicks its add-reaction button
 //   reactpicker {grab, index, more} the quick reaction picker: grab it, click a reaction, or "+"
 //   react.row {name, pill | add}    clicks a pill (its index) or the add pill of the reaction row under a preview
@@ -1276,6 +1315,25 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
 //   latemenu {find, delayMs}        a right-click only the plugin sees, then a plain menu like TeamSpeak's delayMs later
 //   emojis                          HD emoji counts in the visible chat
 //   setemoji {hdEmoji, jumboEmoji, emojiButton}   Settings values, saved and applied
+//   input.unfocus                   the focus to the visible chat, as a click there would (an empty input then
+//                                   holds TeamSpeak's "Enter Chat Message..."); logs the input 300 ms later
+//   input.insert {text, keep}       the plugin's way into the chat input (ChatInputs::insert, as the emoji picker
+//                                   and "Use in the chat input" do; keep: as Shift in the picker); logs it, and 700 ms later
+//   input.expect {text}             PASS when the input holds exactly text, else FAIL (with the input's state)
+//   input.focus {reason}            the focus to the input with reason other|mouse|tab|backtab|active|popup|shortcut;
+//                                   logs it at once and 300 ms later (does TeamSpeak take its placeholder out then?)
+// 2.2.1 open questions for the live run: TeamSpeak's placeholder out on the plugin's focus (reason other), its
+// colour, and Ctrl+Z after an emoji never bringing it back:
+//   {"cmd":"input.set","text":""} {"cmd":"input.unfocus"} {"cmd":"input.focus","reason":"other"} {"cmd":"input.log"}
+//   (the same with "mouse" and "popup"), then {"cmd":"input.unfocus"} {"cmd":"input.insert","text":"\ud83d\ude00"}
+//   {"cmd":"key","key":"Z","mods":["ctrl"]} {"cmd":"key","key":"Z","mods":["ctrl"]} {"cmd":"input.log"}  -> empty, no placeholder
+// 2.2.1 placeholder check (an emoji went out as "<emoji>Enter Chat Message..."):
+//   {"cmd":"input.set","text":""} {"cmd":"input.unfocus"} {"cmd":"input.log"}   -> the placeholder shown and learned
+//   {"cmd":"clickobj","object":"tsmediaEmojiButton"} {"cmd":"type","text":"rocket","target":"popup"}
+//   {"cmd":"key","key":"Return","target":"popup"} {"cmd":"input.expect","text":"\ud83d\ude80"}
+//   {"cmd":"input.set","text":""} {"cmd":"input.unfocus"} {"cmd":"ctxmenu","at":"emoji"}
+//   {"cmd":"menu.pick","path":["&Use in the chat input"]} {"cmd":"input.expect","text":"<that emoji>"}
+//   {"cmd":"input.set","text":""} {"cmd":"input.unfocus"} {"cmd":"input.insert","text":"\ud83d\ude00"} {"cmd":"input.expect","text":"\ud83d\ude00"}
 // ============================================================================================
 
 void SelfTest::later(int ms, std::function<void()> fn)
@@ -1405,11 +1463,47 @@ QString describeFormat(const QTextCharFormat& f)
             parts << QString::fromLatin1("REPLYLINE runs=[") + runs.join(QLatin1Char(' ')) + QLatin1Char(']');
         }
     }
+    // Chat redesign: our pictures and texts (the TeamSpeak runs they keep), and what we recoloured.
+    if (layoutformat::isOurs(f)) {
+        QStringList        runs;
+        const QVariantList list = layoutformat::runsOf(f);
+        for (int i = 0; i + 1 < list.size(); i += 2) {
+            const QTextCharFormat rf = qvariant_cast<QTextFormat>(list.at(i + 1)).toCharFormat();
+            QString           run  = QLatin1Char('"') + visible(list.at(i).toString()) + QLatin1Char('"');
+            if (rf.isAnchor())
+                run += QString::fromLatin1("{href=") + rf.anchorHref().left(120) + QLatin1Char('}');
+            if (rf.isImageFormat())
+                run += QString::fromLatin1("{img=") + rf.toImageFormat().name() + QLatin1Char('}');
+            if (rf.foreground().style() != Qt::NoBrush)
+                run += QString::fromLatin1("{fg=") + rf.foreground().color().name() + QLatin1Char('}');
+            runs << run;
+        }
+        parts << QString::fromLatin1("LAYOUT kind=%1 time=%2 runs=[%3]").arg(static_cast<int>(layoutformat::kindOf(f))).arg(f.stringProperty(layoutformat::kTime), runs.join(QLatin1Char(' ')));
+    }
+    if (f.hasProperty(layoutformat::kApplied))
+        parts << QString::fromLatin1("APPLIED");
     if (f.foreground().style() != Qt::NoBrush)
         parts << QString::fromLatin1("fg=") + f.foreground().color().name();
     if (f.fontItalic())
         parts << QString::fromLatin1("i");
+    if (f.fontWeight() > QFont::Normal)
+        parts << QString::fromLatin1("w=%1").arg(f.fontWeight());
     return parts.join(QLatin1Char(' '));
+}
+
+// Chat redesign: a block format as the layout sets it (TeamSpeak's own: "-").
+QString describeBlock(const QTextBlockFormat& f)
+{
+    QStringList parts;
+    if (f.hasProperty(layoutformat::kKind))
+        parts << QString::fromLatin1("row=%1 tag=%2").arg(f.intProperty(layoutformat::kKind)).arg(f.intProperty(layoutformat::kBlockTag));
+    if (f.hasProperty(QTextFormat::BlockLeftMargin) || f.hasProperty(QTextFormat::TextIndent))
+        parts << QString::fromLatin1("left=%1 indent=%2").arg(f.leftMargin()).arg(f.textIndent());
+    if (f.hasProperty(QTextFormat::BlockTopMargin))
+        parts << QString::fromLatin1("top=%1").arg(f.topMargin());
+    if (f.hasProperty(QTextFormat::LineHeightType))
+        parts << QString::fromLatin1("line=%1/%2").arg(f.lineHeight()).arg(f.lineHeightType());
+    return parts.isEmpty() ? QString::fromLatin1("-") : parts.join(QLatin1Char(' '));
 }
 
 } // namespace
@@ -1435,6 +1529,19 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
                 return w;
         }
         return nullptr;
+    };
+    // 2.2.1: the input's text, focus and what ChatInputs knows of TeamSpeak's placeholder in it.
+    const QPointer<ChatIntegration> integration = m_chat;
+    const auto inputState = [integration](QTextEdit* e) -> QString {
+        if (!e)
+            return QString::fromLatin1("no input");
+        ChatInputs* inputs = integration && integration->m_emoji ? integration->m_emoji->inputs() : nullptr;
+        return QString::fromLatin1("\"%1\" focus %2 placeholder \"%3\" shown %4 pending %5")
+            .arg(visible(e->toPlainText()))
+            .arg(e->hasFocus() ? 1 : 0)
+            .arg(inputs ? visible(inputs->placeholder(e)) : QString::fromLatin1("?"))
+            .arg(inputs && inputs->showsPlaceholder(e) ? 1 : 0)
+            .arg(inputs && inputs->hasPending(e) ? 1 : 0);
     };
     const auto targetOf = [&](const QString& t) -> QWidget* {
         if (t.isEmpty() || t == QLatin1String("input"))
@@ -1510,9 +1617,15 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         }
         QTextDocument* doc  = b->document();
         const int      last = c.value(QString::fromLatin1("last")).toInt(10);
-        QString        out;
+        // Chat redesign: the undo stack (never changed by us) and each block's format.
+        QString out = QString::fromLatin1("undo/redo enabled %1, %2 blocks\n").arg(doc->isUndoRedoEnabled() ? 1 : 0).arg(doc->blockCount());
         for (QTextBlock tb = doc->findBlockByNumber(qMax(0, doc->blockCount() - last)); tb.isValid(); tb = tb.next()) {
-            out += QString::fromLatin1("== block %1 visible %2 pos %3 len %4\n").arg(tb.blockNumber()).arg(tb.isVisible() ? 1 : 0).arg(tb.position()).arg(tb.length());
+            out += QString::fromLatin1("== block %1 visible %2 pos %3 len %4 format %5\n")
+                       .arg(tb.blockNumber())
+                       .arg(tb.isVisible() ? 1 : 0)
+                       .arg(tb.position())
+                       .arg(tb.length())
+                       .arg(describeBlock(tb.blockFormat()));
             for (auto it = tb.begin(); !it.atEnd(); ++it) {
                 const QTextFragment f = it.fragment();
                 if (!f.isValid())
@@ -1570,7 +1683,7 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
                 for (int q = tb.position(); q < m.textStart && p < 0; ++q) {
                     const QTextCharFormat f = charFormatAt(b->document(), q);
                     if (f.isAnchor() && f.anchorHref().startsWith(QLatin1String("client://")))
-                        p = q + 2;
+                        p = layoutformat::isOurs(f) ? q : q + 2; // chat redesign: the head picture is that link
                 }
             } else {
                 p = qMin(m.textStart + 1, tb.position() + tb.length() - 2);
@@ -1708,8 +1821,8 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
             say(QString::fromLatin1("input.set: no chat input"));
             return true;
         }
+        e->setFocus(Qt::OtherFocusReason); // first: TeamSpeak takes its placeholder out itself (2.2.1)
         e->clear();
-        e->setFocus(Qt::OtherFocusReason);
         QTextCursor cursor = e->textCursor();
         cursor.insertText(c.value(QString::fromLatin1("text")).toString());
         e->setTextCursor(cursor);
@@ -1723,6 +1836,75 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
                 .arg(e ? visible(e->toPlainText()) : QString::fromLatin1("no input"), e ? QString::fromLatin1(e->metaObject()->className()) : QString())
                 .arg(bar ? QString::fromLatin1("shown %1x%2").arg(bar->width()).arg(bar->height()) : QString::fromLatin1("hidden"))
                 .arg(bar ? QString::fromLatin1(" ") + describeWidgetTexts(bar) : QString()));
+        if (e) { // 2.2.1: the placeholder state, and the text's own colour (TeamSpeak's placeholder grey)
+            QTextCursor first(e->document());
+            first.setPosition(e->document()->isEmpty() ? 0 : 1);
+            say(QString::fromLatin1("input.log: state %1, first character %2").arg(inputState(e), describeFormat(first.charFormat())));
+        }
+        return true;
+    }
+    if (cmd == QLatin1String("input.unfocus")) { // 2.2.1
+        const QPointer<QTextEdit> e(input());
+        if (b)
+            b->setFocus(Qt::MouseFocusReason);
+        say(QString::fromLatin1("input.unfocus: the focus to %1").arg(b ? QString::fromLatin1("the chat") : QString::fromLatin1("nothing (no visible chat)")));
+        later(300, [this, e, inputState] {
+            say(QString::fromLatin1("input.unfocus: %1").arg(inputState(e.data())));
+            next();
+        });
+        return false;
+    }
+    if (cmd == QLatin1String("input.focus")) { // 2.2.1 review: TeamSpeak's own handling, per focus reason
+        const QPointer<QTextEdit> e(input());
+        if (!e) {
+            say(QString::fromLatin1("input.focus: no chat input"));
+            return true;
+        }
+        static const struct {
+            const char*     name;
+            Qt::FocusReason reason;
+        } reasons[] = {{"other", Qt::OtherFocusReason},   {"mouse", Qt::MouseFocusReason},          {"tab", Qt::TabFocusReason},
+                       {"backtab", Qt::BacktabFocusReason}, {"active", Qt::ActiveWindowFocusReason}, {"popup", Qt::PopupFocusReason},
+                       {"shortcut", Qt::ShortcutFocusReason}};
+        const QString   name   = str("reason", "other");
+        Qt::FocusReason reason = Qt::OtherFocusReason;
+        for (const auto& r : reasons) {
+            if (name == QLatin1String(r.name))
+                reason = r.reason;
+        }
+        say(QString::fromLatin1("input.focus: reason %1 (%2), before %3").arg(name).arg(static_cast<int>(reason)).arg(inputState(e.data())));
+        if (!e->window()->isActiveWindow())
+            e->window()->activateWindow();
+        e->setFocus(reason);
+        say(QString::fromLatin1("input.focus: now %1").arg(inputState(e.data())));
+        later(300, [this, e, inputState] {
+            say(QString::fromLatin1("input.focus: 300 ms later %1").arg(inputState(e.data())));
+            next();
+        });
+        return false;
+    }
+    if (cmd == QLatin1String("input.insert")) { // 2.2.1
+        const QPointer<QTextEdit> e(input());
+        ChatInputs*               inputs = m_chat->m_emoji ? m_chat->m_emoji->inputs() : nullptr;
+        if (!e || !inputs) {
+            say(QString::fromLatin1("input.insert: no chat input"));
+            return true;
+        }
+        const QString text = str("text", "");
+        say(QString::fromLatin1("input.insert: \"%1\" into %2").arg(visible(text), inputState(e.data())));
+        inputs->insert(e.data(), text, c.value(QString::fromLatin1("keep")).toBool());
+        say(QString::fromLatin1("input.insert: now %1").arg(inputState(e.data())));
+        later(700, [this, e, inputState] {
+            say(QString::fromLatin1("input.insert: 700 ms later %1").arg(inputState(e.data())));
+            next();
+        });
+        return false;
+    }
+    if (cmd == QLatin1String("input.expect")) { // 2.2.1
+        QTextEdit*    e    = input();
+        const QString want = str("text", "");
+        const bool    ok   = e && e->toPlainText() == want;
+        say(QString::fromLatin1("input.expect: %1 (want \"%2\", have %3)").arg(ok ? QString::fromLatin1("PASS") : QString::fromLatin1("FAIL"), visible(want), inputState(e)));
         return true;
     }
     if (cmd == QLatin1String("key") || cmd == QLatin1String("type")) {
@@ -1812,11 +1994,36 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         if (b) {
             QScrollBar*   bar = b->verticalScrollBar();
             const QString to  = str("to", "bottom");
-            bar->setValue(to == QLatin1String("top") ? bar->minimum() : to == QLatin1String("bottom") ? bar->maximum() : to.toInt());
+            if (c.contains(QString::fromLatin1("block"))) { // part 5: that block's top (plus offset px) at the top of the view
+                const QTextBlock tb = b->document()->findBlockByNumber(c.value(QString::fromLatin1("block")).toInt());
+                if (tb.isValid())
+                    bar->setValue(qRound(b->document()->documentLayout()->blockBoundingRect(tb).top()) + c.value(QString::fromLatin1("offset")).toInt(0));
+            } else {
+                bar->setValue(to == QLatin1String("top") ? bar->minimum() : to == QLatin1String("bottom") ? bar->maximum() : to.toInt());
+            }
             say(QString::fromLatin1("scrollchat: %1/%2").arg(bar->value()).arg(bar->maximum()));
         }
         next(400);
         return false;
+    }
+    if (cmd == QLatin1String("where")) { // part 5: the reader's place: the scroll bar and the block on top
+        if (!b) {
+            say(QString::fromLatin1("where: no visible chat"));
+            return true;
+        }
+        QScrollBar*             bar = b->verticalScrollBar();
+        const layoutdoc::Anchor a   = layoutdoc::anchorAt(b->document(), bar->value());
+        const QTextBlock        tb  = b->document()->findBlockByNumber(a.block);
+        say(QString::fromLatin1("where: scroll %1/%2 (at bottom %3), top block %4 visible %5 offset %6 of %7: \"%8\"")
+                .arg(bar->value())
+                .arg(bar->maximum())
+                .arg(bar->value() >= bar->maximum() - 4 ? 1 : 0)
+                .arg(a.block)
+                .arg(tb.isValid() && tb.isVisible() ? 1 : 0)
+                .arg(a.offset)
+                .arg(a.height)
+                .arg(visible(tb.text().left(90))));
+        return true;
     }
     if (cmd == QLatin1String("react.add")) {
         const QString key  = findKey(str("name", ""));
@@ -2020,6 +2227,628 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         m_chat->refreshAll();
         say(QString::fromLatin1("setemoji: hd %1 jumbo %2 button %3").arg(s.hdEmoji).arg(s.jumboEmoji).arg(s.emojiButton));
         next(1500);
+        return false;
+    }
+    *handled = false;
+    return true;
+}
+
+// ============================================================================================
+// Part 4: the chat redesign
+//   {"cmd":"layout","mode":"cozy"|"compact"|"classic"|0..2,"group":true,"actions":true,"grab":"name"}
+//   {"cmd":"layoutinfo"}                      the visible chat's layout state (and the bar's)
+//   {"cmd":"hover","find":"text","nth":0,"at":"body"|"link"|"reply"|"nick"|"media"|"chip"|"leave",
+//    "press":true (a left click there),"click":"react"|"reply"|"copy"|"more" (the bar's button),"tip":true,"grab":"name"}
+//   {"cmd":"emojibtn","action":"info"|"hover"|"leave"|"press"|"click"|"space"|"close"|"hide"|"show","grab":"name"}
+// Part 5 (2.2.1 microphone button and voice messages):
+//   {"cmd":"micbtn","action":"info"|"hover"|"leave"|"tip"|"click"|"press"|"move"|"release"|"up",
+//    "dx":0,"dy":0,"fake":"<spec>","grab":"name"}
+//                                             the visible input's microphone button: its state (and the hold's),
+//                                             tool tip and place, the strip above the input, and every button
+//                                             around the input (one smiley: TeamSpeak's).
+//                                             click: a left press and release on its icon at once (a tap while
+//                                             it is Ready: nothing is recorded, the strip shows the hint; stop
+//                                             and send while the window records).
+//                                             Hold to record: press (at the icon's centre plus dx, dy), move
+//                                             (the held pointer to centre plus dx, dy: beyond 72 px is the
+//                                             cancel zone), release (there: sends, or cancels in the zone), up
+//                                             (the hold's button counts as let go without a release: lost,
+//                                             kept in the window after about 120 ms). From press to release or
+//                                             up the recorder's check of the physical mouse button reads the
+//                                             driver's hold instead (setPointerHeldForTests). Esc while held:
+//                                             {"cmd":"key","key":"Escape"}.
+//                                             A click or press that would start recording writes voice_fake.txt
+//                                             first (fake, default "600000": generated sound, never the
+//                                             microphone), and removes it again if nothing started.
+//   {"cmd":"voicestate"}                      the recorder: phase, the hold and the strip, the window's view and
+//                                             texts, MicGuard, our vars
+//   {"cmd":"disconnect","reconnectMs":6000,"probeMs":[1500,4000],"clickMicMs":2500}
+//                                             stops this tab's connection and connects it again in the same tab
+//                                             (0: stays disconnected for 20 s at most, then the script ends); the
+//                                             mic button and the microphone flags are logged at probeMs and after.
+//                                             clickMicMs: a click on the mic while recording (the window's: stop
+//                                             and send; a hold's: its release, as micbtn release)
+// ============================================================================================
+
+bool SelfTest::runPart4(const QString& cmd, const QJsonObject& c, bool* handled)
+{
+    *handled          = true;
+    const auto   str  = [&c](const char* key, const char* fallback) { return c.value(QString::fromLatin1(key)).toString(QString::fromLatin1(fallback)); };
+    QTextBrowser* b   = m_chat->visibleChatBrowser();
+    ChatLayout*   lay = m_chat->layout();
+    const auto findMessage = [&c, &str](QTextBrowser* browser) -> QTextBlock {
+        const QString find = str("find", "");
+        int           nth  = c.value(QString::fromLatin1("nth")).toInt(0);
+        for (QTextBlock tb = browser->document()->lastBlock(); tb.isValid(); tb = tb.previous()) {
+            if (!tb.isVisible())
+                continue;
+            const replydoc::Message m = replydoc::parseBlock(tb);
+            if (m.block < 0)
+                continue;
+            if (!find.isEmpty() && !(m.text + QLatin1Char(' ') + m.mediaLabel).contains(find, Qt::CaseInsensitive))
+                continue;
+            if (nth-- > 0)
+                continue;
+            return tb;
+        }
+        return QTextBlock();
+    };
+    const auto grabLater = [this, &c, &str](QWidget* w, int ms) {
+        const QString        name = str("grab", "");
+        const QPointer<QWidget> guard(w);
+        if (name.isEmpty() || !w) {
+            next(ms);
+            return;
+        }
+        later(ms, [this, guard, name] {
+            if (guard)
+                say(QString::fromLatin1("grab: -> ") + saveGrab(guard.data(), name));
+            next(0);
+        });
+        Q_UNUSED(c);
+    };
+
+    if (cmd == QLatin1String("layout")) {
+        Settings&        s    = Settings::instance();
+        const QJsonValue mode = c.value(QString::fromLatin1("mode"));
+        if (mode.isString()) {
+            const QString m = mode.toString();
+            s.chatLayout    = m == QLatin1String("classic") ? 0 : m == QLatin1String("compact") ? 2 : 1;
+        } else if (mode.isDouble()) {
+            s.chatLayout = qBound(Settings::chatLayoutRange.min, mode.toInt(), Settings::chatLayoutRange.max);
+        }
+        if (c.contains(QString::fromLatin1("group")))
+            s.chatGroupMessages = c.value(QString::fromLatin1("group")).toBool();
+        if (c.contains(QString::fromLatin1("actions")))
+            s.chatHoverActions = c.value(QString::fromLatin1("actions")).toBool();
+        s.save();
+        QElapsedTimer clock;
+        clock.start();
+        m_chat->refreshAll();
+        if (b && lay)
+            lay->processNow(b);
+        say(QString::fromLatin1("layout: mode %1 group %2 actions %3 in %4 ms; %5")
+                .arg(s.chatLayout)
+                .arg(s.chatGroupMessages)
+                .arg(s.chatHoverActions)
+                .arg(clock.elapsed())
+                .arg(b && lay ? lay->describe(b) : QString::fromLatin1("no visible chat")));
+        grabLater(b ? b->viewport() : nullptr, c.value(QString::fromLatin1("ms")).toInt(600));
+        return false;
+    }
+    if (cmd == QLatin1String("layoutinfo")) {
+        if (!b || !lay) {
+            say(QString::fromLatin1("layoutinfo: no visible chat"));
+            return true;
+        }
+        ActionBar* bar = lay->bar();
+        say(QString::fromLatin1("layoutinfo: %1; overlay %2; bar %3")
+                .arg(lay->describe(b))
+                .arg(lay->overlayMode(b) ? 1 : 0)
+                .arg(bar && bar->isVisible() ? QString::fromLatin1("shown at %1,%2 %3x%4").arg(bar->x()).arg(bar->y()).arg(bar->width()).arg(bar->height()) : QString::fromLatin1("hidden")));
+        return true;
+    }
+    if (cmd == QLatin1String("hover")) {
+        if (!b || !lay) {
+            say(QString::fromLatin1("hover: no visible chat"));
+            return true;
+        }
+        QWidget*      vp = b->viewport();
+        const QString at = str("at", "body");
+        if (at == QLatin1String("leave")) {
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(vp, &leave);
+            say(QString::fromLatin1("hover: left the chat; bar %1").arg(lay->bar() && lay->bar()->isVisible() ? QString::fromLatin1("still shown") : QString::fromLatin1("hidden")));
+            grabLater(vp, 300);
+            return false;
+        }
+        QTextBlock tb = findMessage(b);
+        if (at == QLatin1String("chip")) { // a system row: the newest block whose text has find
+            tb = QTextBlock();
+            for (QTextBlock x = b->document()->lastBlock(); x.isValid() && !tb.isValid(); x = x.previous()) {
+                if (x.isVisible() && !layoutdoc::chipsOf(x).isEmpty() && layoutdoc::eventText(x).contains(str("find", ""), Qt::CaseInsensitive))
+                    tb = x;
+            }
+        }
+        if (!tb.isValid()) {
+            say(QString::fromLatin1("hover: no message with \"%1\"").arg(str("find", "")));
+            return true;
+        }
+        ensureShown(b, tb);
+        const int                n      = tb.blockNumber();
+        const layoutformat::Lead lead   = layoutformat::leadOf(tb);
+        const int                indent = lay->indentFor(b);
+        QPoint                   pos;
+        if (at == QLatin1String("link")) {
+            for (auto it = tb.begin(); !it.atEnd() && pos.isNull(); ++it) {
+                const QTextFragment f = it.fragment();
+                if (f.isValid() && f.position() >= lead.bodyStart && f.charFormat().isAnchor() && !f.charFormat().isImageFormat()
+                    && f.charFormat().anchorHref().startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                    pos = charRect(b, f.position() + qMin(3, f.length() - 1)).center();
+            }
+        } else if (at == QLatin1String("reply") || at == QLatin1String("nick")) {
+            if (!lead.styled || lead.kind != layoutformat::Head) {
+                say(QString::fromLatin1("hover: block %1 has no Cozy head").arg(n));
+                return true;
+            }
+            const QRect r = charRect(b, lead.object); // the head picture's line
+            pos           = at == QLatin1String("reply") ? QPoint(r.left() + indent + 40, r.top() + 9) : QPoint(r.left() + indent + 8, r.bottom() - 10);
+        } else if (at == QLatin1String("media")) {
+            const QVector<QRectF> media = m_chat->mediaRectsIn(b, n);
+            if (!media.isEmpty())
+                pos = media.first().center().toPoint();
+        } else if (at == QLatin1String("chip")) { // P2: a run's chip ("+N more events" / "Show fewer") on that row
+            const QVector<layoutdoc::ChipRef> chips = layoutdoc::chipsOf(tb);
+            if (!chips.isEmpty())
+                pos = charRect(b, chips.last().position).center() + QPoint(4, 0);
+        } else {
+            lay->hoverBlock(b, n, &pos);
+        }
+        if (pos.isNull()) {
+            say(QString::fromLatin1("hover: nothing (%1) to point at in block %2").arg(at).arg(n));
+            return true;
+        }
+        sendMouse(vp, QEvent::MouseMove, pos, Qt::NoButton, Qt::NoButton);
+        if (c.value(QString::fromLatin1("press")).toBool()) { // a left click there (a reply row, a chip)
+            sendMouse(vp, QEvent::MouseButtonPress, pos, Qt::LeftButton, Qt::LeftButton);
+            sendMouse(vp, QEvent::MouseButtonRelease, pos, Qt::LeftButton, Qt::NoButton);
+        }
+        ActionBar*  bar   = lay->bar();
+        QStringList shown;
+        for (int i = 0; bar && i < 4; ++i) {
+            if (QAbstractButton* button = bar->button(i)) {
+                if (!button->isHidden())
+                    shown << button->toolTip();
+            }
+        }
+        say(QString::fromLatin1("hover: %1 of block %2 at %3,%4 (head kind %5); cursor %6; bar %7 [%8]")
+                .arg(at)
+                .arg(n)
+                .arg(pos.x())
+                .arg(pos.y())
+                .arg(static_cast<int>(lead.kind))
+                .arg(vp->cursor().shape())
+                .arg(bar && bar->isVisible() ? QString::fromLatin1("at %1,%2").arg(bar->x()).arg(bar->y()) : QString::fromLatin1("hidden"))
+                .arg(shown.join(QString::fromLatin1(", "))));
+        if (c.value(QString::fromLatin1("tip")).toBool()) {
+            QHelpEvent tip(QEvent::ToolTip, pos, vp->mapToGlobal(pos));
+            QApplication::sendEvent(vp, &tip);
+            say(QString::fromLatin1("hover: tool tip \"%1\"").arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+        }
+        const QString click = str("click", "");
+        if (!click.isEmpty()) {
+            const int action = click == QLatin1String("react") ? ActionBar::React
+                               : click == QLatin1String("reply") ? ActionBar::Reply
+                               : click == QLatin1String("copy")  ? ActionBar::Copy
+                                                                 : ActionBar::More;
+            QAbstractButton* button = bar && bar->isVisible() ? bar->button(action) : nullptr;
+            if (!button || button->isHidden()) {
+                say(QString::fromLatin1("hover: no %1 button on the bar").arg(click));
+            } else {
+                QApplication::clipboard()->clear();
+                button->click();
+                say(QString::fromLatin1("hover: clicked %1").arg(click));
+                later(700, [this] {
+                    QWidget* popup = QApplication::activePopupWidget();
+                    say(QString::fromLatin1("hover: after the click: clipboard \"%1\", popup %2")
+                            .arg(visible(QApplication::clipboard()->text().left(200)), popup ? QString::fromLatin1(popup->metaObject()->className()) + QLatin1Char('#') + popup->objectName() : QString::fromLatin1("none")));
+                });
+            }
+        }
+        grabLater(vp, c.value(QString::fromLatin1("ms")).toInt(click.isEmpty() ? 300 : 1200));
+        return false;
+    }
+    if (cmd == QLatin1String("emojibtn")) {
+        EmojiInput* ei   = m_chat->emoji() ? m_chat->emoji()->input() : nullptr;
+        QTextEdit*  edit = nullptr;
+        for (const QPointer<QWidget>& w : m_chat->m_inputs) {
+            if (w && w->isVisible() && qobject_cast<QTextEdit*>(w.data()))
+                edit = qobject_cast<QTextEdit*>(w.data());
+        }
+        if (!ei || !edit) {
+            say(QString::fromLatin1("emojibtn: no chat input"));
+            return true;
+        }
+        QAbstractButton* taken    = ei->takenButton(edit);
+        QAbstractButton* fallback = ei->fallbackButton(edit);
+        QAbstractButton* found    = EmojiInput::findTeamSpeakButton(edit);
+        QAbstractButton* button   = taken ? taken : found;
+        const QString    action   = str("action", "info");
+        const auto       displays = [] {
+            int n = 0;
+            for (QWidget* w : QApplication::topLevelWidgets())
+                n += w->isVisible() && w->inherits("EmoticonsDisplay") ? 1 : 0;
+            return n;
+        };
+        say(QString::fromLatin1("emojibtn: %1").arg(ei->describe()));
+        if (action == QLatin1String("hover") && button) {
+            button->setAttribute(Qt::WA_UnderMouse, true);
+            QEvent enter(QEvent::Enter);
+            QApplication::sendEvent(button, &enter);
+            button->update();
+        } else if (action == QLatin1String("leave") && button) {
+            button->setAttribute(Qt::WA_UnderMouse, false);
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(button, &leave);
+            button->update();
+        } else if (action == QLatin1String("press") && button) {
+            sendMouse(button, QEvent::MouseButtonPress, button->rect().center(), Qt::LeftButton, Qt::LeftButton);
+            const QPointer<QAbstractButton> guard(button);
+            later(1500, [guard] { // let go outside: nothing opens
+                if (guard)
+                    sendMouse(guard.data(), QEvent::MouseButtonRelease, QPoint(-40, -40), Qt::LeftButton, Qt::NoButton);
+            });
+        } else if (action == QLatin1String("click") && button) {
+            sendMouse(button, QEvent::MouseButtonPress, button->rect().center(), Qt::LeftButton, Qt::LeftButton);
+            sendMouse(button, QEvent::MouseButtonRelease, button->rect().center(), Qt::LeftButton, Qt::NoButton);
+        } else if (action == QLatin1String("space") && button) {
+            button->setFocus(Qt::TabFocusReason);
+            QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier, QString::fromLatin1(" "));
+            QApplication::sendEvent(button, &press);
+            QKeyEvent release(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier, QString::fromLatin1(" "));
+            QApplication::sendEvent(button, &release);
+        } else if (action == QLatin1String("close")) {
+            if (QWidget* popup = QApplication::activePopupWidget())
+                popup->close();
+        } else if (action == QLatin1String("hide") && button) {
+            button->hide(); // as TeamSpeak's emoticon option would (test only; "show" gives it back)
+        } else if (action == QLatin1String("show") && button) {
+            button->show();
+        }
+        const QPointer<QTextEdit> guardEdit(edit);
+        later(500, [this, ei, guardEdit, displays] {
+            if (!m_chat || !guardEdit)
+                return;
+            say(QString::fromLatin1("emojibtn: after: taken %1, fallback %2, picker %3, EmoticonsDisplay shown %4, tool tip \"%5\"")
+                    .arg(ei->takenButton(guardEdit.data()) ? 1 : 0)
+                    .arg(ei->fallbackButton(guardEdit.data()) ? 1 : 0)
+                    .arg(ei->pickerOpen() ? 1 : 0)
+                    .arg(displays())
+                    .arg(ei->takenButton(guardEdit.data()) ? ei->takenButton(guardEdit.data())->toolTip() : QString()));
+        });
+        Q_UNUSED(fallback);
+        QWidget* area = button ? button->parentWidget() : edit->parentWidget();
+        grabLater(area, c.value(QString::fromLatin1("ms")).toInt(900));
+        return false;
+    }
+
+    // ---- part 5: the microphone button and voice messages -------------------------------------------
+    const auto visibleInput = [this]() -> QTextEdit* {
+        for (const QPointer<QWidget>& w : m_chat->m_inputs) {
+            if (w && w->isVisible() && qobject_cast<QTextEdit*>(w.data()))
+                return qobject_cast<QTextEdit*>(w.data());
+        }
+        return nullptr;
+    };
+    const QPointer<ChatIntegration> chat = m_chat;
+    const auto phaseName = [chat]() -> QString {
+        VoiceController* voice = chat ? chat->voice() : nullptr;
+        if (!voice)
+            return QString::fromLatin1("no controller");
+        static const char* names[] = {"Idle", "Starting", "Recording", "Saving", "TooShort", "Error"};
+        return QString::fromLatin1(names[static_cast<int>(voice->phase())]);
+    };
+    const auto micState = [chat, phaseName](QTextEdit* edit) -> QString {
+        MicButton* mic = edit ? MicButton::of(edit) : nullptr;
+        if (!mic)
+            return QString::fromLatin1("no mic button (input %1); phase %2").arg(edit ? 1 : 0).arg(phaseName());
+        static const char* modes[] = {"Ready", "Unavailable", "Holding", "Recording", "Busy"}; // MicButton::Mode
+        const QRect icon = mic->iconRect().translated(mic->pos());
+        return QString::fromLatin1("mic %1 enabled %2 visible %3 tip \"%4\" reason \"%5\" a11y \"%6\"/\"%7\" pulse %8 cursor %9; "
+                                   "at %10,%11 %12x%13 icon %14,%15 in input %16x%17 (viewport right %18); shared %19; phase %20")
+            .arg(QString::fromLatin1(modes[static_cast<int>(mic->state().mode)]))
+            .arg(mic->isEnabled() ? 1 : 0)
+            .arg(mic->isVisible() ? 1 : 0)
+            .arg(mic->toolTip(), mic->state().reason, mic->accessibleName(), mic->accessibleDescription())
+            .arg(mic->pulsing() ? 1 : 0)
+            .arg(mic->cursor().shape())
+            .arg(mic->x())
+            .arg(mic->y())
+            .arg(mic->width())
+            .arg(mic->height())
+            .arg(icon.x())
+            .arg(icon.y())
+            .arg(edit->width())
+            .arg(edit->height())
+            .arg(edit->viewport()->geometry().right())
+            .arg(QString::fromLatin1(modes[static_cast<int>(MicButton::sharedState().mode)]))
+            .arg(phaseName())
+            + QString::fromLatin1("; hold %1 cancelZone %2 down %3 cancel %4")
+                  .arg(mic->holding() ? 1 : 0)
+                  .arg(mic->inCancelZone() ? 1 : 0)
+                  .arg(mic->isDown() ? 1 : 0)
+                  .arg(mic->state().cancel ? 1 : 0);
+    };
+    // The strip above the input while the button is held (and its notice afterwards).
+    const auto stripState = [chat]() -> QString {
+        VoiceController* voice = chat ? chat->voice() : nullptr;
+        HoldStrip*       strip = voice ? voice->strip() : nullptr;
+        if (!strip)
+            return QString::fromLatin1("no strip");
+        static const char*     modes[] = {"Recording", "Cancel", "Saving", "Notice"}; // HoldStrip::Mode
+        const HoldStrip::View& v       = strip->view();
+        QWidget*               owner   = strip->parentWidget();
+        QWidget*               input   = strip->input();
+        const QRect            in      = input && owner ? QRect(input->mapTo(owner, QPoint(0, 0)), input->size()) : QRect();
+        return QString::fromLatin1("strip visible %1 mode %2 time %3 ms warning %4 line \"%5\" at %6,%7 %8x%9 (input at %10,%11 %12 wide, visible %13) "
+                                   "parent %14#%15 on top %16 quitOnClose %17")
+            .arg(strip->isVisible() ? 1 : 0)
+            .arg(QString::fromLatin1(modes[static_cast<int>(v.mode)]))
+            .arg(v.timeMs)
+            .arg(v.timeWarning ? 1 : 0)
+            .arg(HoldStrip::line(v))
+            .arg(strip->x())
+            .arg(strip->y())
+            .arg(strip->width())
+            .arg(strip->height())
+            .arg(in.x())
+            .arg(in.y())
+            .arg(in.width())
+            .arg(input && input->isVisible() ? 1 : 0)
+            .arg(owner ? QString::fromLatin1(owner->metaObject()->className()) : QString::fromLatin1("none"), owner ? owner->objectName() : QString())
+            .arg(owner && !owner->children().isEmpty() && owner->children().last() == strip ? 1 : 0)
+            .arg(strip->testAttribute(Qt::WA_QuitOnClose) ? 1 : 0);
+    };
+    // Every visible button in the input's row (the input's parent): one smiley (TeamSpeak's) and our mic.
+    const auto rowButtons = [](QTextEdit* edit) -> QString {
+        QWidget* row = edit ? edit->parentWidget() : nullptr;
+        if (!row)
+            return QString::fromLatin1("no row");
+        QStringList out;
+        for (QAbstractButton* b : row->findChildren<QAbstractButton*>()) {
+            if (!b->isVisible())
+                continue;
+            const QPoint at = b->mapTo(row, QPoint(0, 0));
+            out << QString::fromLatin1("%1#%2 %3,%4 %5x%6 tip \"%7\"")
+                       .arg(QString::fromLatin1(b->metaObject()->className()), b->objectName())
+                       .arg(at.x())
+                       .arg(at.y())
+                       .arg(b->width())
+                       .arg(b->height())
+                       .arg(b->toolTip().left(80));
+        }
+        const QPoint inputAt = edit->mapTo(row, QPoint(0, 0));
+        return QString::fromLatin1("row %1#%2 %3x%4, input at %5,%6 %7x%8: %9 visible buttons [%10]")
+            .arg(QString::fromLatin1(row->metaObject()->className()), row->objectName())
+            .arg(row->width())
+            .arg(row->height())
+            .arg(inputAt.x())
+            .arg(inputAt.y())
+            .arg(edit->width())
+            .arg(edit->height())
+            .arg(out.size())
+            .arg(out.join(QString::fromLatin1("; ")));
+    };
+    const auto flags = [](uint64 sch) -> QString {
+        int muted = -1, deact = -1, hw = -1;
+        const unsigned e = ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_INPUT_MUTED, &muted);
+        ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_INPUT_DEACTIVATED, &deact);
+        ts3::funcs.getClientSelfVariableAsInt(sch, CLIENT_INPUT_HARDWARE, &hw);
+        return QString::fromLatin1("sch %1 connected %2: input_muted %3 input_deactivated %4 input_hardware %5 (error %6)")
+            .arg(sch)
+            .arg(ts3::isConnected(sch) ? 1 : 0)
+            .arg(muted)
+            .arg(deact)
+            .arg(hw)
+            .arg(e);
+    };
+    const auto voiceState = [chat, phaseName, stripState]() -> QString {
+        VoiceController* voice = chat ? chat->voice() : nullptr;
+        if (!voice)
+            return QString::fromLatin1("no controller");
+        VoicePanel* panel = voice->panel();
+        QString     out   = QString::fromLatin1("phase %1 holding %2; %3").arg(phaseName()).arg(voice->holding() ? 1 : 0).arg(stripState());
+        if (panel) {
+            static const char* modes[] = {"Starting", "Recording", "Saving", "TooShort", "Error"};
+            const VoicePanel::View& v  = panel->view();
+            out += QString::fromLatin1("; window visible %1 active %2 %3x%4 mode %5 time %6 ms warning %7 confirm %8 sendingShown %9 sending %10 "
+                                       "target \"%11\" hints [%12] error \"%13\" / \"%14\" fix %15 \"%16\"; texts: %17")
+                       .arg(panel->isVisible() ? 1 : 0)
+                       .arg(panel->isActiveWindow() ? 1 : 0)
+                       .arg(panel->width())
+                       .arg(panel->height())
+                       .arg(QString::fromLatin1(modes[static_cast<int>(v.mode)]))
+                       .arg(v.timeMs)
+                       .arg(v.timeWarning ? 1 : 0)
+                       .arg(v.confirmDiscard ? 1 : 0)
+                       .arg(v.sendingShown ? 1 : 0)
+                       .arg(v.sending ? 1 : 0)
+                       .arg(v.target, v.hints.join(QString::fromLatin1(" | ")), v.errorTitle, v.errorBody)
+                       .arg(static_cast<int>(v.fix))
+                       .arg(v.fixText, describeWidgetTexts(panel));
+        } else {
+            out += QString::fromLatin1("; no window");
+        }
+        out += QString::fromLatin1("; diag: ") + voice->diagnosticLines().join(QString::fromLatin1(" / "));
+        return out;
+    };
+
+    if (cmd == QLatin1String("micbtn")) {
+        QTextEdit*    edit   = visibleInput();
+        MicButton*    mic    = edit ? MicButton::of(edit) : nullptr;
+        const QString action = str("action", "info");
+        const QPoint  offset(c.value(QString::fromLatin1("dx")).toInt(0), c.value(QString::fromLatin1("dy")).toInt(0)); // from the icon's centre
+        say(QString::fromLatin1("micbtn: %1").arg(micState(edit)));
+        say(QString::fromLatin1("micbtn: %1").arg(stripState()));
+        say(QString::fromLatin1("micbtn: %1").arg(rowButtons(edit)));
+        if (mic && action == QLatin1String("hover")) {
+            const QPoint at = mic->iconRect().center();
+            mic->setAttribute(Qt::WA_UnderMouse, true);
+            QEvent enter(QEvent::Enter);
+            QApplication::sendEvent(mic, &enter);
+            sendMouse(mic, QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton);
+            mic->update();
+        } else if (mic && action == QLatin1String("leave")) {
+            mic->setAttribute(Qt::WA_UnderMouse, false);
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(mic, &leave);
+            mic->update();
+        } else if (mic && action == QLatin1String("tip")) {
+            const QPoint at = mic->iconRect().center();
+            QHelpEvent   tip(QEvent::ToolTip, at, mic->mapToGlobal(at));
+            QApplication::sendEvent(mic, &tip);
+            say(QString::fromLatin1("micbtn: tool tip shown %1 \"%2\"").arg(QToolTip::isVisible() ? 1 : 0).arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+        } else if (mic && (action == QLatin1String("click") || action == QLatin1String("press"))) {
+            // A press records at once (a click is a tap: it records, then discards): never the real
+            // microphone, generated sound for whatever this starts.
+            VoiceController* voice  = m_chat->voice();
+            const bool       starts = voice && (voice->phase() == VoiceController::Phase::Idle || voice->phase() == VoiceController::Phase::TooShort) && mic->isEnabled();
+            const QString    fake   = ts3::dataDir() + QString::fromLatin1("/voice_fake.txt");
+            if (starts) {
+                QFile file(fake);
+                if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    say(QString::fromLatin1("micbtn: can't write voice_fake.txt; not pressing"));
+                    return true;
+                }
+                file.write(str("fake", "600000").toUtf8());
+                file.close();
+                say(QString::fromLatin1("micbtn: voice_fake.txt = ") + str("fake", "600000"));
+            }
+            const QPoint at = mic->iconRect().center() + offset;
+            if (action == QLatin1String("press")) {
+                // The recorder checks the physical button while held (it is up: these events are ours): it
+                // reads this hold instead until release or up.
+                m_micHeld = true;
+                if (voice) {
+                    const QPointer<SelfTest> self(this);
+                    voice->setPointerHeldForTests([self] { return self && self->m_micHeld; });
+                }
+                sendMouse(mic, QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton);
+                sendMouse(mic, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                say(QString::fromLatin1("micbtn: pressed at %1,%2 (enabled %3): button hold %4, recorder holding %5, phase %6")
+                        .arg(at.x())
+                        .arg(at.y())
+                        .arg(mic->isEnabled() ? 1 : 0)
+                        .arg(mic->holding() ? 1 : 0)
+                        .arg(voice && voice->holding() ? 1 : 0)
+                        .arg(phaseName()));
+            } else {
+                sendMouse(mic, QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton);
+                sendMouse(mic, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                sendMouse(mic, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                say(QString::fromLatin1("micbtn: clicked at %1,%2 (enabled %3)").arg(at.x()).arg(at.y()).arg(mic->isEnabled() ? 1 : 0));
+            }
+            later(1500, [fake, phaseName] {
+                if (QFile::exists(fake) && phaseName() == QLatin1String("Idle")) {
+                    QFile::remove(fake); // nothing started: no fake left for later
+                    say(QString::fromLatin1("micbtn: nothing started, voice_fake.txt removed"));
+                }
+            });
+        } else if (mic && action == QLatin1String("move")) {
+            const QPoint at = mic->iconRect().center() + offset;
+            sendMouse(mic, QEvent::MouseMove, at, Qt::NoButton, m_micHeld ? Qt::LeftButton : Qt::NoButton);
+            say(QString::fromLatin1("micbtn: moved to %1,%2 (%3 px from the icon's centre): hold %4 cancelZone %5")
+                    .arg(at.x())
+                    .arg(at.y())
+                    .arg(qRound(std::hypot(static_cast<double>(offset.x()), static_cast<double>(offset.y()))))
+                    .arg(mic->holding() ? 1 : 0)
+                    .arg(mic->inCancelZone() ? 1 : 0));
+        } else if (action == QLatin1String("release") || action == QLatin1String("up")) {
+            VoiceController* voice   = m_chat->voice();
+            const bool       wasHeld = mic && mic->holding();
+            m_micHeld                = false;
+            if (action == QLatin1String("release")) {
+                if (mic) {
+                    const QPoint at = mic->iconRect().center() + offset;
+                    sendMouse(mic, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    say(QString::fromLatin1("micbtn: released at %1,%2 (button hold was %3): phase %4").arg(at.x()).arg(at.y()).arg(wasHeld ? 1 : 0).arg(phaseName()));
+                }
+                if (voice)
+                    voice->setPointerHeldForTests(&VoiceController::primaryButtonHeld); // the real mouse again
+            } else {
+                // Up without a release (let go where TeamSpeak didn't see it): the recorder finds it after
+                // about 120 ms and keeps the recording in the window. The real mouse again after that.
+                say(QString::fromLatin1("micbtn: up without a release (button hold %1)").arg(wasHeld ? 1 : 0));
+                later(1000, [this] {
+                    if (!m_micHeld && m_chat && m_chat->voice())
+                        m_chat->voice()->setPointerHeldForTests(&VoiceController::primaryButtonHeld);
+                });
+            }
+        }
+        const QPointer<QTextEdit> guard(edit);
+        later(c.value(QString::fromLatin1("afterMs")).toInt(600), [this, guard, micState, stripState] {
+            if (m_chat) {
+                say(QString::fromLatin1("micbtn: after: %1").arg(micState(guard.data())));
+                say(QString::fromLatin1("micbtn: after: %1").arg(stripState()));
+            }
+        });
+        grabLater(mic ? mic->parentWidget()->parentWidget() : nullptr, c.value(QString::fromLatin1("ms")).toInt(900));
+        return false;
+    }
+    if (cmd == QLatin1String("voicestate")) {
+        say(QString::fromLatin1("voicestate: %1").arg(voiceState()));
+        say(QString::fromLatin1("voicestate: %1").arg(flags(ts3::currentConnection())));
+        return true;
+    }
+    if (cmd == QLatin1String("disconnect")) {
+        const uint64 sch = ts3::currentConnection();
+        char*        nickRaw = nullptr;
+        QByteArray   nick    = "TesterA";
+        if (ts3::funcs.getClientSelfVariableAsString && ts3::funcs.getClientSelfVariableAsString(sch, CLIENT_NICKNAME, &nickRaw) == ERROR_ok)
+            nick = ts3::takeString(nickRaw).toUtf8();
+        say(QString::fromLatin1("disconnect: before: %1; %2").arg(flags(sch), micState(visibleInput())));
+        const unsigned err = ts3::funcs.stopConnection(sch, "");
+        say(QString::fromLatin1("disconnect: stopConnection(%1) error %2").arg(sch).arg(err));
+        QList<int> probes;
+        for (const QJsonValue& v : c.value(QString::fromLatin1("probeMs")).toArray())
+            probes << v.toInt();
+        for (const int ms : probes) {
+            later(ms, [ms, sch, flags, micState, visibleInput, voiceState] {
+                say(QString::fromLatin1("disconnect: +%1 ms: %2; %3").arg(ms).arg(flags(sch), micState(visibleInput())));
+                say(QString::fromLatin1("disconnect: +%1 ms: %2").arg(ms).arg(voiceState()));
+            });
+        }
+        // clickMicMs: a click on the mic button meanwhile (only while recording: it stops and sends, or keeps it)
+        const int clickMicMs = c.value(QString::fromLatin1("clickMicMs")).toInt(-1);
+        if (clickMicMs >= 0) {
+            later(clickMicMs, [this, clickMicMs, visibleInput, micState] {
+                VoiceController* voice = m_chat ? m_chat->voice() : nullptr;
+                QTextEdit*       edit  = visibleInput();
+                MicButton*       mic   = edit ? MicButton::of(edit) : nullptr;
+                if (!voice || !mic || voice->phase() != VoiceController::Phase::Recording) {
+                    say(QString::fromLatin1("disconnect: +%1 ms: no click (not recording): %2").arg(clickMicMs).arg(micState(edit)));
+                    return;
+                }
+                const QPoint at   = mic->iconRect().center();
+                const bool   held = mic->holding(); // a hold: this click's release is the hold's release
+                sendMouse(mic, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                sendMouse(mic, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                if (held) {
+                    m_micHeld = false;
+                    voice->setPointerHeldForTests(&VoiceController::primaryButtonHeld);
+                }
+                say(QString::fromLatin1("disconnect: +%1 ms: mic clicked (hold %2): %3").arg(clickMicMs).arg(held ? 1 : 0).arg(micState(edit)));
+            });
+        }
+        const int reconnectMs = c.value(QString::fromLatin1("reconnectMs")).toInt(6000);
+        if (reconnectMs > 0) {
+            later(reconnectMs, [sch, nick, flags] {
+                uint64         tab = 0;
+                const unsigned e   = ts3::funcs.guiConnect(PLUGIN_CONNECT_TAB_CURRENT, nick.constData(), "127.0.0.1:9987", "", nick.constData(), "", "", "", "", "", "", "", "", "", &tab);
+                say(QString::fromLatin1("disconnect: reconnect in the current tab: error %1 tab %2 (was %3); %4").arg(e).arg(tab).arg(sch).arg(flags(sch)));
+            });
+        }
+        next(c.value(QString::fromLatin1("ms")).toInt(800));
         return false;
     }
     *handled = false;

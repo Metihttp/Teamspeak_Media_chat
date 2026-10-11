@@ -1,6 +1,6 @@
 #pragma once
 
-// 2.2 emoji: Settings > General > "Emoji": HD emoji in the chat, the emoji button in the chat input,
+// 2.2 emoji: Settings > General > "Emoji": HD emoji in the chat, our picker on TeamSpeak's emoji button,
 // jumbo emoji for messages of only emoji. All on by default.
 
 #include "settingssection.h"

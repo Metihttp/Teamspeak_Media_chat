@@ -48,20 +48,6 @@ int readInt(const QSettings& s, const char* name, int fallback, Settings::Range 
 
 } // namespace
 
-// 2.2 voice: an endpoint id is printable ASCII ("{0.0.1.00000000}.{guid}"); anything else (edited by
-// hand, too long) means "the microphone TeamSpeak uses".
-QString Settings::validVoiceMicrophone(const QString& value)
-{
-    const QString v = value.trimmed();
-    if (v.size() > maxVoiceMicrophoneLength)
-        return {};
-    for (const QChar c : v) {
-        if (c.unicode() < 0x20 || c.unicode() > 0x7e)
-            return {};
-    }
-    return ownedCopy(v);
-}
-
 QString Settings::normalizeUploadDirectory(const QString& input)
 {
     QString dir = input.trimmed();
@@ -172,16 +158,21 @@ void Settings::load(const QString& file)
     // 2.2 protocol
     showReactions = readBool(s, "showReactions", d.showReactions);
     sharePresence = readBool(s, "sharePresence", d.sharePresence);
-    // 2.2 voice
-    voiceMicrophone       = validVoiceMicrophone(s.value(key("voiceMicrophone")).toString());
-    voiceMuteTeamSpeakMic = readBool(s, "voiceMuteTeamSpeakMic", d.voiceMuteTeamSpeakMic);
-    voiceReview           = readBool(s, "voiceReview", d.voiceReview);
-    voiceSounds           = readBool(s, "voiceSounds", d.voiceSounds);
+    // 2.2.1 voice: voiceMicrophone, voiceMuteTeamSpeakMic, voiceReview and voiceSounds (2.2.0) are ignored
 
     // 2.2 emoji
     hdEmoji     = readBool(s, "hdEmoji", d.hdEmoji);
     emojiButton = readBool(s, "emojiButton", d.emojiButton);
     jumboEmoji  = readBool(s, "jumboEmoji", d.jumboEmoji);
+
+    // chat redesign
+    chatLayout           = readInt(s, "chatLayout", d.chatLayout, chatLayoutRange);
+    chatGroupMessages    = readBool(s, "chatGroupMessages", d.chatGroupMessages);
+    chatHoverActions     = readBool(s, "chatHoverActions", d.chatHoverActions);
+    chatAvatars          = readBool(s, "chatAvatars", d.chatAvatars);
+    chatMentions         = readBool(s, "chatMentions", d.chatMentions);
+    chatCollapseEvents   = readBool(s, "chatCollapseEvents", d.chatCollapseEvents);
+    chatLayoutIntroShown = readBool(s, "chatLayoutIntroShown", d.chatLayoutIntroShown);
 }
 
 void Settings::save() const
@@ -236,16 +227,19 @@ void Settings::save(const QString& file) const
     // 2.2 protocol
     s.setValue(key("showReactions"), showReactions);
     s.setValue(key("sharePresence"), sharePresence);
-    // 2.2 voice
-    s.setValue(key("voiceMicrophone"), ownedCopy(validVoiceMicrophone(voiceMicrophone)));
-    s.setValue(key("voiceMuteTeamSpeakMic"), voiceMuteTeamSpeakMic);
-    s.setValue(key("voiceReview"), voiceReview);
-    s.setValue(key("voiceSounds"), voiceSounds);
 
     // 2.2 emoji
     s.setValue(key("hdEmoji"), hdEmoji);
     s.setValue(key("emojiButton"), emojiButton);
     s.setValue(key("jumboEmoji"), jumboEmoji);
+    // chat redesign
+    s.setValue(key("chatLayout"), qBound(chatLayoutRange.min, chatLayout, chatLayoutRange.max));
+    s.setValue(key("chatGroupMessages"), chatGroupMessages);
+    s.setValue(key("chatHoverActions"), chatHoverActions);
+    s.setValue(key("chatAvatars"), chatAvatars);
+    s.setValue(key("chatMentions"), chatMentions);
+    s.setValue(key("chatCollapseEvents"), chatCollapseEvents);
+    s.setValue(key("chatLayoutIntroShown"), chatLayoutIntroShown);
     s.sync();
 }
 

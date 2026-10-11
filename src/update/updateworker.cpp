@@ -81,13 +81,14 @@ class CheckJob : public Job
 
     void run() override
     {
-        CheckOutcome  outcome;
-        http::Request request;
-        request.url        = manifestUrl();
-        request.maxBytes   = kMaxOuterBytes;
-        request.deadlineMs = kCheckDeadlineMs;
-        request.cancel     = &m_link->cancel;
-        const http::Response response = http::get(request);
+        CheckOutcome   outcome;
+        http::Response response = fetch(manifestUrl());
+        outcome.file            = QString::fromLatin1(kManifestName);
+        if (response.error == http::Error::NotFound && !canceled()) {
+            // A release without the format 2 file (made the 2.2.0 way): its signed file instead.
+            response     = fetch(legacyManifestUrl());
+            outcome.file = QString::fromLatin1(kLegacyManifestName);
+        }
         outcome.httpError     = response.error;
         outcome.httpStatus    = response.status;
         outcome.retryAfterSec = response.retryAfterSec;
@@ -100,6 +101,16 @@ class CheckJob : public Job
     }
 
   private:
+    http::Response fetch(const QUrl& url)
+    {
+        http::Request request;
+        request.url        = url;
+        request.maxBytes   = kMaxOuterBytes;
+        request.deadlineMs = kCheckDeadlineMs;
+        request.cancel     = &m_link->cancel;
+        return http::get(request);
+    }
+
     QVector<TrustedKey>                      m_keys;
     QSet<int>                                m_revoked;
     std::function<void(const CheckOutcome&)> m_done;
@@ -225,7 +236,7 @@ class PrepareJob : public Job
                 }
                 http::Request request;
                 request.url        = assetUrl(QLatin1Char('v') + m_manifest.version.toString(), asset);
-                request.maxBytes   = f->size; // never more than the signed size
+                request.maxBytes   = f->size; // never more than the manifest's size
                 request.deadlineMs = downloadDeadlineMs(f->size);
                 request.cancel     = &m_link->cancel;
                 request.sink       = [&writer](const char* data, qint64 size) { return writer.write(data, size); };
@@ -266,13 +277,13 @@ class PrepareJob : public Job
                 outcome.failure = PrepareOutcome::Failure::Mismatch;
                 return outcome;
             }
-            // The signed hash matched; the CPU and file type must match the name too.
-            QByteArray image;
-            pe::ImageInfo info;
-            if (!fs::readAll(part, &image, kMaxFileSize) || !pe::readInfo(image, &info) || info.machine != f->machine
-                || info.isDll != (f->kind == FileKind::Plugin)) {
+            // The streamed bytes match the manifest. Once more from the disk (size, SHA-256), and the CPU
+            // and file type must match the name too.
+            QByteArray          image;
+            const DownloadCheck check = fs::readAll(part, &image, kMaxFileSize) ? checkDownload(image, *f) : DownloadCheck::WrongMachine;
+            if (check != DownloadCheck::Ok) {
                 fs::removeFile(part);
-                outcome.failure = PrepareOutcome::Failure::WrongMachine;
+                outcome.failure = check == DownloadCheck::Mismatch ? PrepareOutcome::Failure::Mismatch : PrepareOutcome::Failure::WrongMachine;
                 return outcome;
             }
             const QString staged = staging + QLatin1Char('/') + targetFileName(f->kind, f->arch) + QLatin1String(".new");

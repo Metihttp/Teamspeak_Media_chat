@@ -43,6 +43,7 @@ class QTextBrowser;
 class QTextDocument;
 class QTextEdit;
 class QTimer;
+class ChatInputs;
 class EmojiInput;
 
 class ChatEmoji : public QObject
@@ -56,7 +57,11 @@ class ChatEmoji : public QObject
     void attach(QTextBrowser* browser);         // a chat view
     void documentSwapped(QTextBrowser* browser); // TeamSpeak gave it a new document
     void attachInput(QTextEdit* input);         // a chat input line (the emoji button, Ctrl+E)
+    void rediscover();                          // ChatIntegration's discover pass: TeamSpeak's emoticon button again until found
     void settingsChanged();                     // Settings::hdEmoji / jumboEmoji / emojiButton
+    // 2.2.1: the attached chat inputs (TeamSpeak's placeholder in them, putting text in): chatinput.h.
+    ChatInputs* inputs() const;
+    EmojiInput* input() const { return m_input; } // the chat inputs' emoji button (tests, the live-test driver)
 
     // True while this edits a document (ChatIntegration doesn't rescan for those changes).
     static bool isMutating();
@@ -70,6 +75,9 @@ class ChatEmoji : public QObject
     // "Copy text": [from, to) of browser's document with HD emoji and smileys as their text (the
     // selection instead when the click at position is in it). Parented to menu.
     QAction* copyTextAction(QMenu* menu, QTextBrowser* browser, int position, int from, int to);
+    // Chat redesign: the action bar's "Copy text": [from, to) as Copy text copies it (emoji and smileys as
+    // text, TeamSpeak's text of TS Media's chat layout), also with HD emoji off.
+    void copyText(QTextBrowser* browser, int from, int to);
 
     // ---- also for tests and tools ------------------------------------------------------------------
     // Everything waiting in browser's document, now (pictures drawn synchronously).

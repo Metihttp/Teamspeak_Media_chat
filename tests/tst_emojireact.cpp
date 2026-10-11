@@ -60,7 +60,7 @@ void message(QTextDocument* doc, const QString& nick, const QString& text)
     c.insertText(QStringLiteral("<20:02:13> "), QTextCharFormat());
     QTextCharFormat link;
     link.setAnchor(true);
-    link.setAnchorHref(QStringLiteral("client://17/KpNqZMq7js/JajRo+3zOFPViX1E=~") + nick);
+    link.setAnchorHref(QStringLiteral("client://17/TX9dkL2PT/zT4sK2RHejI+ISAww=~") + nick);
     c.insertText(QLatin1Char('"') + nick + QLatin1Char('"'), link);
     c.insertText(QStringLiteral(": "), QTextCharFormat());
     for (const QString& part : text.split(QLatin1Char('|'))) {

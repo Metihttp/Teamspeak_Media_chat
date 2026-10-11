@@ -59,12 +59,15 @@ class SelfTest : public QObject
     bool                      m_running = false;
     qint64                    m_notLocalSince = 0; // the current tab stopped being a localhost server then
     int                       m_logJobsEveryMs = 0; // waitidle: progress lines this often (0: none)
+    bool                      m_micHeld        = false; // part 5: micbtn press .. release / up (the recorder reads it while held)
     qint64                    m_jobsLoggedAt   = 0;
     bool                      runPart2(const QString& cmd, const QJsonObject& c, bool* handled);
     void                      reactStep(const QString& key, int reaction, int left, int gapMs);
     // Part 3 (replies and HD emoji): context menus, keys into the chat input, clicks on reply lines.
     bool                      runPart3(const QString& cmd, const QJsonObject& c, bool* handled);
     void                      later(int ms, std::function<void()> fn); // a child timer: gone with the driver
+    // Part 4 (chat redesign): the chat layout (layout, layoutinfo, hover) and TeamSpeak's emoji button (emojibtn).
+    bool                      runPart4(const QString& cmd, const QJsonObject& c, bool* handled);
 };
 
 #endif

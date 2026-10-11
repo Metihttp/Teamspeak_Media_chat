@@ -3,6 +3,7 @@
 #include <QAbstractButton>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QScreen>
 
@@ -165,6 +166,15 @@ void ReactionPicker::paintEvent(QPaintEvent*)
         p.setPen(QPen(m_dark ? QColor(255, 255, 255, 30) : QColor(0, 0, 0, 25), 1.0));
         p.drawLine(QPointF(x, kPadding + 8), QPointF(x, height() - kPadding - 8));
     }
+}
+
+void ReactionPicker::mousePressEvent(QMouseEvent* event)
+{
+    // A press outside closes the popup and Qt hands it on; on the button that opened it that would open it
+    // again at once: a second click on that button closes it instead.
+    if (!rect().contains(event->pos()) && m_opener.contains(event->globalPos()))
+        setAttribute(Qt::WA_NoMouseReplay);
+    QWidget::mousePressEvent(event);
 }
 
 void ReactionPicker::keyPressEvent(QKeyEvent* event)

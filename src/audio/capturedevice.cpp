@@ -55,17 +55,9 @@ QString endpointIdIn(const QString& text)
     return m.hasMatch() ? m.captured(0) : QString();
 }
 
-DeviceChoice chooseCaptureDevice(const QString& setting, const TeamSpeakCapture& teamSpeak, const EndpointList& list)
+DeviceChoice chooseCaptureDevice(const TeamSpeakCapture& teamSpeak, const EndpointList& list)
 {
     DeviceChoice choice;
-    if (!setting.isEmpty()) {
-        if (const Endpoint* e = byId(list, setting)) {
-            choice.source     = DeviceChoice::Source::Setting;
-            choice.endpointId = e->id;
-            return choice;
-        }
-        choice.settingMissing = true;
-    }
     if (!teamSpeak.known || teamSpeak.isDefault || teamSpeak.device.trimmed().isEmpty())
         return choice; // "Default" in TeamSpeak: which Windows role it means is not known
 
@@ -92,6 +84,7 @@ DeviceChoice chooseCaptureDevice(const QString& setting, const TeamSpeakCapture&
             return choice;
         }
     }
+    choice.unmatched = true; // TeamSpeak named one, but not one we can find: the window says so
     return choice;
 }
 

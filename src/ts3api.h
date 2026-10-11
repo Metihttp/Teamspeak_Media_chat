@@ -24,6 +24,8 @@ extern QString pluginId;
 
 // <TeamSpeak config>/plugins/tsmedia (created on demand).
 QString dataDir();
+// Chat redesign: TeamSpeak's config folder itself (its cache of avatars is in <config>/cache). Empty if unknown.
+QString configDir();
 
 QString errorText(unsigned int error);
 

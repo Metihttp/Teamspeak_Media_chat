@@ -81,19 +81,23 @@ struct Settings {
     // 2.2 protocol: Privacy (both global, never per server)
     bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
     bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
-    // 2.2 voice: voice messages
-    static constexpr int maxVoiceMicrophoneLength = 512;
-    QString voiceMicrophone;               // Windows endpoint id of the microphone; empty = the one TeamSpeak uses
-    bool    voiceMuteTeamSpeakMic = true;  // mute the TeamSpeak microphone while recording (always given back)
-    bool    voiceReview           = true;  // the hotkey's second press stops for a listen; off: it sends
-    bool    voiceSounds           = true;  // a short sound when recording starts and stops
-    // A stored microphone id as load() keeps it: printable ASCII up to maxVoiceMicrophoneLength, else empty.
-    static QString validVoiceMicrophone(const QString& value);
+    // 2.2.1 voice: voice messages have no settings any more (TeamSpeak's microphone, muted while
+    // recording, the start and stop sounds); 2.2.0's voice* keys in the ini are ignored.
 
     // 2.2 emoji (global)
     bool hdEmoji     = true; // emoji (and TeamSpeak's emoticons) in the chat as HD pictures
-    bool emojiButton = true; // the emoji button in the chat input (the picker's shortcut works either way)
+    bool emojiButton = true; // our picker on TeamSpeak's emoji button (the picker's shortcut works either way)
     bool jumboEmoji  = true; // messages of only emoji (up to 27) show them large
+
+    // Chat redesign (global): the chat's layout, only in your own view.
+    static constexpr Range chatLayoutRange = {0, 2};
+    int  chatLayout           = 1;     // 0 TeamSpeak classic, 1 Cozy (names and pictures above messages), 2 Compact
+    bool chatGroupMessages    = true;  // messages of one person within 7 minutes under one name
+    bool chatHoverActions     = true;  // the action bar over the hovered message
+    bool chatAvatars          = true;  // profile pictures (Cozy); initials otherwise
+    bool chatMentions         = true;  // messages that mention you are highlighted
+    bool chatCollapseEvents   = true;  // runs of join and leave lines collapse
+    bool chatLayoutIntroShown = false; // the one-time line about the new layout was shown
 
     static Settings& instance();
     void             load();

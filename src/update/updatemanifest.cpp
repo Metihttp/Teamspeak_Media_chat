@@ -9,6 +9,7 @@
 #include <cmath>
 
 #include "crypto.h"
+#include "pecheck.h"
 #include "updatekeys.h"
 
 namespace upd {
@@ -325,21 +326,13 @@ QString sanitizeNote(const QString& text)
     return result;
 }
 
-ManifestError parsePayload(const QByteArray& payload, Manifest* out, QString* detail)
-{
-    *out = Manifest();
-    if (detail)
-        detail->clear();
-    if (payload.size() > kMaxPayloadBytes)
-        return ManifestError::TooLarge;
-    QJsonParseError     error{};
-    const QJsonDocument doc = QJsonDocument::fromJson(payload, &error);
-    if (error.error != QJsonParseError::NoError || !doc.isObject())
-        return fail(detail, "payload is not a JSON object");
-    const QJsonObject p = doc.object();
+namespace {
 
+// The fields of a format 1 payload and of a format 2 file (the same, except "format" and revokeKeys).
+ManifestError parseFields(const QJsonObject& p, int expectedFormat, bool readRevocations, Manifest* out, QString* detail)
+{
     qint64 format = 0;
-    if (!readInteger(p.value(latin("format")), 0, 1000000, &format) || format != 1)
+    if (!readInteger(p.value(latin("format")), 0, 1000000, &format) || format != expectedFormat)
         return fail(detail, "format");
     if (p.value(latin("product")).toString() != latin("tsmedia"))
         return fail(detail, "product");
@@ -434,8 +427,9 @@ ManifestError parsePayload(const QByteArray& payload, Manifest* out, QString* de
         }
     }
 
+    // Revoking a key needs a signature: an unsigned manifest never revokes anything.
     const QJsonValue revoke = p.value(latin("revokeKeys"));
-    if (!revoke.isUndefined() && !revoke.isNull()) {
+    if (readRevocations && !revoke.isUndefined() && !revoke.isNull()) {
         if (!revoke.isArray() || revoke.toArray().size() > 16)
             return fail(detail, "revokeKeys");
         for (const QJsonValue& id : revoke.toArray()) {
@@ -451,8 +445,48 @@ ManifestError parsePayload(const QByteArray& payload, Manifest* out, QString* de
     return ManifestError::None;
 }
 
+} // namespace
+
+ManifestError parsePayload(const QByteArray& payload, Manifest* out, QString* detail)
+{
+    *out = Manifest();
+    if (detail)
+        detail->clear();
+    if (payload.size() > kMaxPayloadBytes)
+        return ManifestError::TooLarge;
+    QJsonParseError     error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject())
+        return fail(detail, "payload is not a JSON object");
+    return parseFields(doc.object(), kFormatSigned, true, out, detail);
+}
+
+ManifestError parseUnsigned(const QByteArray& bytes, Manifest* out, QString* detail)
+{
+    *out = Manifest();
+    if (detail)
+        detail->clear();
+    if (bytes.size() > kMaxPayloadBytes)
+        return ManifestError::TooLarge;
+    QJsonParseError     error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject())
+        return ManifestError::NotJson;
+    const QJsonObject p = doc.object();
+    // Format 2 has no signature. Signature fields mean a mix-up or a trick (a signature that is there
+    // must be valid), so they are refused rather than ignored.
+    if (p.contains(latin("sig")) || p.contains(latin("key")) || p.contains(latin("payload"))) {
+        if (detail)
+            *detail = latin("signature fields in an unsigned manifest");
+        return ManifestError::BadSignature;
+    }
+    return parseFields(p, kFormatUnsigned, false, out, detail);
+}
+
 QSet<int> honouredRevocations(const Manifest& manifest, const QVector<TrustedKey>& keys)
 {
+    if (!manifest.isSigned())
+        return {};
     const TrustedKey* signer = findKey(keys, manifest.signedBy);
     QSet<int>         result;
     for (int id : manifest.revokeKeys) {
@@ -472,6 +506,20 @@ ManifestError readManifest(const QByteArray& bytes, const QVector<TrustedKey>& k
     *out = Manifest();
     if (detail)
         detail->clear();
+    if (bytes.size() > kMaxOuterBytes)
+        return ManifestError::TooLarge;
+    {
+        QJsonParseError     jsonError{};
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes, &jsonError);
+        if (jsonError.error != QJsonParseError::NoError || !doc.isObject())
+            return ManifestError::NotJson;
+        qint64 format = 0;
+        if (!readInteger(doc.object().value(latin("format")), 0, 1000000, &format))
+            return ManifestError::NotJson;
+        if (format == kFormatUnsigned)
+            return parseUnsigned(bytes, out, detail);
+    }
+    // Format 1 (signed), or a format this version doesn't know (parseSigned: UnsupportedFormat).
     SignedManifest signedManifest;
     ManifestError  error = parseSigned(bytes, &signedManifest);
     if (error != ManifestError::None)
@@ -513,6 +561,16 @@ Offer offerFor(const Manifest& manifest, const Version& effectiveInstalled, cons
     if (skipped.isValid() && skipped == manifest.version)
         return Offer::Skipped;
     return Offer::Yes;
+}
+
+DownloadCheck checkDownload(const QByteArray& image, const UpdateFile& expected)
+{
+    if (expected.size <= 0 || image.size() != expected.size || expected.sha256.size() != 32 || crypto::Sha256::hash(image) != expected.sha256)
+        return DownloadCheck::Mismatch;
+    pe::ImageInfo info;
+    if (!pe::readInfo(image, &info) || info.machine != expected.machine || info.isDll != (expected.kind == FileKind::Plugin))
+        return DownloadCheck::WrongMachine;
+    return DownloadCheck::Ok;
 }
 
 } // namespace upd

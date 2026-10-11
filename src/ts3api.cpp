@@ -33,6 +33,15 @@ QString dataDir()
     return dir;
 }
 
+QString configDir()
+{
+    char path[1024] = {};
+    if (funcs.getConfigPath)
+        funcs.getConfigPath(path, sizeof(path));
+    const QString dir = QString::fromUtf8(path);
+    return dir.isEmpty() ? QString() : QDir::cleanPath(dir);
+}
+
 QString errorText(unsigned int error)
 {
     char* msg = nullptr;

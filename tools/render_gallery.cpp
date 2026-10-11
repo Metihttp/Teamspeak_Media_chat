@@ -16,6 +16,12 @@
 #include <QImageReader>
 #include <QPainter>
 #include <QSet>
+#include <QAbstractTextDocumentLayout>
+#include <QPainterPath>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextLayout>
 #include <QTextStream>
 #include <QtMath>
 
@@ -31,6 +37,9 @@
 #include "previewrenderer.h"
 #include "reactionart.h" // 2.2 reactions
 #include "replyart.h"   // 2.2 reply
+#include "layoutdoc.h"   // chat redesign
+#include "layoutformat.h" // chat redesign
+#include "tschat.h"      // chat redesign: TeamSpeak-like chat documents (tests/)
 #include "uiutil.h"
 
 namespace {
@@ -1454,6 +1463,11 @@ int contrastReport(const QString& outDir)
         // 2.2 reactions: the row's colours on TeamSpeak's chat background
         for (const rx::ColorPair& pair : rx::colorPairs(dark, dark ? QColor(0x31, 0x33, 0x38) : QColor(0xff, 0xff, 0xff)))
             pairs.append({pair.name, pair.foreground, pair.background, pair.minimum});
+        // Chat redesign: the chat layout's colours on TeamSpeak's skins.
+        const layoutart::Colors layout = layoutart::colorsFor(dark, dark ? QColor(0x2f, 0x31, 0x36) : QColor(Qt::white), dark ? QColor(0xdc, 0xdd, 0xde) : QColor(Qt::black),
+                                                              dark ? QColor(0x1c, 0xb0, 0xf4) : QColor(0x1c, 0x82, 0xcc));
+        for (const layoutart::Pair& pair : layoutart::contrastPairs(layout))
+            pairs.append({QStringLiteral("chat layout ") + pair.what, pair.fore, pair.back, pair.minimum});
         for (const PreviewColorPair& pair : qAsConst(pairs)) {
             const double ratio = ui::contrastRatio(pair.foreground, pair.background);
             const bool   ok    = ratio + 0.005 >= pair.minimum;
@@ -1538,6 +1552,352 @@ int checkSpoilerCovers()
     }
     return failures;
 }
+
+// ============================================================================================
+// Chat redesign: the chat layout on documents built like TeamSpeak's (tests/tschat.h), in TeamSpeak
+// classic, Cozy and Compact, with what ChatLayout paints under the text (a hovered row, a mention, the
+// focus row, a gutter time). <outdir>/chatlayout/<theme>_<dpr>x_<page>.png
+// ============================================================================================
+
+namespace chatpages {
+
+const QString kAlice = QStringLiteral("q0Xn6AliceAAAAAAAAAAAAAAAAA=");
+const QString kReza  = QStringLiteral("q0Xn6RezaAAAAAAAAAAAAAAAAAA=");
+const QString kSara  = QStringLiteral("q0Xn6SaraAAAAAAAAAAAAAAAAAA=");
+const QString kMe    = QStringLiteral("q0Xn6MineAAAAAAAAAAAAAAAAAA=");
+const QString kLong  = QStringLiteral("q0Xn6LongAAAAAAAAAAAAAAAAAA=");
+
+QFont chatFont()
+{
+    QFont f(QStringLiteral("Segoe UI"));
+    f.setPixelSize(12); // TeamSpeak's 9 pt at 96 dpi
+    return f;
+}
+
+void setup(QTextDocument& doc, int width)
+{
+    doc.setDefaultFont(chatFont());
+    doc.setTextWidth(width);
+    doc.setDocumentMargin(4);
+    const struct {
+        const char* name;
+        QColor      color;
+        bool        up;
+    } icons[] = {{"MESSAGE_INCOMING", QColor(0x3b, 0xa5, 0x5d), false}, {"MESSAGE_OUTGOING", QColor(0x43, 0x8b, 0xe8), true}, {"MESSAGE_INFO", QColor(0x43, 0x8b, 0xe8), true}};
+    for (const auto& i : icons) {
+        QImage icon(26, 26, QImage::Format_ARGB32_Premultiplied);
+        icon.setDevicePixelRatio(2.0);
+        icon.fill(Qt::transparent);
+        QPainter p(&icon);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(i.color, 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const qreal a = i.up ? 11.5 : 1.5, b = i.up ? 2.5 : 10.5;
+        p.drawLine(QPointF(6.5, a), QPointF(6.5, b));
+        p.drawLine(QPointF(3, i.up ? 6 : 7), QPointF(6.5, b));
+        p.drawLine(QPointF(10, i.up ? 6 : 7), QPointF(6.5, b));
+        p.end();
+        doc.addResource(QTextDocument::ImageResource, QUrl(QStringLiteral("iconpath:%1?size=13x13").arg(QString::fromLatin1(i.name))), icon);
+    }
+}
+
+// A picture standing for a preview (a gradient card with rounded corners), as ChatIntegration inserts it.
+void addPreview(QTextDocument& doc, int w, int h, const QString& name)
+{
+    QImage img(QSize(w, h) * 2, QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(2.0);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    QLinearGradient g(0, 0, w, h);
+    g.setColorAt(0, QColor(0x13, 0x8a, 0x8f));
+    g.setColorAt(1, QColor(0x7a, 0x1f, 0x8c));
+    QPainterPath path;
+    path.addRoundedRect(QRectF(0, 0, w, h), 8, 8);
+    p.fillPath(path, g);
+    p.end();
+    QTextCursor c(&doc);
+    c.movePosition(QTextCursor::End);
+    c.insertText(QString(QChar::LineSeparator));
+    QTextImageFormat f;
+    f.setName(name);
+    f.setWidth(w);
+    f.setHeight(h);
+    doc.addResource(QTextDocument::ImageResource, QUrl(name), img);
+    c.insertImage(f);
+}
+
+// The S0 chat: a dark-skin sample chat, then today's lines with every kind of row.
+void fill(QTextDocument& doc, const tschat::Skin& s, int width)
+{
+    setup(doc, width);
+    tschat::fillSampleChat(&doc, s);
+    const auto msg = [&](const char* time, int clid, const QString& uid, const QString& nick, const QString& html, bool out = false) {
+        tschat::append(&doc, tschat::messageHtml(s, QString::fromLatin1(time), clid, uid, nick, html, out));
+    };
+    const auto sys = [&](const char* time, const QString& html) { tschat::append(&doc, tschat::systemHtml(s, QString::fromLatin1(time), html)); };
+    tschat::append(&doc, tschat::dayHtml(s, QStringLiteral("10/10/2026"), false));
+    sys("15:56:16", QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(s, QStringLiteral("Home")));
+    msg("16:00:17", 7, kMe, QStringLiteral("Mehdi"), tschat::linkHtml(s, QStringLiteral("https://example.com/live/first-stream")), true);
+    msg("16:00:57", 7, kMe, QStringLiteral("Mehdi"), tschat::linkHtml(s, QStringLiteral("https://example.com/live/night-owl")), true);
+    msg("16:02:12", 7, kMe, QStringLiteral("Mehdi"), QStringLiteral("this one is live now, come watch"), true);
+    msg("17:45:37", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("@Mehdi are you coming tonight? The usual server, around nine."));
+    msg("17:49:28", 7, kMe, QStringLiteral("Mehdi"), QStringLiteral("yes, after 9. I'll bring the new map"), true);
+    msg("18:06:56", 19, kSara, QStringLiteral("Sara"),
+        QStringLiteral("\u0633\u0644\u0627\u0645 \u0628\u0686\u0647\u200c\u0647\u0627\u060c \u06a9\u06cc \u0622\u0646\u0644\u0627\u06cc\u0646 \u0645\u06cc\u200c\u0634\u06cc\u062f\u061f")); // a right-to-left message
+    msg("18:07:10", 19, kSara, QStringLiteral("Sara"), tschat::linkHtml(s, QStringLiteral("ts3file://127.0.0.1?filename=lake.jpg"), QStringLiteral("lake.jpg")));
+    addPreview(doc, 260, 170, QStringLiteral("tsmedia:gallery.preview"));
+    sys("18:09:40", tschat::clientHtml(s, 18, kReza, QStringLiteral("Reza")) + QStringLiteral(" connected to channel ") + tschat::channelHtml(s, QStringLiteral("Home")));
+    sys("18:09:44", QStringLiteral("\"Bob\" connected to channel ") + tschat::channelHtml(s, QStringLiteral("Home")));
+    sys("18:09:50", QStringLiteral("\"Bob\" switched from channel ") + tschat::channelHtml(s, QStringLiteral("Home")) + QStringLiteral(" to channel ") + tschat::channelHtml(s, QStringLiteral("AFK")));
+    sys("18:09:58", QStringLiteral("\"Carl\" disconnected (leaving)"));
+    msg("18:12:40", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("ok then<br>I will set up the server around 21:00<br>bring snacks"));
+    msg("18:20:31", 21, kLong, QStringLiteral("xX_TheLongestNickname_In_TS_Xx"), QStringLiteral("gg wp everyone"));
+    sys("18:25:00", tschat::clientHtml(s, 18, kReza, QStringLiteral("Reza")) + QStringLiteral(" was kicked from the server by ") + tschat::clientHtml(s, 1, kMe, QStringLiteral("Admin")) + QStringLiteral(" (spam)"));
+    tschat::append(&doc, tschat::printHtml(s, QStringLiteral("2 files sent.")));
+}
+
+layoutdoc::Env envFor(layoutart::Mode mode, bool dark, qreal dpr, int width)
+{
+    layoutdoc::Env env;
+    env.mode         = mode;
+    env.tokens       = layoutart::tokensFor(mode == layoutart::Mode::Classic ? layoutart::Mode::Cozy : mode, chatFont(), false);
+    env.colors       = layoutart::colorsFor(dark, dark ? QColor(0x2f, 0x31, 0x36) : QColor(Qt::white), dark ? QColor(0xdc, 0xdd, 0xde) : QColor(Qt::black),
+                                            dark ? QColor(0x1c, 0xb0, 0xf4) : QColor(0x1c, 0x82, 0xcc));
+    env.dpr          = dpr;
+    env.contentWidth = width - 8;
+    env.today        = QDate(2026, 10, 10);
+    env.tag          = QStringLiteral("g");
+    env.mentions     = true;
+    env.ownNick      = QStringLiteral("Mehdi");
+    env.ownUid       = kMe;
+    env.collapse     = true;
+    return env;
+}
+
+int blockWith(QTextDocument& doc, const QString& text)
+{
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+        if (b.text().contains(text))
+            return b.blockNumber();
+    }
+    return -1;
+}
+
+// The slot ChatLayout paints for block n: from its top to the next visible block's top.
+QRectF slotOf(QTextDocument& doc, int n, int width)
+{
+    QAbstractTextDocumentLayout* layout = doc.documentLayout();
+    const QTextBlock             b      = doc.findBlockByNumber(n);
+    const QRectF                 r      = layout->blockBoundingRect(b);
+    qreal                        bottom = r.bottom();
+    for (QTextBlock next = b.next(); next.isValid(); next = next.next()) {
+        if (!next.isVisible())
+            continue;
+        bottom = layout->blockBoundingRect(next).top() - qMax(next.blockFormat().topMargin(), b.blockFormat().bottomMargin());
+        break;
+    }
+    return QRectF(0, r.top(), width, bottom - r.top());
+}
+
+struct Paint {
+    int  hover = -1;
+    int  focus = -1;
+    bool gutterTime = false;
+};
+
+// The chat as TeamSpeak's viewport paints it: the background, what ChatLayout paints under the text, the text.
+QImage paint(QTextDocument& doc, const layoutdoc::Env& env, int width, qreal dpr, const Paint& extra, int fromY = 0, int height = -1)
+{
+    doc.documentLayout()->documentSize();
+    const int h = height > 0 ? height : qCeil(doc.size().height()) - fromY;
+    QImage    img(QSize(width, h) * dpr, QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(dpr);
+    img.fill(env.colors.base);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(0, -fromY);
+    const layoutart::Colors& c = env.colors;
+    if (env.mode != layoutart::Mode::Classic) {
+        for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+            if (b.isVisible() && layoutdoc::isMention(b)) {
+                const QRectF r = slotOf(doc, b.blockNumber(), width);
+                p.fillRect(r, c.mentionTint);
+                p.fillRect(QRectF(r.left(), r.top(), 3, r.height()), c.mentionBar);
+            }
+        }
+        if (extra.focus >= 0) {
+            const QRectF r = slotOf(doc, extra.focus, width);
+            p.fillRect(r, c.hover);
+            p.fillRect(QRectF(r.left(), r.top(), 2, r.height()), c.focusBar);
+        }
+        if (extra.hover >= 0) {
+            p.fillRect(slotOf(doc, extra.hover, width), c.hover);
+            const QTextBlock         b    = doc.findBlockByNumber(extra.hover);
+            const layoutformat::Lead lead = layoutformat::leadOf(b);
+            if (extra.gutterTime && lead.styled && lead.kind == layoutformat::Continuation) {
+                const QTextLine line = b.layout()->lineForTextPosition(lead.bodyStart - b.position());
+                const qreal     base = doc.documentLayout()->blockBoundingRect(b).top() + line.y() + line.ascent();
+                const QString   time = layoutart::shortTime(lead.format.stringProperty(layoutformat::kTime), false);
+                if (env.mode == layoutart::Mode::Compact)
+                    layoutart::paintGutterTime(p, time, doc.documentMargin(), base, env.tokens, c, true);
+                else
+                    layoutart::paintGutterTime(p, time, doc.documentMargin() + env.tokens.G - 8, base, env.tokens, c, false);
+            }
+        }
+    }
+    QAbstractTextDocumentLayout::PaintContext ctx;
+    ctx.palette.setColor(QPalette::Text, c.text);
+    ctx.clip = QRectF(0, fromY, width, h);
+    doc.documentLayout()->draw(&p, ctx);
+    p.end();
+    return img;
+}
+
+// The runs of events, as ChatLayout folds them.
+void collapse(QTextDocument& doc, const layoutdoc::Env& env, const QSet<int>& expanded = {})
+{
+    int serial = 1;
+    for (const layoutdoc::RunPlan& run : layoutdoc::planRuns(&doc, 0, doc.blockCount() - 1, expanded))
+        layoutdoc::applyRun(&doc, run, env, &serial);
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+        for (const layoutdoc::ChipRef& chip : layoutdoc::chipsOf(b))
+            doc.addResource(QTextDocument::ImageResource, QUrl(chip.name), QPixmap::fromImage(layoutdoc::chipPicture(chip.text, false, env, nullptr)));
+    }
+}
+
+QImage side(const QList<QImage>& images, const QColor& back, int gap = 16)
+{
+    if (images.isEmpty())
+        return {};
+    const qreal dpr = images.first().devicePixelRatio();
+    int         w = 0, h = 0;
+    for (const QImage& i : images) {
+        w += i.width() + qRound(gap * dpr);
+        h = qMax(h, i.height());
+    }
+    QImage out(w - qRound(gap * dpr), h, QImage::Format_ARGB32_Premultiplied);
+    out.fill(back);
+    QPainter p(&out);
+    int x = 0;
+    for (QImage i : images) {
+        i.setDevicePixelRatio(1.0);
+        p.drawImage(x, 0, i);
+        x += i.width() + qRound(gap * dpr);
+    }
+    p.end();
+    out.setDevicePixelRatio(dpr);
+    return out;
+}
+
+int render(const QString& outDir)
+{
+    const QString dir = outDir + QStringLiteral("/chatlayout");
+    QDir().mkpath(dir);
+    int written = 0;
+    int failures = 0;
+    for (const bool dark : {true, false}) {
+        const tschat::Skin skin = dark ? tschat::darkSkin() : tschat::lightSkin();
+        for (const qreal dpr : {1.0, 1.25, 1.5, 2.0}) {
+            const QString prefix = QStringLiteral("%1/%2_%3x_").arg(dir, dark ? QStringLiteral("dark") : QStringLiteral("light"), QString::number(dpr));
+            const auto    save   = [&](const QImage& image, const QString& name) {
+                image.save(prefix + name + QStringLiteral(".png"));
+                ++written;
+            };
+            const int width = 520;
+            // classic / cozy / compact of the same chat (its top and its bottom)
+            QList<QImage> tops, bottoms;
+            for (const layoutart::Mode mode : {layoutart::Mode::Classic, layoutart::Mode::Cozy, layoutart::Mode::Compact}) {
+                QTextDocument doc;
+                fill(doc, skin, width - 8);
+                const layoutdoc::Env env = envFor(mode, dark, dpr, width);
+                if (mode != layoutart::Mode::Classic) {
+                    layoutdoc::styleAll(&doc, env);
+                    collapse(doc, env);
+                    layoutdoc::renderAll(&doc, env, env.today);
+                }
+                Paint extra;
+                extra.hover      = mode == layoutart::Mode::Classic ? -1 : blockWith(doc, QStringLiteral("this one is live now"));
+                extra.gutterTime = true;
+                const QImage full = paint(doc, env, width, dpr, extra);
+                const int    cut  = qRound(full.height() / dpr) / 2;
+                tops << paint(doc, env, width, dpr, Paint(), 0, cut);
+                bottoms << paint(doc, env, width, dpr, extra, cut, qRound(full.height() / dpr) - cut);
+                const QString name = mode == layoutart::Mode::Classic ? QStringLiteral("classic") : mode == layoutart::Mode::Cozy ? QStringLiteral("cozy") : QStringLiteral("compact");
+                save(full, name);
+                // the restore is exact
+                if (mode != layoutart::Mode::Classic) {
+                    QTextDocument plain;
+                    fill(plain, skin, width - 8);
+                    layoutdoc::restoreAll(&doc);
+                    if (doc.toPlainText() != plain.toPlainText()) {
+                        QTextStream(stderr) << "error: chatlayout: " << name << " doesn't restore\n";
+                        ++failures;
+                    }
+                }
+            }
+            const QColor sheet = dark ? QColor(0x20, 0x22, 0x25) : QColor(0xe3, 0xe5, 0xe8);
+            save(side(tops, sheet), QStringLiteral("before_cozy_compact_top"));
+            save(side(bottoms, sheet), QStringLiteral("before_cozy_compact_bottom"));
+            // states: the focus row, an opened run, a narrow chat
+            {
+                QTextDocument doc;
+                fill(doc, skin, width - 8);
+                const layoutdoc::Env env = envFor(layoutart::Mode::Cozy, dark, dpr, width);
+                layoutdoc::styleAll(&doc, env);
+                const int run = blockWith(doc, QStringLiteral("\"Reza\" connected")); // the run's first row
+                QSet<int> open;
+                if (run >= 0)
+                    open.insert(doc.findBlockByNumber(run).blockFormat().intProperty(layoutformat::kBlockTag));
+                collapse(doc, env, open);
+                layoutdoc::renderAll(&doc, env, env.today);
+                Paint extra;
+                extra.focus = blockWith(doc, QStringLiteral("are you coming tonight"));
+                const QImage full = paint(doc, env, width, dpr, extra);
+                save(paint(doc, env, width, dpr, extra, qRound(full.height() / dpr) - 520, 520), QStringLiteral("cozy_focus_run_open"));
+            }
+            {
+                QTextDocument doc;
+                fill(doc, skin, 300 - 8);
+                const layoutdoc::Env env = envFor(layoutart::Mode::Cozy, dark, dpr, 300);
+                layoutdoc::styleAll(&doc, env);
+                collapse(doc, env);
+                layoutdoc::renderAll(&doc, env, env.today);
+                const QImage full = paint(doc, env, 300, dpr, Paint());
+                save(paint(doc, env, 300, dpr, Paint(), qRound(full.height() / dpr) - 640, 640), QStringLiteral("cozy_narrow_300"));
+            }
+            // every system kind, every divider, initials
+            {
+                QTextDocument doc;
+                setup(doc, width - 8);
+                const char* kinds[] = {"\"Bob\" connected to channel \"Home\"", "\"Bob\" disconnected (leaving)", "\"Bob\" was kicked from the server by \"Admin\" (spam)",
+                                       "\"Bob\" was assigned the server group \"Member\"", "Channel \"Home\" was edited by \"Admin\"", "Welcome to the TS Media test server",
+                                       "\"Bob\" poked you: wake up", "Some other server notice"};
+                tschat::append(&doc, tschat::dayHtml(skin, QStringLiteral("10/9/2026"), false));
+                for (const char* k : kinds) {
+                    tschat::append(&doc, tschat::messageHtml(skin, QStringLiteral("12:00:00"), 3, kAlice, QStringLiteral("Alice"), QStringLiteral("between the events")));
+                    tschat::append(&doc, tschat::systemHtml(skin, QStringLiteral("12:00:01"), QString::fromUtf8(k).toHtmlEscaped()));
+                }
+                tschat::append(&doc, tschat::printHtml(skin, QStringLiteral("2 files sent.")));
+                tschat::append(&doc, tschat::dayHtml(skin, QStringLiteral("10/10/2026"), false));
+                tschat::append(&doc, QStringLiteral("<span style=\"color:#707475\">*** Chat history of April 11, 2026 (4/11/2026)</span>"));
+                tschat::append(&doc, tschat::dayHtml(skin, QStringLiteral("13/45/2026"), false)); // not a date: shown as written
+                for (int i = 0; i < 8; ++i)
+                    tschat::append(&doc, tschat::messageHtml(skin, QStringLiteral("12:30:00"), 30 + i, QStringLiteral("uid%1AAAAAAAAAAAAAAAAAAAAAAA=").arg(i), QStringList{QStringLiteral("Ana"), QStringLiteral("Ben"), QStringLiteral("Cyrus"), QStringLiteral("Dara"), QStringLiteral("Emil"), QStringLiteral("Farah"), QStringLiteral("Gita"), QStringLiteral("\u0645\u0647\u062f\u06cc")}.at(i), QStringLiteral("initials")));
+                for (const layoutart::Mode mode : {layoutart::Mode::Cozy, layoutart::Mode::Compact}) {
+                    const layoutdoc::Env env = envFor(mode, dark, dpr, width);
+                    layoutdoc::styleAll(&doc, env);
+                    layoutdoc::renderAll(&doc, env, env.today);
+                    save(paint(doc, env, width, dpr, Paint()), mode == layoutart::Mode::Cozy ? QStringLiteral("kinds_cozy") : QStringLiteral("kinds_compact"));
+                    layoutdoc::restoreAll(&doc);
+                }
+            }
+        }
+    }
+    QTextStream(stdout) << "chat layout: " << written << " pictures in " << QDir::toNativeSeparators(dir) << "\n";
+    return failures;
+}
+
+} // namespace chatpages
 
 struct Rendered {
     QString label;
@@ -1640,11 +2000,12 @@ int main(int argc, char* argv[])
         }
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
+    const int chatLayout       = chatpages::render(outDir); // chat redesign
     const int contrastFailures = contrastReport(outDir);
     const int dragCard         = checkDragCardContrast(); // 2.2 drag-out
     if (g_layoutFailures)
         QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
     // 2.2 album: and every grid's size (g_layoutErrors)
     emoji::shutdown(); // 2.2 emoji: the renderer's worker and engines
-    return contrastFailures == 0 && dragCard == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
+    return contrastFailures == 0 && dragCard == 0 && chatLayout == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
 }

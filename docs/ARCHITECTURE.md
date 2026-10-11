@@ -8,7 +8,7 @@ How TS Media chat is put together: the modules, the link format it posts, how up
 
 - The plugin is a DLL loaded into the TeamSpeak 3 client (plugin API 26). It uses the Qt 5.15.2 that TeamSpeak 3.6 ships, and only the modules TeamSpeak ships with it: QtCore, QtGui and QtWidgets. There is no QtMultimedia and no QtConcurrent.
 - Video, audio, voice recording and video compression use Windows Media Foundation and WASAPI directly. `mfplat.dll` and `mfreadwrite.dll` are delay-loaded and checked for before use, so the plugin still loads on Windows N editions without the Media Feature Pack, just without those features.
-- SHA-256 and signature checks use Windows CNG (`bcrypt.dll`). `winhttp.dll` is loaded on demand, only in official builds and only while an update check or download runs.
+- SHA-256 checks (and the signature check of the old update manifest) use Windows CNG (`bcrypt.dll`). `winhttp.dll` is loaded on demand, only in official builds and only while an update check or download runs.
 - The previews live inside TeamSpeak's own chat: TeamSpeak's chat views are `QTextBrowser` widgets, and the plugin adds its previews to their documents as image resources placed under the file links.
 
 ## Module map
@@ -59,7 +59,7 @@ How TS Media chat is put together: the modules, the link format it posts, how up
 | `src/imageeditmodel.*`, `src/imageeditor.*`, `src/imageeditorcanvas.cpp` | The crop & annotate editor: the model without widgets (rotation, crop, shapes, undo, export) and its window |
 | `src/videocompress.*`, `src/video/mftranscode.*`, `src/compresssettings.*` | The compression planner (pure), the Source Reader to Sink Writer transcode to H.264/AAC MP4 with its verification, and Settings → Sending → Videos |
 | `src/audio/*` | Voice messages without UI: WASAPI capture, a generated test source, the microphone choice, the recorder thread, the AAC `.m4a` writer, waveform levels, the TeamSpeak mic mute guard and the start / stop sounds |
-| `src/voicecontroller.*`, `src/voicepanel.*`, `src/voicesection.*` | Recording, review and sending of a voice message, its window, and its settings group |
+| `src/voicecontroller.*`, `src/voicepanel.*`, `src/micbutton.*`, `src/holdstrip.*` | Recording and sending of a voice message (no settings, no review), its window (Plugins menu, `/tsmedia voice`), the chat input's microphone button (in the right-edge slot EmojiInput reserves; hold to record, release to send) and the strip above the input while it is held |
 | `src/video/mfvideo.*`, `src/video/mfcommon.*` | Media Foundation probing and playback; shared helpers (COM and platform scopes, error texts, D3D11 device, MPEG-4 sink writer) |
 
 ### Between plugins
@@ -186,7 +186,7 @@ Anyone can post a `ts3file://` link with any parameters, or send a plugin comman
 
 ## Updates
 
-The update check is built only with `TSMEDIA_UPDATER=ON` (official signed releases). A signed manifest (ECDSA P-256, keys built into the DLL) names the size and SHA-256 of each raw `.update` asset; the plugin builds every URL itself, follows redirects only to GitHub hosts, checks each file's PE machine and that its imports resolve in the running TeamSpeak, and installs by renaming the loaded DLL aside. A boot counter in `ts3plugin_init` rolls back a version that never finished starting. Everything else, including the manifest format, is in [updates](UPDATES.md).
+The update check is built only with `TSMEDIA_UPDATER=ON` (official releases). The manifest of the official repository's latest release (`tsmedia-update-v2.json`, fetched over HTTPS; the signed `tsmedia-update.json` that 2.2.0 reads is still verified when it is used) names the size and SHA-256 of each raw `.update` asset; the plugin builds every URL itself, follows redirects only to GitHub hosts, checks each file's PE machine and that its imports resolve in the running TeamSpeak, and installs by renaming the loaded DLL aside. A boot counter in `ts3plugin_init` rolls back a version that never finished starting. Everything else, including the manifest format, is in [updates](UPDATES.md).
 
 ## Threading and unloading
 

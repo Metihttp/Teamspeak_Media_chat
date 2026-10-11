@@ -6,6 +6,8 @@
 #include <QDateTime>
 #include <QHash>
 #include <QSet>
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QtEndian>
 #include <QtTest>
 
@@ -312,6 +314,54 @@ class TestVoice : public QObject
         QCOMPARE(env.conns[2].sets, 1);
     }
 
+    void micGuardGivesBackOnceReadable()
+    {
+        // 2.2.1: the connection dropped while recording: left muted, then given back once TeamSpeak
+        // can be read again (reconnected), unless unmuted by hand meanwhile.
+        FakeMic env;
+        env.add(1, 1, 0);
+        env.add(2, 1, 0);
+        voice::MicGuard guard(env);
+        QCOMPARE(guard.engage(), 2);
+        env.conns[2].readable = false;
+        voice::MicGuard::Released r = guard.release();
+        QCOMPARE(r.restored, 1);
+        QCOMPARE(r.kept, 1);
+        QCOMPARE(r.pending, 1);
+        QVERIFY(guard.hasPending());
+        QCOMPARE(guard.retryPending(), 0); // still unreadable
+        QCOMPARE(env.conns[2].muted, 1);
+        env.conns[2].readable = true;
+        QCOMPARE(guard.retryPending(), 1);
+        QCOMPARE(env.conns[2].muted, 0);
+        QVERIFY(!guard.hasPending());
+
+        // Unmuted by hand while it couldn't be read: forgotten, nothing written.
+        QCOMPARE(guard.engage(), 2);
+        env.conns[2].readable = false;
+        QCOMPARE(guard.release().pending, 1);
+        env.conns[2].readable = true;
+        env.conns[2].muted    = 0;
+        const int sets        = env.conns[2].sets;
+        QCOMPARE(guard.retryPending(), 0);
+        QVERIFY(!guard.hasPending());
+        QCOMPARE(env.conns[2].sets, sets);
+
+        // A new recording while one is pending takes it over (never unmuted while recording).
+        QCOMPARE(guard.engage(), 2);
+        env.conns[1].readable = false;
+        QCOMPARE(guard.release().pending, 1);
+        env.conns[1].readable = true;
+        QCOMPARE(guard.engage(), 2); // 1 still muted (ours), 2 muted again
+        QCOMPARE(guard.retryPending(), 0);
+        QCOMPARE(env.conns[1].muted, 1);
+        r = guard.release();
+        QCOMPARE(r.restored, 2);
+        QCOMPARE(env.conns[1].muted, 0);
+        QCOMPARE(env.conns[2].muted, 0);
+        QVERIFY(!guard.hasPending());
+    }
+
     void micGuardRetriesAndSkipsFailedMute()
     {
         FakeMic env;
@@ -383,53 +433,52 @@ class TestVoice : public QObject
         ts.known = true;
         ts.mode  = QStringLiteral("Windows Audio Session");
 
-        // The setting wins when that microphone is there (case doesn't matter).
-        ts.device         = list.endpoints.at(0).id;
-        voice::DeviceChoice c = voice::chooseCaptureDevice(list.endpoints.at(2).id.toUpper(), ts, list);
-        QCOMPARE(c.source, Source::Setting);
-        QCOMPARE(c.endpointId, list.endpoints.at(2).id);
-        QVERIFY(!c.settingMissing);
-
-        // A picked microphone that is unplugged: TeamSpeak's, and the window says so.
-        c = voice::chooseCaptureDevice(QStringLiteral("{0.0.1.00000000}.{00000000-0000-0000-0000-000000000000}"), ts, list);
+        // 2.2.1: always TeamSpeak's microphone (no setting). WASAPI mode: the id (alone or inside a longer
+        // string, case doesn't matter).
+        ts.device             = list.endpoints.at(0).id.toUpper();
+        voice::DeviceChoice c = voice::chooseCaptureDevice(ts, list);
         QCOMPARE(c.source, Source::TeamSpeak);
         QCOMPARE(c.endpointId, list.endpoints.at(0).id);
-        QVERIFY(c.settingMissing);
-
-        // WASAPI mode: the id (alone or inside a longer string).
-        c = voice::chooseCaptureDevice({}, ts, list);
-        QCOMPARE(c.source, Source::TeamSpeak);
-        QCOMPARE(c.endpointId, list.endpoints.at(0).id);
+        QVERIFY(!c.unmatched);
         ts.device = QStringLiteral("SWD\\MMDEVAPI\\") + list.endpoints.at(1).id;
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, list).endpointId, list.endpoints.at(1).id);
+        QCOMPARE(voice::chooseCaptureDevice(ts, list).endpointId, list.endpoints.at(1).id);
 
         // The device name, with the id from TeamSpeak's own list.
         ts.device  = QStringLiteral("My Headset");
         ts.devices = {qMakePair(QStringLiteral("My Headset"), list.endpoints.at(0).id)};
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, list).endpointId, list.endpoints.at(0).id);
+        QCOMPARE(voice::chooseCaptureDevice(ts, list).endpointId, list.endpoints.at(0).id);
 
         // DirectSound: a friendly name, maybe cut at 31 characters.
         ts.mode = QStringLiteral("DirectSound");
         ts.devices.clear();
         ts.device = QStringLiteral("microphone (realtek high definition audio)");
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, list).endpointId, list.endpoints.at(1).id);
+        QCOMPARE(voice::chooseCaptureDevice(ts, list).endpointId, list.endpoints.at(1).id);
         ts.device = QStringLiteral("Headset Microphone (USB Audio D");
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, list).endpointId, list.endpoints.at(0).id);
+        QCOMPARE(voice::chooseCaptureDevice(ts, list).endpointId, list.endpoints.at(0).id);
 
-        // Ambiguous ("Microphone (" fits two): no guess.
+        // Ambiguous ("Microphone (" fits two): no guess; the window says TeamSpeak's wasn't found.
         ts.device = QStringLiteral("Microphone (");
-        c         = voice::chooseCaptureDevice({}, ts, list);
+        c         = voice::chooseCaptureDevice(ts, list);
         QCOMPARE(c.source, Source::DefaultCommunications);
         QVERIFY(c.endpointId.isEmpty());
+        QVERIFY(c.unmatched);
 
-        // Unknown, "Default" or no answer: Windows' default communications microphone.
+        // Unknown: Windows' default communications microphone (not found); "Default" or no answer: the
+        // same, without "not found".
         ts.device = QStringLiteral("Some USB mic that isn't plugged in");
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, list).source, Source::DefaultCommunications);
+        c         = voice::chooseCaptureDevice(ts, list);
+        QCOMPARE(c.source, Source::DefaultCommunications);
+        QVERIFY(c.unmatched);
         ts.device    = list.endpoints.at(0).id;
         ts.isDefault = true;
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, list).source, Source::DefaultCommunications);
-        QCOMPARE(voice::chooseCaptureDevice({}, voice::TeamSpeakCapture(), list).source, Source::DefaultCommunications);
-        QCOMPARE(voice::chooseCaptureDevice({}, ts, voice::EndpointList()).source, Source::DefaultCommunications);
+        c            = voice::chooseCaptureDevice(ts, list);
+        QCOMPARE(c.source, Source::DefaultCommunications);
+        QVERIFY(!c.unmatched);
+        c = voice::chooseCaptureDevice(voice::TeamSpeakCapture(), list);
+        QCOMPARE(c.source, Source::DefaultCommunications);
+        QVERIFY(!c.unmatched);
+        ts.isDefault = false;
+        QCOMPARE(voice::chooseCaptureDevice(ts, voice::EndpointList()).source, Source::DefaultCommunications);
     }
 
     void endpointIdIn()
@@ -500,7 +549,7 @@ class TestVoice : public QObject
         QVERIFY(voice::cueWav(voice::Cue::Start) != voice::cueWav(voice::Cue::Stop));
     }
 
-    // ---- names and the setting ------------------------------------------------------------------------
+    // ---- names, and the old settings --------------------------------------------------------------------
     void names()
     {
         MediaLink link = MediaLink::parse(QStringLiteral("ts3file://h?port=9987&serverUID=u&channel=1&path=%2Ftsmedia&filename=voice_message_3f9a1c2e.m4a"
@@ -518,20 +567,29 @@ class TestVoice : public QObject
         QCOMPARE(displayNameFor(exe), QStringLiteral("voice.exe"));
     }
 
-    void microphoneSetting()
+    // 2.2.1: voice messages have no settings: 2.2.0's keys are read past and never written again.
+    void oldVoiceSettingsIgnored()
     {
-        const QString id = QStringLiteral("{0.0.1.00000000}.{11111111-2222-3333-4444-555555555555}");
-        QCOMPARE(Settings::validVoiceMicrophone(id), id);
-        QCOMPARE(Settings::validVoiceMicrophone(QStringLiteral("  ") + id + QStringLiteral(" ")), id);
-        QVERIFY(Settings::validVoiceMicrophone(QString(Settings::maxVoiceMicrophoneLength + 1, QLatin1Char('a'))).isEmpty());
-        QCOMPARE(Settings::validVoiceMicrophone(QString(Settings::maxVoiceMicrophoneLength, QLatin1Char('a'))).size(), Settings::maxVoiceMicrophoneLength);
-        QVERIFY(Settings::validVoiceMicrophone(QStringLiteral("mic\nx")).isEmpty());
-        QVERIFY(Settings::validVoiceMicrophone(QString::fromUtf8("\u0645\u06cc\u06a9\u0631\u0648\u0641\u0648\u0646")).isEmpty());
-        const Settings defaults;
-        QVERIFY(defaults.voiceMicrophone.isEmpty());
-        QVERIFY(defaults.voiceMuteTeamSpeakMic);
-        QVERIFY(defaults.voiceReview);
-        QVERIFY(defaults.voiceSounds);
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString old = dir.filePath(QStringLiteral("old.ini"));
+        {
+            QSettings ini(old, QSettings::IniFormat);
+            ini.setValue(QStringLiteral("voiceMicrophone"), QStringLiteral("{0.0.1.00000000}.{11111111-2222-3333-4444-555555555555}"));
+            ini.setValue(QStringLiteral("voiceMuteTeamSpeakMic"), false);
+            ini.setValue(QStringLiteral("voiceReview"), false);
+            ini.setValue(QStringLiteral("voiceSounds"), false);
+            ini.setValue(QStringLiteral("hdEmoji"), false);
+        }
+        Settings s;
+        s.load(old);
+        QVERIFY(!s.hdEmoji); // the rest is read as before
+        const QString fresh = dir.filePath(QStringLiteral("new.ini"));
+        s.save(fresh);
+        QSettings written(fresh, QSettings::IniFormat);
+        QVERIFY(!written.allKeys().isEmpty());
+        for (const QString& key : written.allKeys())
+            QVERIFY2(!key.startsWith(QLatin1String("voice"), Qt::CaseInsensitive), qPrintable(key));
     }
 };
 

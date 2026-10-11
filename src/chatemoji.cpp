@@ -31,7 +31,8 @@
 #include "emojisegment.h"
 #include "emojitext.h"
 #include "i18n.h"
-#include "replydoc.h" // 2.2 reply: its line breaks are no text
+#include "layoutformat.h" // chat redesign: messages in TS Media's chat layout
+#include "replydoc.h"     // 2.2 reply: its line breaks are no text
 #include "settings.h"
 
 namespace {
@@ -180,7 +181,9 @@ void dropResources(QTextDocument* document, const QSet<QString>& names)
         document->addResource(QTextDocument::ImageResource, QUrl(name), QVariant());
 }
 
-bool selectionHasEmoji(const QTextCursor& selection)
+// The selection's copy needs our text: it holds HD emoji, or pictures and texts of TS Media's chat layout
+// (whose TeamSpeak text is kept in their format; layoutformat.h).
+bool selectionNeedsFix(const QTextCursor& selection)
 {
     if (!selection.hasSelection())
         return false;
@@ -190,7 +193,7 @@ bool selectionHasEmoji(const QTextCursor& selection)
     for (QTextBlock b = doc->findBlock(from); b.isValid() && b.position() < to; b = b.next()) {
         for (auto it = b.begin(); !it.atEnd(); ++it) {
             const QTextFragment f = it.fragment();
-            if (f.isValid() && f.position() < to && f.position() + f.length() > from && isOurs(f.charFormat()))
+            if (f.isValid() && f.position() < to && f.position() + f.length() > from && (isOurs(f.charFormat()) || layoutformat::isOurs(f.charFormat())))
                 return true;
         }
     }
@@ -267,6 +270,17 @@ void ChatEmoji::attachInput(QTextEdit* input)
         m_input->attach(input);
 }
 
+ChatInputs* ChatEmoji::inputs() const
+{
+    return m_input ? m_input->inputs() : nullptr;
+}
+
+void ChatEmoji::rediscover()
+{
+    if (m_input)
+        m_input->rediscover();
+}
+
 void ChatEmoji::documentSwapped(QTextBrowser* browser)
 {
     View* view = viewFor(browser);
@@ -295,7 +309,7 @@ void ChatEmoji::watch(View& view)
         return;
     QPointer<QTextBrowser> browser = view.browser;
     connect(doc, &QTextDocument::contentsChange, this, [this, doc, browser](int position, int removed, int added) {
-        if (g_mutating || !browser)
+        if (g_mutating || layoutformat::mutating() || !browser) // chat redesign: ChatLayout's edits have no new emoji
             return;
         View* v = viewFor(browser.data());
         if (!v || v->document != doc)
@@ -609,6 +623,12 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
         return lastPx;
     };
 
+    // Chat redesign: in TS Media's chat layout the header is in our picture; the message starts after it.
+    const layoutformat::Lead layoutLead = layoutformat::leadOf(block);
+    if (layoutLead.styled && (layoutLead.kind == layoutformat::Head || layoutLead.kind == layoutformat::Continuation || layoutLead.kind == layoutformat::CompactHead)) {
+        header       = true;
+        messageStart = layoutLead.bodyStart;
+    }
     for (auto it = block.begin(); !it.atEnd(); ++it) {
         const QTextFragment f = it.fragment();
         if (!f.isValid())
@@ -616,6 +636,8 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
         const QTextCharFormat cf  = f.charFormat();
         const int             pos = f.position();
         const QString         href = cf.anchorHref();
+        if (layoutformat::isOurs(cf))
+            continue; // our pictures, line breaks and trailers (never emoji)
         if (cf.isAnchor() || !href.isEmpty()) {
             if (href.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
                 break; // the TS Media link and the "plugin required" note after it stay as they are
@@ -828,6 +850,14 @@ QString ChatEmoji::originalText(QTextDocument* document, int from, int to)
                     out += original;
                 continue;
             }
+            // Chat redesign: a head, a system prefix or a divider gives TeamSpeak's text it keeps; our line
+            // breaks and trailers give nothing.
+            if (layoutformat::isOurs(cf)) {
+                const QString kept = layoutformat::copyText(cf, [](const QString& name) { return emoji::teamSpeakEmoticonCode(name); });
+                for (int i = start; i < end && cf.isImageFormat(); ++i)
+                    out += kept;
+                continue;
+            }
             if (cf.isImageFormat()) {
                 const QString code = emoji::teamSpeakEmoticonCode(cf.toImageFormat().name()); // TeamSpeak's own emoticons
                 for (int i = start; i < end && !code.isEmpty(); ++i)
@@ -863,7 +893,7 @@ bool ChatEmoji::fixClipboard()
         return false;
     QTextBrowser*     browser   = m_copyBrowser.data();
     const QTextCursor selection = browser->textCursor();
-    if (!selectionHasEmoji(selection))
+    if (!selectionNeedsFix(selection))
         return false;
     const QMimeData* mime = QGuiApplication::clipboard()->mimeData();
     if (!mime || !mime->hasText())
@@ -984,6 +1014,13 @@ QAction* ChatEmoji::copyTextAction(QMenu* menu, QTextBrowser* browser, int posit
     return action;
 }
 
+void ChatEmoji::copyText(QTextBrowser* browser, int from, int to)
+{
+    if (!browser || to <= from)
+        return;
+    setClipboardText(originalText(browser->document(), from, to).trimmed());
+}
+
 void ChatEmoji::insertIntoInput(int id)
 {
     if (m_input)
@@ -1027,7 +1064,7 @@ bool ChatEmoji::eventFilter(QObject* watched, QEvent* event)
         auto* ke = static_cast<QKeyEvent*>(event);
         if (!ke->matches(QKeySequence::Copy))
             return false;
-        if (!selectionHasEmoji(browser->textCursor())) {
+        if (!selectionNeedsFix(browser->textCursor())) {
             // TeamSpeak's own copy: corrected afterwards if it leaves the emoji out after all.
             m_copyBrowser = browser;
             m_copyMs      = QDateTime::currentMSecsSinceEpoch();

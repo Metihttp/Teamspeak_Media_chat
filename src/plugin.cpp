@@ -16,6 +16,8 @@
 
 #include "accessgroup.h" // 2.2 servergroup
 #include "chatintegration.h"
+#include "chatlayout.h"        // chat redesign: avatars
+#include "chatlayoutsection.h" // chat redesign
 #include "composesettings.h" // 2.2 compose
 #include "compresssettings.h" // 2.4 compress
 #include "core.h"
@@ -43,7 +45,6 @@
 #include "version.h"
 #include "video/mfvideo.h"
 #include "voicecontroller.h" // 2.2 voice
-#include "voicesection.h"    // 2.2 voice
 #ifdef TSMEDIA_TESTHOOKS
 #include <QElapsedTimer>
 
@@ -121,8 +122,8 @@ void showSettings(QWidget* parent)
     dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
     dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
     dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, g_core)); // 2.4 compress
-    dialog->addSection(SettingsDialog::Tab::General, new VoiceSection(dialog)); // 2.2 voice (General has the room: Sending is full)
     dialog->addSection(SettingsDialog::Tab::General, new EmojiSection(dialog));         // 2.2 emoji
+    dialog->addSection(SettingsDialog::Tab::General, new ChatLayoutSection(dialog), true); // chat redesign: at the top
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_peers)
             g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
@@ -252,15 +253,13 @@ void serverSettingsChanged()
         g_settings->reloadServers(); // rows not edited in an open dialog show the new value
 }
 
-// 2.2 voice: the recorder for the visible chat (menu, command, hotkey).
+// 2.2 voice: the recorder for the visible chat (menu, command; the chat input's mic button goes to it
+// directly). 2.2.1: no hotkey any more.
 void recordVoice(VoiceController::Origin origin)
 {
     if (!g_chat || !g_chat->voice())
         return;
-    if (origin == VoiceController::Origin::Hotkey)
-        g_chat->voice()->hotkey();
-    else
-        g_chat->voice()->start(origin);
+    g_chat->voice()->start(origin);
 }
 
 #ifdef TSMEDIA_TESTHOOKS
@@ -514,8 +513,6 @@ TS3_EXPORT int ts3plugin_init()
                                   i18n::t("Pictures cached: %1 (%2 KB), waiting: %3").arg(cache.entries).arg(cache.bytes / 1024).arg(cache.pending)}};
         });
         chat->start();
-        if (chat->voice()) // 2.2 voice: "Open TS Media settings" in the recorder's errors
-            QObject::connect(chat->voice(), &VoiceController::settingsRequested, chat, [] { showSettings(nullptr); });
 #ifdef TSMEDIA_TESTHOOKS
         // Test builds: selftest_script.txt (localhost servers only; a child of the chat, gone with it).
         new SelfTest(core, chat, SelfTest::Hooks{[] { showSettings(nullptr); }, []() -> QWidget* { return g_settings.data(); }}, chat);
@@ -754,7 +751,6 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
     const Hotkey keys[] = {
         {"tsmedia_send", i18n::t("Send files to the current chat")},
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
-        {VoiceSection::kHotkeyKeyword, i18n::t("Record a voice message (press to start, press again to stop)")}, // 2.2 voice
         {"tsmedia_reply", i18n::t("Reply to the last message in the current chat")}, // 2.2 reply
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
@@ -831,8 +827,6 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
         });
     } else if (key == QLatin1String("tsmedia_cancel")) {
         onGuiThread([] { cancelUploads(0); });
-    } else if (key == QLatin1String(VoiceSection::kHotkeyKeyword)) { // 2.2 voice
-        onGuiThread([] { recordVoice(VoiceController::Origin::Hotkey); });
     } else if (key == QLatin1String("tsmedia_reply")) { // 2.2 reply
         onGuiThread([] {
             if (g_chat)
@@ -1041,6 +1035,18 @@ TS3_EXPORT void ts3plugin_onClientBanFromServerEvent(uint64 serverConnectionHand
     Q_UNUSED(time);
     Q_UNUSED(kickMessage);
     PeerHub::onClientMove(serverConnectionHandlerID, clientID, oldChannelID, newChannelID, visibility);
+}
+
+// Chat redesign (P2): TeamSpeak downloaded a client's avatar: Cozy heads draw it.
+TS3_EXPORT void ts3plugin_onAvatarUpdated(uint64 serverConnectionHandlerID, anyID clientID, const char* avatarPath)
+{
+    Q_UNUSED(avatarPath); // read from TeamSpeak's cache by the uid (the same file)
+    // TeamSpeak's callbacks may come from its own thread: the chat is only touched on the GUI thread.
+    const uint64 sch = serverConnectionHandlerID;
+    onGuiThread([sch, clientID] {
+        if (g_chat && g_chat->layout())
+            g_chat->layout()->avatarUpdated(sch, clientID);
+    });
 }
 
 TS3_EXPORT void ts3plugin_onClientDisplayNameChanged(uint64 serverConnectionHandlerID, anyID clientID, const char* displayName, const char* uniqueClientIdentifier)

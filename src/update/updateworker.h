@@ -36,6 +36,7 @@ struct CheckOutcome {
     qint64        retryAfterSec = 0;
     unsigned long winError      = 0;
     QString       host;
+    QString       file; // the manifest that was read: kManifestName, or kLegacyManifestName after a 404
     ManifestError manifestError = ManifestError::None;
     QString       detail;
     Manifest      manifest; // valid only if ok()
@@ -49,7 +50,7 @@ struct PrepareOutcome {
         DiskSpace,    // neededBytes free bytes needed in updateDir
         Disk,         // can't create or write the files
         Network,      // httpError says why
-        Mismatch,     // a download doesn't match the signed size or SHA-256
+        Mismatch,     // a download doesn't match the manifest's size or SHA-256
         WrongMachine, // the file isn't for this CPU, or isn't a DLL / exe as named
         Quarantined,  // a staged file changed or vanished after 1.5 s (antivirus)
         Imports,      // the new DLL imports something this TeamSpeak doesn't have

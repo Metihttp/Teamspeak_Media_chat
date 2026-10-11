@@ -21,7 +21,7 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat: a photo album shown as a grid under its caption with reactions, an inline video player, a voice message, and a reply with an emoji">
+  <img src="docs/images/hero-light.png" width="100%" alt="TeamSpeak 3 chat with TS Media chat in the Cozy layout, names, avatars and times above the messages: a photo album shown as a grid under its caption with reactions, an inline video player, a voice message, and a reply with an emoji">
 </picture>
 
 **TS Media chat** is a plugin for the TeamSpeak 3 client on Windows. Drop a file on the chat, paste a screenshot or record a voice message, and everyone with the plugin sees it right in the chat.
@@ -29,13 +29,15 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 ## Why TS Media chat
 
 - **Send anything.** Drag & drop, paste with Ctrl+V or pick files, with a caption, spoilers or as an album.
+- **Hold to talk.** Hold the microphone in the chat input to record a voice message; let go to send it.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
+- **A Discord-like chat.** Names, avatars and times above grouped messages, only in your own view.
 - **Reply and react.** Reply to any message, Discord-style, and react to media with any emoji.
-- **HD emoji.** Sharp Windows 11 emoji in the chat, an emoji picker, and big emoji for messages of only emoji.
+- **HD emoji.** Sharp Windows 11 emoji in the chat, TeamSpeak's own emoji button opening an HD picker, and big emoji for messages of only emoji.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
 - **Works for everyone.** People without the plugin get a normal TeamSpeak download link.
 - **Stays on your server.** Files go to the channel's file browser, never to a cloud service.
-- **Keeps itself up to date.** If you agree, signed updates from GitHub install with one click.
+- **Keeps itself up to date.** If you agree, updates from GitHub install with one click, every file checked against its SHA-256.
 
 ## Install
 
@@ -50,7 +52,7 @@ If nothing happens, enable the plugin in **Tools → Options → Addons**.
 <details>
 <summary><b>Updates, uninstall and portable installs</b></summary>
 
-- **Updates:** from 2.2.0 on, the plugin asks once whether to check GitHub for updates, then asks before installing each one ([how updates work](docs/UPDATES.md)). From 2.1 or older, install 2.2.0 by hand once: close TeamSpeak, double-click the new `.ts3_plugin`. Settings and the cache are kept.
+- **Updates:** from 2.2.0 on, the plugin asks once whether to check GitHub for updates, then asks before installing each one ([how updates work](docs/UPDATES.md)). From 2.1 or older, install the latest version by hand once: close TeamSpeak, double-click the new `.ts3_plugin`. Settings and the cache are kept.
 - **Uninstall:** use **Tools → Options → Addons**, or close TeamSpeak and delete `tsmedia_win64.dll` and `tsmedia_win32.dll` from `%APPDATA%\TS3Client\plugins`; delete the `tsmedia` folder there to remove the settings, cache and log too. Sent files stay on the servers.
 - **Portable TeamSpeak:** uses the `config` folder inside the TeamSpeak folder instead of `%APPDATA%\TS3Client`.
 
@@ -69,7 +71,7 @@ The file is uploaded with TeamSpeak's own file transfer into the channel you are
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/with-without-dark.png">
-  <img src="docs/images/with-without-light.png" width="100%" alt="The same chat message twice. Without the plugin: a file link followed by a grey note saying the TS Media chat plugin is required. With TS Media chat: the photo shown inline in the chat.">
+  <img src="docs/images/with-without-light.png" width="100%" alt="The same chat messages twice. Without the plugin: a file link followed by a grey note saying the TS Media chat plugin is required. With TS Media chat: the Cozy layout with names and avatars, and the photo shown inline in the chat.">
 </picture>
 
 ## Send files
@@ -97,7 +99,7 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/album-dark.png">
-  <img src="docs/images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat under the sender's caption, one of them covered as a spoiler, with a row of reactions below it; next to it an MP3 playing inline with its own reactions, a PDF file card, and a reply to the album">
+  <img src="docs/images/album-light.png" width="100%" alt="An album of five photos in the TeamSpeak chat under the sender's caption, one of them covered as a spoiler, with a row of reactions below it; next to it an MP3 playing inline with its own reactions, a PDF file card, a reply to the album and two more messages">
 </picture>
 
 Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as…, Copy file and more, or drag it out into a folder ([right-click menu and shortcuts](docs/USAGE.md#right-click-menu)).
@@ -106,21 +108,30 @@ Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/voice-dark.png">
-  <img src="docs/images/voice-light.png" width="100%" alt="A voice message card in the chat with a play button, its waveform and length, next to the Voice message window while recording: a red dot, a live waveform, 0:07 of 5:00, and Cancel, Stop and Send buttons">
+  <img src="docs/images/voice-light.png" width="100%" alt="Left, under Hold the microphone, let go to send: a voice message card in the chat with a play button, its waveform, its length and reactions, and below it the microphone in the chat input held to record, red, with the strip above the input showing a red dot, 0:04 of 5:00, a live waveform and Release to send · Move away to cancel. Right, under Plugins menu or /tsmedia voice: the Voice message window while recording, with a red dot, a live waveform, 0:07 of 5:00, and Cancel and Send buttons">
 </picture>
 
-Use **Plugins → TS Media chat → Record voice message…**, `/tsmedia voice` or a hotkey. Record up to 5 minutes, listen, then send. Your TeamSpeak microphone is muted while you record, so voice activation doesn't send you live (a setting). [More about voice messages](docs/USAGE.md#voice-messages).
+Press and hold the **microphone** at the right end of the chat input: recording starts at once, and a strip above the input shows the time and a live waveform. Let go and it is sent. To cancel, move the pointer away from the microphone before you let go (or press <kbd>Esc</kbd>). With the keyboard, **Plugins → TS Media chat → Record voice message…** or `/tsmedia voice` opens a small window with **Send** and **Cancel**. Up to 5 minutes; your TeamSpeak microphone is muted while you record, so voice activation doesn't send you live. [More about voice messages](docs/USAGE.md#voice-messages).
+
+## Chat layout
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-layout-dark.png">
+  <img src="docs/images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy, the default: a day divider reading Today, October 10, 2026, join lines as small grey rows with an icon and their time, avatars with names and times above grouped messages, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
+</picture>
+
+TeamSpeak's chat gets a Discord-like look in your own view: names, avatars and times above the messages, messages of one person grouped, day dividers, and join or leave lines as small rows with an icon (runs of them fold into *+N more events*). Point at a message for **Add reaction**, **Reply**, **Copy text** and **More**; messages that mention you are highlighted. Choose *Cozy* (the default), *Compact* (one line per message) or *TeamSpeak classic* in **Settings → General → Chat layout**. Nobody else sees a difference.
 
 ## Replies and emoji
 
 - **Reply:** right-click a message → **Reply**, or press <kbd>Alt</kbd>+<kbd>↑</kbd> in the chat input (again for older messages). A bar above the input shows what you are replying to; <kbd>Enter</kbd> sends, <kbd>Esc</kbd> cancels.
 - With the plugin, a reply shows a small reply line above it; click it to jump to the original. Right-click the original → **View 2 replies** lists the answers.
 - Without the plugin (or on 2.1), people see an italic quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by the reply.
-- **HD emoji:** emoji and TeamSpeak's smileys in messages show as sharp, colorful pictures, and emoji in reply lines too; a message of only emoji shows them large. Open the picker with the smiley at the right of the chat input or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
+- **HD emoji:** emoji and TeamSpeak's smileys in messages show as sharp, colorful pictures, and emoji in reply lines too; a message of only emoji shows them large. Open the picker with TeamSpeak's own emoticon button or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/replies-emoji-dark.png">
-  <img src="docs/images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat with HD emoji in the messages, two replies with a reply line above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input, and the emoji picker open above the input's emoji button with a search for heart">
+  <img src="docs/images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat in the Cozy layout with HD emoji in the messages, two replies with a reply row above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input with the microphone at the input's right end, and the emoji picker open above TeamSpeak's own emoji button next to the input, with a search for heart">
 </picture>
 
 More in the user guide: [replies](docs/USAGE.md#replies) and [emoji](docs/USAGE.md#emoji).
@@ -128,11 +139,12 @@ More in the user guide: [replies](docs/USAGE.md#replies) and [emoji](docs/USAGE.
 ## Settings
 
 <p align="center">
-  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates, showing the Sending tab">
+  <img src="docs/images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates, showing the General tab: the Chat layout group with Cozy, Compact and TeamSpeak classic and its options, then Media cache, Troubleshooting and Emoji">
 </p>
 
 Open them with **Plugins → TS Media chat → Settings…** or `/tsmedia settings`. Most changed:
 
+- **Chat layout:** *Cozy*, *Compact* or *TeamSpeak classic*.
 - **Download images, GIFs and voice messages automatically up to** (15 MB). Videos and audio download when played.
 - **Data saver:** pause automatic downloads everywhere, or on one server.
 - **When you drop files on the chat:** *Open the send window* or *Send right away*.
@@ -165,12 +177,12 @@ Password-protected channels are not supported, and clients must reach the file t
 - **The only web request is the update check**, to GitHub, and only after you turn it on.
 - **Your channel sees that you have TS Media** (and its version), and your reactions. Both go through TeamSpeak only and can be turned off in **Settings → Privacy & updates**.
 - **A reply quotes the original:** its author's name and the start of the message, readable by everyone in that chat.
-- **The microphone is only on** while the *Voice message* window shows *Recording*.
+- **The microphone is only on** while you hold the microphone button, or while the *Voice message* window shows *Recording*.
 - **Channel members can open what you send.** Files stay until someone deletes them.
 - **Received programs are never run**, only shown in Explorer.
 - **Chat links are treated as untrusted.** Sizes, previews, names and checksums are checked.
 
-The DLL is not code-signed; updates are checked against the author's own signature. All details: [privacy & security](docs/PRIVACY-SECURITY.md).
+The DLL is not code-signed; every update file is checked against the SHA-256 listed in the GitHub release. All details: [privacy & security](docs/PRIVACY-SECURITY.md).
 
 ## Troubleshooting
 

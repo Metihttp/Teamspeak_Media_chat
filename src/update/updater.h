@@ -5,16 +5,18 @@
 // Off until the user agrees: 45 s after the first start the consent window asks once ("Keep TS Media
 // chat up to date?"); closing it asks again on the next start, at most twice. Once on, the first check
 // runs 3 to 8 minutes after the plugin starts, then about once a day (failures back off: 1, 3, 6, 12,
-// 24 h). A check fetches one small signed file from GitHub; a newer version is offered in a dialog
-// that waits until TeamSpeak is active and doesn't take the focus. Nothing is downloaded before the
-// user clicks Update; nothing is installed unless every signature, hash and load check passes; the
-// new version starts with the next TeamSpeak start ("Restart TeamSpeak now" or later).
+// 24 h). A check fetches one small file from the latest GitHub release; a newer version is offered in
+// a dialog that waits until TeamSpeak is active and doesn't take the focus. Nothing is downloaded
+// before the user clicks Update; nothing is installed unless every size, SHA-256 (and, for a signed
+// manifest, signature) and load check passes; the new version starts with the next TeamSpeak start
+// ("Restart TeamSpeak now" or later).
 //
 // A manual check (Settings, the plugin menu, /tsmedia update) is explicit consent for that one
 // request and works with automatic checks off.
 //
-// Only builds with TSMEDIA_UPDATER (signed releases) check anything. Other builds still settle the
-// install state at start (onStarted) and show the "turned off in versions you build yourself" text.
+// Only builds with TSMEDIA_UPDATER (official releases: scripts/build.ps1 -Release) check anything.
+// Other builds still settle the install state at start (onStarted) and show the "turned off in
+// versions you build yourself" text.
 
 #include <QDateTime>
 #include <QObject>

@@ -47,7 +47,12 @@ bool isDnsLabel(const QString& label)
 
 QUrl manifestUrl()
 {
-    return repoUrl(latin("/releases/latest/download/tsmedia-update.json"));
+    return repoUrl(latin("/releases/latest/download/") + latin(kManifestName));
+}
+
+QUrl legacyManifestUrl()
+{
+    return repoUrl(latin("/releases/latest/download/") + latin(kLegacyManifestName));
 }
 
 QUrl assetUrl(const QString& tag, const QString& asset)

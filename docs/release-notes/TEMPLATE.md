@@ -1,5 +1,11 @@
 <!-- Do not hard-wrap: GitHub release bodies turn each newline into a line break. -->
-<!-- Release title: TS Media chat X.Y.Z. Body: 120-250 words. Copy this file to vX.Y.Z.md, fill it in, delete these two comment lines and any section that has no entries, then publish it with: gh release create vX.Y.Z dist/TSMedia-X.Y.Z.ts3_plugin --title "TS Media chat X.Y.Z" --notes-file docs/release-notes/vX.Y.Z.md -->
+<!-- DRAFT: release title TS Media chat X.Y.Z, body 120-250 words. Copy this file to vX.Y.Z.md, fill it in, delete this comment line and any section that has no entries (keep the line above), put the release date into CHANGELOG.md, then run scripts\build.ps1 -Release and publish EVERY file of dist\upload-X.Y.Z with the gh commands it prints (docs/UPDATES.md, release checklist). A release without its two manifests breaks automatic updates. Keep the download heading below as the first thing in the body, with X.Y.Z filled in. -->
+
+## ⬇️ [Download TSMedia-X.Y.Z.ts3_plugin](https://github.com/Metihttp/Teamspeak_Media_chat/releases/download/vX.Y.Z/TSMedia-X.Y.Z.ts3_plugin)
+
+**For TeamSpeak 3, this is the only file you need.** Double-click it to install. The other files further down are used by automatic updates; ignore them.
+
+---
 
 **TS Media chat X.Y.Z**: <one sentence on the main user benefit or fix>.
 

@@ -22,21 +22,31 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.2.0 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.2.1 loaded`.
 
 ### How do I update?
 
 From 2.2.0 on, the plugin can update itself. About 45 seconds after its first start it asks *Keep TS Media chat up to date?*; click **Turn on**. It then checks GitHub about once a day and shows *Update to X?* with what's new. **Update** downloads and checks the new version, and **Restart TeamSpeak now** finishes it. You can also check at any time with **Plugins → TS Media chat → Check for updates…** or `/tsmedia update`.
 
-Coming from 2.1 or older, install 2.2.0 by hand once: download the new `.ts3_plugin`, close TeamSpeak completely (the old DLL is locked while TeamSpeak runs), double-click the file and start TeamSpeak again. Your settings and the cache are kept. The same works for any later version.
+Coming from 2.1 or older, install the latest version by hand once: download the new `.ts3_plugin`, close TeamSpeak completely (the old DLL is locked while TeamSpeak runs), double-click the file and start TeamSpeak again. Your settings and the cache are kept. The same works for any later version.
 
 ### Is the update check safe? What does it send?
 
-It asks GitHub for one small file, and nothing is installed unless it carries the author's signature and you click **Update**. GitHub sees your IP address; no names, servers, chats or files are sent. It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
+It asks the plugin's GitHub releases for one small file, and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. GitHub sees your IP address; no names, servers, chats or files are sent. It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
 
 ### An update went wrong
 
 Every error says what happened and whether anything was changed. If the new version crashes while starting, its second start puts the previous version back by itself and tells you in the chat. If TeamSpeak doesn't start at all, start it once with `-safemode` or install any release by hand. See [if something goes wrong](UPDATES.md#if-something-goes-wrong).
+
+### TeamSpeak crashes or hangs when I quit
+
+On some PCs TeamSpeak 3 crashes when you quit it, or its window closes but `ts3client_win64.exe` keeps running in the background, so TeamSpeak won't start again. This happens in TeamSpeak's own sound backend, also without TS Media chat, and depends on the sound device and its driver. What helps:
+
+1. In **Tools → Options → Playback** and **Tools → Options → Capture**, switch *Playback Mode* and *Capture Mode* to the other one: from *Windows Audio Session* to *DirectSound*, or back.
+2. Update the driver or app of your headset or sound device.
+3. If TeamSpeak still runs in the background, open Task Manager (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Esc</kbd>), end `ts3client_win64.exe` (`ts3client_win32.exe` on 32-bit TeamSpeak) under **Details**, then start TeamSpeak again.
+
+Before 2.2.1, quitting while the plugin's *Voice message* window was open could also leave TeamSpeak running without a window; 2.2.1 fixes that.
 
 ### Does it work with 32-bit TeamSpeak?
 
@@ -171,9 +181,13 @@ Yes: turn off **Settings → Privacy & updates → Tell people in your channel t
 
 ## Replies and emoji
 
-### There are two smiley buttons in the chat input
+### TeamSpeak's emoticon button opens a different list
 
-One is TeamSpeak's own emoticon button, the other is the TS Media chat emoji picker (HD emoji, search, recently used). To keep only TeamSpeak's, turn off **Settings → General → Emoji → Show the emoji button in the chat input**; <kbd>Ctrl</kbd>+<kbd>E</kbd> in the chat input still opens the picker.
+With TS Media, TeamSpeak's own emoticon button next to the chat input shows an HD face and opens the TS Media chat emoji picker (HD emoji, search, recently used). To get TeamSpeak's own emoticon list back, turn off **Settings → General → Emoji → Use TS Media's emoji picker for TeamSpeak's emoji button**; <kbd>Ctrl</kbd>+<kbd>E</kbd> in the chat input still opens TS Media's picker.
+
+### The chat looks different from my friends' TeamSpeak
+
+That is the chat layout (**Settings → General → Chat layout**): *Cozy* and *Compact* change only your own view, and your messages reach everyone as before. Choose *TeamSpeak classic* for TeamSpeak's own look.
 
 ### A smiley like `:)` shows as text in a reply line
 
@@ -188,24 +202,35 @@ In the message itself, TeamSpeak's smileys (`:)`, `;)`, `:D` …) show as HD emo
 | Microphone access is blocked | Windows' privacy setting keeps desktop apps (TeamSpeak too) away from the microphone. | **Open Windows settings**, turn on *Let desktop apps access your microphone*, then try again. |
 | No microphone found | Windows has no microphone that is on. | Connect one, or pick one in **Open sound settings**. |
 | The microphone is busy | Another app uses the microphone in exclusive mode. | Close that app (or turn off *Allow applications to take exclusive control* for the device), then **Try again**. |
-| The microphone was disconnected | It was unplugged or turned off. With 1 second or more recorded, you get the review instead and keep what you said. | Reconnect it, then **Try again**. |
-| This microphone can't be used | Its audio format isn't 44.1 or 48 kHz, which Windows' encoder needs. | Pick another microphone in the TS Media settings, or change the device's format in Windows sound settings. |
+| The microphone was disconnected | It was unplugged or turned off. With 1 second or more recorded, the window keeps what you said. | **Send** what was recorded, or reconnect it and **Try again**. |
+| Recording stopped | The *Voice message* window was hidden or minimized, which stops the microphone; or, while you held the microphone button, TeamSpeak never saw you let go (<kbd>Alt</kbd>+<kbd>Tab</kbd>, a menu or another window took the mouse), or another chat came up, so nothing was sent by itself. What you said is kept. | **Send** it, or close the window to discard it. |
+| Reached the 5:00 limit | You held the microphone button with the pointer away from it, ready to cancel, when the recording reached 5 minutes, so it wasn't sent by itself. | **Send** it, or close the window to discard it. |
+| Not connected to this server | The connection was lost before the message went out. It is kept while the window is open. | Reconnect, then **Send**. |
+| This microphone can't be used | Its audio format isn't 44.1 or 48 kHz, which Windows' encoder needs. | Choose another microphone in TeamSpeak (**Tools → Options → Capture**), or set the device to 48000 Hz in **Open sound settings**. |
 | Voice messages aren't available | Windows Media Foundation is missing (Windows N editions). | Install the Media Feature Pack. |
 | Couldn't save the recording | The file couldn't be written (disk full?). Your recording is kept while the window is open. | Free some space, then **Try again**. |
 | No sound from the microphone | Nothing louder than -50 dB arrived for 3 seconds: the microphone may be muted in Windows or on the headset. | Unmute it; the recording goes on meanwhile. |
-| Recording from Windows' default communications microphone | The plugin couldn't tell which microphone TeamSpeak uses. | If that's the wrong one, pick yours under **Settings → General → Voice messages → Microphone**. |
+| Recording from Windows' default communications microphone | The plugin couldn't tell which microphone TeamSpeak uses (or TeamSpeak uses *Default*). | If that's the wrong one, pick yours in TeamSpeak (**Tools → Options → Capture**), or make it Windows' default communications device. |
+
+### I clicked the microphone and nothing was recorded
+
+The microphone button records while you hold it, like in Telegram: press it, talk, and let go to send. A click shorter than half a second records nothing; the strip above the chat input then says *Hold to record, release to send*. If holding a mouse button is hard for you, use **Plugins → TS Media chat → Record voice message…** or `/tsmedia voice`: they record in a window with **Send** and **Cancel** buttons, and work with the keyboard.
+
+### How do I cancel a voice message I'm holding?
+
+Move the pointer away from the microphone before you let go. The strip turns red and says *Release to cancel*; letting go there discards the recording, and nothing is sent. Changed your mind? Move back to the microphone and let go there to send it. <kbd>Esc</kbd> while you hold the button cancels too.
 
 ### Others saw my microphone as muted
 
-That's on purpose: while you record, your TeamSpeak microphone is muted so voice activation doesn't send you live to the channel. It is unmuted as soon as the recording stops. If TeamSpeak lost the connection meanwhile, it may stay muted for that server: unmute it with TeamSpeak's mute button. Turn this off with *Mute my TeamSpeak microphone while recording* in the settings.
+That's on purpose: while you record, your TeamSpeak microphone is muted so voice activation doesn't send you live to the channel. It is unmuted as soon as the recording stops. If TeamSpeak lost the connection meanwhile, it stays muted for that server until TeamSpeak is connected there again, then the plugin unmutes it (if TeamSpeak is closed before that, unmute it with TeamSpeak's mute button).
 
 ### Does the plugin listen all the time?
 
-No. The microphone is only opened while the *Voice message* window shows *Recording*, and closing the window stops it. Windows' microphone icon in the taskbar shows TeamSpeak as using it during that time (the plugin runs inside TeamSpeak).
+No. The microphone is only opened while you hold the microphone button in the chat input (a strip above the input shows the time and a red dot) or while the *Voice message* window shows *Recording*; letting go, or closing the window, stops it. Windows' microphone icon in the taskbar shows TeamSpeak as using it during that time (the plugin runs inside TeamSpeak).
 
 ### How long can a voice message be?
 
-Up to 5 minutes; the time turns red at 4:30. A minute takes about 0.73 MB on the server.
+Up to 5 minutes; the time turns red at 4:30, and at 5:00 it is sent by itself (if you hold the microphone button with the pointer moved away to cancel, it is kept in the *Voice message* window instead). A minute takes about 0.73 MB on the server.
 
 ## Permissions
 
@@ -225,7 +250,7 @@ Create the group once in **Settings → Servers → Server access → Create TS 
 
 ### What do friends on TS Media 2.1 or older see?
 
-Your files, captions and albums still reach them: they see the caption, every picture of an album as its own preview, spoilers unblurred and voice messages as an ordinary audio file card. A reply reaches them as an italic quote line (*↪ Alice · 21∶14: “…”*) followed by the reply, and emoji look the way TeamSpeak draws them. They don't see or send reactions and don't count as having TS Media in your send window. Once they install 2.2.0 by hand, later versions reach them through the update check.
+Your files, captions and albums still reach them: they see the caption, every picture of an album as its own preview, spoilers unblurred and voice messages as an ordinary audio file card. A reply reaches them as an italic quote line (*↪ Alice · 21∶14: “…”*) followed by the reply, and emoji look the way TeamSpeak draws them. They don't see or send reactions and don't count as having TS Media in your send window. Once they install 2.2 or later by hand, later versions reach them through the update check.
 
 ### Does it work with TeamSpeak 5 or TeamSpeak 6?
 

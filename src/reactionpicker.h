@@ -24,6 +24,9 @@ class ReactionPicker : public QWidget
 
     // Opens below anchor (global coordinates), right-aligned with it; above it when there is no room.
     void openAt(const QRect& anchor);
+    // Chat redesign: the button that opened it (global coordinates): a press there while it is open closes
+    // it, and the press isn't handed on to the button (which would open it again at once).
+    void setOpener(const QRect& opener) { m_opener = opener; }
 
     QSize        sizeForCount() const;
     static QSize fixedSize(int quickCount = 8);
@@ -35,6 +38,7 @@ class ReactionPicker : public QWidget
   protected:
     void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
 
   private:
     void choose(int index);
@@ -44,4 +48,5 @@ class ReactionPicker : public QWidget
     QColor                    m_base;
     QVector<int>              m_quick;
     QVector<QAbstractButton*> m_buttons; // the quick ones, then "+"
+    QRect                     m_opener;
 };

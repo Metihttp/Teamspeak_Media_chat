@@ -10,7 +10,7 @@ Where your files go, what other people learn about you, what stays on your compu
 - The only web request the plugin makes is the update check, to GitHub, and only after you agree.
 - People in your channel learn that you have TS Media chat and its version, and see your reactions. Both go through TeamSpeak and can be turned off.
 - A reply is an ordinary chat message that quotes the start of the original and names its author.
-- The microphone is used only while the *Voice message* window shows *Recording*.
+- The microphone is used only while you hold the microphone button in the chat input, or while the *Voice message* window shows *Recording*.
 - No telemetry, no accounts, no analytics.
 
 ## Where your files go
@@ -37,7 +37,7 @@ TS Media chat talks to other copies of itself with TeamSpeak's plugin commands. 
 
 ## Web requests
 
-- **The update check is the only web request**, and only in official builds. About 45 seconds after the first start, the plugin asks *Keep TS Media chat up to date?*; nothing is sent before you click **Turn on**. Then it asks GitHub about once a day for a small file (`tsmedia-update.json`), and downloads the plugin files only after you click **Update**. **Check now** checks once when you ask.
+- **The update check is the only web request**, and only in official builds. About 45 seconds after the first start, the plugin asks *Keep TS Media chat up to date?*; nothing is sent before you click **Turn on**. Then it asks GitHub about once a day for a small file (`tsmedia-update-v2.json`), and downloads the plugin files only after you click **Update**. **Check now** checks once when you ask.
 - **What GitHub learns:** your IP address. Windows may also check GitHub's certificate with its issuer, and a proxy configured in Windows sees the connection. No names, servers, chats, files or identifiers are sent, the User-Agent carries no version, and there are no cookies. The plugin follows redirects only to GitHub's own hosts over HTTPS. Details: [updates](UPDATES.md#what-is-sent).
 - **Nothing else.** The link in the note for people without the plugin, *Get it from Microsoft Store* for video extensions and *Copy and open bug report* open your browser or the Store only when someone clicks them; the plugin itself sends nothing.
 - Copies you build yourself contain no update check and never load Windows' web library (`winhttp.dll`).
@@ -56,9 +56,9 @@ Everything below is in `%APPDATA%\TS3Client\plugins\tsmedia` (a portable TeamSpe
 
 ## The microphone (voice messages)
 
-- **Only while you record.** The plugin opens the microphone only after you start a voice message, and only while the *Voice message* window shows *Recording*. If that window is closed, or TeamSpeak unloads the plugin, recording stops at once. Nothing is recorded in the background, and the hotkey can't record without the window appearing.
-- **Nothing leaves your computer until you press Send.** The sound is kept in memory, written to `%APPDATA%\TS3Client\plugins\tsmedia\voice` when you stop, and sent through TeamSpeak's file transfer like any file. Discarded recordings are deleted right away; sent ones are deleted with their upload (a failed one stays for Retry until you dismiss it), and anything left over at the next start.
-- **Your TeamSpeak microphone is muted while you record** (a setting), and others can see that. It is unmuted again when recording stops; it is never unmuted where you muted it yourself. If something goes wrong (TeamSpeak crashes, the connection drops), it stays muted rather than open.
+- **Only while you record.** The plugin opens the microphone only after you start a voice message, and only while you hold the microphone button in the chat input (a strip above the input shows the recording) or while the *Voice message* window shows *Recording*. If you let go, close that window, or TeamSpeak unloads the plugin, recording stops at once. Nothing is recorded in the background, and nothing records without the strip or the window showing.
+- **Nothing leaves your computer until you let go of the microphone button or press Send** (or the recording reaches 5 minutes, where it is sent by itself and the strip or the window says so; if you were about to cancel a held one, it is kept in the window instead). Letting go away from the button, or <kbd>Esc</kbd>, discards it; when TeamSpeak never saw you let go, or another chat came up while you held the button, the recording is kept in the window and only sent if you press Send. The sound is kept in memory, written to `%APPDATA%\TS3Client\plugins\tsmedia\voice` when you stop, and sent through TeamSpeak's file transfer like any file. Discarded recordings are deleted right away; sent ones are deleted with their upload (a failed one stays for Retry until you dismiss it), and anything left over at the next start.
+- **Your TeamSpeak microphone is muted while you record**, and others can see that. It is unmuted again when recording stops; it is never unmuted where you muted it yourself. If something goes wrong (TeamSpeak crashes, the connection drops), it stays muted rather than open; after a dropped connection it is unmuted once TeamSpeak is connected there again.
 - The recording is the raw microphone: TeamSpeak's noise suppression and echo cancellation don't apply to it.
 
 ## Photo and video metadata
@@ -103,9 +103,11 @@ Anyone can type a TeamSpeak file link with fake metadata, so the plugin checks e
 
 By default, only images, GIFs and voice messages up to 15 MB download automatically (voice messages at most 16 MB), plus small previews. Videos and audio files are only downloaded when you press play, and spoilers only after you reveal them. Data saver pauses automatic downloads for all servers or for one. The limits can be changed in the [settings](SETTINGS.md#receiving).
 
-## Updates are signed
+## Updates are checked
 
-An update is installed only if its manifest carries a valid ECDSA P-256 signature from the author's key, built into the plugin, and every downloaded file matches the signed size and SHA-256. A hacked GitHub account alone can't push an update. Only newer versions are offered, and a version that fails to start is rolled back by itself. See [updates](UPDATES.md#trust).
+Updates come only from the latest release of the official repository, [Metihttp/Teamspeak_Media_chat](https://github.com/Metihttp/Teamspeak_Media_chat/releases), over HTTPS; the plugin follows redirects only to GitHub hosts and builds every download address itself. Each downloaded file must match the size and SHA-256 listed in that release, be built for your CPU, and load in your TeamSpeak, or nothing is changed. Only newer versions are offered, nothing is installed before you click **Update**, and a version that fails to start is rolled back by itself.
+
+Since 2.2.1, updates don't depend on a separate signing key: the trust is the official GitHub repository itself and HTTPS, so whoever controls the repository (or a program on your PC that intercepts HTTPS with its own root certificate) can offer an update; you still decide whether to click **Update**. The signed manifest that 2.2.0 reads is still checked against its signature. See [updates](UPDATES.md#trust).
 
 ## The DLL is not code-signed
 

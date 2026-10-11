@@ -613,6 +613,27 @@ void ChatReactions::openFullPicker(QTextBrowser* browser, const QString& key, co
     picker->openAt(anchor, true);
 }
 
+bool ChatReactions::canReactTo(QTextBrowser* browser, const QString& key)
+{
+    Kind kind = Kind::Unknown;
+    return browser && eligible(browser, key, &kind) && canAdd(kind);
+}
+
+void ChatReactions::openPickerAt(QTextBrowser* browser, const QString& key, const QRect& anchor)
+{
+    Kind kind = Kind::Unknown;
+    if (!browser || !eligible(browser, key, &kind))
+        return;
+    const QString blocked = blockedText(browser);
+    if (!blocked.isEmpty()) {
+        m_chat->showFeedback(browser->viewport(), blocked, true);
+        return;
+    }
+    openPicker(browser, key, anchor);
+    if (m_picker)
+        m_picker->setOpener(anchor); // the bar's button again closes it
+}
+
 void ChatReactions::addMenu(QMenu* menu, QTextBrowser* browser, const QString& key)
 {
     PeerHub* hub  = PeerHub::instance();

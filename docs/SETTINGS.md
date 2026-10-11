@@ -5,14 +5,14 @@
 Every option of TS Media chat, with its default and its range.
 
 <p align="center">
-  <img src="images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates, showing the Sending tab">
+  <img src="images/settings.png" width="640" alt="The TS Media chat settings with the tabs General, Sending, Receiving and playback, Servers, and Privacy and updates, showing the General tab: the Chat layout group with Cozy, Compact and TeamSpeak classic and its options, then Media cache, Troubleshooting and Emoji">
 </p>
 
 Open the settings with **Plugins → TS Media chat → Settings…**, by typing `/tsmedia settings` in the chat, or with the plugin's Settings button in **Tools → Options → Addons**.
 
 | Tab | Groups |
 | --- | --- |
-| [General](#general-tab) | Media cache, Troubleshooting (*Diagnostic info…*), Voice messages, Emoji |
+| [General](#general-tab) | Chat layout, Media cache, Troubleshooting (*Diagnostic info…*), Emoji |
 | [Sending](#sending-tab) | Sending, Note for people without the plugin, Dropping files, Videos |
 | [Receiving & playback](#receiving--playback-tab) | Receiving (with data saver), Playback, Spoilers |
 | [Servers](#servers-tab) | Servers (settings for single servers), Server access (for server admins) |
@@ -27,6 +27,21 @@ Open the settings with **Plugins → TS Media chat → Settings…**, by typing 
 Settings are stored in `%APPDATA%\TS3Client\plugins\tsmedia\settings.ini` (a portable TeamSpeak uses the `config` folder inside the TeamSpeak folder instead of `%APPDATA%\TS3Client`). A value outside its range is corrected to the nearest allowed value when the plugin starts.
 
 ## General tab
+
+Voice messages have no settings since 2.2.1: they always record from TeamSpeak's own microphone, mute your TeamSpeak microphone while you record and play a short sound when recording starts and stops. See [voice messages](USAGE.md#voice-messages).
+
+### Chat layout
+
+How TeamSpeak's chat looks in your own view. Nothing is sent and nobody else sees a difference.
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Cozy / Compact / TeamSpeak classic | Cozy | *Cozy*: names, avatars and times above the messages, like Discord, with day dividers and system lines as small rows with an icon. *Compact*: one line per message with the time in front. *TeamSpeak classic*: TeamSpeak's own look. Switching applies at once; TeamSpeak's own chat is given back exactly. |
+| Group messages from the same person under one name | on | Messages of one person within 7 minutes share one name and time; point at one to see its time. A reply always starts a new group. |
+| Show message actions on hover | on | Add reaction (on media), Reply, Copy text and More over the message under the pointer. Every action is also in the chat's right-click menu. Hidden when the chat is narrower than 240 px. |
+| Show people's avatars (Cozy) | on | The pictures TeamSpeak already has in its cache. Nothing is downloaded; initials on a coloured disc otherwise. |
+| Highlight messages that mention you | on | Your nickname (three letters or more) or *@nickname* in someone else's message: the row gets a tint and a bar, the name a pill. Never in links or your own messages. |
+| Fold runs of join and leave events into one row | on | The same event shows once with a count (*×3*); four or more events in a row show their first with *+N more events* (a click opens them, *Show fewer* closes them). Pokes, kicks, bans, errors, welcome and host messages always show. |
 
 ### Media cache
 
@@ -43,19 +58,6 @@ Settings are stored in `%APPDATA%\TS3Client\plugins\tsmedia\settings.ini` (a por
 
 **Diagnostic info…** opens the window that `/tsmedia diag` opens: versions, settings, session counts and recent plugin messages to paste into a bug report. Nothing is sent by the plugin; see [privacy & security](PRIVACY-SECURITY.md#what-stays-on-your-computer).
 
-### Voice messages
-
-See [voice messages](USAGE.md#voice-messages) for how recording works.
-
-| Setting | Default | Range and notes |
-| --- | --- | --- |
-| Microphone | Same as TeamSpeak (recommended) | Or one of Windows' microphones by name. When the plugin can't tell which microphone TeamSpeak uses, it records from Windows' default communications microphone and the recording window says so. A microphone picked here that is unplugged shows as *not connected*; until it is back, the TeamSpeak one is used. |
-| Mute my TeamSpeak microphone while recording | on | So people in your channel don't hear you live (voice activation). Others see your microphone as muted until you finish. It is always unmuted again when recording stops, unless you unmuted it yourself meanwhile. |
-| Let me listen before sending (hotkey) | on | Off: the hotkey's second press sends right away instead of stopping for a listen. |
-| Play a sound when recording starts and stops | on | A short beep through TeamSpeak's playback device; only you hear it. |
-
-The line under the options shows the record hotkey (*Record hotkey: F9*, or *not set*); **Set up hotkeys…** opens TeamSpeak's hotkey setup, where it is listed under TS Media chat as *Record a voice message*.
-
 ### Emoji
 
 See [emoji](USAGE.md#emoji) for the picker and HD emoji in the chat.
@@ -64,7 +66,7 @@ See [emoji](USAGE.md#emoji) for the picker and HD emoji in the chat.
 | --- | --- | --- |
 | Show emoji in high quality in the chat | on | Emoji and TeamSpeak's smileys in messages show as HD pictures (Windows' Segoe UI Emoji, drawn with DirectWrite), and so do emoji in reply lines, the reply bar and *View replies*. Greyed out on a PC without a color emoji font. Off: every chat goes back to TeamSpeak's own emoji and smileys at once. Reactions are pictures either way. |
 | Show messages of only emoji large | on | Up to 27 emoji with nothing else in the message show at 48 px. Only while the option above is on. |
-| Show the emoji button in the chat input | on | The smiley at the right end of TeamSpeak's chat input. <kbd>Ctrl</kbd>+<kbd>E</kbd> opens the picker either way. |
+| Use TS Media's emoji picker for TeamSpeak's emoji button | on | TeamSpeak's own emoticon button next to the chat input shows an HD face and opens TS Media's picker. Off: TeamSpeak's own emoticon list. <kbd>Ctrl</kbd>+<kbd>E</kbd> opens TS Media's picker either way. If TeamSpeak hides its button, a smiley inside the chat input takes its place, left of the microphone. The microphone button stays either way. |
 
 The picker remembers your recently used emoji and skin tone in `emoji.ini`, next to `settings.ini`. Replies have no settings.
 
@@ -199,7 +201,7 @@ Both travel through TeamSpeak's plugin commands only; nothing leaves TeamSpeak. 
 | --- | --- | --- |
 | Check for updates automatically | off until you agree | The plugin asks once (*Keep TS Media chat up to date?*). On: about once a day it asks GitHub whether there is a new version. Nothing is installed until you click **Update**. |
 
-- The status line shows your version and the last check (*Version 2.2.0 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
+- The status line shows your version and the last check (*Version 2.2.1 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
 - **Check now** checks once, also while automatic checks are off.
 - Versions you build yourself show *Updates are turned off in versions you build yourself* instead.
 - What is sent and how updates are checked: [updates](UPDATES.md).
@@ -214,10 +216,12 @@ For reference, the keys 2.2 added. Values outside their range are corrected when
 | `sendAsAlbum` | the send window's last *Send as an album* choice |
 | `compressVideos`, `compressVideosOverMB`, `compressVideoQuality` (480, 720 or 1080), `convertUnplayableVideos`, `compressUseGpu` | Videos |
 | `editorColor`, `editorStroke`, `editorHideMode` | the picture editor's last colour, size and *Hide details* mode |
-| `voiceMicrophone`, `voiceMuteTeamSpeakMic`, `voiceReview`, `voiceSounds` | Voice messages |
 | `hdEmoji`, `jumboEmoji`, `emojiButton` | Emoji |
+| `chatLayout` (0 = TeamSpeak classic, 1 = Cozy, 2 = Compact), `chatGroupMessages`, `chatHoverActions`, `chatAvatars`, `chatMentions`, `chatCollapseEvents`, `chatLayoutIntroShown` | Chat layout |
 | `dataSaver`, `revealSpoilers` | data saver, *Show spoilers without blurring* |
 | `showReactions`, `sharePresence` | Privacy |
 | `updateCheck` (0 = not asked, 1 = on, 2 = off), `updateConsentAsked`, `updateSkipVersion` | Updates |
 | `[server_<id>]` groups: `name`, `dataSaver`, `uploadDirectory`, `uploadMaxMB`, `addRequiredNotice` | Servers (`<id>` is 12 hex digits derived from the server's unique ID) |
 | `[accessGroups]` | the `tsmediachat` group id remembered per server (Server access) |
+
+2.2.0's `voiceMicrophone`, `voiceMuteTeamSpeakMic`, `voiceReview` and `voiceSounds` are ignored since 2.2.1 (voice messages have no settings any more).

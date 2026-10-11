@@ -12,8 +12,9 @@
 #include <QUrl>
 #include <QVariantList>
 
-#include "albums.h"      // uidFromClientHref
-#include "emojiformat.h" // 2.2 emoji: HD pictures read as what they stand for
+#include "albums.h"       // uidFromClientHref
+#include "emojiformat.h"  // 2.2 emoji: HD pictures read as what they stand for
+#include "layoutformat.h" // chat redesign: headers kept in TS Media's chat layout
 
 namespace replydoc {
 
@@ -215,7 +216,42 @@ Message parseBlock(const QTextBlock& block)
     const QString        text   = block.text();
     int                  offset = 0; // characters of ours in front of TeamSpeak's header
 
-    if (!pieces.isEmpty() && pieces.first().start == bpos && isObject(pieces.first().format)) {
+    // Chat redesign: a block in TS Media's chat layout keeps its header in our picture (layoutformat.h);
+    // the reply line, if any, is right after that picture (Cozy) or in front of it (Compact).
+    const layoutformat::Lead styledLead = layoutformat::leadOf(block);
+    int                      bodyStart = -1;
+    QString                  timeText;
+    if (styledLead.styled) {
+        if (styledLead.kind != layoutformat::Head && styledLead.kind != layoutformat::Continuation && styledLead.kind != layoutformat::CompactHead)
+            return m; // a system row or a divider
+        const layoutformat::Header h = layoutformat::headerOf(block);
+        if (!h.valid)
+            return m;
+        m.nick = nickFrom(h.nickText);
+        if (m.nick.isEmpty())
+            return m;
+        m.uid       = albums::uidFromClientHref(h.nickHref);
+        m.clientId  = m.uid.isEmpty() ? 0 : clientIdOf(h.nickHref);
+        m.nickColor = h.nickColor;
+        timeText    = h.time;
+        bodyStart   = h.bodyStart;
+        m.baseFormat = plainCopy(h.baseFormat);
+        if (styledLead.reply >= 0) {
+            for (const Piece& p : pieces) {
+                if (p.start == styledLead.reply && isObject(p.format)) {
+                    const QTextImageFormat image = p.format.toImageFormat();
+                    m.restyled                   = true;
+                    m.object                     = image.name();
+                    m.objectSize                 = QSizeF(image.width(), image.height());
+                    m.quote                      = quoteFromRuns(image.property(kRunsProperty).toList());
+                    m.hasQuote                   = m.quote.valid();
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!styledLead.styled && !pieces.isEmpty() && pieces.first().start == bpos && isObject(pieces.first().format)) {
         const QTextImageFormat image = pieces.first().format.toImageFormat();
         m.restyled                   = true;
         m.object                     = image.name();
@@ -238,6 +274,8 @@ Message parseBlock(const QTextBlock& block)
     QString         nickHref;
     QTextCharFormat nickFormat;
     for (const Piece& p : pieces) {
+        if (styledLead.styled)
+            break; // read from our picture above
         if (p.end <= bpos + offset)
             continue;
         if (isClientLink(p.format)) {
@@ -261,9 +299,7 @@ Message parseBlock(const QTextBlock& block)
     static const QRegularExpression lead(QStringLiteral("^\\x{FFFC}{0,2}[ \\t]*(?:<([^<>\\n\\x{2028}\\x{2029}]{1,24})>)?[ \\t]*\"?$"));
     static const QRegularExpression textual(
         QStringLiteral("^\\x{FFFC}{0,2}[ \\t]*(?:<([^<>\\n\\x{2028}\\x{2029}]{1,24})>)?[ \\t]*\"((?:(?!\"[ \\t]*:)[^\\n\\x{2028}\\x{2029}]){1,64})\"[ \\t]*:[ \\t]?"));
-    int     bodyStart = -1;
-    QString timeText;
-    if (nickStart >= 0) {
+    if (!styledLead.styled && nickStart >= 0) {
         const QRegularExpressionMatch before = lead.match(text.mid(offset, nickStart - bpos - offset));
         const QString                 nick   = nickFrom(text.mid(nickStart - bpos, nickEnd - nickStart));
         QString                       after  = text.mid(nickEnd - bpos, 3);
@@ -299,6 +335,8 @@ Message parseBlock(const QTextBlock& block)
     m.visible  = block.isVisible();
     m.minutes  = minutesOf(timeText);
     for (const Piece& p : pieces) {
+        if (styledLead.styled)
+            break; // the header's format, from our picture
         if (p.start >= bpos + offset && !p.format.isImageFormat()) {
             m.baseFormat = plainCopy(p.format);
             break;
@@ -404,6 +442,9 @@ bool collapse(QTextDocument* doc, const Message& m, const QString& name, const Q
         return false;
     const QTextBlock block = doc->findBlockByNumber(m.block);
     if (!block.isValid() || block.position() != m.position || m.quoteEnd > block.position() + block.length() - 1)
+        return false;
+    // Chat redesign: ChatLayout gives the block back first (ChatReplies does it), never collapse under it.
+    if (layoutformat::leadOf(block).styled)
         return false;
 
     QVariantList runs;

@@ -28,8 +28,8 @@ EmojiSection::EmojiSection(QWidget* parent)
     QLabel* jumboHint = hint(i18n::t("Up to 27 emoji with nothing else in the message, like in Discord."), group);
     m_jumbo->setAccessibleDescription(jumboHint->text());
 
-    m_button = new QCheckBox(i18n::t("Show the emoji &button in the chat input"), group);
-    QLabel* buttonHint = hint(i18n::t("Ctrl+E opens the emoji picker in the chat input either way. Windows' own emoji panel (Windows key + .) works too."), group);
+    m_button = new QCheckBox(i18n::t("Use TS Media's emoji picker for TeamSpeak's emoji &button"), group);
+    QLabel* buttonHint = hint(i18n::t("Off: TeamSpeak's own emoticon list. Ctrl+E opens TS Media's picker either way."), group);
     m_button->setAccessibleDescription(buttonHint->text());
 
     auto* rows = form(group);

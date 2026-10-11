@@ -77,7 +77,18 @@ class ChatReplies : public QObject
     // Files went out with leadFor(target): the reply is done.
     void sentWithFiles(const ChatTarget& target);
 
+    // ---- chat redesign (chatlayout.h) ------------------------------------------------------------------
+    // What the reply line of the message at block shows (a Cozy head draws it as Discord's reply row).
+    bool    replyHeader(QTextBrowser* browser, int block, replyart::Header* header);
+    void    startReplyAt(QTextBrowser* browser, int block); // the action bar's Reply
+    void    activateReplyOf(QTextBrowser* browser, int block); // a click on a Cozy head's reply row
+    int     pendingBlock(QTextBrowser* browser) const;      // the message being replied to there, or -1
+    QString replyToolTip(QTextBrowser* browser, int block);  // the reply line's tool tip (rich text)
+    // The layout changed reply blocks: read the chat again and lay the reply lines out now.
+    void    layoutChanged(QTextBrowser* browser);
+
   private:
+    friend class ChatLayout; // the menu for a keyboard context menu
     // What a reply line's picture should show. Pictures are drawn only for the lines on screen (right
     // before the chat paints, renderVisible): a picture is up to the chat's width at the screen's scale
     // (about 140 KB at 2x), so drawing every reply line of a long chat would take hundreds of MB.

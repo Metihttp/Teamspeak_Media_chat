@@ -5,6 +5,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.2.1] - 2026-10-11
+
+### Added
+
+- **Chat layout** (**Settings → General → Chat layout**): TeamSpeak's chat in a Discord-like *Cozy* layout (the default) with names, avatars and times above the messages, or *Compact* with one line per message and the time in front; *TeamSpeak classic* keeps TeamSpeak's own look. Only your view changes.
+  - Messages of one person within 7 minutes are grouped under one name; day dividers read *Today, October 10, 2026*; join, leave and other system lines become small rows with an icon and their time, also TeamSpeak's status lines in the server tab and in private chats (*You switched from channel …*, *Chat partner disconnected …*). A server's welcome and host messages keep their formatting and never fold, and where TeamSpeak's saved chat history begins a *History* divider shows its day.
+  - Switching the layout, turning grouping on or off or resizing the chat keeps your place in it, also when the row at the top is folded into *+N more events*; opening or closing a fold at the bottom keeps following new messages.
+  - Pointing at a message shows **Add reaction**, **Reply**, **Copy text** and **More**; replies show Discord's reply row above the name.
+  - Messages that mention you are highlighted; runs of join and leave events fold into *+N more events*.
+  - Links keep their colour and underline and get a full underline under the pointer; copying gives TeamSpeak's text.
+  - Avatars are the pictures TeamSpeak already has (nothing is downloaded); people without one get their initials. Grouping, message actions, avatars, mentions and folding can each be turned off in the same settings group.
+- A **microphone button** at the right end of the chat input for voice messages (hold it to record, see *Changed*). Where nothing can be sent (not connected, a password-protected channel, a private chat whose partner left) it is greyed out and its tooltip says why.
+
+### Changed
+
+- **Hold the microphone button to record, release to send**, like Telegram. Recording starts the moment you press it; a strip above the chat input shows a pulsing red dot, the time out of 5:00, a live waveform and *Release to send · Move away to cancel*.
+  - Move the pointer away from the button before letting go to cancel (the strip turns red: *Release to cancel*); move back to send after all. <kbd>Esc</kbd> while holding cancels too.
+  - A click (under half a second) records nothing and shows *Hold to record, release to send*; a double click starts nothing.
+  - At 5:00 the message is sent by itself even while you still hold the button, and the strip says so. If the pointer is away from the button then, ready to cancel, it is kept in the *Voice message* window instead.
+  - If TeamSpeak never sees you let go (<kbd>Alt</kbd>+<kbd>Tab</kbd>, a menu or another window took the mouse), or another chat comes up while you hold the button, the recording is never sent by itself: it stops and is kept in the *Voice message* window with **Send**.
+  - **Plugins → TS Media chat → Record voice message…** and `/tsmedia voice` still record in the window, with the keyboard.
+- Updates no longer depend on a signing key. Every download is checked against the SHA-256 listed in the GitHub release.
+- TeamSpeak's own emoticon button next to the chat input now shows an HD face and opens TS Media's emoji picker. The extra smiley inside the chat input is gone, and its place at the right end of the input is now the microphone's (the smiley only comes back, left of the microphone, if TeamSpeak hides its button).
+- Voice messages are sent as recorded, without a review step: in the window, **Send** (or <kbd>Enter</kbd>, or a click on the red microphone button) stops and sends at once, **Cancel** (<kbd>Esc</kbd>) discards. At 5:00 the message is sent by itself, and the window says so.
+- A recording that stopped by itself (the microphone was unplugged, the window was hidden) or couldn't go out (not connected) is kept in the window: **Send** it, or close the window to discard it (from 3 seconds on it asks first).
+- Voice messages always record from TeamSpeak's own microphone (Windows' default communications microphone when the plugin can't tell which one that is), always mute your TeamSpeak microphone while you record, and always play the short start and stop sounds.
+
+### Removed
+
+- The *Record a voice message* hotkey. The microphone button, **Plugins → TS Media chat → Record voice message…** and `/tsmedia voice` stay. A binding you made for it in TeamSpeak no longer does anything.
+- The **Settings → General → Voice messages** group (*Microphone*, *Mute my TeamSpeak microphone while recording*, *Let me listen before sending (hotkey)*, *Play a sound when recording starts and stops*). Values saved by 2.2.0 are ignored.
+- *Let me listen before sending*: the review step with play, **Re-record** and **Discard** is gone.
+
+### Fixed
+
+- Picking an emoji while the chat input was empty could send TeamSpeak's grey "Enter Chat Message..." text along with it.
+- If the connection dropped while you recorded a voice message, your TeamSpeak microphone could stay muted. Now it is unmuted once TeamSpeak is connected there again.
+- Quitting TeamSpeak while the voice message window was open could leave TeamSpeak running in the background without a window, for example while the window asked whether to discard a recording or while a recording of 3 seconds or more was being sent (also in 2.2.0).
+
 ## [2.2.0] - 2026-10-10
 
 ### Added
@@ -171,6 +210,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.2.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.1.0
 [2.0.7]: https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.0.7

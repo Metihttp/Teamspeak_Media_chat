@@ -33,6 +33,8 @@
 
 #include "chatemoji.h" // 2.2 emoji: its items in the chat menu
 #include "chatintegration.h"
+#include "chatlayout.h"   // chat redesign: a block is given back before its quote line is taken out
+#include "layoutformat.h" // chat redesign: a Cozy head draws the reply line as its reply row
 #include "emojirender.h" // 2.2 emoji: pictures the worker drew
 #include "emojitext.h"   // 2.2 emoji: whether names and snippets show HD emoji
 #include "i18n.h"
@@ -436,6 +438,7 @@ void ChatReplies::afterScan(QTextBrowser* browser)
         const bool   wasMutating = m_chat->m_mutating;
         m_chat->m_mutating       = true;
         int         first        = -1;
+        QVector<int> collapsed;
         QTextCursor batch(doc);
         batch.beginEditBlock();
         // Back to front: the edits of later messages don't move earlier ones.
@@ -443,11 +446,27 @@ void ChatReplies::afterScan(QTextBrowser* browser)
             const Collapse& c = raw.at(k);
             // Drawn once it is on screen (renderVisible); until then a blank picture, never none.
             doc->addResource(QTextDocument::ImageResource, QUrl(c.name), m_blank);
-            if (replydoc::collapse(doc, view.messages.at(c.message), c.name, c.size))
+            replydoc::Message m = view.messages.at(c.message);
+            // Chat redesign: the layout gives the block back first, and styles it again right after.
+            if (m_chat->m_layout && layoutformat::leadOf(doc->findBlockByNumber(m.block)).styled) {
+                m_chat->m_layout->unstyle(browser, m.block);
+                collapsed.append(m.block); // styled again in any case
+                m = replydoc::parseBlock(doc->findBlockByNumber(m.block)); // its positions now
+                if (!m.hasQuote || m.restyled || m.quoteStart < 0)
+                    continue;
+            }
+            if (replydoc::collapse(doc, m, c.name, c.size)) {
                 first = c.message;
+                if (!collapsed.contains(m.block))
+                    collapsed.append(m.block);
+            }
         }
         batch.endEditBlock(); // TeamSpeak's view hears of it (contentsChange) while we are still "mutating"
         m_chat->m_mutating = wasMutating;
+        if (m_chat->m_layout) {
+            for (const int block : qAsConst(collapsed))
+                m_chat->m_layout->restyleSoon(browser, block);
+        }
         if (first >= 0)
             reindexFrom(view, doc, first);
         restoreAnchor(browser, anchor);
@@ -559,12 +578,15 @@ replyart::Header ChatReplies::headerFor(const View& view, int message) const
     header.nick                       = m.quote.nick;
     header.snippet                    = m.quote.snippet;
     header.media                      = m.quote.media;
+    header.uid                        = m.quote.uid; // chat redesign: the reply row's mini avatar
     if (original >= 0) {
         // The original as this chat shows it: its current name and colour, and more of its text.
         const replydoc::Message& o = view.messages.at(original);
         header.found               = true;
         header.nick                = o.nick;
         header.nickColor           = o.nickColor;
+        if (!o.uid.isEmpty())
+            header.uid = o.uid;
         if (!o.text.trimmed().isEmpty()) {
             header.snippet = replies::makeSnippet(o.text, 200);
             header.media   = false;
@@ -648,6 +670,9 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
         line.header    = headerFor(*view, i);
         line.style     = headerStyle(browser, style, m);
         line.size      = replyart::headerSize(line.header, line.style, style.maxWidth);
+        // Chat redesign: a Cozy head draws the reply as its reply row; this picture is only the quote's keeper.
+        if (layoutformat::leadOf(doc->findBlockByNumber(m.block)).kind == layoutformat::Head)
+            line.size = QSize(0, 0);
         line.signature = signatureOf(line);
         if (QSizeF(line.size) != m.objectSize)
             resizes.append({i, QSizeF(line.size)});
@@ -727,6 +752,8 @@ void ChatReplies::renderVisible(QTextBrowser* browser, View& view)
         const auto now = view.rendered.constFind(it->object);
         if (now != view.rendered.cend() && *now == line->signature)
             continue;
+        if (line->size.isEmpty())
+            continue; // a Cozy head's (never drawn)
         emoji::takeTextFallbacks();
         doc->addResource(QTextDocument::ImageResource, QUrl(it->object), QPixmap::fromImage(replyart::renderHeader(line->header, line->style, line->size)));
         // Some emoji still on their way (emojitext.h): drawn again once they are there.
@@ -1302,6 +1329,8 @@ void ChatReplies::startReply(QTextBrowser* browser, int block, bool show)
     m_watch->start();
     if (show)
         jumpTo(browser, m.block);
+    if (m_chat->m_layout) // chat redesign: its row gets the focus look
+        m_chat->m_layout->pendingChanged();
 }
 
 void ChatReplies::cancelReply()
@@ -1313,6 +1342,8 @@ void ChatReplies::cancelReply()
     updateComposeLines();
     if (had)
         hideBar();
+    if (had && m_chat->m_layout) // chat redesign: the focus look goes
+        m_chat->m_layout->pendingChanged();
 }
 
 void ChatReplies::watchPending()
@@ -1502,7 +1533,7 @@ bool ChatReplies::trySend(QWidget* input)
     auto* edit = qobject_cast<QTextEdit*>(input);
     if (!edit || !m_hasPending)
         return false;
-    const QString typed   = edit->toPlainText();
+    const QString typed   = m_chat->typedText(edit); // 2.2.1: TeamSpeak's placeholder is never a reply
     const QString trimmed = typed.trimmed();
     if (trimmed.isEmpty() || trimmed.startsWith(QLatin1Char('/')))
         return false; // nothing to send, or one of TeamSpeak's commands: TeamSpeak's
@@ -1765,6 +1796,70 @@ void ChatReplies::flash(QTextBrowser* browser, int block)
     };
     const Style style = styleOf(browser);
     m_flash           = new Flash(browser->viewport(), area, replyart::paletteFor(style.dark, style.base).accent, ui::animationsEnabled());
+}
+
+// ============================================================================================
+// Chat redesign
+// ============================================================================================
+
+bool ChatReplies::replyHeader(QTextBrowser* browser, int block, replyart::Header* header)
+{
+    ensureIndex(browser);
+    View* view = viewOf(browser);
+    if (!view || !header)
+        return false;
+    const int idx = view->byBlock.value(block, -1);
+    if (idx < 0 || !view->messages.at(idx).hasQuote)
+        return false;
+    *header = headerFor(*view, idx);
+    return true;
+}
+
+void ChatReplies::startReplyAt(QTextBrowser* browser, int block)
+{
+    startReply(browser, block, false);
+}
+
+void ChatReplies::activateReplyOf(QTextBrowser* browser, int block)
+{
+    ensureIndex(browser);
+    View*     view = viewOf(browser);
+    const int idx  = view ? view->byBlock.value(block, -1) : -1;
+    if (idx >= 0)
+        activateLine(browser, idx);
+}
+
+int ChatReplies::pendingBlock(QTextBrowser* browser) const
+{
+    return m_hasPending && m_pending.browser == browser && browser && browser->isVisible() ? m_pending.block : -1;
+}
+
+QString ChatReplies::replyToolTip(QTextBrowser* browser, int block)
+{
+    ensureIndex(browser);
+    View*     view    = viewOf(browser);
+    const int message = view ? view->byBlock.value(block, -1) : -1;
+    if (message < 0)
+        return {};
+    const int original = view->originalOf.value(message, -1);
+    if (original < 0)
+        return QString::fromLatin1("<div>%1</div>").arg(i18n::t("The original message isn't in this chat any more.").toHtmlEscaped());
+    const replydoc::Message& o    = view->messages.at(original);
+    const QString            text = o.text.trimmed().isEmpty() ? o.mediaLabel : replies::makeSnippet(o.text, 280);
+    QString html = QString::fromLatin1("<div style='white-space:pre'>%1</div>").arg(i18n::t("Click to show the original message").toHtmlEscaped());
+    if (!text.isEmpty())
+        html += QString::fromLatin1("<div>%1</div>").arg((o.nick + QString::fromLatin1(": ") + text).toHtmlEscaped());
+    return html;
+}
+
+void ChatReplies::layoutChanged(QTextBrowser* browser)
+{
+    View* view = viewOf(browser);
+    if (!view)
+        return;
+    index(*view, browser->document());
+    view->stale = false;
+    refreshLines(browser);
 }
 
 // Feedback at the pointer (a click) or at the widget (a key).

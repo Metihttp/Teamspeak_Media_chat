@@ -309,10 +309,15 @@ class TestVoiceMedia : public QObject
         }
         if (!list.defaultCommunications.isEmpty())
             QVERIFY(ids.contains(list.defaultCommunications));
-        // The setting picks an endpoint by id; an unknown id falls back.
+        // TeamSpeak's device (WASAPI mode: its id) maps to Windows' endpoint of that id (2.2.1: no setting).
         if (!list.endpoints.isEmpty()) {
-            const voice::DeviceChoice c = voice::chooseCaptureDevice(list.endpoints.first().id, {}, list);
-            QCOMPARE(c.source, voice::DeviceChoice::Source::Setting);
+            voice::TeamSpeakCapture teamSpeak;
+            teamSpeak.known  = true;
+            teamSpeak.mode   = QStringLiteral("Windows Audio Session");
+            teamSpeak.device = list.endpoints.first().id;
+            const voice::DeviceChoice c = voice::chooseCaptureDevice(teamSpeak, list);
+            QCOMPARE(c.source, voice::DeviceChoice::Source::TeamSpeak);
+            QCOMPARE(c.endpointId, list.endpoints.first().id);
         }
         qInfo("%d capture endpoint(s)", list.endpoints.size());
         QCOMPARE(voice::captureErrorFor(static_cast<long>(0x80070005L)), voice::CaptureError::PrivacyBlocked);

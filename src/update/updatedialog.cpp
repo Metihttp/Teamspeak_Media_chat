@@ -380,9 +380,9 @@ UpdateDialog::UpdateDialog(QWidget* parent)
     // Room for 5 notes of 2 lines each and the link, so the dialog doesn't change size between its states.
     const int lineHeight = notes->fontMetrics().lineSpacing();
     notes->setMinimumHeight((kMaxNotes * kNoteLines + 1) * lineHeight + kMaxNotes * notesLayout->spacing() + 2);
-    auto* signatureHint = label(i18n::t("Downloaded from GitHub and checked against the author's signature before anything is changed. "
-                                        "The new version starts when TeamSpeak restarts."),
-                                available, "hint");
+    auto* checkHint = label(i18n::t("Downloaded from TS Media chat's GitHub releases, and every file is checked against its SHA-256 before "
+                                    "anything is changed. The new version starts when TeamSpeak restarts."),
+                            available, "hint");
     auto* availableLayout = new QVBoxLayout(available);
     availableLayout->setContentsMargins(0, 0, 0, 0);
     availableLayout->setSpacing(6);
@@ -392,7 +392,7 @@ UpdateDialog::UpdateDialog(QWidget* parent)
     availableLayout->addWidget(m_notesTitle);
     availableLayout->addWidget(notes, 1);
     availableLayout->addSpacing(4);
-    availableLayout->addWidget(signatureHint);
+    availableLayout->addWidget(checkHint);
     m_stack->addWidget(available);
 
     // Downloading / working

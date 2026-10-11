@@ -27,7 +27,7 @@ struct StagedFile {
     FileKind   kind = FileKind::Plugin;
     Arch       arch = Arch::Win64;
     QString    path;   // staging/<ver>/<name>.new
-    QByteArray sha256; // as the signed manifest says
+    QByteArray sha256; // as the manifest says
     qint64     size = 0;
 };
 

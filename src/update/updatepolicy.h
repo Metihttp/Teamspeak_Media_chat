@@ -15,7 +15,13 @@ namespace upd {
 // Not user-configurable. The plugin builds every URL itself from the validated version.
 constexpr const char* kRepository = "Metihttp/Teamspeak_Media_chat";
 
-QUrl manifestUrl();                          // .../releases/latest/download/tsmedia-update.json
+// The release's manifests (updatemanifest.h): the format 2 file, read first, and the format 1 file that
+// 2.2.0 reads, read only when the latest release has no format 2 file (404).
+constexpr const char* kManifestName       = "tsmedia-update-v2.json";
+constexpr const char* kLegacyManifestName = "tsmedia-update.json";
+
+QUrl manifestUrl();                          // .../releases/latest/download/tsmedia-update-v2.json
+QUrl legacyManifestUrl();                    // .../releases/latest/download/tsmedia-update.json
 QUrl assetUrl(const QString& tag, const QString& asset); // .../releases/download/<tag>/<asset>
 QUrl releaseNotesUrl(const QString& tag);    // .../releases/tag/<tag>
 QUrl latestReleaseUrl();                     // .../releases/latest (the manual download page)

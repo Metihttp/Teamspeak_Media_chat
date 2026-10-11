@@ -67,7 +67,7 @@ class UpdateDialog : public QDialog
 
     void showAvailable(const Available& info);
     void showDownloading(const QString& version, qint64 done, qint64 total);
-    void showWorking(const QString& version, const QString& status); // "Checking the signature…", "Installing…"
+    void showWorking(const QString& version, const QString& status); // "Checking the files…", "Installing…"
     void showInstalled(const QString& version, int connectedServers, int runningUploads);
     void showError(const Error& error);
     // Closes the window for good: the Updater's answer to a button, Esc or the title bar's X. Never

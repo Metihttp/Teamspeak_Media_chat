@@ -8,7 +8,8 @@
 // change to the server failed: the flag reads muted then, so it is given back). release(): those connections
 // are unmuted again, but only where the microphone is still muted: if the user unmuted it by hand in
 // the meantime, nothing changes. A connection whose state can't be read (disconnected) is left as it is:
-// it fails closed (muted), never open. CLIENT_INPUT_DEACTIVATED (push-to-talk) is never touched.
+// it fails closed (muted), never open, and is given back by retryPending() once it can be read again.
+// CLIENT_INPUT_DEACTIVATED (push-to-talk) is never touched.
 // The destructor releases, so every way out (stop, cancel, error, plugin shutdown) gives the mic back.
 //
 // Pure logic: TeamSpeak is behind MicEnvironment (voicecontroller.cpp has the real one; the unit tests
@@ -43,19 +44,30 @@ class MicGuard
     struct Released {
         int restored = 0; // unmuted again
         int kept     = 0; // left muted on purpose: unmuted by hand already, or unreadable (fail closed)
+        int pending  = 0; // of kept: unreadable now, given back by retryPending() once readable
     };
 
     // Mutes as described above; returns how many connections it muted (0 is fine: nothing to do).
-    // Engaging twice does not mute anything new.
+    // Engaging twice does not mute anything new. Pending connections that still read muted are taken
+    // over (given back with this recording).
     int      engage();
     Released release();
+
+    // 2.2.1: connections release() couldn't read (the connection dropped while recording) are given back
+    // once they can be read again and still read muted (TeamSpeak reconnected); call it now and then
+    // (VoiceController: every second). Nothing while engaged. Returns how many were unmuted.
+    int  retryPending();
+    bool hasPending() const { return !m_pending.isEmpty(); }
 
     bool           engaged() const { return m_engaged; }
     QList<quint64> mutedConnections() const { return m_muted; }
 
   private:
+    bool giveBack(quint64 sch, bool* restored);
+
     MicEnvironment& m_env;
     QList<quint64>  m_muted;
+    QList<quint64>  m_pending;
     bool            m_engaged = false;
 };
 

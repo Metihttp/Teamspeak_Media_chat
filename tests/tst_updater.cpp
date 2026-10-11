@@ -1,11 +1,12 @@
-// Unit tests for the updater (docs/UPDATES.md): SHA-256 and ECDSA through CNG, the signed manifest
-// (including hostile inputs), versions, the URL allowlist and schedule, the PE checks, and the
-// installer against a temporary plugins folder (swap, undo, rename of a loaded DLL, self-rollback,
-// startup reconcile, cleanup). Runs inside tsmedia_tests (tests/testmain.h).
+// Unit tests for the updater (docs/UPDATES.md): SHA-256 and ECDSA through CNG, the unsigned (format 2)
+// and the signed (format 1) manifest (including hostile inputs), downloads checked against the
+// manifest, versions, the URL allowlist and schedule, the PE checks, and the installer against a
+// temporary plugins folder (swap, undo, rename of a loaded DLL, self-rollback, startup reconcile,
+// cleanup). Runs inside tsmedia_tests (tests/testmain.h).
 //
 // The signed vectors in tests/data/update were made with the test key 99, whose private key lives
 // outside the repository (C:/dev/tsmedia-devtools/signing). This test is built without
-// TSMEDIA_TESTHOOKS, so trustedKeys() must not accept them.
+// TSMEDIA_TESTHOOKS, so trustedKeys() must not accept them. unsigned.json needs no key.
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -73,6 +74,29 @@ QByteArray toJson(const QJsonObject& object)
     return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 
+// A valid format 2 (unsigned) manifest of the given version: the base payload with "format":2.
+QJsonObject unsignedManifest(const QString& version = QStringLiteral("2.2.2"))
+{
+    QJsonObject m = basePayload();
+    m.insert(QStringLiteral("format"), 2);
+    m.insert(QStringLiteral("version"), version);
+    m.insert(QStringLiteral("tag"), QStringLiteral("v") + version);
+    return m;
+}
+
+ManifestError readUnsigned(const QJsonObject& manifest, Manifest* out = nullptr, QString* detail = nullptr)
+{
+    Manifest m;
+    // No trusted keys at all: an unsigned manifest must not need any.
+    const ManifestError e = readManifest(toJson(manifest), {}, {}, &m, detail);
+    if (out)
+        *out = m;
+    return e;
+}
+
+// A real PE image of the given CPU, with a tag appended so its hash is its own.
+QByteArray peImage(bool x86, const QByteArray& tag);
+
 ManifestError parse(const QJsonObject& payload, Manifest* out = nullptr)
 {
     Manifest m;
@@ -108,6 +132,14 @@ QString systemDll(bool x86)
     else
         GetSystemDirectoryW(dir, MAX_PATH);
     return QDir::fromNativeSeparators(QString::fromWCharArray(dir)) + QStringLiteral("/version.dll");
+}
+
+QByteArray peImage(bool x86, const QByteArray& tag)
+{
+    QFile source(systemDll(x86));
+    if (!source.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return source.readAll() + tag;
 }
 
 // A real PE file of the right CPU with some bytes appended (an overlay), so "old" and "new" differ.
@@ -286,8 +318,11 @@ class TestUpdater : public QObject
         QCOMPARE(readManifest(valid, testKeys(), {99}, &m), ManifestError::RevokedKey);
 
         changed = outer;
-        changed.insert(QStringLiteral("format"), 2);
+        changed.insert(QStringLiteral("format"), 3);
         QCOMPARE(readManifest(toJson(changed), testKeys(), {}, &m), ManifestError::UnsupportedFormat);
+        // Relabelled as format 2 (unsigned) but still carrying a signature: refused, not read unsigned.
+        changed.insert(QStringLiteral("format"), 2);
+        QCOMPARE(readManifest(toJson(changed), testKeys(), {}, &m), ManifestError::BadSignature);
         changed = outer;
         changed.insert(QStringLiteral("payload"), QStringLiteral("not base64!"));
         QCOMPARE(readManifest(toJson(changed), testKeys(), {}, &m), ManifestError::BadEncoding);
@@ -452,6 +487,249 @@ class TestUpdater : public QObject
         QCOMPARE(offerFor(m, v210, {}, Arch::Win64), Offer::Yes);
     }
 
+    // ---- unsigned manifests (2.2.1: tsmedia-update-v2.json, format 2) ----------------------------
+    void unsignedManifestAccepted()
+    {
+        Manifest m;
+        QString  detail;
+        QCOMPARE(readUnsigned(unsignedManifest(), &m, &detail), ManifestError::None);
+        QVERIFY2(detail.isEmpty(), qPrintable(detail));
+        QCOMPARE(m.version.toString(), QStringLiteral("2.2.2"));
+        QVERIFY(!m.isSigned());
+        QCOMPARE(m.signedBy, 0);
+        QCOMPARE(m.files.size(), 2);
+        const UpdateFile* w64 = m.file(FileKind::Plugin, Arch::Win64);
+        QVERIFY(w64);
+        QCOMPARE(w64->size, qint64(1000));
+        QCOMPARE(w64->sha256, QByteArray(32, static_cast<char>(0xaa)));
+        QCOMPARE(w64->machine, kMachineX64);
+        QCOMPARE(offerFor(m, Version::parse(QStringLiteral("2.2.1")), {}, Arch::Win64), Offer::Yes);
+        QCOMPARE(offerFor(m, Version::parse(QStringLiteral("2.2.0")), {}, Arch::Win64), Offer::Yes);
+        // The download URLs come from the version, never from the manifest: always the official repository.
+        QCOMPARE(assetUrl(QStringLiteral("v") + m.version.toString(), assetName(FileKind::Plugin, Arch::Win64, m.version)).toString(),
+                 QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/download/v2.2.2/TSMedia-2.2.2-win64.update"));
+        // Also with the trusted keys passed (what the worker does).
+        QCOMPARE(readManifest(toJson(unsignedManifest()), testKeys(), {}, &m), ManifestError::None);
+
+        // The test vector, in the shape scripts/build.ps1 writes it.
+        QCOMPARE(readManifest(readData("unsigned.json"), trustedKeys(), {}, &m, &detail), ManifestError::None);
+        QCOMPARE(m.version.toString(), QStringLiteral("9.0.1"));
+        QCOMPARE(m.published, QDate(2026, 11, 2));
+        QVERIFY(m.package.present);
+        QCOMPARE(m.files.size(), 4);
+        QVERIFY(m.file(FileKind::Helper, Arch::Win32));
+        QCOMPARE(m.notes.size(), 2);
+        QVERIFY(!m.isSigned());
+
+        // Unknown fields are ignored (forward compatible); a "url" never changes where files come from.
+        QJsonObject extra = unsignedManifest();
+        extra.insert(QStringLiteral("someday"), QJsonObject{{QStringLiteral("a"), 1}});
+        QCOMPARE(readUnsigned(withWin64Field(extra, QStringLiteral("url"), QStringLiteral("https://evil.example.com/x.update")), &m), ManifestError::None);
+    }
+
+    void unsignedManifestRejected()
+    {
+        Manifest          m;
+        const QJsonObject base = unsignedManifest();
+        auto set = [&base](const char* key, const QJsonValue& value) {
+            QJsonObject o = base;
+            o.insert(QLatin1String(key), value);
+            return o;
+        };
+        // Malformed JSON and unknown formats.
+        QCOMPARE(readManifest(QByteArray("{\"format\":2,"), {}, {}, &m), ManifestError::NotJson);
+        QCOMPARE(readManifest(QByteArray("[2]"), {}, {}, &m), ManifestError::NotJson);
+        QCOMPARE(readManifest(QByteArray("\"format\""), {}, {}, &m), ManifestError::NotJson);
+        QCOMPARE(readManifest(QByteArray("{\"format\":2}"), {}, {}, &m), ManifestError::BadPayload);
+        QCOMPARE(readUnsigned(set("format", QStringLiteral("2")), &m), ManifestError::NotJson);
+        QCOMPARE(readUnsigned(set("format", 2.5), &m), ManifestError::NotJson);
+        QCOMPARE(readUnsigned(set("format", 3), &m), ManifestError::UnsupportedFormat);
+        // Too large: more than 48 KiB (and more than 64 KiB, the download limit).
+        QByteArray big = toJson(set("pad", QString(49 * 1024, QLatin1Char('x'))));
+        QCOMPARE(readManifest(big, {}, {}, &m), ManifestError::TooLarge);
+        big = toJson(set("pad", QString(70 * 1024, QLatin1Char('x'))));
+        QCOMPARE(readManifest(big, {}, {}, &m), ManifestError::TooLarge);
+
+        // A signature that is there must be valid: format 2 has none, so signature fields are refused.
+        QString detail;
+        QCOMPARE(readUnsigned(set("sig", QStringLiteral("AAAA")), &m, &detail), ManifestError::BadSignature);
+        QVERIFY(detail.contains(QStringLiteral("signature")));
+        QCOMPARE(readUnsigned(set("key", 1), &m), ManifestError::BadSignature);
+        QCOMPARE(readUnsigned(set("payload", QStringLiteral("e30=")), &m), ManifestError::BadSignature);
+
+        // A format 1 payload without its envelope (a signed release with the signature stripped) is
+        // not an unsigned manifest: format 1 always needs a key and a valid signature.
+        QVERIFY(readManifest(toJson(basePayload()), testKeys(), {}, &m) != ManifestError::None);
+
+        // Every field is checked as strictly as in a signed manifest.
+        const QString big32 = QString::number(33 * 1024 * 1024);
+        const struct {
+            const char* name;
+            QJsonObject manifest;
+        } cases[] = {
+            {"product", set("product", QStringLiteral("other"))},
+            {"version suffix", set("version", QStringLiteral("2.2.2-beta"))},
+            {"version v", set("version", QStringLiteral("v2.2.2"))},
+            {"tag mismatch", set("tag", QStringLiteral("v2.2.3"))},
+            {"files missing", [&] { QJsonObject o = base; o.remove(QStringLiteral("files")); return o; }()},
+            {"size 0", withWin64Field(base, QStringLiteral("size"), 0)},
+            {"size over 32 MiB", withWin64Field(base, QStringLiteral("size"), 33 * 1024 * 1024)},
+            {"size string", withWin64Field(base, QStringLiteral("size"), big32)},
+            {"sha uppercase", withWin64Field(base, QStringLiteral("sha256"), QString(64, QLatin1Char('A')))},
+            {"sha short", withWin64Field(base, QStringLiteral("sha256"), QString(63, QLatin1Char('a')))},
+            {"sha missing", withWin64Field(base, QStringLiteral("sha256"), QJsonValue())},
+            {"machine mismatch", withWin64Field(base, QStringLiteral("machine"), QStringLiteral("x86"))},
+            {"asset other host", withWin64Field(base, QStringLiteral("asset"), QStringLiteral("https://evil.example.com/TSMedia-2.2.2-win64.update"))},
+            {"asset path", withWin64Field(base, QStringLiteral("asset"), QStringLiteral("../../evil.update"))},
+            {"no plugin left", withFile(withFile(base, QStringLiteral("plugins/tsmedia_win64.dll"), QJsonValue::Undefined),
+                                        QStringLiteral("plugins/tsmedia_win32.dll"), QJsonValue::Undefined)},
+            {"package other version", set("package", QJsonObject{{QStringLiteral("name"), QStringLiteral("TSMedia-2.2.1.ts3_plugin")},
+                                                                 {QStringLiteral("size"), 10}, {QStringLiteral("sha256"), hex64('c')}})},
+            {"minFromVersion bad", set("minFromVersion", QStringLiteral("2.2"))},
+        };
+        for (const auto& c : cases)
+            QVERIFY2(readUnsigned(c.manifest, &m) == ManifestError::BadPayload, c.name);
+    }
+
+    void unsignedNeverDowngrades()
+    {
+        Manifest      m;
+        const Version v221 = Version::parse(QStringLiteral("2.2.1"));
+        QCOMPARE(readUnsigned(unsignedManifest(QStringLiteral("2.2.0")), &m), ManifestError::None);
+        QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::No); // older: never offered
+        QCOMPARE(readUnsigned(unsignedManifest(QStringLiteral("2.2.1")), &m), ManifestError::None);
+        QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::No); // the same version
+        QCOMPARE(readUnsigned(unsignedManifest(QStringLiteral("2.2.2")), &m), ManifestError::None);
+        QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::Yes);
+        QCOMPARE(offerFor(m, Version::parse(QStringLiteral("2.3.0")), {}, Arch::Win64), Offer::No); // a pending newer one
+        QCOMPARE(offerFor(m, v221, Version::parse(QStringLiteral("2.2.2")), Arch::Win64), Offer::Skipped);
+        QJsonObject later = unsignedManifest();
+        later.insert(QStringLiteral("minFromVersion"), QStringLiteral("2.2.2"));
+        QCOMPARE(readUnsigned(later, &m), ManifestError::None);
+        QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::NeedsManualInstall);
+        QCOMPARE(readUnsigned(withFile(unsignedManifest(), QStringLiteral("plugins/extra.dll"), QJsonObject{{QStringLiteral("required"), true}}), &m),
+                 ManifestError::None);
+        QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::NeedsManualInstall);
+    }
+
+    void unsignedFileNamesExact()
+    {
+        // Only the four exact names are files to install. Look-alikes (path traversal, another case,
+        // backslashes, absolute paths) are unknown entries: ignored, or "needs a manual install" when
+        // required. They never replace or add to what is downloaded; the targets have fixed names.
+        const QJsonObject evil{{QStringLiteral("size"), 5}, {QStringLiteral("sha256"), hex64('e')}, {QStringLiteral("machine"), QStringLiteral("x64")}};
+        const Version     v221 = Version::parse(QStringLiteral("2.2.1"));
+        Manifest          m;
+        for (const char* name : {"../plugins/tsmedia_win64.dll", "plugins/../tsmedia_win64.dll", "Plugins/TSMedia_Win64.dll", "plugins\\tsmedia_win64.dll",
+                                 "plugins/tsmedia_win64.dll ", "/plugins/tsmedia_win64.dll", "C:/Windows/System32/version.dll", "plugins/tsmedia_win64.exe",
+                                 "helper/../../tsmedia_update_helper_win64.exe"}) {
+            QVERIFY2(readUnsigned(withFile(unsignedManifest(), QString::fromLatin1(name), evil), &m) == ManifestError::None, name);
+            QCOMPARE(m.files.size(), 2);
+            const UpdateFile* w64 = m.file(FileKind::Plugin, Arch::Win64);
+            QVERIFY2(w64 && w64->key == QStringLiteral("plugins/tsmedia_win64.dll") && w64->sha256 == QByteArray(32, static_cast<char>(0xaa)), name);
+            QVERIFY2(!m.file(FileKind::Helper, Arch::Win64), name);
+            QVERIFY2(!m.needsNewerUpdater, name);
+            QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::Yes);
+
+            QJsonObject required = evil;
+            required.insert(QStringLiteral("required"), true);
+            QVERIFY2(readUnsigned(withFile(unsignedManifest(), QString::fromLatin1(name), required), &m) == ManifestError::None, name);
+            QCOMPARE(offerFor(m, v221, {}, Arch::Win64), Offer::NeedsManualInstall);
+        }
+        // Look-alikes alone are no plugin file at all: refused.
+        QJsonObject onlyEvil = unsignedManifest();
+        onlyEvil.insert(QStringLiteral("files"), QJsonObject{{QStringLiteral("../plugins/tsmedia_win64.dll"), evil}});
+        QCOMPARE(readUnsigned(onlyEvil, &m), ManifestError::BadPayload);
+        QCOMPARE(targetFileName(FileKind::Plugin, Arch::Win64), QStringLiteral("tsmedia_win64.dll"));
+        QCOMPARE(targetFileName(FileKind::Helper, Arch::Win32), QStringLiteral("tsmedia_update_helper.exe"));
+    }
+
+    void unsignedNeverRevokes()
+    {
+        QJsonObject o = unsignedManifest();
+        o.insert(QStringLiteral("revokeKeys"), QJsonArray{1, 2});
+        Manifest m;
+        QCOMPARE(readManifest(toJson(o), testKeys(), {}, &m), ManifestError::None);
+        QVERIFY(m.revokeKeys.isEmpty());
+        QVERIFY(honouredRevocations(m, testKeys()).isEmpty());
+        m.revokeKeys = {1, 2}; // even if they were there
+        QVERIFY(honouredRevocations(m, testKeys()).isEmpty());
+        o.insert(QStringLiteral("revokeKeys"), QStringLiteral("not read in format 2"));
+        QCOMPARE(readManifest(toJson(o), testKeys(), {}, &m), ManifestError::None);
+    }
+
+    void signedManifestStillVerifies()
+    {
+        // The format 1 file (what 2.2.0 reads, and 2.2.1's fallback) is verified as before.
+        const QByteArray valid = readData("valid.json");
+        Manifest         m;
+        QCOMPARE(readManifest(valid, testKeys(), {}, &m), ManifestError::None);
+        QVERIFY(m.isSigned());
+        QCOMPARE(m.signedBy, 99);
+        QCOMPARE(m.version.toString(), QStringLiteral("9.0.0"));
+
+        // A wrong signature is refused, never read as "unsigned".
+        const QJsonObject outer = QJsonDocument::fromJson(valid).object();
+        QByteArray        sig   = QByteArray::fromBase64(outer.value(QStringLiteral("sig")).toString().toLatin1());
+        sig[10]                 = static_cast<char>(sig[10] ^ 0x40);
+        QJsonObject changed     = outer;
+        changed.insert(QStringLiteral("sig"), QString::fromLatin1(sig.toBase64()));
+        QCOMPARE(readManifest(toJson(changed), testKeys(), {}, &m), ManifestError::BadSignature);
+        // Stripping the signature doesn't make a format 1 file unsigned either.
+        changed = outer;
+        changed.remove(QStringLiteral("sig"));
+        QCOMPARE(readManifest(toJson(changed), testKeys(), {}, &m), ManifestError::BadEncoding);
+        changed.remove(QStringLiteral("key"));
+        QCOMPARE(readManifest(toJson(changed), testKeys(), {}, &m), ManifestError::UnknownKey);
+        // Signed with a key this build doesn't trust (99 outside test builds): refused.
+        QCOMPARE(readManifest(valid, trustedKeys(), {}, &m), ManifestError::UnknownKey);
+    }
+
+    void downloadMatchesManifest()
+    {
+        const QByteArray image = peImage(false, "new64");
+        QVERIFY(image.size() > 1000);
+        UpdateFile f;
+        f.kind    = FileKind::Plugin;
+        f.arch    = Arch::Win64;
+        f.size    = image.size();
+        f.sha256  = crypto::Sha256::hash(image);
+        f.machine = kMachineX64;
+        QCOMPARE(checkDownload(image, f), DownloadCheck::Ok);
+
+        // Hash or size mismatch.
+        QByteArray changed = image;
+        changed[changed.size() - 2] = static_cast<char>(changed[changed.size() - 2] ^ 0x01);
+        QCOMPARE(checkDownload(changed, f), DownloadCheck::Mismatch);
+        QCOMPARE(checkDownload(image + "x", f), DownloadCheck::Mismatch);
+        QCOMPARE(checkDownload(image.left(image.size() - 1), f), DownloadCheck::Mismatch);
+        QCOMPARE(checkDownload(QByteArray(), f), DownloadCheck::Mismatch);
+        UpdateFile wrongHash = f;
+        wrongHash.sha256[0]  = static_cast<char>(wrongHash.sha256[0] ^ 0x01);
+        QCOMPARE(checkDownload(image, wrongHash), DownloadCheck::Mismatch);
+        UpdateFile wrongSize = f;
+        wrongSize.size       = f.size + 1;
+        QCOMPARE(checkDownload(image, wrongSize), DownloadCheck::Mismatch);
+        UpdateFile noHash = f;
+        noHash.sha256.clear();
+        QCOMPARE(checkDownload(image, noHash), DownloadCheck::Mismatch);
+
+        // The hash matches, but the CPU or the file type doesn't fit the name.
+        const QByteArray x86 = peImage(true, "new32");
+        UpdateFile       x86AsX64 = f;
+        x86AsX64.size             = x86.size();
+        x86AsX64.sha256           = crypto::Sha256::hash(x86);
+        QCOMPARE(checkDownload(x86, x86AsX64), DownloadCheck::WrongMachine);
+        UpdateFile dllAsHelper = f;
+        dllAsHelper.kind       = FileKind::Helper;
+        QCOMPARE(checkDownload(image, dllAsHelper), DownloadCheck::WrongMachine);
+        const QByteArray text = QByteArray("not a program at all");
+        UpdateFile       textFile = f;
+        textFile.size             = text.size();
+        textFile.sha256           = crypto::Sha256::hash(text);
+        QCOMPARE(checkDownload(text, textFile), DownloadCheck::WrongMachine);
+    }
+
     // ---- policy ---------------------------------------------------------------------------------
     void urlAllowlist()
     {
@@ -465,10 +743,35 @@ class TestUpdater : public QObject
                                 "https://api.github.com/x", "https://a..githubusercontent.com/x", "https://-a.githubusercontent.com/x", "/relative",
                                 "https://github.com./x", "file:///C:/x"})
             QVERIFY2(!isAllowedUrl(QUrl(QString::fromLatin1(bad))), bad);
-        QCOMPARE(manifestUrl().toString(), QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest/download/tsmedia-update.json"));
+        QCOMPARE(manifestUrl().toString(), QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest/download/tsmedia-update-v2.json"));
+        QCOMPARE(legacyManifestUrl().toString(), QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest/download/tsmedia-update.json"));
         QCOMPARE(assetUrl(QStringLiteral("v2.2.0"), QStringLiteral("TSMedia-2.2.0-win64.update")).toString(),
                  QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/download/v2.2.0/TSMedia-2.2.0-win64.update"));
         QVERIFY(isAllowedUrl(manifestUrl()));
+        QVERIFY(isAllowedUrl(legacyManifestUrl()));
+    }
+
+    void redirectTargets()
+    {
+        // What httpclient.cpp does with a Location header: resolve it against the current URL, then
+        // isAllowedUrl(). With unsigned manifests this is all that keeps a hop on GitHub, so no hostile
+        // form may lead anywhere else. Some only become a (harmless) relative path on github.com itself,
+        // e.g. "  https://evil.example.com/x" with its spaces encoded.
+        const QUrl from(QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest/download/tsmedia-update-v2.json"));
+        const auto next = [&from](const char* location) { return from.resolved(QUrl(QString::fromLatin1(location), QUrl::StrictMode)); };
+        for (const char* ok : {"/Metihttp/Teamspeak_Media_chat/releases/download/v2.2.2/tsmedia-update-v2.json", "../../download/v2.2.2/tsmedia-update-v2.json",
+                               "https://release-assets.githubusercontent.com/github-production-release-asset/1?sp=r&sig=x%2B"})
+            QVERIFY2(isAllowedUrl(next(ok)), ok);
+        for (const char* bad : {"//evil.example.com/x", "https://evil.example.com/x", "http://github.com/x", "https:evil.example.com", "https://github.com@evil.example.com/x",
+                                "https://evil.example.com\\@github.com/x", "https://github.com.evil.example.com/x", "https://raw.githubusercontent.com.evil.example.com/x",
+                                "https://github.com:80/x", "file:///C:/x", "javascript:alert(1)", "https://%67ithub.com.evil.example.com/x",
+                                "https://evil.example.com%2f@github.com/x", "https://evil.example.com%5c@github.com/x", "https://user:pw@github.com/x",
+                                "https://127.0.0.1/x", "https://[::ffff:140.82.112.3]/x", "  https://evil.example.com/x", ""}) {
+            const QUrl to = next(bad);
+            const bool stays = to.host() == from.host() && to.port() == -1 && to.scheme() == from.scheme() && to.userInfo().isEmpty()
+                               && to.path().startsWith(QStringLiteral("/Metihttp/Teamspeak_Media_chat/releases/"));
+            QVERIFY2(!isAllowedUrl(to) || stays, qPrintable(QString::fromLatin1(bad) + QStringLiteral(" -> ") + to.toString()));
+        }
     }
 
     void schedule()

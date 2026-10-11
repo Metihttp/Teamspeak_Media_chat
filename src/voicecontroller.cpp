@@ -1,27 +1,30 @@
 #include "voicecontroller.h"
 
+#include <QApplication>
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QRandomGenerator>
+#include <QStyleHints>
 #include <QTimer>
 #include <QUrl>
 
 #include "audio/capturedevice.h"
 #include "audio/cues.h"
 #include "audio/micguard.h"
-#include "audio/voicerecorder.h"
 #include "audio/waveform.h"
 #include "audio/wasapicapture.h"
-#include "chatintegration.h"
 #include "i18n.h"
-#include "inlinemedia.h"
-#include "settings.h"
+#include "medialink.h"
+#include "micbutton.h"
 #include "ts3api.h"
 #include "uiutil.h"
 #include "video/mfvideo.h"
+
+#include <windows.h> // hold to record: the mouse button's physical state
 
 #ifdef TSMEDIA_TESTHOOKS
 #include "audio/fakecapture.h"
@@ -29,11 +32,10 @@
 
 namespace {
 
-constexpr int    kOpenDelayMs    = 180; // the start sound plays before the microphone opens
-constexpr int    kSavingShowMs   = 300;
-constexpr int    kReviewTickMs   = 33;
-constexpr qint64 kKeepOnLossMs   = 1000; // a lost microphone keeps what was recorded from 1 s on
-constexpr int    kMaxHintLines   = 2;
+constexpr int kOpenDelayMs  = 180; // the start sound plays before the microphone opens
+constexpr int kSavingShowMs = 300;
+constexpr int kMaxHintLines = 2;
+constexpr int kMicRefreshMs = 1000; // the mic buttons follow the visible chat (connection, channel, tab)
 
 qint64 nowMs()
 {
@@ -145,8 +147,6 @@ const char* captureErrorName(voice::CaptureError error)
 const char* sourceName(voice::DeviceChoice::Source source)
 {
     switch (source) {
-    case voice::DeviceChoice::Source::Setting:
-        return "the microphone chosen in the settings";
     case voice::DeviceChoice::Source::TeamSpeak:
         return "TeamSpeak's microphone";
     case voice::DeviceChoice::Source::DefaultCommunications:
@@ -155,12 +155,49 @@ const char* sourceName(voice::DeviceChoice::Source source)
     return "Windows' default communications microphone";
 }
 
+// The mic buttons' gestures (MicButton::Handler).
+bool voiceButtonPressed(QObject* receiver, MicButton* button)
+{
+    auto* voice = qobject_cast<VoiceController*>(receiver);
+    return voice && voice->holdPressed(button);
+}
+
+void voiceButtonZone(QObject* receiver, bool cancel)
+{
+    if (auto* voice = qobject_cast<VoiceController*>(receiver))
+        voice->holdZoneChanged(cancel);
+}
+
+void voiceButtonReleased(QObject* receiver, MicButton::Release how)
+{
+    if (auto* voice = qobject_cast<VoiceController*>(receiver))
+        voice->holdReleased(how);
+}
+
+void voiceButtonClicked(QObject* receiver)
+{
+    if (auto* voice = qobject_cast<VoiceController*>(receiver))
+        voice->toggle();
+}
+
+void voiceButtonHovered(QObject* receiver)
+{
+    if (auto* voice = qobject_cast<VoiceController*>(receiver))
+        voice->updateMicButtons();
+}
+
+// The strip's notices stay about 2 s; longer when Windows is set to keep notifications longer.
+int noticeMs()
+{
+    const int windows = ui::notificationDurationMs();
+    return windows > 5000 ? windows : VoiceController::kNoticeMs;
+}
+
 } // namespace
 
-VoiceController::VoiceController(ChatIntegration* chat, Core* core, QObject* parent)
+VoiceController::VoiceController(Host host, QObject* parent)
     : QObject(parent)
-    , m_chat(chat)
-    , m_core(core)
+    , m_host(std::move(host))
 {
     m_recorder = new voice::VoiceRecorder(this);
     connect(m_recorder, &voice::VoiceRecorder::stateChanged, this, &VoiceController::onRecorderState);
@@ -184,28 +221,61 @@ VoiceController::VoiceController(ChatIntegration* chat, Core* core, QObject* par
         if (m_phase == Phase::TooShort)
             discard(true);
     });
-    m_reviewTimer = new QTimer(this);
-    m_reviewTimer->setInterval(kReviewTickMs);
-    connect(m_reviewTimer, &QTimer::timeout, this, &VoiceController::onPreviewTick);
+    m_micTimer = new QTimer(this);
+    m_micTimer->setInterval(kMicRefreshMs);
+    connect(m_micTimer, &QTimer::timeout, this, [this] {
+        // A TeamSpeak microphone that couldn't be given back (the connection dropped while recording)
+        // is unmuted once TeamSpeak is connected there again.
+        if (m_guard->hasPending() && !m_guard->engaged()) {
+            if (const int back = m_guard->retryPending()) {
+                m_diagMicBack = i18n::t("given back on %1 connection(s) once connected again").arg(back); // 2.2 diagnostics
+                ts3::log(LogLevel_INFO, m_target.sch, "Voice message: TeamSpeak microphone given back on %1 connection(s) once connected again", {ts3::pub(back)});
+            }
+        }
+        if ((m_phase == Phase::Idle || m_phase == Phase::TooShort) && MicButton::anyVisible())
+            updateMicButtons();
+    });
+    m_micTimer->start();
+    m_holdTimer = new QTimer(this);
+    m_holdTimer->setInterval(kHoldWatchMs);
+    connect(m_holdTimer, &QTimer::timeout, this, &VoiceController::watchHold);
+    m_noticeTimer = new QTimer(this);
+    m_noticeTimer->setSingleShot(true);
+    connect(m_noticeTimer, &QTimer::timeout, this, [this] {
+        if (!m_hold)
+            hideStrip();
+    });
+    MicButton::Handler handler;
+    handler.pressed     = &voiceButtonPressed;
+    handler.zoneChanged = &voiceButtonZone;
+    handler.released    = &voiceButtonReleased;
+    handler.clicked     = &voiceButtonClicked;
+    handler.hovered     = &voiceButtonHovered;
+    MicButton::setHandler(this, handler);
 
-    connect(m_chat, &ChatIntegration::playbackStarted, this, &VoiceController::onPlaybackStarted);
     cleanupOldRecordings();
+    updateMicButtons();
 }
 
 void VoiceController::shutdown()
 {
+    MicButton::clearHandler(this);
+    MicButton::abandonHolds(); // a held button: its application filter goes, its release does nothing
+    m_micTimer->stop();
     m_openTimer->stop();
     m_savingTimer->stop();
     m_closeTimer->stop();
-    m_reviewTimer->stop();
+    m_holdTimer->stop();
+    m_noticeTimer->stop();
     m_recorder->cancel(); // joins the capture or encode worker
     releaseMic();
-    closePreview();
+    m_guard->retryPending(); // a dropped connection that is back by now: its microphone too
     removeRecording();
     if (m_panel) {
         disconnect(m_panel, nullptr, this, nullptr);
         delete m_panel.data();
     }
+    deleteStrip(); // it lives in TeamSpeak's window
     finish();
 }
 
@@ -216,26 +286,16 @@ QString VoiceController::diagnosticsTitle()
 
 QStringList VoiceController::diagnosticLines() const
 {
-    const Settings& s     = Settings::instance();
-    const auto      onOff = [](bool on) { return on ? i18n::t("on") : i18n::t("off"); };
-    QStringList     lines;
-    lines << i18n::t("Microphone: %1. Mute TeamSpeak's microphone while recording: %2. Listen before sending: %3. Sounds: %4")
-                 .arg(s.voiceMicrophone.isEmpty() ? i18n::t("same as TeamSpeak") : i18n::t("chosen in the settings"))
-                 .arg(onOff(s.voiceMuteTeamSpeakMic))
-                 .arg(onOff(s.voiceReview))
-                 .arg(onOff(s.voiceSounds));
+    QStringList lines;
     lines << i18n::t("This session: %1 recordings started, %2 sent").arg(m_diagStarted).arg(m_diagSent);
-    if (m_diagSource.isEmpty()) {
+    if (m_diagSource.isEmpty())
         lines << i18n::t("Last recording: none this session");
-    } else {
-        QString last = i18n::t("Last recording: from %1 at %2 Hz").arg(m_diagSource).arg(m_diagRate);
-        if (m_diagSettingMissing)
-            last += i18n::t(" (the microphone chosen in the settings wasn't connected)");
-        lines << last;
-    }
+    else
+        lines << i18n::t("Last recording: from %1 at %2 Hz").arg(m_diagSource).arg(m_diagRate);
     lines << i18n::t("Last microphone error: %1").arg(m_diagError.isEmpty() ? i18n::t("none this session") : m_diagError);
-    QString mic = m_guard->engaged() ? i18n::t("TeamSpeak's microphone: muted for a recording on %1 connection(s)").arg(m_guard->mutedConnections().size())
-                                     : i18n::t("TeamSpeak's microphone: not muted by TS Media");
+    QString mic = m_guard->engaged()      ? i18n::t("TeamSpeak's microphone: muted for a recording on %1 connection(s)").arg(m_guard->mutedConnections().size())
+                  : m_guard->hasPending() ? i18n::t("TeamSpeak's microphone: still muted where the connection dropped, given back once connected again")
+                                          : i18n::t("TeamSpeak's microphone: not muted by TS Media");
     if (!m_diagMicBack.isEmpty())
         mic += i18n::t("; last time %1").arg(m_diagMicBack);
     lines << mic;
@@ -245,14 +305,93 @@ QStringList VoiceController::diagnosticLines() const
 VoiceController::~VoiceController()
 {
     // Plugin shutdown (or the chat going away): no sounds, no chat lines; the microphone comes back.
+    MicButton::clearHandler(this);
+    MicButton::abandonHolds();
     m_openTimer->stop();
+    m_holdTimer->stop();
+    m_noticeTimer->stop();
     m_recorder->cancel();
     m_guard->release();
-    closePreview();
+    m_guard->retryPending(); // connected again since the connection dropped mid-recording: given back now
     removeRecording();
     if (m_panel) {
         disconnect(m_panel, nullptr, this, nullptr);
         delete m_panel.data();
+    }
+    deleteStrip();
+    MicButton::setSharedState(MicButton::State()); // no button goes on saying "Recording"
+}
+
+// ---- the mic buttons ---------------------------------------------------------------------------------
+
+void VoiceController::updateMicButtons()
+{
+    MicButton::State state;
+    switch (m_phase) {
+    case Phase::Idle:
+    case Phase::TooShort: { // "Too short" closes by itself; a click records again (toggle)
+        QString reason;
+        if (!mf::available())
+            reason = i18n::t("Voice messages aren't available: Windows Media Foundation is missing.");
+        else if (m_host.blockReason)
+            reason = m_host.blockReason();
+        state.mode   = reason.isEmpty() ? MicButton::Mode::Ready : MicButton::Mode::Unavailable;
+        state.reason = reason;
+        break;
+    }
+    case Phase::Starting:
+    case Phase::Recording:
+        if (m_hold && m_holdDown) {
+            state.mode   = MicButton::Mode::Holding;
+            state.cancel = m_holdCancel;
+        } else if (m_hold) { // released: stopping, then sent (or kept in the window)
+            state.mode   = MicButton::Mode::Busy;
+            state.reason = m_sendAfterSave ? i18n::t("Sending the voice message…") : i18n::t("Saving the voice message…");
+        } else {
+            state.mode = MicButton::Mode::Recording; // the window records: a click stops and sends
+        }
+        break;
+    case Phase::Saving:
+    case Phase::Error:
+        state.mode = MicButton::Mode::Busy; // a click shows the window (toggle)
+        if (m_hold) // no window: what happens instead
+            state.reason = m_sendAfterSave ? i18n::t("Sending the voice message…") : i18n::t("Saving the voice message…");
+        break;
+    }
+    MicButton::setSharedState(state);
+}
+
+void VoiceController::setPhase(Phase phase)
+{
+    if (m_phase == phase)
+        return;
+    m_phase = phase;
+    updateMicButtons();
+}
+
+void VoiceController::toggle()
+{
+    if (m_hold)
+        return; // a held recording being stopped or sent: there is no window to show, nothing to stop
+    switch (m_phase) {
+    case Phase::Idle:
+    case Phase::TooShort:
+        break; // a press records (holdPressed); this was one it didn't take (right after a tap)
+    case Phase::Starting:
+    case Phase::Recording:
+        // A double click on the button starts and would stop at once: its second click is ignored.
+        if (nowMs() - m_startedMs < qMax(500, QGuiApplication::styleHints()->mouseDoubleClickInterval())) {
+            bringForward(false);
+            break;
+        }
+        // Stop and send. Still Starting (a microphone slow to open): nothing was recorded, so the window
+        // says "Too short" instead of the click doing nothing.
+        requestSend();
+        break;
+    case Phase::Saving: // Busy: the window shows what happens (it may offer Send rather than send)
+    case Phase::Error:
+        bringForward(true);
+        break;
     }
 }
 
@@ -260,25 +399,27 @@ VoiceController::~VoiceController()
 
 void VoiceController::start(Origin origin)
 {
+    if (m_phase == Phase::TooShort)
+        discard(true); // nothing was recorded: no reason to wait until "Too short" closes by itself
     if (m_phase != Phase::Idle) {
-        if (m_panel) {
-            m_panel->show();
-            m_panel->raise();
-            if (origin != Origin::Hotkey)
-                m_panel->activateWindow();
-        }
+        bringForward(true);
         return;
     }
     ChatTarget target;
     QString    description;
     QWidget*   anchor = nullptr;
-    if (!m_chat->voiceTarget(&target, &description, &anchor))
-        return; // the chat already says why
-    m_origin     = origin;
-    m_target     = target;
-    m_targetText = description;
-    m_anchor     = anchor;
-    createPanel(origin == Origin::Hotkey);
+    if (!m_host.target || !m_host.target(&target, &description, &anchor)) {
+        updateMicButtons(); // the chat says why; the buttons say it too
+        return;
+    }
+    m_origin       = origin;
+    m_target       = target;
+    m_targetText   = description;
+    m_targetTextMs = nowMs();
+    m_anchor       = anchor;
+    hideStrip(); // a hold's notice
+    setPhase(Phase::Starting);
+    createPanel();
     if (!mf::available()) {
         showError(voice::CaptureError::None, 0); // "Voice messages aren't available"
         return;
@@ -286,87 +427,367 @@ void VoiceController::start(Origin origin)
     beginRecording();
 }
 
-void VoiceController::createPanel(bool fromHotkey)
+void VoiceController::bringForward(bool activate)
+{
+    if (!m_panel)
+        return;
+    m_panel->show();
+    m_panel->raise();
+    if (activate)
+        m_panel->activateWindow();
+}
+
+// ---- hold to record (the mic button) ----------------------------------------------------------------
+
+bool VoiceController::primaryButtonHeld()
+{
+    // The physical buttons: with swapped buttons (left-handed) the primary one is the right one.
+    const int key = GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+    return (GetAsyncKeyState(key) & 0x8000) != 0;
+}
+
+bool VoiceController::holdPressed(MicButton* button)
+{
+    if (!button)
+        return false;
+    // The second press of a double click, or a press right after a tap: the hint stays, nothing starts.
+    const qint64 rapid = qMax<qint64>(400, QGuiApplication::styleHints()->mouseDoubleClickInterval());
+    if (m_lastTapMs >= 0 && nowMs() - m_lastTapMs < rapid)
+        return false;
+    if (m_phase == Phase::TooShort)
+        discard(true); // the window's "Too short": nothing in it to keep
+    if (m_phase != Phase::Idle)
+        return false; // the window's flow: a click (toggle) stops and sends, or shows the window
+    ChatTarget target;
+    QString    description;
+    QWidget*   anchor = nullptr;
+    if (!m_host.target || !m_host.target(&target, &description, &anchor)) {
+        updateMicButtons(); // the chat says why; the buttons say it too
+        return false;
+    }
+    QWidget* input = button->parentWidget();
+    m_origin       = Origin::Button;
+    m_target       = target;
+    m_targetText   = description;
+    m_targetTextMs = nowMs();
+    m_anchor       = input ? input : anchor; // a window taking over sits above this input
+    m_hold         = true;
+    m_holdDown     = true;
+    m_holdCancel   = false;
+    m_holdPressMs  = nowMs();
+    m_holdUpTicks  = 0;
+    m_holdTicks    = 0;
+    m_holdButton   = button;
+    m_stripInput   = input;
+    m_noticeTimer->stop();
+    ts3::log("Voice message: the microphone button is held", LogLevel_INFO, m_target.sch);
+    if (!mf::available()) {
+        showError(voice::CaptureError::None, 0); // the window says why (the button is greyed out anyway)
+        return true;
+    }
+    beginRecording(); // the microphone opens at once
+    if (m_hold)       // (no microphone at all: the window took over)
+        m_holdTimer->start();
+    return true;
+}
+
+void VoiceController::holdZoneChanged(bool cancel)
+{
+    if (!m_hold || !m_holdDown || m_holdCancel == cancel)
+        return;
+    m_holdCancel = cancel;
+    updateMicButtons();
+    refresh();
+}
+
+void VoiceController::holdReleased(MicButton::Release how)
+{
+    if (!m_hold || !m_holdDown)
+        return; // it ended already (5:00, a problem, the window took over): this release means nothing
+    if (how == MicButton::Release::Lost) {
+        holdLost(Stopped::HoldLost);
+        return;
+    }
+    const bool tap = nowMs() - m_holdPressMs < kMinMs; // the button is held to record
+    if (how == MicButton::Release::Send && !tap && visibleChatChanged()) {
+        holdLost(Stopped::ChatChanged); // let go after another chat came up (before the watch saw it): not sent there
+        return;
+    }
+    m_holdDown   = false;
+    m_holdCancel = false;
+    if (how == MicButton::Release::Cancel || how == MicButton::Release::Escape) {
+        ts3::log(how == MicButton::Release::Escape ? "Voice message: canceled with Esc" : "Voice message: canceled (released away from the button)", LogLevel_INFO,
+                 m_target.sch);
+        endHold(HoldStrip::Icon::Canceled, i18n::t("Canceled — nothing was sent."), false);
+        return;
+    }
+    if (tap) {
+        m_lastTapMs = nowMs();
+        ts3::log("Voice message: a tap on the microphone button, nothing recorded", LogLevel_INFO, m_target.sch);
+        endHold(HoldStrip::Icon::Info, i18n::t("Hold to record, release to send"), true);
+        return;
+    }
+    m_confirm       = false;
+    m_sendAfterSave = true; // like the window's Send: stopped, encoded, sent at once
+    updateMicButtons();
+    stopRecording();
+    refresh();
+}
+
+void VoiceController::holdLost(Stopped why)
+{
+    if (!m_hold || !m_holdDown)
+        return;
+    m_holdDown   = false;
+    m_holdCancel = false;
+    if (m_holdButton)
+        m_holdButton->abandonHold(); // a release that comes after all does nothing
+    if (why == Stopped::ChatChanged)
+        ts3::log("Voice message: another chat came up while the microphone button was held; kept, not sent", LogLevel_INFO, m_target.sch);
+    else
+        ts3::log("Voice message: the microphone button was let go where TeamSpeak didn't see it; kept, not sent", LogLevel_INFO, m_target.sch);
+    m_stopped       = why;
+    m_sendAfterSave = false; // never sent by itself: the window offers Send (showKept)
+    m_confirm       = false;
+    updateMicButtons();
+    stopRecording(); // too short: the strip says so
+    refresh();
+}
+
+void VoiceController::watchHold()
+{
+    if (!m_hold) {
+        m_holdTimer->stop();
+        return;
+    }
+    if (m_holdDown) {
+        if (!m_holdButton) { // its input went (TeamSpeak closing): nothing to keep it for
+            ts3::log("Voice message: the chat input went while the button was held; canceled", LogLevel_INFO, m_target.sch);
+            discard(true);
+            return;
+        }
+        bool lost = QApplication::activePopupWidget() != nullptr; // a menu took the mouse
+        if (m_host.pointerHeld) {
+            m_holdUpTicks = m_host.pointerHeld() ? 0 : m_holdUpTicks + 1;
+            lost          = lost || m_holdUpTicks >= kHoldUpTicks; // up, and no release came meanwhile
+        }
+        if (lost) {
+            holdLost(Stopped::HoldLost);
+            return;
+        }
+        // The input's chat tabs share it: another chat may have come up (a key, the wheel on the tabs).
+        if (++m_holdTicks % kHoldChatTicks == 0 && visibleChatChanged()) {
+            holdLost(Stopped::ChatChanged);
+            return;
+        }
+    }
+    if (m_strip && m_stripInput && m_strip->isVisible())
+        m_strip->placeAbove(m_stripInput); // TeamSpeak's window resized meanwhile
+}
+
+bool VoiceController::visibleChatChanged() const
+{
+    // Disconnected, TeamSpeak's tabs tell nothing reliable (and the release keeps the recording anyway).
+    if (!m_host.visibleTarget || !ts3::isConnected(m_target.sch))
+        return false;
+    const ChatTarget now = m_host.visibleTarget();
+    if (now.sch != m_target.sch || now.mode != m_target.mode)
+        return true;
+    if (m_target.mode != TextMessageTarget_CLIENT)
+        return false;
+    if (!m_target.clientUid.isEmpty() && !now.clientUid.isEmpty())
+        return now.clientUid != m_target.clientUid; // client ids are reused: the person counts
+    return now.clientId != m_target.clientId;
+}
+
+void VoiceController::endHold(HoldStrip::Icon icon, const QString& notice, bool quiet)
+{
+    discard(quiet); // the microphone given back; finish() ends the hold
+    if (m_hold)
+        finish();
+    showNotice(icon, notice);
+}
+
+void VoiceController::toWindow()
+{
+    if (!m_hold)
+        return; // the window's own flow
+    if (m_holdButton)
+        m_holdButton->abandonHold(); // first: the window takes the activation, which would end it as Lost
+    m_hold        = false;
+    m_holdDown    = false;
+    m_holdCancel  = false;
+    m_holdButton  = nullptr;
+    m_holdUpTicks = 0;
+    m_holdTicks   = 0;
+    m_holdTimer->stop();
+    hideStrip();
+    createPanel(); // above the held input (m_anchor), activated: Enter sends, Esc closes
+}
+
+void VoiceController::refreshHold()
+{
+    if (!m_hold || !m_stripInput)
+        return;
+    QWidget* input = m_stripInput.data();
+    if (!input->isVisible()) { // another server tab hid it (the hold is lost): never over another chat
+        hideStrip();
+        return;
+    }
+    if (!m_strip)
+        m_strip = new HoldStrip(input->window());
+    HoldStrip::View v;
+    v.limitMs            = kMaxMs;
+    v.animate            = ui::animationsEnabled();
+    const bool   live    = m_phase == Phase::Starting || m_phase == Phase::Recording;
+    const qint64 elapsed = live ? m_recorder->elapsedMs() : m_lengthMs;
+    v.timeMs             = elapsed;
+    v.timeWarning        = elapsed >= kWarnAtMs;
+    v.liveBins           = m_recorder->bins(qMax(0, m_recorder->binCount() - 200));
+    if (live && m_holdDown) {
+        v.mode = m_holdCancel ? HoldStrip::Mode::Cancel : HoldStrip::Mode::Recording;
+        if (!ts3::isConnected(m_target.sch))
+            v.problem = i18n::t("Not connected · release to keep it");
+        else if (m_phase == Phase::Recording && elapsed >= 3000 && m_recorder->loudestDb() < waveform::kQuietDb)
+            v.problem = i18n::t("No sound from the microphone");
+        else if (v.timeWarning)
+            v.problem = i18n::t("Sent by itself at %1 · release to send").arg(formatDuration(kMaxMs));
+    } else {
+        v.mode = HoldStrip::Mode::Saving;
+        v.text = !m_sendAfterSave ? i18n::t("Saving…") // kept in the window once saved
+                 : m_limitHit     ? i18n::t("Reached the %1 limit, sending…").arg(formatDuration(kMaxMs))
+                                  : i18n::t("Sending…");
+    }
+    m_strip->setView(v);
+    m_strip->placeAbove(input);
+    if (!m_strip->isVisible())
+        m_strip->show();
+}
+
+void VoiceController::showNotice(HoldStrip::Icon icon, const QString& text)
+{
+    QWidget* input = m_stripInput.data();
+    if (!input || !input->isVisible())
+        return;
+    if (!m_strip)
+        m_strip = new HoldStrip(input->window());
+    HoldStrip::View v;
+    v.mode    = HoldStrip::Mode::Notice;
+    v.icon    = icon;
+    v.text    = text;
+    v.animate = ui::animationsEnabled();
+    m_strip->setView(v);
+    m_strip->placeAbove(input);
+    m_strip->show();
+    m_noticeTimer->start(noticeMs());
+}
+
+void VoiceController::hideStrip()
+{
+    m_noticeTimer->stop();
+    if (m_strip && m_strip->isVisible())
+        m_strip->hide();
+}
+
+void VoiceController::deleteStrip()
+{
+    m_noticeTimer->stop();
+    if (m_strip)
+        delete m_strip.data(); // a child of TeamSpeak's window: it must not outlive the DLL
+    m_strip = nullptr;
+}
+
+void VoiceController::createPanel()
 {
     if (m_panel)
         return;
     auto* panel = new VoicePanel(nullptr); // its own top-level window: visible even when TeamSpeak is minimized
-    m_panel     = panel;
+    if (m_host.offscreen)
+        panel->setAttribute(Qt::WA_DontShowOnScreen);
+    m_panel = panel;
     connect(panel, &VoicePanel::sendRequested, this, &VoiceController::requestSend);
-    connect(panel, &VoicePanel::stopRequested, this, [this] { stopRecording(false); });
     connect(panel, &VoicePanel::cancelRequested, this, &VoiceController::requestCancel);
-    connect(panel, &VoicePanel::rerecordRequested, this, &VoiceController::rerecord);
     connect(panel, &VoicePanel::keepRequested, this, [this] {
         m_confirm = false;
-        refresh();
+        if (!m_encoded)
+            refresh(); // recording (or saving) goes on
+        else if (m_sendAfterSave)
+            doSend(); // Send was pressed, or 5:00 came, while it asked: it goes now
+        else
+            showKept(); // it stopped by itself while it asked: Send or close
     });
     connect(panel, &VoicePanel::discardConfirmed, this, [this] { discard(false); });
-    connect(panel, &VoicePanel::playToggled, this, &VoiceController::togglePreview);
-    connect(panel, &VoicePanel::seekRequested, this, &VoiceController::seekPreview);
-    connect(panel, &VoicePanel::seekByRequested, this, &VoiceController::seekPreviewBy);
     connect(panel, &VoicePanel::fixRequested, this, &VoiceController::fix);
-    connect(panel, &VoicePanel::closeRequested, this, [this] { discard(false); });
+    connect(panel, &VoicePanel::closeRequested, this, &VoiceController::requestClose);
     // Deleted by someone else (plugin shutdown): the microphone must not stay open without it.
     connect(panel, &QObject::destroyed, this, [this] {
         if (m_phase != Phase::Idle)
             discard(true);
     });
-    if (fromHotkey)
-        panel->setAttribute(Qt::WA_ShowWithoutActivating); // over a game: no focus stolen
-    m_phase = Phase::Starting;
-    refresh();
+    refresh(); // start() set Starting; a hold handed over (toWindow) keeps its phase
     panel->placeNear(m_anchor);
     panel->show();
     panel->raise();
-    if (!fromHotkey)
-        panel->activateWindow();
+    panel->activateWindow(); // Enter sends, Esc cancels
 }
 
 void VoiceController::beginRecording()
 {
     ++m_diagStarted; // 2.2 diagnostics
-    m_phase          = Phase::Starting;
+    removeRecording();
     m_sendAfterSave  = false;
+    m_encoded        = false;
     m_confirm        = false;
     m_savingShown    = false;
     m_playbackPaused = false;
     m_limitHit       = false;
-    m_deviceLost     = false;
-    m_windowHidden   = false;
+    m_notConnected   = false;
+    m_stopped        = Stopped::None;
     m_lengthMs       = 0;
     m_bytes          = 0;
+    m_startedMs      = nowMs();
     m_levels.clear();
     m_device.reset();
-    m_chat->pauseAllPlayback();
-    m_muted = false;
-    if (Settings::instance().voiceMuteTeamSpeakMic)
-        m_muted = m_guard->engage() > 0;
+    setPhase(Phase::Starting);
+    if (m_host.pauseAllPlayback)
+        m_host.pauseAllPlayback();
+    m_muted = m_guard->engage() > 0; // always: people in the channel must not hear you live
     ts3::log(LogLevel_INFO, m_target.sch, "Voice message: recording starts (TeamSpeak microphone muted on %1 connection(s))", {ts3::pub(m_guard->mutedConnections().size())});
     refresh();
     playCue(true);
-    m_openTimer->start(Settings::instance().voiceSounds ? kOpenDelayMs : 0);
+    if (m_hold)
+        openMicrophone(); // held: at once, never waiting for the sound (the first word must not be clipped)
+    else
+        m_openTimer->start(kOpenDelayMs);
+}
+
+voice::VoiceRecorder::BackendFactory VoiceController::teamSpeakMicrophone(quint64 sch, std::shared_ptr<voice::DeviceChoice> device)
+{
+    const voice::TeamSpeakCapture teamSpeak = teamSpeakCapture(sch);
+    return [teamSpeak, device]() -> std::unique_ptr<voice::CaptureBackend> {
+        // On the worker (COM is set up there): which microphone, then open it.
+        *device = voice::chooseCaptureDevice(teamSpeak, voice::listCaptureEndpoints());
+        return std::make_unique<voice::WasapiCapture>(device->endpointId);
+    };
 }
 
 void VoiceController::openMicrophone()
 {
     if (m_phase != Phase::Starting)
         return;
-    if (!m_panel || !m_panel->isVisible()) { // never record without the window
+    if (m_hold ? !m_holdButton : (!m_panel || !m_panel->isVisible())) { // never record without the window (or the held button)
         discard(true);
         return;
     }
-    const QString                 setting   = Settings::instance().voiceMicrophone;
-    const voice::TeamSpeakCapture teamSpeak = teamSpeakCapture(m_target.sch);
-    auto                          device    = std::make_shared<voice::DeviceChoice>();
-    m_device                                = device;
-    voice::VoiceRecorder::BackendFactory factory = [setting, teamSpeak, device]() -> std::unique_ptr<voice::CaptureBackend> {
-        // On the worker (COM is set up there): which microphone, then open it.
-        *device = voice::chooseCaptureDevice(setting, teamSpeak, voice::listCaptureEndpoints());
-        return std::make_unique<voice::WasapiCapture>(device->endpointId);
-    };
+    auto device = std::make_shared<voice::DeviceChoice>();
+    m_device    = device;
+    voice::VoiceRecorder::BackendFactory factory;
+    if (m_host.microphone)
+        factory = m_host.microphone(m_target.sch, device);
 #ifdef TSMEDIA_TESTHOOKS
-    // Test builds: <data dir>/voice_fake.txt ("<ms>[;send][;silence][;unplug@<ms>]", written by the
+    // Test builds: <data dir>/voice_fake.txt ("<ms>[;send][;silence][;unplug@<ms>][;fast]", written by the
     // selftest_voice.txt hook for localhost servers only) records generated sound, never the microphone.
+    // "fast": the sound comes as fast as it is read (5:00 in a moment: the limit without the wait).
     QFile fake(ts3::dataDir() + QStringLiteral("/voice_fake.txt"));
     if (fake.open(QIODevice::ReadOnly)) {
         const QStringList parts = QString::fromUtf8(fake.readAll()).trimmed().split(QLatin1Char(';'));
@@ -380,16 +801,29 @@ void VoiceController::openMicrophone()
         for (const QString& p : parts) {
             if (p == QLatin1String("silence"))
                 options.signal = voice::FakeCapture::Signal::Silence;
+            else if (p == QLatin1String("fast"))
+                options.realtime = false;
             else if (p.startsWith(QLatin1String("unplug@")))
                 options.unplugAfterMs = p.mid(7).toLongLong();
         }
         factory = [options, device]() -> std::unique_ptr<voice::CaptureBackend> {
-            device->source = voice::DeviceChoice::Source::Setting;
+            device->source = voice::DeviceChoice::Source::TeamSpeak;
             return std::make_unique<voice::FakeCapture>(options);
         };
         ts3::log("[test] voice message from generated sound");
+    } else {
+        // Test builds never record from a real microphone (a click on the mic button during a live test
+        // must not pick up the room): no voice_fake.txt, no recording ("Recording failed").
+        factory = nullptr;
+        ts3::log("[test] no voice_fake.txt: a test build never records from the microphone");
     }
 #endif
+    if (!factory) {
+        ts3::log("Voice message: no microphone to record from", LogLevel_WARNING, m_target.sch);
+        releaseMic(); // nothing records: TeamSpeak's microphone comes back now, not when the error closes
+        showError(voice::CaptureError::Generic, 0);
+        return;
+    }
     m_recorder->start(factory, kMaxMs);
 }
 
@@ -401,12 +835,11 @@ void VoiceController::onRecorderState()
     switch (m_recorder->state()) {
     case State::Recording:
         if (m_phase == Phase::Starting) {
-            m_phase = Phase::Recording;
+            setPhase(Phase::Recording);
             const voice::CaptureFormat format = m_recorder->format();
-            m_diagSource         = QString::fromLatin1(m_device ? sourceName(m_device->source) : "?"); // 2.2 diagnostics
-            m_diagRate           = format.sampleRate;
-            m_diagSettingMissing = m_device && m_device->settingMissing;
-            ts3::log(LogLevel_INFO, m_target.sch, "Voice message: recording from %1 at %2 Hz", {ts3::pub(QString::fromLatin1(m_device ? sourceName(m_device->source) : "?")), ts3::pub(format.sampleRate)});
+            m_diagSource = QString::fromLatin1(m_device ? sourceName(m_device->source) : "?"); // 2.2 diagnostics
+            m_diagRate   = format.sampleRate;
+            ts3::log(LogLevel_INFO, m_target.sch, "Voice message: recording from %1 at %2 Hz", {ts3::pub(m_diagSource), ts3::pub(format.sampleRate)});
         }
         refresh();
         break;
@@ -421,44 +854,62 @@ void VoiceController::onRecorderState()
     case State::Captured: {
         releaseMic();
         playCue(false);
-        m_lengthMs   = m_recorder->elapsedMs();
-        m_limitHit   = m_recorder->limitReached();
-        m_deviceLost = m_recorder->deviceLost();
-        if (m_lengthMs < kMinMs || (m_deviceLost && m_lengthMs < kKeepOnLossMs)) {
-            const bool lost = m_deviceLost;
+        m_lengthMs     = m_recorder->elapsedMs();
+        m_limitHit     = m_recorder->limitReached();
+        const bool lost      = m_recorder->deviceLost();
+        const bool canceling = m_hold && m_holdDown && m_holdCancel; // held in the cancel zone right now
+        if (m_hold && m_holdDown) {
+            // Ended while the button is still held (5:00, the microphone gone): its release means nothing now.
+            m_holdDown   = false;
+            m_holdCancel = false;
+            if (m_holdButton)
+                m_holdButton->abandonHold();
+        }
+        if (m_lengthMs < kMinMs || (lost && m_lengthMs < kKeepOnLossMs)) {
             m_recorder->cancel();
             if (lost) {
                 showError(voice::CaptureError::Disconnected, 0);
+            } else if (m_hold) {
+                endHold(HoldStrip::Icon::Info, i18n::t("Too short to send — nothing was sent."), true); // the stop sound played
             } else {
-                m_phase   = Phase::TooShort;
                 m_confirm = false;
+                setPhase(Phase::TooShort);
                 refresh();
                 m_closeTimer->start(ui::notificationDurationMs());
             }
             return;
         }
+        if (lost)
+            m_stopped = Stopped::DeviceLost;
+        else if (m_limitHit && canceling)
+            m_stopped = Stopped::LimitWhileCanceling; // the strip said "Release to cancel": kept, never sent by itself
+        else if (m_limitHit)
+            m_sendAfterSave = true; // 5:00: it is sent by itself (the window says so)
+        else if (!m_sendAfterSave && m_stopped == Stopped::None)
+            m_stopped = Stopped::Ended; // the sound ended by itself (generated sound in test builds)
+        if (m_stopped != Stopped::None)
+            m_sendAfterSave = false; // not asked for: the window offers to send it
         m_levels = m_recorder->waveformLevels();
-        m_path   = newRecordingPath();
-        m_recorder->encode(m_path);
-        m_phase       = Phase::Saving;
-        m_savingShown = false;
-        m_savingTimer->start(kSavingShowMs);
-        refresh();
+        encode();
         break;
     }
     case State::Encoded:
         m_savingTimer->stop();
-        m_bytes = m_recorder->encodedBytes();
+        m_bytes   = m_recorder->encodedBytes();
+        m_encoded = true;
         ts3::log(LogLevel_INFO, m_target.sch, "Voice message: %1 ms encoded, %2 bytes", {ts3::pub(m_lengthMs), ts3::pub(m_bytes)});
-        if (m_sendAfterSave && !m_confirm)
+        if (m_confirm)
+            refresh(); // "Discard this voice message?" is open: Keep sends it, Discard deletes it
+        else if (m_sendAfterSave)
             doSend();
         else
-            enterReview();
+            showKept();
         break;
     case State::EncodeFailed:
         m_savingTimer->stop();
         ts3::log(LogLevel_WARNING, m_target.sch, "Voice message: encoding failed: %1", {ts3::pub(m_recorder->encodeError())});
         m_path.clear(); // the writer removed its partial file
+        m_encoded = false;
         showSaveError();
         break;
     case State::Idle:
@@ -472,14 +923,19 @@ void VoiceController::onRecorderTick()
 {
     if (m_phase != Phase::Recording)
         return;
+    if (m_hold) { // held: watchHold() looks after the button
+        refresh();
+        return;
+    }
     if (!m_panel) {
         discard(true);
         return;
     }
     if (!m_panel->isVisible() || m_panel->isMinimized()) {
         // The window must be on screen while the microphone is open: stop and keep what was said.
-        m_windowHidden = true;
-        stopRecording(false);
+        m_stopped       = Stopped::WindowHidden;
+        m_sendAfterSave = false;
+        stopRecording();
         m_panel->showNormal();
         m_panel->raise();
         return;
@@ -487,26 +943,38 @@ void VoiceController::onRecorderTick()
     refresh();
 }
 
-void VoiceController::stopRecording(bool send)
+void VoiceController::stopRecording()
 {
-    if (m_phase == Phase::Saving) {
-        m_sendAfterSave = m_sendAfterSave || send;
-        return;
-    }
     if (m_phase != Phase::Starting && m_phase != Phase::Recording)
         return;
-    m_sendAfterSave = send;
     if (m_openTimer->isActive() || m_recorder->state() == voice::VoiceRecorder::State::Idle) {
         // Stopped before the microphone was even open: nothing to send.
         m_openTimer->stop();
         m_recorder->cancel();
         releaseMic();
-        m_phase = Phase::TooShort;
+        m_confirm = false;
+        if (m_hold) {
+            endHold(HoldStrip::Icon::Info, i18n::t("Too short to send — nothing was sent."), true);
+            return;
+        }
+        setPhase(Phase::TooShort);
         refresh();
         m_closeTimer->start(ui::notificationDurationMs());
         return;
     }
     m_recorder->stop(); // -> Captured (onRecorderState)
+}
+
+void VoiceController::encode()
+{
+    removeRecording();
+    m_encoded = false;
+    m_path    = newRecordingPath();
+    m_recorder->encode(m_path);
+    setPhase(Phase::Saving);
+    m_savingShown = false;
+    m_savingTimer->start(kSavingShowMs);
+    refresh();
 }
 
 // ---- sending -------------------------------------------------------------------------------------
@@ -516,36 +984,46 @@ void VoiceController::requestSend()
     switch (m_phase) {
     case Phase::Starting:
     case Phase::Recording:
-    case Phase::Saving:
-        stopRecording(true);
+        m_confirm       = false;
+        m_sendAfterSave = true;
+        stopRecording();
         break;
-    case Phase::Review:
-        doSend();
+    case Phase::Saving:
+        m_confirm       = false;
+        m_sendAfterSave = true;
+        if (m_encoded)
+            doSend();
+        else
+            refresh();
+        break;
+    case Phase::Error:
+        if (m_encoded) { // a kept recording: Send (again)
+            m_sendAfterSave = true;
+            doSend();
+        }
         break;
     case Phase::Idle:
     case Phase::TooShort:
-    case Phase::Error:
         break;
     }
 }
 
 void VoiceController::doSend()
 {
-    if (m_path.isEmpty() || !QFileInfo(m_path).isFile()) {
+    if (!m_encoded || m_path.isEmpty() || !QFileInfo(m_path).isFile()) {
         showSaveError();
         return;
     }
     if (!ts3::isConnected(m_target.sch)) {
-        // Kept: "Not connected to this server. Reconnect, then press Send." (refresh)
+        // Kept: "Not connected to this server … press Send" (the window), sent once you are back.
+        m_notConnected  = true;
         m_sendAfterSave = false;
-        if (m_phase != Phase::Review)
-            enterReview();
-        else
-            refresh();
+        showKept();
         return;
     }
-    closePreview(); // Core links or moves the file: nothing of ours may hold it open
 
+    const bool held  = m_hold;
+    const bool limit = m_limitHit;
     SendRequest request;
     request.target = m_target;
     SendItem item;
@@ -557,12 +1035,17 @@ void VoiceController::doSend()
     item.waveform    = m_levels;
     request.items.append(item);
     m_path.clear(); // Core's now
+    m_encoded = false;
 
     m_recorder->cancel(); // frees the recording in memory
     closeWindow();
     finish();
     ++m_diagSent; // 2.2 diagnostics
-    m_core->send(request);
+    ts3::log(LogLevel_INFO, m_target.sch, "Voice message: sent for upload (%1 ms)", {ts3::pub(m_lengthMs)});
+    if (m_host.send)
+        m_host.send(request);
+    if (held && limit) // 5:00 sent it while the button was held: the strip says why it went
+        showNotice(HoldStrip::Icon::Sent, i18n::t("Reached the %1 limit, so it was sent.").arg(formatDuration(kMaxMs)));
 }
 
 // ---- canceling ----------------------------------------------------------------------------------
@@ -571,10 +1054,25 @@ void VoiceController::requestCancel()
 {
     if (m_confirm)
         return;
-    const bool hasSound = m_phase == Phase::Recording || m_phase == Phase::Saving || m_phase == Phase::Review;
-    const qint64 length = m_phase == Phase::Recording ? m_recorder->elapsedMs() : m_lengthMs;
+    const bool   hasSound = m_phase == Phase::Recording || m_phase == Phase::Saving;
+    const qint64 length   = m_phase == Phase::Recording ? m_recorder->elapsedMs() : m_lengthMs;
     if (hasSound && length >= kConfirmFromMs) {
         m_confirm = true; // the recording goes on meanwhile; Keep continues it
+        refresh();
+        return;
+    }
+    discard(false);
+}
+
+void VoiceController::requestClose()
+{
+    if (m_confirm)
+        return;
+    // A kept recording (stopped by itself, not connected, or not saved yet) is discarded by Close, Esc or
+    // the close button: from 3 s on it asks first, like Cancel while recording.
+    const bool kept = m_phase == Phase::Error && (m_encoded || m_recorder->state() == voice::VoiceRecorder::State::EncodeFailed);
+    if (kept && m_lengthMs >= kConfirmFromMs) {
+        m_confirm = true; // Keep shows the recording's window again
         refresh();
         return;
     }
@@ -593,51 +1091,31 @@ void VoiceController::discard(bool quiet)
     releaseMic();
     if (micOpen && !quiet)
         playCue(false);
-    closePreview();
     removeRecording();
     closeWindow();
     finish();
 }
 
-void VoiceController::rerecord()
-{
-    if (m_phase != Phase::Review && m_phase != Phase::Error)
-        return;
-    // No connection check: recording doesn't need one (the window says "Not connected", and Send checks
-    // it). Returning here after the recording was deleted would leave a Review without a recording.
-    closePreview();
-    removeRecording();
-    m_recorder->cancel();
-    beginRecording();
-}
-
 void VoiceController::fix()
 {
-    const VoicePanel::Fix fix = m_errorView.fix;
-    switch (fix) {
+    switch (m_errorView.fix) {
     case VoicePanel::Fix::TryAgain:
         if (m_recorder->state() == voice::VoiceRecorder::State::EncodeFailed || m_recorder->state() == voice::VoiceRecorder::State::Encoded) {
             // The recording is still in memory (saving failed, or the saved file went missing before
-            // Send): encode it again.
-            removeRecording();
-            m_path = newRecordingPath();
-            m_recorder->encode(m_path);
-            m_phase       = Phase::Saving;
-            m_savingShown = false;
-            m_savingTimer->start(kSavingShowMs);
-            refresh();
+            // it was sent): encode it again; it is sent once saved if Send was pressed.
+            encode();
         } else {
             beginRecording();
         }
+        break;
+    case VoicePanel::Fix::Send:
+        requestSend();
         break;
     case VoicePanel::Fix::WindowsPrivacy:
         QDesktopServices::openUrl(QUrl(QString::fromLatin1("ms-settings:privacy-microphone"))); // a local settings page
         break;
     case VoicePanel::Fix::SoundSettings:
         QDesktopServices::openUrl(QUrl(QString::fromLatin1("ms-settings:sound")));
-        break;
-    case VoicePanel::Fix::PluginSettings:
-        emit settingsRequested();
         break;
     case VoicePanel::Fix::None:
         break;
@@ -657,126 +1135,34 @@ void VoiceController::closeWindow()
 
 void VoiceController::finish()
 {
-    m_phase          = Phase::Idle;
-    m_confirm        = false;
-    m_sendAfterSave  = false;
-    m_savingShown    = false;
-    m_previewWanted  = false;
-    m_pendingSeek    = -1.0;
-    m_reviewTimer->stop();
-}
-
-// ---- review ------------------------------------------------------------------------------------------
-
-void VoiceController::enterReview()
-{
-    m_phase         = Phase::Review;
+    m_confirm       = false;
     m_sendAfterSave = false;
-    closePreview();
-    m_preview = new mf::VideoPlayer(this);
-    m_preview->setVolume(Settings::instance().videoVolume / 100.0);
-    connect(m_preview, &mf::VideoPlayer::loaded, this, [this] {
-        if (!m_preview)
-            return;
-        if (m_pendingSeek >= 0.0)
-            m_preview->seek(qRound64(m_pendingSeek * static_cast<double>(m_lengthMs)));
-        m_pendingSeek = -1.0;
-        if (m_previewWanted) {
-            m_previewWanted = false;
-            m_chat->pauseAllPlayback();
-            m_preview->play();
-        }
-        refresh();
-    });
-    connect(m_preview, &mf::VideoPlayer::failed, this, [this](const QString& error) {
-        ts3::log(LogLevel_WARNING, m_target.sch, "Voice message: the review player failed: %1", {ts3::pub(error)});
-        m_previewWanted = false;
-        refresh();
-    });
-    m_preview->open(m_path, mf::OpenMode::AudioOnly);
-    m_reviewTimer->start();
-    refresh();
-}
-
-void VoiceController::togglePreview()
-{
-    if (m_phase != Phase::Review || !m_preview)
-        return;
-    if (!m_preview->isLoaded()) {
-        m_previewWanted = !m_previewWanted;
-        refresh();
-        return;
-    }
-    if (m_preview->isPlaying()) {
-        m_preview->pause();
-    } else {
-        m_chat->pauseAllPlayback(); // one thing at a time
-        if (m_preview->isEnded())
-            m_preview->seek(0);
-        m_preview->play();
-    }
-    refresh();
-}
-
-void VoiceController::seekPreview(double fraction)
-{
-    if (m_phase != Phase::Review || !m_preview)
-        return;
-    fraction = qBound(0.0, fraction, 1.0);
-    if (!m_preview->isLoaded()) {
-        m_pendingSeek = fraction;
-        return;
-    }
-    const qint64 length = m_preview->duration() > 0 ? m_preview->duration() : m_lengthMs;
-    m_preview->seek(qMin(length, qRound64(fraction * static_cast<double>(length))));
-    refresh();
-}
-
-void VoiceController::seekPreviewBy(qint64 deltaMs)
-{
-    if (m_phase != Phase::Review || !m_preview || !m_preview->isLoaded())
-        return;
-    const qint64 length = m_preview->duration() > 0 ? m_preview->duration() : m_lengthMs;
-    m_preview->seek(qBound<qint64>(0, m_preview->position() + deltaMs, length));
-    refresh();
-}
-
-void VoiceController::closePreview()
-{
-    m_reviewTimer->stop();
-    if (!m_preview)
-        return;
-    mf::VideoPlayer* player = m_preview;
-    m_preview               = nullptr;
-    disconnect(player, nullptr, this, nullptr);
-    delete player; // shuts the engine down synchronously and lets go of the file
-}
-
-void VoiceController::onPlaybackStarted()
-{
-    if (m_phase == Phase::Starting || m_phase == Phase::Recording) {
-        // Nothing plays while recording (it would end up in the message).
-        m_chat->pauseAllPlayback();
-        m_playbackPaused = true;
-        refresh();
-    } else if (m_phase == Phase::Review && m_preview && m_preview->isPlaying()) {
-        m_preview->pause(); // something in the chat or the viewer started: one thing at a time
-        refresh();
-    }
-}
-
-void VoiceController::onPreviewTick()
-{
-    if (m_phase == Phase::Review)
-        refresh();
+    m_encoded       = false;
+    m_savingShown   = false;
+    m_notConnected  = false;
+    m_stopped       = Stopped::None;
+    // Hold to record: over (a notice may show the strip again).
+    if (m_holdButton)
+        m_holdButton->abandonHold(); // 5:00 sent it while still held: the release does nothing
+    m_hold        = false;
+    m_holdDown    = false;
+    m_holdCancel  = false;
+    m_holdButton  = nullptr;
+    m_holdUpTicks = 0;
+    m_holdTicks   = 0;
+    m_holdTimer->stop();
+    hideStrip();
+    setPhase(Phase::Idle);
 }
 
 // ---- errors ------------------------------------------------------------------------------------------
 
 void VoiceController::showError(voice::CaptureError error, long code)
 {
+    toWindow(); // a held recording: the window says it
     m_diagError = code ? QStringLiteral("%1 (0x%2)").arg(QString::fromLatin1(captureErrorName(error))).arg(static_cast<quint32>(code), 8, 16, QLatin1Char('0'))
                        : QString::fromLatin1(captureErrorName(error)); // 2.2 diagnostics
+    m_encoded = false;
     VoicePanel::View v;
     v.mode = VoicePanel::Mode::Error;
     switch (error) {
@@ -806,9 +1192,9 @@ void VoiceController::showError(voice::CaptureError error, long code)
         break;
     case voice::CaptureError::UnsupportedFormat:
         v.errorTitle = i18n::t("This microphone can't be used");
-        v.errorBody  = i18n::t("Its audio format (%1 Hz) isn't supported. Choose another microphone in TS Media settings.").arg(code);
-        v.fix        = VoicePanel::Fix::PluginSettings;
-        v.fixText    = i18n::t("Open TS Media &settings");
+        v.errorBody  = i18n::t("Its audio format (%1 Hz) isn't supported. Choose another microphone in TeamSpeak, or set this one to 48000 Hz in Windows sound settings.").arg(code);
+        v.fix        = VoicePanel::Fix::SoundSettings;
+        v.fixText    = i18n::t("Open &sound settings");
         break;
     case voice::CaptureError::None: // Media Foundation is missing
         v.errorTitle = i18n::t("Voice messages aren't available");
@@ -823,14 +1209,16 @@ void VoiceController::showError(voice::CaptureError error, long code)
         break;
     }
     m_errorView = v;
-    m_phase     = Phase::Error;
     m_confirm   = false;
+    setPhase(Phase::Error);
     refresh();
 }
 
 void VoiceController::showSaveError()
 {
+    toWindow();
     m_diagError = QStringLiteral("saving the recording failed"); // 2.2 diagnostics
+    m_encoded   = false;
     VoicePanel::View v;
     v.mode       = VoicePanel::Mode::Error;
     v.errorTitle = i18n::t("Couldn't save the recording");
@@ -838,8 +1226,50 @@ void VoiceController::showSaveError()
     v.fix        = VoicePanel::Fix::TryAgain;
     v.fixText    = i18n::t("&Try again");
     m_errorView  = v;
-    m_phase      = Phase::Error;
     m_confirm    = false;
+    setPhase(Phase::Error);
+    refresh();
+}
+
+void VoiceController::showKept()
+{
+    toWindow(); // held: the window keeps it (never sent by itself)
+    const QString length = formatDuration(m_lengthMs);
+    VoicePanel::View v;
+    v.mode = VoicePanel::Mode::Error;
+    if (m_notConnected) {
+        v.errorTitle = i18n::t("Not connected to this server");
+        v.errorBody  = i18n::t("Your voice message (%1) is kept. Reconnect, then press Send. Close this window to discard it.").arg(length);
+    } else if (m_stopped == Stopped::DeviceLost) {
+        v.errorTitle = i18n::t("The microphone was disconnected");
+        v.errorBody  = i18n::t("Recording stopped at %1. Send what was recorded, or close this window to discard it.").arg(length);
+    } else if (m_stopped == Stopped::WindowHidden) {
+        v.errorTitle = i18n::t("Recording stopped");
+        v.errorBody  = i18n::t("This window was hidden, so recording stopped at %1. Send what was recorded, or close this window to discard it.").arg(length);
+    } else if (m_stopped == Stopped::HoldLost) {
+        v.errorTitle = i18n::t("Recording stopped");
+        v.errorBody  = i18n::t("The microphone button was let go outside TeamSpeak (or another window took the mouse), so recording stopped at %1 and "
+                               "nothing was sent. Send it, or close this window to discard it.")
+                           .arg(length);
+    } else if (m_stopped == Stopped::ChatChanged) {
+        v.errorTitle = i18n::t("Recording stopped");
+        v.errorBody  = i18n::t("Another chat came up while you held the microphone button, so recording stopped at %1 and nothing was sent. "
+                               "Send it to %2, or close this window to discard it.")
+                           .arg(length, m_targetText);
+    } else if (m_stopped == Stopped::LimitWhileCanceling) {
+        v.errorTitle = i18n::t("Reached the %1 limit").arg(formatDuration(kMaxMs));
+        v.errorBody  = i18n::t("The pointer was away from the microphone to cancel when the recording reached %1, so nothing was sent. "
+                               "Send it, or close this window to discard it.")
+                           .arg(length);
+    } else {
+        v.errorTitle = i18n::t("Recording stopped");
+        v.errorBody  = i18n::t("Recording stopped at %1. Send what was recorded, or close this window to discard it.").arg(length);
+    }
+    v.fix       = VoicePanel::Fix::Send;
+    v.fixText   = i18n::t("&Send");
+    m_errorView = v;
+    m_confirm   = false;
+    setPhase(Phase::Error);
     refresh();
 }
 
@@ -870,7 +1300,7 @@ void VoiceController::ensureCues()
 
 void VoiceController::playCue(bool start)
 {
-    if (!Settings::instance().voiceSounds || !ts3::funcs.playWaveFile || !m_target.sch)
+    if (!ts3::funcs.playWaveFile || !m_target.sch)
         return;
     ensureCues();
     const QByteArray path = QDir::toNativeSeparators(cuePath(start)).toUtf8();
@@ -906,81 +1336,72 @@ void VoiceController::cleanupOldRecordings()
 
 // ---- the window's content ------------------------------------------------------------------------------
 
+void VoiceController::onPlaybackStarted()
+{
+    if (m_phase == Phase::Starting || m_phase == Phase::Recording) {
+        // Nothing plays while recording (it would end up in the message).
+        if (m_host.pauseAllPlayback)
+            m_host.pauseAllPlayback();
+        m_playbackPaused = true;
+        refresh();
+    }
+}
+
 void VoiceController::refresh()
 {
+    refreshHold(); // held: the strip (there is no window)
     if (!m_panel)
         return;
     VoicePanel::View v = m_phase == Phase::Error ? m_errorView : VoicePanel::View();
     if (nowMs() - m_targetTextMs >= 1000) { // a channel switch changes where the message goes
         m_targetTextMs = nowMs();
-        if (ts3::isConnected(m_target.sch))
-            m_targetText = m_chat->voiceTargetText(m_target);
+        if (ts3::isConnected(m_target.sch) && m_host.describe)
+            m_targetText = m_host.describe(m_target);
     }
-    v.target           = m_targetText;
-    v.limitMs          = kMaxMs;
-    v.animate          = ui::animationsEnabled();
-    v.confirmDiscard   = m_confirm;
-    v.device           = m_recorder->deviceName();
+    v.target         = m_targetText;
+    v.limitMs        = kMaxMs;
+    v.animate        = ui::animationsEnabled();
+    v.confirmDiscard = m_confirm;
+    v.device         = m_recorder->deviceName();
     const bool connected = ts3::isConnected(m_target.sch);
-    v.canSend            = connected;
 
     QStringList problems;
     QStringList notes;
-    const QString notConnected = i18n::t("Not connected to this server. Reconnect, then press Send.");
+    const QString muted = i18n::t("Your TeamSpeak microphone is muted while you record.");
     switch (m_phase) {
     case Phase::Idle:
         return;
     case Phase::Starting:
         v.mode = VoicePanel::Mode::Starting;
         if (m_muted)
-            notes << i18n::t("Your TeamSpeak microphone is muted while you record.");
+            notes << muted;
         break;
     case Phase::Recording:
     case Phase::Saving: {
-        v.mode        = m_phase == Phase::Recording ? VoicePanel::Mode::Recording : VoicePanel::Mode::Saving;
-        v.savingShown = m_savingShown;
+        v.mode         = m_phase == Phase::Recording ? VoicePanel::Mode::Recording : VoicePanel::Mode::Saving;
+        v.sendingShown = m_savingShown;
+        v.sending      = m_sendAfterSave;
         const qint64 elapsed = m_phase == Phase::Recording ? m_recorder->elapsedMs() : m_lengthMs;
-        v.timeMs      = elapsed;
+        v.timeMs       = elapsed;
         const int count = m_recorder->binCount();
-        v.liveBins    = m_recorder->bins(qMax(0, count - 100));
-        v.timeWarning = elapsed >= kWarnAtMs;
+        v.liveBins     = m_recorder->bins(qMax(0, count - 100));
+        v.timeWarning  = elapsed >= kWarnAtMs;
         if (!connected)
-            problems << notConnected;
+            problems << i18n::t("Not connected to this server. Reconnect to send it.");
         if (m_phase == Phase::Recording && elapsed >= 3000 && m_recorder->loudestDb() < waveform::kQuietDb)
             problems << i18n::t("No sound from the microphone. Check that it isn't muted.");
-        if (v.timeWarning && elapsed < kMaxMs)
-            problems << i18n::t("30 seconds left");
+        if (m_phase == Phase::Recording && v.timeWarning && elapsed < kMaxMs)
+            problems << i18n::t("30 seconds left. It's sent by itself at %1.").arg(formatDuration(kMaxMs));
+        if (m_phase == Phase::Saving && m_limitHit)
+            notes << i18n::t("Reached the %1 limit, so it's sent now.").arg(formatDuration(kMaxMs));
         if (m_playbackPaused)
             notes << i18n::t("Playback was paused while you record.");
-        if (m_device && m_device->settingMissing && m_device->source == voice::DeviceChoice::Source::TeamSpeak)
-            notes << i18n::t("The microphone chosen in TS Media settings isn't connected. Recording from TeamSpeak's microphone.");
-        else if (m_device && m_device->settingMissing)
-            notes << i18n::t("The microphone chosen in TS Media settings isn't connected. Recording from Windows' default communications microphone.");
-        else if (m_device && m_device->source == voice::DeviceChoice::Source::DefaultCommunications)
-            notes << i18n::t("Recording from Windows' default communications microphone.");
-        if (m_muted)
-            notes << i18n::t("Your TeamSpeak microphone is muted while you record.");
-        break;
-    }
-    case Phase::Review: {
-        v.mode     = VoicePanel::Mode::Review;
-        v.levels   = m_levels;
-        v.lengthMs = m_lengthMs;
-        v.bytes    = m_bytes;
-        if (m_preview && m_preview->isLoaded()) {
-            v.playing = m_preview->isPlaying();
-            v.timeMs  = m_preview->isEnded() ? 0 : qMin(m_lengthMs, m_preview->position());
-            v.started = v.playing || v.timeMs > 0;
+        if (m_device && m_device->source == voice::DeviceChoice::Source::DefaultCommunications) {
+            notes << (m_device->unmatched ? i18n::t("TeamSpeak's microphone wasn't found in Windows. Recording from Windows' default communications microphone.")
+                                          : i18n::t("Recording from Windows' default communications microphone."));
         }
-        if (!connected)
-            problems << notConnected;
-        if (m_limitHit)
-            notes << i18n::t("Maximum length reached (%1).").arg(formatDuration(kMaxMs));
-        else if (m_deviceLost)
-            notes << i18n::t("Recording stopped: the microphone was disconnected.");
-        else if (m_windowHidden)
-            notes << i18n::t("Recording stopped because this window was hidden.");
-        notes << i18n::t("%1 · %2").arg(formatDuration(m_lengthMs), formatSize(static_cast<quint64>(qMax<qint64>(0, m_bytes))));
+        if (m_muted && m_phase == Phase::Recording)
+            notes << muted;
         break;
     }
     case Phase::TooShort:
@@ -994,36 +1415,4 @@ void VoiceController::refresh()
     v.hintError = !problems.isEmpty();
     v.hints     = (problems + notes).mid(0, kMaxHintLines);
     m_panel->setView(v);
-}
-
-// ---- the hotkey ---------------------------------------------------------------------------------------
-
-void VoiceController::hotkey()
-{
-    const qint64 now = nowMs();
-    if (m_lastHotkeyMs > 0 && now - m_lastHotkeyMs < kHotkeyDebounce)
-        return; // key bounce / auto-repeat
-    m_lastHotkeyMs = now;
-    switch (m_phase) {
-    case Phase::Idle:
-        start(Origin::Hotkey);
-        break;
-    case Phase::Starting:
-    case Phase::Recording:
-        stopRecording(!Settings::instance().voiceReview);
-        break;
-    case Phase::Saving:
-        if (!Settings::instance().voiceReview)
-            m_sendAfterSave = true;
-        break;
-    case Phase::Review:
-        if (!m_confirm)
-            doSend();
-        break;
-    case Phase::TooShort:
-    case Phase::Error:
-        if (m_panel)
-            m_panel->raise();
-        break;
-    }
 }
