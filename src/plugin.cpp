@@ -505,7 +505,10 @@ TS3_EXPORT int ts3plugin_init()
         peers->start();
         // 2.2 sha and protocol: their sections of the diagnostic info (counts only; called on the GUI
         // thread while it is collected, and the dialog is closed before PeerHub goes at shutdown).
-        diag::addSectionProvider([]() -> diag::Section { return {fileverify::diagnosticsTitle(), fileverify::diagnosticLines()}; });
+        // 2.3.2: with the connected servers' versions (a TeaSpeak server preallocates uploads).
+        diag::addSectionProvider([]() -> diag::Section {
+            return {fileverify::diagnosticsTitle(), fileverify::diagnosticLines() + (g_core ? g_core->serverCheckDiagnostics() : QStringList())};
+        });
         diag::addSectionProvider([]() -> diag::Section {
             PeerHub* hub = PeerHub::instance();
             return hub ? diag::Section{PeerHub::diagnosticsTitle(), hub->diagnosticLines()} : diag::Section();
@@ -961,6 +964,9 @@ TS3_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHand
         onGuiThread([sch, newStatus] {
             if (newStatus == STATUS_CONNECTION_ESTABLISHED)
                 datasaver::onConnectionEstablished(sch);
+            // 2.3.2: the server's version and platform into the log, once per connection.
+            if (newStatus == STATUS_CONNECTION_ESTABLISHED && g_core)
+                g_core->noteServer(sch);
             if (g_settings)
                 g_settings->reloadServers();
         });
@@ -1099,6 +1105,25 @@ TS3_EXPORT void ts3plugin_onFileTransferStatusEvent(anyID transferID, unsigned i
     onGuiThread([transferID, status, msg, sch] {
         if (g_core)
             g_core->onTransferStatus(transferID, status, msg, sch);
+    });
+}
+
+// The answer to requestFileInfo (no return code: the file's name says which question it answers). Two
+// features ask: Server access checks its group icon, and 2.3.2 Core waits for the server to have all of
+// an uploaded file before its message goes (and asks about a download that came out short).
+TS3_EXPORT void ts3plugin_onFileInfoEvent(uint64 serverConnectionHandlerID, uint64 channelID, const char* name, uint64 size, uint64 datetime)
+{
+    Q_UNUSED(datetime);
+    AccessGroup::handleFileInfo(serverConnectionHandlerID, channelID, name, size); // 2.2 servergroup
+    if (!g_core || !g_core->wantsFileInfo())
+        return; // not Core's: TeamSpeak's own file browser, or the icon check
+    const uint64  sch     = serverConnectionHandlerID;
+    const QString file    = str(name);
+    const quint64 bytes   = static_cast<quint64>(size);
+    const uint64  channel = channelID;
+    onGuiThread([sch, channel, file, bytes] {
+        if (g_core)
+            g_core->onFileInfo(sch, channel, file, bytes);
     });
 }
 

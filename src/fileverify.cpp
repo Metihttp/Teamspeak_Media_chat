@@ -1,9 +1,11 @@
 #include "fileverify.h"
 
+#include <QFile>
 #include <QMetaObject>
 #include <QTimer>
 
 #include "i18n.h"
+#include "uploadwait.h" // 2.3.2: dataEnd
 
 namespace fileverify {
 
@@ -124,9 +126,25 @@ void Verifier::start(const QString& key, const QString& path, const QByteArray& 
         job.pass = 2;
         m_jobs.insert(key, job);
         const quint64 id = job.id;
-        QMetaObject::invokeMethod(this, [this, key, id] { onPassDone(key, id, 2, {}, QString::fromLatin1("no expected digest")); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, [this, key, id] { onPassDone(key, id, 2, {}, QString::fromLatin1("no expected digest"), -1, -1); }, Qt::QueuedConnection);
         return;
     }
+    m_jobs.insert(key, job);
+    runPass(key);
+}
+
+void Verifier::scanTail(const QString& key, const QString& path)
+{
+    if (m_closing)
+        return;
+    cancel(key);
+    Job job;
+    job.id       = ++m_nextId;
+    job.path     = path;
+    job.scanOnly = true;
+    job.pass     = 1; // runPass makes it the last one
+    job.cancel   = std::make_shared<std::atomic<bool>>(false);
+    job.started.start();
     m_jobs.insert(key, job);
     runPass(key);
 }
@@ -185,26 +203,46 @@ void Verifier::runPass(const QString& key)
     job.dueAt    = -1;
     job.progress = -1.0;
 
-    const quint64  id     = job.id;
-    const int      pass   = job.pass;
-    const QString  path   = job.path;
-    const auto     cancel = job.cancel;
-    const HashFile hash   = m_env.hashFile ? m_env.hashFile : HashFile(&hashing::sha256File);
+    const quint64    id       = job.id;
+    const int        pass     = job.pass;
+    const QString    path     = job.path;
+    const auto       cancel   = job.cancel;
+    const bool       scanOnly = job.scanOnly;
+    const QByteArray expected = job.expected;
+    const HashFile   hash     = m_env.hashFile ? m_env.hashFile : HashFile(&hashing::sha256File);
     // shutdown() waits for the pool before this object goes, so it is alive while a pass runs; the
     // queued calls are dropped if it is gone by the time they would run.
     Verifier* self = this;
-    m_pool.start([self, key, id, pass, path, cancel, hash] {
-        const hashing::Progress progress = [self, key, id, pass, cancel](qint64 done, qint64 total) {
-            if (cancel->load() || total <= 0)
-                return;
-            const double fraction = qBound(0.0, static_cast<double>(done) / static_cast<double>(total), 1.0);
-            QMetaObject::invokeMethod(self, [self, key, id, pass, fraction] { self->onPassProgress(key, id, pass, fraction); }, Qt::QueuedConnection);
-        };
-        QString          error;
-        const QByteArray digest = hash(path, cancel.get(), progress, &error);
+    m_pool.start([self, key, id, pass, path, cancel, hash, scanOnly, expected] {
+        QString    error;
+        QByteArray digest;
+        if (!scanOnly) {
+            const hashing::Progress progress = [self, key, id, pass, cancel](qint64 done, qint64 total) {
+                if (cancel->load() || total <= 0)
+                    return;
+                const double fraction = qBound(0.0, static_cast<double>(done) / static_cast<double>(total), 1.0);
+                QMetaObject::invokeMethod(self, [self, key, id, pass, fraction] { self->onPassProgress(key, id, pass, fraction); }, Qt::QueuedConnection);
+            };
+            digest = hash(path, cancel.get(), progress, &error);
+        }
         if (cancel->load())
             return; // dropped: nobody waits for it
-        QMetaObject::invokeMethod(self, [self, key, id, pass, digest, error] { self->onPassDone(key, id, pass, digest, error); }, Qt::QueuedConnection);
+        // 2.3.2: the last pass didn't match (or there is nothing to match): where does the data end? Zeros
+        // after it may be an upload still arriving at a preallocating server (uploadwait.h). The file was
+        // just read, so this is mostly the system's cache; for a file that ends in data, one chunk.
+        qint64 size = -1;
+        qint64 end  = -1;
+        if (scanOnly || (pass >= 2 && digest.size() == kShaBytes && digest != expected)) {
+            QFile file(path);
+            if (file.open(QIODevice::ReadOnly)) {
+                size = file.size();
+                end  = uploadwait::dataEnd(file, cancel.get());
+            }
+            if (cancel->load())
+                return;
+        }
+        QMetaObject::invokeMethod(self, [self, key, id, pass, digest, error, size, end] { self->onPassDone(key, id, pass, digest, error, size, end); },
+                                  Qt::QueuedConnection);
     });
 }
 
@@ -219,12 +257,16 @@ void Verifier::onPassProgress(const QString& key, quint64 id, int pass, double f
     emit progressChanged(key, fraction, pass >= 2);
 }
 
-void Verifier::onPassDone(const QString& key, quint64 id, int pass, const QByteArray& digest, const QString& error)
+void Verifier::onPassDone(const QString& key, quint64 id, int pass, const QByteArray& digest, const QString& error, qint64 size, qint64 dataEnd)
 {
     auto it = m_jobs.find(key);
     if (it == m_jobs.end() || it->id != id || it->pass != pass || it->waiting)
         return; // canceled or replaced meanwhile
     Job& job = it.value();
+    if (job.scanOnly) {
+        finish(key, Outcome::Unchecked, {}, error, size, dataEnd);
+        return;
+    }
     if (digest.size() == kShaBytes && digest == job.expected) {
         finish(key, Outcome::Match, digest, {});
         return;
@@ -243,7 +285,7 @@ void Verifier::onPassDone(const QString& key, quint64 id, int pass, const QByteA
         return;
     }
     if (digest.size() == kShaBytes)
-        finish(key, Outcome::Mismatch, digest, {});
+        finish(key, Outcome::Mismatch, digest, {}, size, dataEnd);
     else
         finish(key, Outcome::ReadError, {}, error.isEmpty() ? QString::fromLatin1("no digest") : error);
 }
@@ -277,7 +319,7 @@ void Verifier::pollWaiting()
         runPass(key);
 }
 
-void Verifier::finish(const QString& key, Outcome outcome, const QByteArray& received, const QString& error)
+void Verifier::finish(const QString& key, Outcome outcome, const QByteArray& received, const QString& error, qint64 size, qint64 dataEnd)
 {
     const Job job = m_jobs.take(key);
     Result    result;
@@ -285,11 +327,13 @@ void Verifier::finish(const QString& key, Outcome outcome, const QByteArray& rec
     result.outcome   = outcome;
     result.expected  = job.expected;
     result.received  = received;
-    result.rechecked = job.pass >= 2;
+    result.rechecked = job.pass >= 2 && !job.scanOnly;
     if (result.rechecked)
         result.firstReceived = job.firstReceived;
     result.error     = error;
     result.elapsedMs = job.started.isValid() ? job.started.elapsed() : 0;
+    result.size      = size;
+    result.dataEnd   = dataEnd;
 
     switch (outcome) {
     case Outcome::Match:
@@ -302,6 +346,8 @@ void Verifier::finish(const QString& key, Outcome outcome, const QByteArray& rec
         break;
     case Outcome::ReadError:
         count(Counter::ReadErrors);
+        break;
+    case Outcome::Unchecked: // nothing was compared
         break;
     }
     emit finished(result);
@@ -363,6 +409,21 @@ QStringList diagnosticLines()
                  .arg(counted(Counter::ForgedBlocked))
                  .arg(counted(Counter::PreviewMismatched));
     lines << i18n::t("Files sent: %1 with a checksum, %2 without").arg(counted(Counter::SentWithSha)).arg(counted(Counter::SentWithoutSha));
+    // 2.3.2: the upload race (uploadwait.h)
+    lines << i18n::t("Upload race: messages that waited for the server %1, sent without its confirmation %2; downloads started again %3, "
+                     "complete after that %4")
+                 .arg(counted(Counter::UploadsWaited))
+                 .arg(counted(Counter::UploadsUnconfirmed))
+                 .arg(counted(Counter::DownloadsRefetched))
+                 .arg(counted(Counter::DownloadsRecovered));
+    // 2.3.2: preallocating servers (TeaSpeak)
+    lines << i18n::t("Server copies of sent files checked: %1 by their end, %2 whole, %3 by size only; %4 still arriving at first. Downloads that ended in "
+                     "zeros: %5")
+                 .arg(counted(Counter::ContentByTail))
+                 .arg(counted(Counter::ContentByFull))
+                 .arg(counted(Counter::ContentSizeOnly))
+                 .arg(counted(Counter::ContentWaited))
+                 .arg(counted(Counter::ZeroTails));
     lines << i18n::t("Hashing: %1").arg(hashBackend());
     return lines;
 }

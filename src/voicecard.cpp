@@ -140,6 +140,8 @@ QStringList statusTexts(const MediaEntry& e, const PlaybackOverlay& o)
             return {i18n::t("%1 · Click to retry").arg(title), title};
         return {title};
     }
+    if (isWaitingForUpload(e)) // 2.3.2: instead of a "0%" that never moves
+        return waitingForUploadTexts();
     return {};
 }
 
@@ -370,6 +372,8 @@ double voiceSeekFractionAt(const MediaEntry& entry, const PlaybackOverlay& overl
 QString voiceZoneToolTip(const MediaEntry& entry, const PlaybackOverlay& overlay, VideoZone zone, double seekFraction)
 {
     if (overlay.busy) {
+        if (isWaitingForUpload(entry)) // 2.3.2
+            return i18n::t("%1 Click to cancel autoplay.").arg(waitingForUploadText());
         if (entry.state == MediaState::Downloading)
             return i18n::t("Downloading… Click to cancel autoplay.");
         if (entry.state == MediaState::Ready)

@@ -1368,6 +1368,8 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
         if (o.busy) {
             if (isCheckingShown(*e)) // 2.2 sha
                 return i18n::t("%1 Click to cancel autoplay.").arg(checkingText(*e));
+            if (isWaitingForUpload(*e)) // 2.3.2
+                return i18n::t("%1 Click to cancel autoplay.").arg(waitingForUploadText());
             if (e->state == MediaState::Downloading)
                 return i18n::t("Downloading… Click to cancel autoplay.");
             if (e->state == MediaState::Ready)

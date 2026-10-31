@@ -16,6 +16,7 @@
 #include "fileverify.h"
 #include "hashing.h"
 #include "testmain.h"
+#include "uploadwait.h" // 2.3.2: isZeroTail
 
 namespace {
 
@@ -175,6 +176,7 @@ class TestFileVerify : public QObject
     void realFileTruncatedOrPadded();
     void realFileFixedBeforeSecondPass();
     void realFileMissing();
+    void realFileScanTail();
 
     // forged-hash guard
     void knownDigestsVerdicts();
@@ -594,6 +596,42 @@ void TestFileVerify::realFileTruncatedOrPadded()
     QCOMPARE(r.outcome, Outcome::Mismatch);
     QCOMPARE(r.received, digestOf(got));
     QVERIFY(r.stableMismatch());
+    // 2.3.2: where the data ends comes with a mismatch; only the zeroed end is a zero tail.
+    QCOMPARE(r.size, qint64(got.size()));
+    QVERIFY(r.dataEnd > 0 && r.dataEnd <= r.size);
+    QCOMPARE(uploadwait::isZeroTail(r.size, r.dataEnd, false), change == 2);
+}
+
+void TestFileVerify::realFileScanTail()
+{
+    // 2.3.2: no digest to compare with: only where the data ends, from the verifier's threads.
+    QTemporaryDir    dir;
+    const QString    path = dir.filePath(QStringLiteral("notes.png"));
+    QByteArray       file(400000, '\0');
+    file.replace(0, 225000, QByteArray(225000, 'x'));
+    QVERIFY(writeFile(path, file));
+    fileverify::Verifier verifier(quickEnvironment());
+    Reports              reports;
+    reports.attach(&verifier);
+    verifier.scanTail(QStringLiteral("k"), path);
+    QVERIFY(verifier.isChecking(QStringLiteral("k")));
+    verifier.scanTail(QStringLiteral("gone"), dir.filePath(QStringLiteral("gone.png")));
+    QTRY_COMPARE(reports.results.size(), 2);
+    for (const Result& r : qAsConst(reports.results)) {
+        QCOMPARE(r.outcome, Outcome::Unchecked);
+        QVERIFY(!r.rechecked);
+        if (r.key == QLatin1String("k")) {
+            QCOMPARE(r.size, qint64(400000));
+            QCOMPARE(r.dataEnd, qint64(225000));
+        } else {
+            QCOMPARE(r.size, qint64(-1));
+            QCOMPARE(r.dataEnd, qint64(-1));
+        }
+    }
+    // Nothing was checked: no counts.
+    QCOMPARE(fileverify::counted(fileverify::Counter::Verified), 0);
+    QCOMPARE(fileverify::counted(fileverify::Counter::Mismatched), 0);
+    QCOMPARE(fileverify::counted(fileverify::Counter::ReadErrors), 0);
 }
 
 void TestFileVerify::realFileFixedBeforeSecondPass()
@@ -773,13 +811,32 @@ void TestFileVerify::diagnostics()
     fileverify::count(fileverify::Counter::Mismatched);
     fileverify::count(fileverify::Counter::ForgedBlocked);
     fileverify::count(fileverify::Counter::SentWithSha);
+    // 2.3.2: the upload race
+    fileverify::count(fileverify::Counter::UploadsWaited);
+    fileverify::count(fileverify::Counter::UploadsWaited);
+    fileverify::count(fileverify::Counter::DownloadsRefetched);
+    fileverify::count(fileverify::Counter::DownloadsRefetched);
+    fileverify::count(fileverify::Counter::DownloadsRefetched);
+    fileverify::count(fileverify::Counter::DownloadsRecovered);
+    // 2.3.2: preallocating servers
+    fileverify::count(fileverify::Counter::ContentByTail);
+    fileverify::count(fileverify::Counter::ContentByTail);
+    fileverify::count(fileverify::Counter::ContentByFull);
+    fileverify::count(fileverify::Counter::ContentWaited);
+    fileverify::count(fileverify::Counter::ZeroTails);
+    fileverify::count(fileverify::Counter::ZeroTails);
+    fileverify::count(fileverify::Counter::ZeroTails);
     const QStringList lines = fileverify::diagnosticLines();
-    QCOMPARE(lines.size(), 4);
+    QCOMPARE(lines.size(), 6);
     QVERIFY(lines.at(0).contains(QStringLiteral("2 matched")));
     QVERIFY(lines.at(0).contains(QStringLiteral("1 didn't match")));
     QVERIFY(lines.at(1).contains(QStringLiteral(": 1;")));
     QVERIFY(lines.at(2).contains(QStringLiteral("1 with a checksum, 0 without")));
-    QVERIFY(lines.at(3).contains(fileverify::hashBackend()));
+    QVERIFY(lines.at(3).contains(QStringLiteral("messages that waited for the server 2, sent without its confirmation 0")));
+    QVERIFY(lines.at(3).contains(QStringLiteral("downloads started again 3, complete after that 1")));
+    QVERIFY(lines.at(4).contains(QStringLiteral("2 by their end, 1 whole, 0 by size only; 1 still arriving at first")));
+    QVERIFY(lines.at(4).contains(QStringLiteral("ended in zeros: 3")));
+    QVERIFY(lines.at(5).contains(fileverify::hashBackend()));
     QVERIFY(!fileverify::diagnosticsTitle().isEmpty());
     fileverify::resetCounters();
     QCOMPARE(fileverify::counted(fileverify::Counter::Verified), 0);

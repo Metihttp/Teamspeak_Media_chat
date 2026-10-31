@@ -580,6 +580,8 @@ QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly
     case MediaState::Downloading: {
         if (isCheckingShown(e)) // 2.2 sha
             return {checkingText(e), i18n::t("Checking…")};
+        if (isWaitingForUpload(e)) // 2.3.2
+            return waitingForUploadTexts();
         const int     percent = qRound(qBound(0.0, e.progress, 1.0) * 100.0);
         const QString amounts = amountText(e);
         QStringList   texts;
@@ -595,10 +597,8 @@ QStringList statusTexts(const MediaEntry& e, bool cannotPreview, bool revealOnly
             return {i18n::t("Click to show in folder"), i18n::t("Show in folder")};
         return {i18n::t("Click to open"), i18n::t("Open")};
     case MediaState::Failed:
-        if (e.error == MediaError::Mismatch) { // 2.2 sha: the cause and the way out, as much as fits
-            const QString again = i18n::t("Ask the sender again");
-            return {joinDot(errorTitle(e), errorHint(e)), joinDot(errorTitle(e), again), joinDot(i18n::t("Doesn't match"), again), errorTitle(e),
-                    i18n::t("Doesn't match")};
+        if (e.error == MediaError::Mismatch) { // 2.2 sha: the cause and the way out, as much as fits (2.3.2: a click tries again)
+            return {joinDot(errorTitle(e), errorHint(e)), joinDot(i18n::t("Doesn't match"), errorHint(e)), errorTitle(e), i18n::t("Doesn't match")};
         }
         return {errorTitle(e)};
     }
@@ -891,6 +891,11 @@ QImage renderPicture(const MediaEntry& e, const QImage& pixels, MediaStill::Sour
             drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, shown, {checkingText(e), i18n::t("Checking…")}, pillFont);
             break;
         }
+        if (isWaitingForUpload(e)) { // 2.3.2: no percentage (it would read as a stuck 0%)
+            drawProgressDisc(p, disc, -1, true, false, style, hovered, pressed);
+            drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::None, -1, waitingForUploadTexts(), pillFont);
+            break;
+        }
         // Same disc as the download button before, now with the percentage; the pill has the amounts.
         drawProgressDisc(p, disc, e.progress, false, true, style, hovered, pressed);
         const QString amounts = amountText(e);
@@ -1082,7 +1087,10 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
         drawWaitingGlyph(p, slot.center(), 8.5, 2.2, pal.track, hovered ? pal.title : pal.muted);
         break;
     case MediaState::Downloading:
-        drawRing(p, slot.center(), 8.5, 2.2, shownDownloadProgress(e), pal.track, pal.progress, style.animate); // 2.2 sha: the check's, when shown
+        if (isWaitingForUpload(e)) // 2.3.2: waiting, like a queued download (no stuck 0%)
+            drawWaitingGlyph(p, slot.center(), 8.5, 2.2, pal.track, hovered ? pal.title : pal.muted);
+        else
+            drawRing(p, slot.center(), 8.5, 2.2, shownDownloadProgress(e), pal.track, pal.progress, style.animate); // 2.2 sha: the check's, when shown
         break;
     case MediaState::Ready:
         // Programs and scripts are only shown in their folder (the status line says so).
@@ -1130,7 +1138,7 @@ QImage renderCard(const MediaEntry& e, const PreviewStyle& style, bool imageDeco
     p.drawText(QRectF(textStart, top + titleFm.height() + 3, textWidth, subFm.height()), align,
                fitText(subFm, hiddenSpoiler ? QStringList{i18n::t("Click to reveal")} : cardStatusTexts(e, imageDecodeFailed, style.revealOnly), textWidth));
 
-    if (e.state == MediaState::Downloading && !hiddenSpoiler) {
+    if (e.state == MediaState::Downloading && !hiddenSpoiler && !isWaitingForUpload(e)) { // 2.3.2: no bar while waiting
         const QRectF track(textStart, h - 10, textWidth, 3);
         p.setPen(Qt::NoPen);
         p.setBrush(pal.track);
@@ -1408,9 +1416,10 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
                           retry && overlay.pressed != VideoZone::None);
     } else if (overlay.busy) {
         // 2.2 sha: while a smaller file is checked the ring stays full, without a "100%" that would
-        // contradict "Checking file…".
+        // contradict "Checking file…". 2.3.2: waiting for the sender's upload: the waiting glyph.
         const bool label = !isCheckingShown(entry) || checkingPercent(entry);
-        drawProgressDisc(p, g.centerDisc, overlay.busyProgress, false, label, style, overlay.hover != VideoZone::None, overlay.pressed != VideoZone::None);
+        drawProgressDisc(p, g.centerDisc, overlay.busyProgress, isWaitingForUpload(entry), label, style, overlay.hover != VideoZone::None,
+                         overlay.pressed != VideoZone::None);
     } else if (!overlay.playing) {
         const QRectF disc = g.centerDisc;
         PressScale   scale(p, disc.center(), pressed);
@@ -1453,6 +1462,8 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
             } else if (isCheckingShown(entry) && !started) { // 2.2 sha: downloaded, being checked
                 drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::Progress, shownDownloadProgress(entry), {checkingText(entry), i18n::t("Checking…")}, pillFont,
                          leftMax);
+            } else if (isWaitingForUpload(entry) && !started) { // 2.3.2: no percentage (it would read as a stuck 0%)
+                drawPill(p, bounds, Qt::BottomLeftCorner, PillIcon::None, -1, waitingForUploadTexts(), pillFont, leftMax);
             } else if (!overlay.busy && !started) {
                 switch (entry.state) {
                 case MediaState::Idle:
@@ -1533,8 +1544,9 @@ double seekFractionAt(const QSize& logicalSize, const QPointF& pos)
 
 bool isRetryableDownload(const MediaEntry& entry)
 {
-    // 2.2 sha: a file that doesn't match its link would come back with the same bytes.
-    return entry.state == MediaState::Failed && entry.error != MediaError::NotFound && entry.error != MediaError::Password && entry.error != MediaError::Mismatch;
+    // 2.3.2: a file that didn't match its link too: it may have been the sender's upload still arriving
+    // at the server (Core::retry downloads it again).
+    return entry.state == MediaState::Failed && entry.error != MediaError::NotFound && entry.error != MediaError::Password;
 }
 
 // ---- 2.2 sha ------------------------------------------------------------------------------------
@@ -1546,6 +1558,8 @@ bool isCheckingShown(const MediaEntry& entry)
 
 double shownDownloadProgress(const MediaEntry& entry)
 {
+    if (isWaitingForUpload(entry)) // 2.3.2: nothing to measure until the server has all of it
+        return -1.0;
     if (!isCheckingShown(entry))
         return entry.progress;
     return checkingPercent(entry) ? qBound(0.0, entry.check.progress, 1.0) : 1.0;
@@ -1564,9 +1578,26 @@ QString errorHint(const MediaEntry& entry)
 {
     if (entry.state != MediaState::Failed)
         return {};
-    if (entry.error == MediaError::Mismatch)
-        return i18n::t("Ask the sender to send it again");
+    if (entry.error == MediaError::Mismatch) // 2.3.2: no longer final
+        return i18n::t("Click to try again");
     return isRetryableDownload(entry) ? retryHint() : QString();
+}
+
+// ---- 2.3.2: the upload race -----------------------------------------------------------------------
+
+bool isWaitingForUpload(const MediaEntry& entry)
+{
+    return entry.state == MediaState::Downloading && entry.waitingForUpload;
+}
+
+QString waitingForUploadText()
+{
+    return i18n::t("Waiting for the sender's upload…");
+}
+
+QStringList waitingForUploadTexts()
+{
+    return {waitingForUploadText(), i18n::t("Waiting for upload…"), i18n::t("Waiting…")};
 }
 
 bool isPreviewActionable(const MediaEntry& entry)
@@ -1710,7 +1741,10 @@ void drawAlbumTile(QPainter& p, const QRect& tile, const QSize& box, const Album
                 drawProgressDisc(p, disc, -1, true, false, style, hovered, pressed);
                 break;
             case MediaState::Downloading:
-                drawProgressDisc(p, disc, e->progress, false, false, style, hovered, pressed);
+                if (isWaitingForUpload(*e)) // 2.3.2: waiting, like a queued download (no stuck 0%)
+                    drawProgressDisc(p, disc, -1, true, false, style, hovered, pressed);
+                else
+                    drawProgressDisc(p, disc, e->progress, false, false, style, hovered, pressed);
                 break;
             case MediaState::Idle:
             case MediaState::Ready:

@@ -224,8 +224,9 @@ QString formatTimeLeft(qint64 ms);                   // "8 s left", "3 min left"
 // ---- transfer errors: one wording per cause, shared by every surface -----------------------------
 
 // Why a transfer failed (MediaEntry::error for downloads). Core maps TeamSpeak's error codes to it.
-// 2.2 sha: Mismatch, the downloaded file isn't the one its link's SHA-256 names (deleted, final: a new
-// download gets the same bytes). New values go at the end (diagnostics count them by number).
+// 2.2 sha: Mismatch, the downloaded file isn't the one its link's SHA-256 names (deleted; 2.3.2: after
+// two complete downloads agreed on it, and a click still tries again). New values go at the end
+// (diagnostics count them by number).
 enum class MediaError { None, Permission, Password, NotFound, NotConnected, Quota, Other, Mismatch };
 
 // Downloads. The title is a short fragment for inline cards and pictures (no final period, never the

@@ -80,7 +80,8 @@ QRectF    videoZoneRect(const QSize& logicalSize, const QPointF& pos, bool cente
 double    seekFractionAt(const QSize& logicalSize, const QPointF& pos); // 0..1 along the seek bar
 
 // A failed download that a click (or "Retry download") can fix. Not for files that are gone from
-// the server or in password-protected channels: those previews do nothing when clicked.
+// the server or in password-protected channels: those previews do nothing when clicked. 2.3.2: a file
+// that didn't match what was sent can be tried again (Core::retry downloads it once more).
 bool isRetryableDownload(const MediaEntry& entry);
 // A left click on the preview does something (download, open, retry, play).
 bool isPreviewActionable(const MediaEntry& entry);
@@ -96,14 +97,24 @@ QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool reve
 bool isCheckingShown(const MediaEntry& entry);
 // The download progress previews draw: while a large file (over 256 MB) is checked, the check's own,
 // which starts at 0 again (checkingText says so with its percentage); while a smaller one is, 1.0;
-// otherwise entry.progress.
+// 2.3.2: while it waits for the sender's upload, -1 (nothing to measure: the waiting glyph or a
+// spinner, never a stuck 0%); otherwise entry.progress.
 double shownDownloadProgress(const MediaEntry& entry);
 // "Checking file…", "Checking file… 42%" (files over 256 MB), "Checking file again…" (the second pass
 // after a first one that didn't match).
 QString checkingText(const MediaEntry& entry);
-// What a failed preview says under its title: "Click to retry" where retrying can help, "Ask the sender
-// to send it again" for a file that doesn't match what was sent, else nothing.
+// What a failed preview says under its title: "Click to retry" where retrying can help, "Click to try
+// again" for a file that doesn't match what was sent (2.3.2), else nothing.
 QString errorHint(const MediaEntry& entry);
+
+// ---- 2.3.2: a download waiting for the sender's upload ---------------------------------------------
+// True between two downloads of a file that came out short or didn't match while the sender's upload
+// may still have been arriving at the server (MediaEntry::waitingForUpload): Core waits for the server
+// to have all of it. Previews say waitingForUploadText(), "Waiting for the sender's upload…" (with the
+// waiting glyph, no percentage); waitingForUploadTexts() adds the shorter forms for narrow places.
+bool        isWaitingForUpload(const MediaEntry& entry);
+QString     waitingForUploadText();
+QStringList waitingForUploadTexts();
 
 // Text colours with the background they are drawn on (translucent layers already flattened), and
 // the contrast each needs: tools/render_gallery prints them so a regression shows up.

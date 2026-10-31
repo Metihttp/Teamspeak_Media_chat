@@ -9,16 +9,20 @@
 // A file that doesn't match is checked once more before that counts: TeamSpeak may report a transfer
 // complete while the file is still being written (the 2.0.5 write race), so the second pass waits
 // until nothing has the file open for writing, and a moment longer. Only a match lets Core move the
-// file into the cache. A mismatch is final (decisions: "Block only"): the file is deleted, and the
-// preview asks for the file to be sent again.
+// file into the cache. A mismatch is never shown (decisions: "Block only"): the file is deleted. 2.3.2:
+// nor is it final at once: the sender's upload may still have been arriving at the server (the upload
+// race, uploadwait.h), so Core asks the server and downloads it again; it is final once a download
+// started after the server reported the whole file gives the same wrong digest as the one before (or
+// nothing changes while the server can't tell), and the preview then offers to try again.
 //
 // Sender. finalizeStaged() is the one step that hashes what gets uploaded: the final staged bytes,
 // right before the preview and the file are uploaded (2.4: after a transcode or an edit). A read error
 // isn't fatal: the link goes out without a sha.
 //
 // Forged hashes. Core remembers the real digest of server files it has seen (its own uploads, checked
-// downloads). A link naming the same file and size with another hash is refused at once, without
-// downloading the file again (KnownDigests).
+// downloads, 2.3.2: mismatches confirmed with the server's whole file). A link naming the same file and
+// size with another hash is refused at once, without downloading the file again (KnownDigests); a
+// click on it still downloads it once (Core::retryMismatch).
 
 #include <QByteArray>
 #include <QElapsedTimer>
@@ -92,7 +96,8 @@ class KnownDigests
 
 // ---- receiver -------------------------------------------------------------------------------------
 
-enum class Outcome { Match, Mismatch, ReadError };
+// Unchecked: scanTail() only (nothing to compare with).
+enum class Outcome { Match, Mismatch, ReadError, Unchecked };
 
 struct Result {
     QString    key;
@@ -103,6 +108,10 @@ struct Result {
     bool       rechecked = false;
     QString    error;         // ReadError: why
     qint64     elapsedMs = 0; // start() to the result
+    // 2.3.2: Mismatch and Unchecked: the file's size and where its data ends (uploadwait::dataEnd: the
+    // zeros after it may be an upload still arriving at a preallocating server). -1: not known.
+    qint64     size    = -1;
+    qint64     dataEnd = -1;
 
     // A mismatch both passes agree on: the file on the server really is a different one (Core then
     // remembers its digest for the forged-hash guard). Not after a race: the passes differ then.
@@ -130,6 +139,9 @@ class Verifier : public QObject
     // Checks the file at path against expected (32 bytes) for key. A check still running for key is
     // dropped first (its result never arrives). The file must stay where it is until finished().
     void start(const QString& key, const QString& path, const QByteArray& expected);
+    // 2.3.2: no digest to compare with: only finds where the file's data ends (Outcome::Unchecked, size
+    // and dataEnd), on the same threads. Replaces a check still running for key.
+    void scanTail(const QString& key, const QString& path);
     void cancel(const QString& key); // its result never arrives
     void cancelAll();
     // cancelAll(), then waits for passes still running: each stops within one chunk (hashing.h). For
@@ -152,6 +164,7 @@ class Verifier : public QObject
         QByteArray                         expected;
         std::shared_ptr<std::atomic<bool>> cancel;
         int                                pass     = 0;     // 1 or 2 while hashing
+        bool                               scanOnly = false; // 2.3.2: scanTail()
         bool                               waiting  = false; // for the second pass
         qint64                             waitFrom = 0;
         qint64                             dueAt    = -1;    // the second pass starts then (-1: writer not gone yet)
@@ -161,10 +174,11 @@ class Verifier : public QObject
     };
 
     void runPass(const QString& key);
-    void onPassDone(const QString& key, quint64 id, int pass, const QByteArray& digest, const QString& error);
+    // size, dataEnd: the tail scan (the last pass when the digest didn't match; scanTail()), else -1.
+    void onPassDone(const QString& key, quint64 id, int pass, const QByteArray& digest, const QString& error, qint64 size, qint64 dataEnd);
     void onPassProgress(const QString& key, quint64 id, int pass, double fraction);
     void pollWaiting();
-    void finish(const QString& key, Outcome outcome, const QByteArray& received, const QString& error);
+    void finish(const QString& key, Outcome outcome, const QByteArray& received, const QString& error, qint64 size = -1, qint64 dataEnd = -1);
 
     Environment         m_env;
     QHash<QString, Job> m_jobs;
@@ -194,6 +208,17 @@ enum class Counter {
     PreviewMismatched,  // previews that didn't match their ph (the placeholder stays)
     SentWithSha,
     SentWithoutSha,     // the staged file couldn't be read: the link went out without a sha
+    // 2.3.2: the upload race (uploadwait.h)
+    UploadsWaited,      // sent files whose message waited until the server had all of them
+    UploadsUnconfirmed, // sent files whose message went without the server confirming all of them
+    DownloadsRefetched, // downloads started again while the sender's upload was still arriving
+    DownloadsRecovered, // files that arrived complete after that
+    // 2.3.2: preallocating servers (TeaSpeak; uploadwait.h)
+    ContentByTail,      // sent files whose bytes on the server were checked by their tail ...
+    ContentByFull,      // ... by downloading them whole
+    ContentSizeOnly,    // ... not at all (posted after the size check)
+    ContentWaited,      // sent files whose server copy still had other bytes (zeros) at first
+    ZeroTails,          // downloads that ended in zeros (an upload still arriving): waited for, never a mismatch
     Count
 };
 void        count(Counter counter);

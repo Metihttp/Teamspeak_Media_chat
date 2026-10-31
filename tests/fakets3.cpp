@@ -20,9 +20,15 @@ struct State {
     QList<Transfer>            transfers;
     QList<Message>             messages;
     QList<Directory>           directories;
+    QList<InfoRequest>         infoRequests; // 2.3.2
     QStringList                log;
     anyID                      nextTransfer   = 100;
     int                        nextReturnCode = 0;
+    QString                    serverVersion  = QStringLiteral("3.13.7 [Build: 1655727713]"); // 2.3.2
+    QString                    serverPlatform = QStringLiteral("Linux");
+    bool                       resumeSupported = true;
+    bool                       resumeFromStart = false;
+    QStringList                deletedWhileChecking;
 };
 
 State& state()
@@ -98,7 +104,12 @@ unsigned int getServerVariableAsString(uint64 sch, size_t flag, char** result)
 {
     if (sch != kConnection)
         return ERROR_parameter_invalid;
-    *result = copyString(flag == VIRTUALSERVER_UNIQUE_IDENTIFIER ? QByteArray(kServerUid) : QByteArray("Fake server"));
+    if (flag == VIRTUALSERVER_VERSION)
+        *result = copyString(state().serverVersion.toUtf8());
+    else if (flag == VIRTUALSERVER_PLATFORM)
+        *result = copyString(state().serverPlatform.toUtf8());
+    else
+        *result = copyString(flag == VIRTUALSERVER_UNIQUE_IDENTIFIER ? QByteArray(kServerUid) : QByteArray("Fake server"));
     return ERROR_ok;
 }
 
@@ -156,7 +167,8 @@ void createReturnCode(const char*, char* returnCode, size_t maxLen)
     qstrncpy(returnCode, rc.constData(), static_cast<uint>(maxLen));
 }
 
-unsigned int requestFile(uint64 sch, uint64 channelID, const char*, const char* file, int, int, const char* destinationDirectory, anyID* result, const char* returnCode)
+unsigned int requestFile(uint64 sch, uint64 channelID, const char*, const char* file, int overwrite, int resume, const char* destinationDirectory, anyID* result,
+                         const char* returnCode)
 {
     if (sch != kConnection || channelID != kChannel)
         return ERROR_parameter_invalid;
@@ -165,6 +177,8 @@ unsigned int requestFile(uint64 sch, uint64 channelID, const char*, const char* 
     t.remotePath = QString::fromUtf8(file);
     t.localDir   = QDir::fromNativeSeparators(QString::fromUtf8(destinationDirectory));
     t.returnCode = QString::fromUtf8(returnCode);
+    t.overwrite  = overwrite != 0;
+    t.resume     = resume != 0;
     state().transfers.append(t);
     *result = t.id;
     return ERROR_ok;
@@ -209,10 +223,27 @@ unsigned int getTransferFileSizeDone(anyID transferID, uint64* result)
     return findTransfer(transferID) ? ERROR_ok : ERROR_file_invalid_transfer_id;
 }
 
+unsigned int requestFileInfo(uint64 sch, uint64 channelID, const char*, const char* file, const char* returnCode)
+{
+    if (sch != kConnection)
+        return ERROR_parameter_invalid;
+    if (!state().connected)
+        return ERROR_not_connected;
+    state().infoRequests.append({channelID, QString::fromUtf8(file), QString::fromUtf8(returnCode)});
+    return ERROR_ok;
+}
+
 unsigned int requestDeleteFile(uint64, uint64, const char*, const char** file, const char*)
 {
-    for (const char** it = file; it && *it; ++it)
-        state().files.remove(QString::fromUtf8(*it));
+    for (const char** it = file; it && *it; ++it) {
+        const QString path = QString::fromUtf8(*it);
+        // 2.3.2: a sender's content check of the file not halted yet (the server would refuse the delete).
+        for (const Transfer& t : qAsConst(state().transfers)) {
+            if (!t.upload && !t.halted && t.remotePath == path && t.localDir.contains(QLatin1String("/servercheck/")))
+                state().deletedWhileChecking.append(path);
+        }
+        state().files.remove(path);
+    }
     return ERROR_ok;
 }
 
@@ -297,6 +328,47 @@ void setConnected(bool connected)
     state().connected = connected;
 }
 
+void enableFileInfo(bool enabled)
+{
+    ts3::funcs.requestFileInfo = enabled ? requestFileInfo : nullptr;
+}
+
+QList<InfoRequest> fileInfoRequests()
+{
+    return state().infoRequests;
+}
+
+void setServerVersion(const QString& version, const QString& platform)
+{
+    state().serverVersion  = version;
+    state().serverPlatform = platform;
+}
+
+void setResumeSupported(bool supported)
+{
+    state().resumeSupported = supported;
+}
+
+void setResumeFromStart(bool fromStart)
+{
+    state().resumeFromStart = fromStart;
+}
+
+QStringList deletedWhileChecking()
+{
+    return state().deletedWhileChecking;
+}
+
+QList<Transfer> checkDownloads()
+{
+    QList<Transfer> out;
+    for (const Transfer& t : qAsConst(state().transfers)) {
+        if (!t.upload && t.localDir.contains(QLatin1String("/servercheck/")))
+            out.append(t);
+    }
+    return out;
+}
+
 void putFile(const QString& remotePath, const QByteArray& data)
 {
     state().files.insert(remotePath, data);
@@ -378,7 +450,28 @@ QString deliver(anyID id, const QByteArray& bytes)
 QString deliverServerFile(anyID id)
 {
     const Transfer* t = findTransfer(id);
-    return t ? deliver(id, state().files.value(t->remotePath)) : QString();
+    if (!t)
+        return {};
+    const QByteArray bytes = state().files.value(t->remotePath);
+    if (!t->resume)
+        return deliver(id, bytes);
+    // 2.3.2: TeamSpeak's resume: the local file is continued where it ends (the server sends the rest;
+    // one that can't seek sends all of it, or the bytes from the start up to the length asked for).
+    const QString path = t->localDir + QLatin1Char('/') + QFileInfo(t->remotePath).fileName();
+    QDir().mkpath(t->localDir);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadWrite))
+        return {};
+    const qint64 have  = file.size();
+    const int    after = static_cast<int>(qMin<qint64>(have, bytes.size()));
+    QByteArray   rest  = bytes.mid(after);
+    if (!state().resumeSupported)
+        rest = bytes;
+    else if (state().resumeFromStart)
+        rest = bytes.left(bytes.size() - after);
+    if (!file.seek(have) || file.write(rest) != rest.size())
+        return {};
+    return path;
 }
 
 bool completeUpload(anyID id)

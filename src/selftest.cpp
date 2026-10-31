@@ -16,6 +16,8 @@
 //   reveal {name}  play {name}  download {name}  viewer {name}
 //   viewer.grab {name}  viewer.key {key: Space|Right|Left|Escape|Return}  viewer.close
 //   clearcache  cancel  sendoriginal  dump  menus  windows
+//   faketailzero {n}                2.3.2: the next n tail checks of sent files see zeros (as on a TeaSpeak server still
+//                                   receiving the upload; also selftest_options.txt "fake_tail_zero=<n>")
 //   setting {key, value}            a few Settings values (see below), saved and applied
 //   connect {nick}                  a new server tab to 127.0.0.1:9987
 //   say {text}                      a raw channel message (no flood governor)
@@ -837,6 +839,10 @@ bool SelfTest::run(const QJsonObject& c)
     }
     if (cmd == QLatin1String("clearcache")) {
         m_core->clearCache();
+        return true;
+    }
+    if (cmd == QLatin1String("faketailzero")) { // 2.3.2: as selftest_options.txt "fake_tail_zero=<n>"
+        m_core->setFakeTailZero(c.value(QString::fromLatin1("n")).toInt(1));
         return true;
     }
     if (cmd == QLatin1String("cancel")) {

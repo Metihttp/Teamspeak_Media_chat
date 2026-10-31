@@ -1,6 +1,6 @@
 // 2.2 servergroup: TeamSpeak callbacks only the Server access feature uses. They live here instead of
 // plugin.cpp so the feature stays in its own files; the callbacks plugin.cpp already exports (errors,
-// transfers, connection changes, menus) forward to AccessGroup from there.
+// transfers, connection changes, menus, 2.3.2: file info) forward to AccessGroup from there.
 //
 // Every one of them runs on a TeamSpeak thread: AccessGroup's handlers copy the arguments and continue
 // on the GUI thread. If another feature needs one of these events later, move the export to plugin.cpp
@@ -83,12 +83,6 @@ TS3_EXPORT void ts3plugin_onChannelPermListEvent(uint64 serverConnectionHandlerI
 TS3_EXPORT void ts3plugin_onChannelPermListFinishedEvent(uint64 serverConnectionHandlerID, uint64 channelID)
 {
     AccessGroup::handleChannelPermListFinished(serverConnectionHandlerID, channelID);
-}
-
-TS3_EXPORT void ts3plugin_onFileInfoEvent(uint64 serverConnectionHandlerID, uint64 channelID, const char* name, uint64 size, uint64 datetime)
-{
-    (void)datetime;
-    AccessGroup::handleFileInfo(serverConnectionHandlerID, channelID, name, size);
 }
 
 TS3_EXPORT void ts3plugin_onPermissionListEvent(uint64 serverConnectionHandlerID, unsigned int permissionID, const char* permissionName, const char* permissionDescription)

@@ -39,6 +39,7 @@
 #include <QStorageInfo> // 2.4 compress: free space for the compressed copy
 
 #include <windows.h>
+#include <winioctl.h> // 2.3.2: FSCTL_SET_SPARSE (WIN32_LEAN_AND_MEAN leaves it out)
 #undef PostMessage // clashes with OpType::PostMessage
 
 namespace {
@@ -78,6 +79,13 @@ constexpr int     kMaxFloodRetries      = 5; // folder / upload requests sent ag
 constexpr qint64  kExportMaxAgeMs       = 24LL * 3600 * 1000; // 2.2 drag-out: staged copies are kept this long
 constexpr qint64  kMaxExportCopyBytes   = 64LL * 1024 * 1024; // 2.2 drag-out: copied (when no hard link) only up to this
 constexpr int     kShowCheckMs          = 300; // 2.2 sha: "Checking file…" only for checks that take longer
+constexpr int     kInfoTimeoutMs        = 5000; // 2.3.2: a file info question without an answer counts as none
+constexpr int     kInfoSizeGraceMs      = 500;  // 2.3.2: its return code answered ok: the size event may still follow
+constexpr int     kCheckSlotPollMs      = 250;  // 2.3.2: a content check waiting for a download slot looks again after this
+constexpr int     kCheckWritePollMs     = 100;  // 2.3.2: a content check's download still being written: looked at again after this
+constexpr int     kCheckWriteWaits      = 50;   // ... this many times at most (then it is read anyway)
+constexpr int     kCheckDirRetryMs      = 2000; // 2.3.2: a halted check's folder TeamSpeak still held: removed once more after this
+constexpr qint64  kMaxDenseStubBytes    = 64LL * 1024 * 1024; // 2.3.2: a tail check's local file where it can't be sparse: at most this
 
 Core* g_instance = nullptr;
 
@@ -204,6 +212,21 @@ QString fileChangedText()
     return i18n::t("The file on the server was replaced after it was sent.");
 }
 
+// 2.3.2: a link a TS Media sender posted right after its upload (tsm), with a size: a download that
+// came out short may have raced the upload (uploadwait.h). Plain TeamSpeak links are copied from the
+// file browser long after an upload; for them a short file still means another file.
+bool mayRaceUpload(const MediaLink& link)
+{
+    return link.protocol > 0 && link.size != 0;
+}
+
+// 2.3.2: the server never got the whole file (its size stopped growing short of the link's).
+QString incompleteUploadText()
+{
+    return i18n::t("The file never arrived completely on the server; the sender's upload may have been interrupted. Try again later, or ask the sender to "
+                   "send it again.");
+}
+
 QString uploadLimitText(int limitMB, bool serverLimit = false)
 {
     // 2.2 per-server settings: a server's own limit is changed where it was set.
@@ -252,6 +275,24 @@ bool isInterruption(unsigned int status)
     default:
         return false;
     }
+}
+
+// 2.3.2: what a content check's download that didn't come says about the server's bytes. The file busy
+// (still being written by the upload): other bytes. No room right now (flood protection, too many
+// transfers) or the connection: nothing (*answered false: tried again the same way). Anything else: the
+// check can't be done this way.
+uploadwait::Bytes checkFailure(unsigned int error, bool* answered)
+{
+    *answered = true;
+    if (error == ERROR_file_already_in_use)
+        return uploadwait::Bytes::Different;
+    if (error == ERROR_permissions_client_insufficient)
+        return uploadwait::Bytes::Refused; // no other way to download it works either
+    if (error == ERROR_client_is_flooding || error == ERROR_file_transfer_limit_reached || isInterruption(error)) {
+        *answered = false;
+        return uploadwait::Bytes::Different;
+    }
+    return uploadwait::Bytes::Failed;
 }
 
 bool writeFile(const QString& path, const QByteArray& data)
@@ -446,6 +487,85 @@ bool hasUnwrittenTail(const QString& path, const QString& fileName)
     return tail.size() == run && tail.count('\0') == run;
 }
 
+// 2.3.2: the last `run` bytes of a file are all zeros (a cheap first look, at most 64 KB on the GUI
+// thread; where the data really ends is found off it, fileverify::Verifier::scanTail).
+bool endsInZeros(const QString& path, qint64 run)
+{
+    QFile file(path);
+    if (run <= 0 || !file.open(QIODevice::ReadOnly) || file.size() < run || !file.seek(file.size() - run))
+        return false;
+    const QByteArray tail = file.read(run);
+    return tail.size() == run && uploadwait::trailingZeros(tail) == run;
+}
+
+// 2.3.2: videos and audio files may end in long zero runs of their own (uploadwait::zeroRunThreshold).
+bool isAudioOrVideo(MediaKind kind)
+{
+    return kind == MediaKind::Video || kind == MediaKind::Audio;
+}
+
+// 2.3.2: the last n bytes of a local file of exactly size bytes (empty: it isn't there, or has another size).
+QByteArray readFileTail(const QString& path, quint64 size, quint64 n)
+{
+    QFile file(path);
+    if (path.isEmpty() || n == 0 || n > size || !file.open(QIODevice::ReadOnly) || static_cast<quint64>(file.size()) != size
+        || !file.seek(static_cast<qint64>(size - n)))
+        return {};
+    const QByteArray tail = file.read(static_cast<qint64>(n));
+    return static_cast<quint64>(tail.size()) == n ? tail : QByteArray();
+}
+
+// 2.3.2: what a tail check compares of an uploaded file of size bytes at path (uploadwait::tailWindow):
+// its last 64 KB, or, when they end in zeros, up to its last 1 MB (read on the GUI thread only then).
+// Empty: it isn't there (or has another size), or there is no window.
+QByteArray readUploadedTail(const QString& path, quint64 size)
+{
+    QByteArray last = readFileTail(path, size, uploadwait::tailLength(size));
+    if (!last.isEmpty() && last.endsWith('\0'))
+        last = readFileTail(path, size, qMin<quint64>(size, static_cast<quint64>(uploadwait::kMaxTailWindowBytes)));
+    return uploadwait::tailWindow(last, size);
+}
+
+// 2.3.2: the local file a tail check's resume continues, size bytes long. Sparse: the gap before the tail
+// is neither allocated nor zero-filled when TeamSpeak writes the tail behind it (an ordinary file is:
+// the whole size written as zeros on disk, for every check). Where files can't be sparse (FAT, exFAT),
+// only a small gap is made the ordinary way; false otherwise (the check goes another way).
+bool makeResumeStub(const QString& path, qint64 size)
+{
+    const QString native = QDir::toNativeSeparators(path);
+    const HANDLE  file   = CreateFileW(wide(native), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD         returned = 0;
+    const bool    sparse   = DeviceIoControl(file, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr) != FALSE;
+    LARGE_INTEGER end;
+    end.QuadPart  = size;
+    const bool ok = (sparse || size <= kMaxDenseStubBytes) && SetFilePointerEx(file, end, nullptr, FILE_BEGIN) && SetEndOfFile(file);
+    CloseHandle(file);
+    if (!ok)
+        DeleteFileW(wide(native));
+    return ok;
+}
+
+// 2.3.2: a server variable (VIRTUALSERVER_VERSION, ...); empty if unknown.
+QString serverVariable(uint64 sch, size_t flag)
+{
+    char* value = nullptr;
+    if (!ts3::funcs.getServerVariableAsString || ts3::funcs.getServerVariableAsString(sch, flag, &value) != ERROR_ok || !value)
+        return {};
+    return ts3::takeString(value);
+}
+
+#ifdef TSMEDIA_TESTHOOKS
+bool isLocalServer(uint64 sch)
+{
+    QString host;
+    quint16 port = 0;
+    return ts3::getServerAddress(sch, &host, &port)
+           && (host == QLatin1String("127.0.0.1") || host == QLatin1String("localhost") || host == QLatin1String("::1"));
+}
+#endif
+
 // 2.2 sha: a preview's bytes for its ph check (at most kMaxPreviewBytes are read; previews are never
 // larger, see finishPreviewDownload). Empty if it can't be read.
 QByteArray readPreview(const QString& path)
@@ -520,6 +640,7 @@ Core::Core(QObject* parent)
     m_pool.setMaxThreadCount(kProbeThreads);
     m_stillPool.setMaxThreadCount(kStillThreads);
     m_transcodePool.setMaxThreadCount(1); // 2.4 compress: one video at a time, in the order sent
+    m_checkPool.setMaxThreadCount(1);     // 2.3.2: content checks' whole-file hashes (16 MB at most each)
     m_clock.start();
 
     // 2.2 sha: downloads whose link has a sha are checked on the verifier's own threads before they
@@ -541,9 +662,16 @@ Core::~Core()
     // done this already.)
     stopCompressions();
 
-    // Workers only read files and post their result back; stop running staging copies, then join them.
+    // Workers only read files and post their result back; stop running staging copies (2.3.2: and the
+    // hashes of content checks), then join them.
     for (const auto& cancel : qAsConst(m_stagingCancel))
         cancel->store(true);
+    for (const ServerCheck& check : qAsConst(m_serverChecks)) {
+        if (check.hashCancel)
+            check.hashCancel->store(true);
+    }
+    m_checkPool.clear();
+    m_checkPool.waitForDone();
     m_pool.clear();
     m_pool.waitForDone();
     m_stillPool.clear();
@@ -576,6 +704,11 @@ Core::~Core()
     for (const QString& path : qAsConst(m_keptCompressed)) // 2.2: compressed MP4s kept for a retry
         removeOwnFile(path);
     m_keptCompressed.clear();
+    // 2.3.2: content checks (cleanupUpload ended those of the jobs above): no download of ours goes on.
+    for (ServerCheck& check : m_serverChecks)
+        endContentTransfer(check);
+    m_serverChecks.clear();
+    QDir(serverCheckDir()).removeRecursively(); // what TeamSpeak still holds goes at the next start
 
     if (g_instance == this)
         g_instance = nullptr;
@@ -620,6 +753,17 @@ void Core::start()
     pruneExports(kExportMaxAgeMs); // 2.2 drag-out
     QDir(ts3::dataDir() + QStringLiteral("/edit")).removeRecursively(); // 2.2 editor: edited copies
     QDir(keptCompressedDir()).removeRecursively(); // 2.2: compressed videos kept for a retry
+    QDir(serverCheckDir()).removeRecursively();   // 2.3.2: content checks' downloads
+
+#ifdef TSMEDIA_TESTHOOKS
+    // Test builds: selftest_options.txt "fake_tail_zero=<n>" (localhost servers only, checked per check).
+    QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
+    if (options.open(QIODevice::ReadOnly)) {
+        const QRegularExpressionMatch match = QRegularExpression(QStringLiteral("fake_tail_zero\\s*=\\s*(\\d+)")).match(QString::fromUtf8(options.readAll()));
+        if (match.hasMatch())
+            setFakeTailZero(match.captured(1).toInt());
+    }
+#endif
 
     // The limit may have been lowered while TeamSpeak was closed.
     singleShotOwned(kStartupCacheCheckMs, this, [this] { enforceCacheLimit(); });
@@ -659,7 +803,12 @@ QString Core::cachePathFor(const MediaLink& link) const
 
 QString Core::partialDir(const QString& key, bool preview) const
 {
-    return cacheDir() + QStringLiteral("/.partial/") + key + (preview ? QStringLiteral(".pv") : QString());
+    const QString base = cacheDir() + QStringLiteral("/.partial/") + key;
+    if (preview)
+        return base + QStringLiteral(".pv");
+    // 2.3.2: every download of a main file gets a folder of its own (startDownload counts them), so a
+    // transfer TeamSpeak is still writing can never write into the next attempt's file.
+    return base + QLatin1Char('.') + QString::number(m_partialSerial.value(key));
 }
 
 void Core::touch(MediaEntry& e)
@@ -824,16 +973,29 @@ void Core::download(const QString& key, bool openWhenReady)
         return;
     case MediaState::Downloading:
         e.openWhenReady = e.openWhenReady || openWhenReady;
+        // 2.3.2: waiting for the sender's upload: the download that follows is the user's now (no
+        // automatic size or data saver rules).
+        if (auto r = m_refetches.find(key); r != m_refetches.end())
+            r->wasAuto = false;
         return;
     case MediaState::Failed:
-        if (e.error == MediaError::NotFound || e.error == MediaError::Mismatch) // 2.2 sha: the same bytes again
+        if (e.error == MediaError::NotFound)
             return;
+        // 2.3.2: asked for again (it may have been the upload race; or a zero tail that stayed, whose
+        // digest was noted: its own link contradicts it now)
+        if (e.error == MediaError::Mismatch || knownDigestContradicts(e))
+            retryMismatch(e);
         break;
     case MediaState::Idle:
+        // 2.3.2: a link the forged-hash guard would refuse (its file's digest was noted, e.g. a zero tail
+        // that stayed): asked for, it gets its one attempt, as from Failed.
+        if (knownDigestContradicts(e))
+            retryMismatch(e);
         break;
     }
 
     e.openWhenReady = openWhenReady;
+    m_refetches.remove(key); // 2.3.2: a new attempt never goes on with an old refetch's state
     startDownload(key);
 }
 
@@ -842,8 +1004,10 @@ void Core::retry(const QString& key)
     auto it = m_entries.find(key);
     if (it == m_entries.end())
         return;
-    if (it->state == MediaState::Failed && (it->error == MediaError::NotFound || it->error == MediaError::Mismatch)) // 2.2 sha
+    if (it->state == MediaState::Failed && it->error == MediaError::NotFound)
         return;
+    if (it->state == MediaState::Failed && (it->error == MediaError::Mismatch || knownDigestContradicts(it.value()))) // 2.3.2: asked for again
+        retryMismatch(it.value());
 
     // A missing preview (failed, or removed from the cache) comes back too.
     const bool wantPreview  = !it->previewPath.isEmpty() && (it->state != MediaState::Ready || !isPreviewableImage(it->kind));
@@ -853,6 +1017,7 @@ void Core::retry(const QString& key)
         startPreviewDownload(key);
     if (retryMain) {
         m_autoDownloads.remove(key);
+        m_refetches.remove(key); // 2.3.2: a new attempt never goes on with an old refetch's state
         startDownload(key);
     }
 }
@@ -877,6 +1042,7 @@ void Core::startDownload(const QString& key)
         const auto known = m_remoteSizes.constFind(remoteId(e.link));
         if (known != m_remoteSizes.constEnd() && known.value() != e.link.size) {
             m_autoDownloads.remove(key);
+            dropRefetch(e); // 2.3.2: a download fetched again ends here too
             e.progress = 0.0;
             touch(e);
             return;
@@ -904,6 +1070,9 @@ void Core::startDownload(const QString& key)
         return;
     }
 
+    // 2.3.2: a new folder for every attempt (an earlier transfer may still write into its own).
+    QDir(partialDir(key, false)).removeRecursively();
+    ++m_partialSerial[key];
     const QString partial = partialDir(key, false);
     QDir(partial).removeRecursively();
     QDir().mkpath(partial);
@@ -1029,6 +1198,18 @@ void Core::finishDownload(const QString& key)
         // The progress timer checks the real size too, but a fast transfer can finish between two
         // ticks (or before the size is known): check what actually arrived.
         const quint64 actual = static_cast<quint64>(QFileInfo(found).size());
+        if (mayRaceUpload(e.link) && actual < e.link.size) {
+            // 2.3.2: short. Maybe the sender's upload was still arriving at the server (the message is
+            // posted when TeamSpeak says the upload is complete): the server is asked, and it is
+            // downloaded again once the server has all of it (uploadwait.h). Not noted as the file's
+            // real size: that would hold back its automatic downloads.
+            ts3::log(LogLevel_INFO, e.sch, "Downloaded only %1 of %2 of %3; asking the server whether the sender's upload is still arriving",
+                     {ts3::pub(formatSize(actual)), ts3::pub(formatSize(e.link.size)), ts3::file(e.link.remoteFile())});
+            QDir(partial).removeRecursively();
+            beginRefetch(key, uploadwait::Seen::Short, actual, {}, wasAuto);
+            pumpDownloadQueue();
+            return;
+        }
         noteRemoteSize(e.link, actual);
         if (e.link.size != 0 && actual != e.link.size) {
             // Not the file this message refers to (replaced on the server, or a made-up size): never
@@ -1042,6 +1223,7 @@ void Core::finishDownload(const QString& key)
             // Larger than the auto-download limit (link of unknown size): wait for a click, like
             // abortOversizedAutoDownload.
             QDir(partial).removeRecursively();
+            dropRefetch(e); // 2.3.2: a download fetched again ends here too
             e.state           = MediaState::Idle;
             e.progress        = 0.0;
             e.tooLargeForAuto = true;
@@ -1055,7 +1237,7 @@ void Core::finishDownload(const QString& key)
 
     // 2.2 sha: a link with a sha is cached only once the file matches it (checked off the GUI thread;
     // onCheckFinished stores it). The transfer slot is free meanwhile.
-    if (!found.isEmpty() && startCheck(key, found)) {
+    if (!found.isEmpty() && startCheck(key, found, wasAuto)) {
         pumpDownloadQueue();
         return;
     }
@@ -1094,6 +1276,14 @@ void Core::storeDownload(const QString& key, const QString& found)
     e.openWhenReady = false;
     m_resumeAttempts.remove(key);
     ts3::log(QStringLiteral("Downloaded %1 (%2)").arg(e.link.remoteFile(), formatSize(e.link.size)), LogLevel_INFO, e.sch);
+    // 2.3.2: complete after waiting for the sender's upload.
+    if (const auto refetch = m_refetches.constFind(key); refetch != m_refetches.constEnd() && refetch->state.startedAt >= 0) {
+        fileverify::count(fileverify::Counter::DownloadsRecovered);
+        ts3::log(LogLevel_INFO, e.sch, "%1 arrived complete after waiting %2 s for the sender's upload (%3 downloads)",
+                 {ts3::file(e.link.remoteFile()), ts3::pub((floodClockMs() - refetch->state.startedAt + 500) / 1000), ts3::pub(refetch->state.downloads + 1)});
+    }
+    dropRefetch(e);
+    m_guardWaived.remove(key);
     invalidateStill(key, MediaStill::Full); // the preview stays on screen until the image is decoded
     touch(e);
 
@@ -1189,14 +1379,19 @@ void Core::failDownload(const QString& key, MediaError error, const QString& tex
     if (e.state == MediaState::Failed || e.state == MediaState::Ready)
         return;
 
-    if (e.state == MediaState::Downloading) {
+    if (e.state == MediaState::Downloading && !e.waitingForUpload) { // 2.3.2: waiting, it has no transfer
         if (m_downloadsByTransfer.value(e.transferId) == key)
             m_downloadsByTransfer.remove(e.transferId);
         --m_activeDownloads;
         QDir(partialDir(key, false)).removeRecursively();
     }
     m_downloadQueue.removeAll(key);
-    const bool wasAuto = m_autoDownloads.remove(key);
+    bool wasAuto = m_autoDownloads.remove(key);
+    if (const auto refetch = m_refetches.constFind(key); refetch != m_refetches.constEnd())
+        wasAuto = wasAuto || refetch->wasAuto;
+    dropRefetch(e); // 2.3.2: whatever it waited for, this is the end of it
+    if (!interrupted && error != MediaError::NotConnected)
+        m_guardWaived.remove(key); // the user's attempt is over (a resumed one goes on with it)
 
     e.state         = MediaState::Failed;
     e.error         = error;
@@ -1264,6 +1459,28 @@ void Core::abortChangedDownload(const QString& key, quint64 actualSize)
     noteRemoteSize(it->link, actualSize);
     haltDownload(it->sch, it->transferId);
     failDownload(key, MediaError::NotFound, fileChangedText(), false, true);
+}
+
+// 2.3.2: the server announced fewer bytes than the link names: the sender's upload may still be
+// arriving. The transfer can only bring what is there so far: halted, and fetched again once the server
+// has all of it (beginRefetch).
+void Core::abortShortDownload(const QString& key, quint64 announced)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || it->state != MediaState::Downloading || it->waitingForUpload || it->check.running)
+        return;
+    MediaEntry& e = it.value();
+    haltDownload(e.sch, e.transferId);
+    if (m_downloadsByTransfer.value(e.transferId) == key)
+        m_downloadsByTransfer.remove(e.transferId);
+    --m_activeDownloads;
+    QDir(partialDir(key, false)).removeRecursively();
+    e.transferId       = 0;
+    const bool wasAuto = m_autoDownloads.remove(key);
+    ts3::log(LogLevel_INFO, e.sch, "The server has %1 of %2 of %3 so far; waiting for the sender's upload",
+             {ts3::pub(formatSize(announced)), ts3::pub(formatSize(e.link.size)), ts3::file(e.link.remoteFile())});
+    beginRefetch(key, uploadwait::Seen::Short, announced, {}, wasAuto);
+    pumpDownloadQueue();
 }
 
 QString Core::remoteId(const MediaLink& link)
@@ -1360,7 +1577,7 @@ quint64 Core::autoDownloadLimit(const MediaEntry& e) const
 void Core::abortOversizedAutoDownload(const QString& key)
 {
     auto it = m_entries.find(key);
-    if (it == m_entries.end() || it->state != MediaState::Downloading)
+    if (it == m_entries.end() || it->state != MediaState::Downloading || it->waitingForUpload)
         return;
     MediaEntry& e = it.value();
 
@@ -1370,6 +1587,7 @@ void Core::abortOversizedAutoDownload(const QString& key)
     --m_activeDownloads;
     QDir(partialDir(key, false)).removeRecursively();
     m_autoDownloads.remove(key);
+    dropRefetch(e); // 2.3.2: a download fetched again stops here too (it waits for a click)
 
     e.state           = MediaState::Idle;
     e.progress        = 0.0;
@@ -1824,7 +2042,10 @@ void Core::onDataSaverChanged()
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
         const MediaEntry& e = it.value();
         if (saves(e.link.serverUid)) {
-            if (m_autoDownloads.contains(it.key()) && (e.state == MediaState::Queued || e.state == MediaState::Downloading))
+            // 2.3.2: an automatic download waiting for the sender's upload isn't in m_autoDownloads
+            // between its downloads (its refetch remembers it was one): it pauses too.
+            const bool waitingAuto = e.waitingForUpload && m_refetches.value(it.key()).wasAuto;
+            if ((m_autoDownloads.contains(it.key()) || waitingAuto) && (e.state == MediaState::Queued || e.state == MediaState::Downloading))
                 pause.append(it.key());
         } else if (e.heldByDataSaver && e.state == MediaState::Idle) {
             resume.append(it.key());
@@ -1836,7 +2057,7 @@ void Core::onDataSaverChanged()
         if (it == m_entries.end())
             continue;
         MediaEntry& e = it.value();
-        if (e.state == MediaState::Downloading) {
+        if (e.state == MediaState::Downloading && !e.waitingForUpload) {
             haltDownload(e.sch, e.transferId);
             if (m_downloadsByTransfer.value(e.transferId) == key)
                 m_downloadsByTransfer.remove(e.transferId);
@@ -1845,6 +2066,7 @@ void Core::onDataSaverChanged()
         }
         m_downloadQueue.removeAll(key);
         m_autoDownloads.remove(key);
+        dropRefetch(e); // 2.3.2
         e.state           = MediaState::Idle;
         e.progress        = 0.0;
         e.transferId      = 0;
@@ -2732,10 +2954,18 @@ void Core::finishUpload(int id)
     ts3::log(QStringLiteral("Uploaded %1 (%2)").arg(joinRemote(job.remoteDir, job.remoteName), formatSize(job.size)), LogLevel_INFO, job.target.sch);
     scheduleCacheLimit(link.key());
 
+    // 2.3.2: TeamSpeak says "complete" once the last bytes are in its socket; on a real internet link
+    // part of the file is still on its way to the server, and whoever downloads it right after the
+    // message gets a short file. The message waits until the server has all of it (and of its preview):
+    // the file counts as uploaded only then. Meanwhile it says "Posting to chat…" and can be canceled
+    // (waiting), like a message held for earlier files.
+    const bool checking = startServerCheck(id);
+    job.uploaded        = !checking;
+
     // The messages of one send appear in its order: a file that finishes before an earlier one (or
     // before the rest of its album) waits; pumpPostUnits posts it when its turn has come.
     const QString held = heldText(job);
-    setUploadState(job, UploadState::Posting, held.isEmpty() ? i18n::t("Posting to chat…") : held, !held.isEmpty());
+    setUploadState(job, UploadState::Posting, held.isEmpty() ? i18n::t("Posting to chat…") : held, checking || !held.isEmpty());
 }
 
 // What an uploaded file's message waits for: an earlier part of its send that still has to be posted,
@@ -2756,7 +2986,8 @@ QString Core::heldText(const UploadJob& job) const
             return {};
         for (int id : unit.jobs) {
             const UploadJob* other = upload(id);
-            if (id != job.id && other && isPreparing(other->state))
+            // 2.3.2: one the server doesn't have all of yet is still on its way too.
+            if (id != job.id && other && (isPreparing(other->state) || m_serverChecks.contains(id)))
                 return i18n::t("Waiting for the rest of the album…");
         }
         return {};
@@ -2784,7 +3015,7 @@ void Core::pumpPostUnits()
             bool settled = true;
             for (int id : unit.jobs) {
                 const UploadJob* job = upload(id);
-                if (job && isPreparing(job->state))
+                if (job && (isPreparing(job->state) || m_serverChecks.contains(id))) // 2.3.2: not all on the server yet
                     settled = false;
             }
             if (!earlierPending && settled) {
@@ -2907,13 +3138,24 @@ void Core::pumpPosts()
         FloodGovernor& governor = floodGovernor(sch);
         bool           held     = false;
         while (!m_postQueue[sch].isEmpty() && governor.postReady(now)) {
+            // 2.3.2: a repost whose file the server hasn't confirmed yet waits (finishServerCheck pumps
+            // again), and so do the posts of its send behind it; the others go meanwhile.
+            const QList<PostItem>& queue = m_postQueue[sch];
+            QSet<int>              waitingBatches;
+            int                    next = 0;
+            for (; next < queue.size(); ++next) {
+                const PostItem& candidate = queue.at(next);
+                if (!postAwaitsServer(candidate) && (candidate.batch == 0 || !waitingBatches.contains(candidate.batch)))
+                    break;
+                waitingBatches.insert(candidate.batch);
+            }
             // The messages of one send go strictly one after another: the next waits for the answer to
             // the one before it (or its timeout), so a late flood answer can't put them out of order.
-            if (batchPostInFlight(sch, m_postQueue[sch].first().batch)) {
-                held = true; // finishPost / unansweredPost pump again
+            if (next >= queue.size() || batchPostInFlight(sch, queue.at(next).batch)) {
+                held = true; // finishPost / unansweredPost / finishServerCheck pump again
                 break;
             }
-            PostItem post = m_postQueue[sch].takeFirst();
+            PostItem post = m_postQueue[sch].takeAt(next);
             sendPost(post);
         }
         const int pending = m_postQueue.value(sch).size();
@@ -3108,6 +3350,16 @@ bool Core::batchPostInFlight(uint64 sch, int batch) const
     return false;
 }
 
+// 2.3.2: a reposted message whose file the server is being asked about (repostFailed) waits for it.
+bool Core::postAwaitsServer(const PostItem& post) const
+{
+    for (int id : post.jobs) {
+        if (m_serverChecks.contains(id))
+            return true;
+    }
+    return false;
+}
+
 // Whether a file of batch other than exceptId can still bring a message to the chat: uploading, or
 // uploaded and waiting for its turn or in the post queue.
 bool Core::batchCanStillPost(int batch, int exceptId) const
@@ -3234,10 +3486,13 @@ void Core::cancelUpload(int id)
         return;
     UploadJob& job = m_uploads[id];
     if (job.state == UploadState::Posting) {
-        // Uploaded, but its message still waits for earlier files or the rest of its album: nothing
-        // was posted, so no message will ever point at the file or its preview. Don't leave them in the
-        // channel's file browser (without delete permission they stay; deleteRemoteFile logs it). The
-        // cached copy is left to the cache limit. Its unit is composed without it, like a failed item.
+        // Uploaded, but its message still waits for earlier files or the rest of its album (2.3.2: or
+        // for the server to have all of it): nothing was posted, so no message will ever point at the
+        // file or its preview. Don't leave them in the channel's file browser (without delete permission
+        // they stay; deleteRemoteFile logs it). The cached copy is left to the cache limit. Its unit is
+        // composed without it, like a failed item.
+        // 2.3.2: its check's download is halted first, so the delete doesn't meet a transfer of the file.
+        dropServerCheck(id);
         deleteRemoteFile(job.target.sch, job.channelId, joinRemote(job.remoteDir, job.remoteName));
         if (!job.previewRemotePath.isEmpty())
             deleteRemoteFile(job.target.sch, job.channelId, job.previewRemotePath);
@@ -3385,6 +3640,17 @@ int Core::repostFailed(int id, const ChatTarget& target)
         if (job != m_uploads.end() && job->state == UploadState::Failed)
             setUploadState(job.value(), UploadState::Posting, i18n::t("Posting to chat…"));
     }
+    // 2.3.2: a file the connection was lost for before the server confirmed all of it: the server is
+    // asked first. The message waits in the queue meanwhile (postAwaitsServer); finishServerCheck lets
+    // it go.
+    for (int other : qAsConst(post.jobs)) {
+        const auto unconfirmed = m_unconfirmedUploads.find(other);
+        if (unconfirmed == m_unconfirmedUploads.end())
+            continue;
+        const QVector<ServerCheck::File> files = unconfirmed.value();
+        m_unconfirmedUploads.erase(unconfirmed);
+        startServerCheck(other, &files);
+    }
     ts3::log(LogLevel_INFO, post.sch, "Posting a chat message again (%1 files)", {ts3::pub(post.jobs.size())});
     enqueuePost(post, false); // a new place at the end
     pumpPosts();
@@ -3397,6 +3663,7 @@ void Core::forgetUpload(int id)
     if (it == m_uploads.end())
         return;
     m_failedPosts.remove(id);
+    m_unconfirmedUploads.remove(id); // 2.3.2
     removeOwnFile(m_keptCompressed.take(id)); // 2.2: its compressed MP4, if one was kept for a retry
     const int batch = it->batch;
     releaseSource(it.value());
@@ -3475,6 +3742,7 @@ void Core::cleanupUpload(UploadJob& job)
                                && (job.state == UploadState::Failed || job.state == UploadState::Canceled);
     abortPreviewUpload(job);
     m_uploadExtra.remove(job.id);
+    dropServerCheck(job.id); // 2.3.2: its answer, if one still comes, finds nothing to do; its check's download stops
     for (QList<FileWait>& waiting : m_fileQueue) // its folder request or upload start won't go any more
         waiting.erase(std::remove_if(waiting.begin(), waiting.end(), [&job](const FileWait& w) { return w.id == job.id; }), waiting.end());
     if (removePreview) {
@@ -4120,12 +4388,18 @@ void Core::updateProgress()
     QStringList                      oversized;         // automatic downloads larger than the auto-download limit
     QVector<QPair<QString, quint64>> changed;           // the file on the server is not the one the link describes
     QStringList                      oversizedPreviews; // preview transfers above 5 MB
+    QVector<QPair<QString, quint64>> shortfalls;        // 2.3.2: the server has fewer bytes than the link names (so far)
     for (auto it = m_downloadsByTransfer.constBegin(); it != m_downloadsByTransfer.constEnd(); ++it) {
         auto   e     = m_entries.find(it.value());
         uint64 done  = 0;
         uint64 total = 0;
         if (e == m_entries.end() || ts3::funcs.getTransferFileSize(it.key(), &total) != ERROR_ok || total == 0)
             continue;
+        if (mayRaceUpload(e->link) && total < e->link.size) {
+            // 2.3.2: maybe the sender's upload is still arriving: not the file's real size (yet).
+            shortfalls.append({it.value(), total});
+            continue;
+        }
         noteRemoteSize(e->link, total);
         if (e->link.size != 0 && total != e->link.size) {
             changed.append({it.value(), total});
@@ -4172,6 +4446,8 @@ void Core::updateProgress()
         abortOversizedAutoDownload(key);
     for (const auto& c : qAsConst(changed))
         abortChangedDownload(c.first, c.second);
+    for (const auto& s : qAsConst(shortfalls))
+        abortShortDownload(s.first, s.second);
     for (const QString& key : qAsConst(oversizedPreviews)) {
         auto it = m_entries.find(key);
         if (it == m_entries.end() || it->previewState != MediaState::Downloading)
@@ -4205,16 +4481,22 @@ void Core::onStagedFinalized(int id, const fileverify::StagedDigest& digest)
 
 // Starts checking a finished download against its link's sha. The entry stays Downloading at 100%
 // until onCheckFinished.
-bool Core::startCheck(const QString& key, const QString& found)
+bool Core::startCheck(const QString& key, const QString& found, bool wasAuto)
 {
     auto it = m_entries.find(key);
-    if (it == m_entries.end() || !m_verifier || it->link.sha256.size() != fileverify::kShaBytes)
+    if (it == m_entries.end() || !m_verifier)
+        return false;
+    // 2.3.2: a TS Media link without a sha whose file ends in zeros: maybe an upload still arriving at a
+    // preallocating server. Where its data ends is found off the GUI thread (onCheckFinished, Unchecked).
+    const bool hasSha = it->link.sha256.size() == fileverify::kShaBytes;
+    const bool scan   = !hasSha && mayRaceUpload(it->link) && endsInZeros(found, uploadwait::zeroRunThreshold(isAudioOrVideo(it->kind)));
+    if (!hasSha && !scan)
         return false;
     MediaEntry& e   = it.value();
     e.progress      = 1.0;
     e.check         = ShaCheck();
     e.check.running = true;
-    m_checks.insert(key, {floodClockMs(), found});
+    m_checks.insert(key, {floodClockMs(), found, wasAuto});
     if (!m_checkTimer) {
         // A member timer, never a functor singleShot: nothing of ours may be pending once the plugin is gone.
         m_checkTimer = new QTimer(this);
@@ -4223,7 +4505,10 @@ bool Core::startCheck(const QString& key, const QString& found)
     }
     if (!m_checkTimer->isActive())
         m_checkTimer->start(kShowCheckMs);
-    m_verifier->start(key, found, e.link.sha256);
+    if (hasSha)
+        m_verifier->start(key, found, e.link.sha256);
+    else
+        m_verifier->scanTail(key, found);
     touch(e);
     return true;
 }
@@ -4294,16 +4579,37 @@ void Core::onCheckFinished(const fileverify::Result& result)
         return;
 
     case fileverify::Outcome::Mismatch:
-        // Final: a new download would get the same bytes. The file is never shown, cached or saved.
-        e.check.received = result.received;
-        if (result.stableMismatch())
-            m_knownDigests.note(remoteId(e.link), e.link.size, result.received); // later links with this made-up hash fail at once
+        // The file is never shown, cached or saved.
+        if (mayRaceUpload(e.link) && result.received.size() == fileverify::kShaBytes
+            && uploadwait::isZeroTail(result.size, result.dataEnd, isAudioOrVideo(e.kind), true)) {
+            // 2.3.2: complete in size but ending in zeros: a server that preallocates uploads (TeaSpeak)
+            // while the sender's upload is still arriving. Never a mismatch: waited for like a short
+            // download, its progress being where the data ends. Its digest goes along: a server copy that
+            // stays like this is noted for the forged-hash guard (onRefetchAnswer).
+            fileverify::count(fileverify::Counter::ZeroTails);
+            ts3::log(LogLevel_INFO, e.sch, "%1 doesn't match its SHA-256 yet: it ends in %2 of zeros after %3 (the sender's upload is still arriving); waiting for it",
+                     {ts3::file(remote), ts3::pub(formatSize(static_cast<quint64>(result.size - result.dataEnd))), ts3::pub(formatSize(static_cast<quint64>(result.dataEnd)))});
+            QDir(partial).removeRecursively();
+            beginRefetch(key, uploadwait::Seen::ZeroTail, static_cast<quint64>(result.dataEnd), result.received, check.wasAuto);
+            return;
+        }
         ts3::log(LogLevel_WARNING, e.sch, "SHA-256 mismatch for %1: expected %2, got %3",
                  {ts3::file(remote), ts3::pub(hashing::toHex(result.expected)), ts3::pub(hashing::toHex(result.received))});
         if (result.rechecked && result.firstReceived != result.received)
             ts3::log(LogLevel_WARNING, e.sch, "The first check of %1 got %2: the file changed between the checks",
                      {ts3::file(remote), ts3::pub(result.firstReceived.isEmpty() ? QStringLiteral("nothing") : hashing::toHex(result.firstReceived))});
         QDir(partial).removeRecursively();
+        if (mayRaceUpload(e.link) && result.received.size() == fileverify::kShaBytes) {
+            // 2.3.2: not final yet. The sender's upload may still have been arriving at the server when
+            // this was downloaded: the server is asked, and only two complete downloads with the same
+            // wrong digest make it a real mismatch (onRefetchAnswer notes it for the forged-hash guard).
+            beginRefetch(key, uploadwait::Seen::Mismatch, e.link.size, result.received, check.wasAuto);
+            return;
+        }
+        // A link without a size (hostile: 2.2 senders always name it): final at once.
+        e.check.received = result.received;
+        if (result.stableMismatch())
+            m_knownDigests.note(remoteId(e.link), e.link.size, result.received); // later links with this made-up hash fail at once
         e.state = MediaState::Idle; // finishDownload already let go of the transfer (failDownload's guard)
         failDownload(key, MediaError::Mismatch, downloadErrorText(MediaError::Mismatch), false, true);
         return;
@@ -4313,6 +4619,31 @@ void Core::onCheckFinished(const fileverify::Result& result)
         QDir(partial).removeRecursively();
         e.state = MediaState::Idle;
         failDownload(key, MediaError::Other, i18n::t("Couldn't check the downloaded file. Try again."), false, true);
+        return;
+
+    case fileverify::Outcome::Unchecked:
+        // 2.3.2: a link without a sha whose file ended in zeros (startCheck): where its data ends says
+        // whether it is an upload still arriving at a preallocating server.
+        if (mayRaceUpload(e.link) && uploadwait::isZeroTail(result.size, result.dataEnd, isAudioOrVideo(e.kind))) {
+            const auto refetch = m_refetches.constFind(key);
+            if (refetch != m_refetches.constEnd() && uploadwait::zeroTailSettled(refetch->state, static_cast<quint64>(result.dataEnd), floodClockMs())) {
+                // Downloaded again and again with no more data: nothing contradicts the file (there is
+                // no checksum), so the zeros are its own end (a WAV's silence, a BMP's black rows, a
+                // tar's padding). Kept as it is, as before 2.3.2.
+                ts3::log(LogLevel_INFO, e.sch, "%1 still ends in %2 of zeros after %3 downloads; nothing contradicts it (no checksum), so they are its own end",
+                         {ts3::file(remote), ts3::pub(formatSize(static_cast<quint64>(result.size - result.dataEnd))), ts3::pub(refetch->state.downloads + 1)});
+                dropRefetch(e); // not a recovery (storeDownload): nothing more arrived
+                storeDownload(key, QFileInfo::exists(check.path) ? check.path : findDownloaded(partial, e.link.fileName));
+                return;
+            }
+            fileverify::count(fileverify::Counter::ZeroTails);
+            ts3::log(LogLevel_INFO, e.sch, "%1 ends in %2 of zeros after %3: the sender's upload may still be arriving; waiting for it",
+                     {ts3::file(remote), ts3::pub(formatSize(static_cast<quint64>(result.size - result.dataEnd))), ts3::pub(formatSize(static_cast<quint64>(result.dataEnd)))});
+            QDir(partial).removeRecursively();
+            beginRefetch(key, uploadwait::Seen::ZeroTail, static_cast<quint64>(result.dataEnd), {}, check.wasAuto);
+            return;
+        }
+        storeDownload(key, QFileInfo::exists(check.path) ? check.path : findDownloaded(partial, e.link.fileName));
         return;
     }
 }
@@ -4327,6 +4658,8 @@ bool Core::refuseForgedHash(const QString& key)
         || it->state == MediaState::Downloading)
         return false;
     MediaEntry& e = it.value();
+    if (m_guardWaived.contains(key)) // 2.3.2: the user asked for it after all (retryMismatch); it is checked when it arrives
+        return false;
     if (m_knownDigests.check(remoteId(e.link), e.link.size, e.link.sha256) != fileverify::KnownDigests::Verdict::Contradicts)
         return false;
     fileverify::count(fileverify::Counter::ForgedBlocked);
@@ -4359,6 +4692,909 @@ bool Core::previewFileMatches(const QString& path, const QByteArray& previewSha)
             ts3::log(LogLevel_INFO, 0, "The cached preview %1 isn't the one a link names; that one is downloaded", {ts3::local(QFileInfo(path).fileName())});
     }
     return it->digest == previewSha;
+}
+
+// ============================================================================================
+// 2.3.2: the upload race (uploadwait.h)
+// ============================================================================================
+
+QString Core::askFileSize(uint64 sch, uint64 channelId, const QString& path, int uploadId, const QString& key, unsigned int* error)
+{
+    *error = ERROR_ok;
+    if (!ts3::funcs.requestFileInfo) {
+        *error = ERROR_not_implemented;
+        return {};
+    }
+    const QString rc = registerOp(OpType::FileInfo, key, uploadId);
+    InfoQuery     query;
+    query.sch       = sch;
+    query.channelId = channelId;
+    query.path      = path;
+    query.uploadId  = uploadId;
+    query.key       = key;
+    m_infoQueries.insert(rc, query);
+    m_infoPending.store(m_infoQueries.size()); // before asking: the answer comes on TeamSpeak's thread
+    const unsigned err = ts3::funcs.requestFileInfo(sch, channelId, "", path.toUtf8().constData(), rc.toUtf8().constData());
+    floodGovernor(sch).charge(FloodGovernor::Cost::FileInfo, floodClockMs()); // the attempt counts either way
+    if (err != ERROR_ok) {
+        forgetOp(rc);
+        m_infoQueries.remove(rc);
+        m_infoPending.store(m_infoQueries.size());
+        *error = err;
+        return {};
+    }
+    // An owned timer: nothing of ours may be pending in Qt once the plugin is unloaded.
+    singleShotOwned(kInfoTimeoutMs, this, [this, rc] { finishInfoQuery(rc, uploadwait::Answer::None); });
+    return rc;
+}
+
+// The end of a question, by its return code's answer, its size event, or its timeout (whichever comes
+// first; the others find nothing to do).
+void Core::finishInfoQuery(const QString& returnCode, uploadwait::Answer answer)
+{
+    if (!m_infoQueries.contains(returnCode))
+        return;
+    const InfoQuery query = m_infoQueries.take(returnCode);
+    m_infoPending.store(m_infoQueries.size());
+    forgetOp(returnCode);
+    if (answer == uploadwait::Answer::Size && !query.hasSize)
+        answer = uploadwait::Answer::None;
+    if (query.uploadId != 0)
+        onServerCheckAnswer(query.uploadId, returnCode, answer, query.size);
+    else if (!query.key.isEmpty())
+        onRefetchAnswer(query.key, returnCode, answer, query.size);
+}
+
+void Core::wake(QTimer*& timer, qint64 delayMs, void (Core::*run)())
+{
+    if (!timer) {
+        // A member timer (a child), never a functor singleShot: nothing of ours may be pending once the
+        // plugin is gone.
+        timer = new QTimer(this);
+        timer->setSingleShot(true);
+        connect(timer, &QTimer::timeout, this, run);
+    }
+    const int delay = static_cast<int>(qBound<qint64>(0, delayMs, 60 * 60 * 1000));
+    if (!timer->isActive() || timer->remainingTime() > delay)
+        timer->start(delay);
+}
+
+// ---- sender: the message waits until the server has all of the file -----------------------------
+
+bool Core::startServerCheck(int id, const QVector<ServerCheck::File>* files)
+{
+    const UploadJob* job = upload(id);
+    if (!job || !ts3::funcs.requestFileInfo)
+        return false; // can't be asked: the message goes at once, as before
+    noteServer(job->target.sch); // 2.3.2: which server this is goes into the log once
+    ServerCheck check;
+    check.sch = job->target.sch;
+    if (files) {
+        check.files = *files; // a repost: what the check the connection cut short still had to confirm
+    } else {
+        // 2.3.2: what was uploaded, for the content check: its tail (from the staged file, else the copy
+        // seedCache put into the cache) and its SHA-256 (finalizeStaged's). Kept with the check, so a
+        // repost after a lost connection has them when the staging folder is long gone.
+        const auto        extra = m_uploadExtra.constFind(id);
+        ServerCheck::File main;
+        main.path = joinRemote(job->remoteDir, job->remoteName);
+        main.size = job->size;
+        if (!job->stagingDir.isEmpty())
+            main.tail = readUploadedTail(job->stagingDir + QLatin1Char('/') + job->remoteName, job->size);
+        if (main.tail.isEmpty() && extra != m_uploadExtra.constEnd() && extra->link.isValid())
+            main.tail = readUploadedTail(cachePathFor(extra->link), job->size);
+        if (extra != m_uploadExtra.constEnd() && extra->hashed)
+            main.sha256 = extra->digest.sha256;
+        check.files.append(main);
+        // Its preview: the message names it too. It was uploaded before the file, so it is asked about
+        // only when the file itself wasn't all there at once (onServerCheckAnswer): each question costs
+        // flood points that an album's message would otherwise wait for.
+        if (!job->previewRemotePath.isEmpty() && extra != m_uploadExtra.constEnd() && !extra->previewJpeg.isEmpty()) {
+            ServerCheck::File preview;
+            preview.path   = job->previewRemotePath;
+            preview.size   = static_cast<quint64>(extra->previewJpeg.size());
+            preview.tail   = uploadwait::tailWindow(extra->previewJpeg.right(uploadwait::kMaxTailWindowBytes), preview.size);
+            preview.sha256 = hashing::sha256(extra->previewJpeg);
+            check.files.append(preview);
+        }
+    }
+    if (check.files.isEmpty())
+        return false;
+    const qint64 now = floodClockMs();
+    check.state      = uploadwait::startConfirm(job->size, now);
+    check.dueAt      = now;
+    m_serverChecks.insert(id, check);
+    wake(m_serverCheckTimer, 0, &Core::runServerChecks); // asked right away, outside TeamSpeak's event
+    return true;
+}
+
+// Asks the questions (2.3.2: and starts the content checks) that are due, as the connection's
+// FloodGovernor allows (file info and transfers count on the same counter as chat messages).
+void Core::runServerChecks()
+{
+    const qint64     now    = floodClockMs();
+    qint64           wakeAt = -1;
+    const auto       later  = [&wakeAt](qint64 at) { wakeAt = wakeAt < 0 ? at : qMin(wakeAt, at); };
+    const QList<int> ids    = m_serverChecks.keys();
+    for (const int id : ids) {
+        auto check = m_serverChecks.find(id);
+        if (check == m_serverChecks.end() || !check->query.isEmpty() || check->reading)
+            continue; // gone, its question waits for the answer, or its download is being read
+        const UploadJob* job = upload(id);
+        if (!job || job->state != UploadState::Posting || check->files.isEmpty()) {
+            dropServerCheck(id);
+            continue;
+        }
+        const uint64 sch = job->target.sch;
+        if (check->transferId != 0) {
+            // 2.3.2: a content check's download that doesn't finish: the bytes aren't there yet (a server
+            // may hold a download back until they arrive).
+            if (now < check->transferDue) {
+                later(check->transferDue);
+                continue;
+            }
+            ts3::log(LogLevel_DEBUG, sch, "The check of %1 on the server didn't finish in time", {ts3::file(check->files.first().path)});
+            endContentTransfer(check.value());
+            onContentResult(id, uploadwait::Bytes::Different, {});
+            continue;
+        }
+        const FloodGovernor::Cost cost = check->content ? FloodGovernor::Cost::Transfer : FloodGovernor::Cost::FileInfo;
+        qint64                    due  = check->dueAt;
+        if (due <= now && !floodGovernor(sch).generalReady(cost, now))
+            due = qMax(now + 1, floodGovernor(sch).nextGeneralCheckMs(cost, now));
+        // 2.3.2: a content check takes a download slot. With all of them busy, one check at a time goes
+        // anyway (its message waits for it; it is small).
+        if (due <= now && check->content && m_activeDownloads >= kMaxParallelDownloads && !m_checkTransfers.isEmpty())
+            due = now + kCheckSlotPollMs;
+        if (due > now) {
+            later(due);
+            continue;
+        }
+        if (!ts3::isConnected(sch)) {
+            // No answer this time; onConnectionLost ends the check (or it stops waiting in the end).
+            if (check->content)
+                onContentResult(id, uploadwait::Bytes::Different, {}, false);
+            else
+                onServerCheckAnswer(id, {}, uploadwait::Answer::None, 0);
+            continue;
+        }
+        if (check->content) {
+            startContentTransfer(id);
+            check = m_serverChecks.find(id);
+            if (check != m_serverChecks.end() && check->transferId != 0)
+                later(check->transferDue);
+            continue;
+        }
+        const QString path  = check->files.first().path;
+        unsigned int  error = ERROR_ok;
+        const QString rc    = askFileSize(sch, job->channelId, path, id, {}, &error);
+        check               = m_serverChecks.find(id);
+        if (check == m_serverChecks.end())
+            continue;
+        if (rc.isEmpty()) {
+            ts3::log(LogLevel_DEBUG, sch, "Couldn't ask the server about %1: %2", {ts3::file(path), ts3::pub(ts3::errorText(error))});
+            const uploadwait::Answer answer = error == ERROR_file_not_found ? uploadwait::Answer::Missing
+                                              : error == ERROR_not_connected ? uploadwait::Answer::None
+                                                                             : uploadwait::Answer::Refused;
+            onServerCheckAnswer(id, {}, answer, 0);
+            continue;
+        }
+        check->query = rc;
+    }
+    if (wakeAt >= 0)
+        wake(m_serverCheckTimer, wakeAt - now, &Core::runServerChecks);
+}
+
+void Core::onServerCheckAnswer(int id, const QString& returnCode, uploadwait::Answer answer, quint64 size)
+{
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end() || check->query != returnCode || check->content)
+        return; // canceled, failed or asked again meanwhile
+    check->query.clear();
+    const UploadJob* job = upload(id);
+    if (!job || job->state != UploadState::Posting || check->files.isEmpty()) {
+        dropServerCheck(id);
+        return;
+    }
+    const uint64                  sch  = job->target.sch;
+    const qint64                  now  = floodClockMs();
+    const ServerCheck::File       file = check->files.first();
+    const uploadwait::ConfirmStep step = uploadwait::confirmStep(check->state, file.size, answer, size, now);
+    const qint64                  took = now - check->state.startedAt;
+    switch (step.what) {
+    case uploadwait::Confirm::Poll:
+        if (!check->waited)
+            ts3::log(LogLevel_DEBUG, sch, "The server has %1 of %2 of %3 so far; the message waits",
+                     {ts3::pub(answer == uploadwait::Answer::Size ? formatSize(size) : QStringLiteral("?")), ts3::pub(formatSize(file.size)), ts3::file(file.path)});
+        check->waited = true;
+        check->dueAt  = now + step.delayMs;
+        wake(m_serverCheckTimer, step.delayMs, &Core::runServerChecks);
+        return;
+    case uploadwait::Confirm::Confirmed:
+        // 2.3.2: a server that preallocates uploads (TeaSpeak) reports the whole size while the bytes
+        // still arrive: they are checked too before the message goes.
+        ts3::log(LogLevel_DEBUG, sch, "The server reports the whole size of %1 after %2 ms; checking its bytes", {ts3::file(file.path), ts3::pub(took)});
+        beginContentCheck(id, true);
+        return;
+    case uploadwait::Confirm::Larger:
+        ts3::log(LogLevel_WARNING, sch, "The server reports %1 at %2, more than the %3 uploaded; posting it anyway",
+                 {ts3::file(file.path), ts3::pub(formatSize(size)), ts3::pub(formatSize(file.size))});
+        fileverify::count(fileverify::Counter::UploadsUnconfirmed);
+        break;
+    case uploadwait::Confirm::Missing:
+        ts3::log(LogLevel_WARNING, sch, "The server doesn't list %1 right after its upload; posting it anyway", {ts3::file(file.path)});
+        fileverify::count(fileverify::Counter::UploadsUnconfirmed);
+        break;
+    case uploadwait::Confirm::Refused:
+        // 2.3.2: the server can't tell its size: its bytes may (a download needs another permission).
+        ts3::log(LogLevel_INFO, sch, "Couldn't ask the server whether it has all of %1; checking its bytes instead", {ts3::file(file.path)});
+        beginContentCheck(id, false);
+        return;
+    case uploadwait::Confirm::TimedOut:
+    case uploadwait::Confirm::Stalled:
+        ts3::log(LogLevel_WARNING, sch, "The server had %1 of %2 of %3 after %4 s (%5); posting it anyway",
+                 {ts3::pub(check->state.lastSize < 0 ? QStringLiteral("?") : formatSize(static_cast<quint64>(check->state.lastSize))),
+                  ts3::pub(formatSize(file.size)), ts3::file(file.path), ts3::pub((took + 500) / 1000), ts3::pub(uploadwait::confirmName(step.what))});
+        fileverify::count(fileverify::Counter::UploadsUnconfirmed);
+        break;
+    }
+    finishServerCheck(id);
+}
+
+// The check is over (confirmed, or the message goes anyway): the file counts as uploaded, its message
+// takes its turn (pumpPostUnits).
+void Core::finishServerCheck(int id)
+{
+    dropServerCheck(id);
+    auto job = m_uploads.find(id);
+    if (job == m_uploads.end() || job->state != UploadState::Posting)
+        return;
+    job->uploaded      = true;
+    const QString held = heldText(job.value());
+    setUploadState(job.value(), UploadState::Posting, held.isEmpty() ? i18n::t("Posting to chat…") : held, !held.isEmpty());
+}
+
+void Core::dropServerCheck(int id)
+{
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end())
+        return;
+    endContentTransfer(check.value());
+    m_serverChecks.erase(check);
+}
+
+// ---- 2.3.2: the content check (preallocating servers, uploadwait.h) ------------------------------
+
+QString Core::serverCheckDir() const
+{
+    return ts3::dataDir() + QStringLiteral("/servercheck");
+}
+
+// The current file's size is confirmed (sizeKnown) or the server can't tell it: its bytes are checked
+// next, the best way there is (uploadwait::firstMethod).
+void Core::beginContentCheck(int id, bool sizeKnown)
+{
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end() || check->files.isEmpty())
+        return;
+    const ServerCheck::File  file    = check->files.first();
+    const qint64             now     = floodClockMs();
+    const UploadJob*         job     = upload(id);
+    // A check's download was refused for lack of permission on this connection and channel already: the
+    // next one would be too (each refusal costs flood points).
+    const bool               refused = job && m_checkRefused.contains(remoteDirKey(check->sch, job->channelId, {}));
+    const uploadwait::Method method  = file.size == 0 || refused ? uploadwait::Method::SizeOnly
+                                                                 : uploadwait::firstMethod(!file.tail.isEmpty(), !file.sha256.isEmpty(), file.size);
+    check->sizeKnown = sizeKnown;
+    if (method == uploadwait::Method::SizeOnly) {
+        // No permission to download it, or its uploaded end isn't known (the staged file and the cache
+        // copy are gone; or it ends in more zeros than a tail check reaches) and it is too large (or has
+        // no checksum) to download whole.
+        const QString why = refused ? QStringLiteral("no permission to download it") : QStringLiteral("its end as uploaded can't be compared");
+        if (sizeKnown) {
+            fileverify::count(fileverify::Counter::ContentSizeOnly);
+            ts3::log(LogLevel_INFO, check->sch, "Content check of %1 not possible (%2); posting it after the size check", {ts3::file(file.path), ts3::pub(why)});
+            ts3::log(LogLevel_DEBUG, check->sch, "Server has all of %1 (size only) after %2 ms", {ts3::file(file.path), ts3::pub(now - check->state.startedAt)});
+            nextServerFile(id);
+        } else {
+            fileverify::count(fileverify::Counter::UploadsUnconfirmed);
+            ts3::log(LogLevel_INFO, check->sch, "Couldn't check whether the server has all of %1 (%2); posting it without waiting", {ts3::file(file.path), ts3::pub(why)});
+            finishServerCheck(id);
+        }
+        return;
+    }
+    check->content      = true;
+    check->contentState = uploadwait::startContent(method, now);
+    check->dueAt        = now;
+    wake(m_serverCheckTimer, 0, &Core::runServerChecks);
+}
+
+// The current file is confirmed: its preview next, right away, but only when the file had to be waited
+// for (its own bytes went out before the file's, so once the server had all of the file at once, it has
+// the preview too); else the message takes its turn.
+void Core::nextServerFile(int id)
+{
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end())
+        return;
+    endContentTransfer(check.value());
+    check->content       = false;
+    check->sizeKnown     = false;
+    check->contentWaited = false;
+    check->contentState  = uploadwait::ContentState();
+    if (!check->files.isEmpty())
+        check->files.removeFirst();
+    if (!check->files.isEmpty() && check->waited) {
+        const qint64 now = floodClockMs();
+        uploadwait::nextConfirmFile(check->state, now);
+        check->dueAt = now;
+        wake(m_serverCheckTimer, 0, &Core::runServerChecks);
+        return;
+    }
+    if (check->waited)
+        fileverify::count(fileverify::Counter::UploadsWaited);
+    finishServerCheck(id);
+}
+
+// Downloads what the check of the current file needs: its tail (TeamSpeak's resume: a local file of
+// size - N bytes, then requestFile with resume brings the last N), or all of it.
+void Core::startContentTransfer(int id)
+{
+    auto             check = m_serverChecks.find(id);
+    const UploadJob* job   = upload(id);
+    if (check == m_serverChecks.end() || !job || check->files.isEmpty())
+        return;
+    const ServerCheck::File  file   = check->files.first();
+    const uploadwait::Method method = check->contentState.method;
+    const quint64            n      = static_cast<quint64>(file.tail.size()); // uploadwait::tailWindow
+    const bool               resume = method == uploadwait::Method::Tail && n < file.size; // a tail as long as the file: a plain download
+    sweepCheckDirs(); // what earlier checks left behind (TeamSpeak held it a while)
+    const QString dir = serverCheckDir() + QLatin1Char('/') + QString::number(id) + QLatin1Char('_') + QString::number(++m_nextCheckFolder);
+    QDir(dir).removeRecursively();
+    bool prepared = QDir().mkpath(dir);
+    if (prepared && resume)
+        prepared = makeResumeStub(dir + QLatin1Char('/') + QFileInfo(file.path).fileName(), static_cast<qint64>(file.size - n));
+    if (!prepared) {
+        removeCheckDir(dir);
+        ts3::log(LogLevel_WARNING, check->sch, "Couldn't prepare the check of %1 on the server", {ts3::file(file.path)});
+        onContentResult(id, uploadwait::Bytes::Failed, {});
+        return;
+    }
+    const uint64   sch = check->sch;
+    const QString  rc  = registerOp(OpType::CheckDownload, {}, id);
+    anyID          tid = 0;
+    const unsigned err = ts3::funcs.requestFile(sch, job->channelId, "", file.path.toUtf8().constData(), resume ? 0 : 1, resume ? 1 : 0, utf8Native(dir).constData(),
+                                                &tid, rc.toUtf8().constData());
+    floodGovernor(sch).charge(FloodGovernor::Cost::Transfer, floodClockMs()); // the attempt counts either way
+    check = m_serverChecks.find(id);
+    if (err != ERROR_ok || check == m_serverChecks.end()) {
+        forgetOp(rc);
+        removeCheckDir(dir);
+        if (check == m_serverChecks.end())
+            return;
+        ts3::log(LogLevel_DEBUG, sch, "Couldn't start the check of %1 on the server: %2", {ts3::file(file.path), ts3::pub(ts3::errorText(err))});
+        // The connection: tried again the same way (or onConnectionLost ends it). Anything else: the next way.
+        bool                    answered = true;
+        const uploadwait::Bytes bytes    = checkFailure(err, &answered);
+        onContentResult(id, bytes, {}, answered);
+        return;
+    }
+    setOpTransfer(rc, tid);
+    check->transferId  = tid;
+    check->transferDir = dir;
+    check->transferDue = floodClockMs() + uploadwait::contentTransferTimeoutMs(method, file.size);
+    check->token       = ++m_nextCheckToken;
+    m_checkTransfers.insert(tid, id);
+    ++m_activeDownloads; // its slot: downloads of received files wait for it
+    ts3::log(LogLevel_DEBUG, sch, "Checking %1 on the server (%2)", {ts3::file(file.path), ts3::pub(uploadwait::methodName(method))});
+}
+
+void Core::onContentTransferDone(int id, anyID transferId, unsigned int status, const QString& message)
+{
+    m_checkTransfers.remove(transferId);
+    --m_activeDownloads;
+    QMetaObject::invokeMethod(this, [this] { pumpDownloadQueue(); }, Qt::QueuedConnection); // its slot is free
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end() || check->transferId != transferId || check->files.isEmpty())
+        return;
+    check->transferId  = 0;
+    check->transferDue = -1;
+    if (status == ERROR_file_transfer_complete) {
+        check->reading = true;
+        readContentWhenWritten(id, check->token, 0);
+        return;
+    }
+    const QString path = check->files.first().path;
+    removeCheckDir(check->transferDir);
+    check->transferDir.clear();
+    ts3::log(LogLevel_DEBUG, check->sch, "The check of %1 on the server didn't finish: %2", {ts3::file(path), ts3::pub(message.isEmpty() ? ts3::errorText(status) : message)});
+    // The connection: tried again (or onConnectionLost ends it); the file busy: other bytes; else the next way.
+    bool                    answered = true;
+    const uploadwait::Bytes bytes    = checkFailure(status, &answered);
+    onContentResult(id, bytes, {}, answered);
+}
+
+// TeamSpeak reports a download complete while it may still be writing the file (finishWhenWritten):
+// read once nothing has it open for writing.
+void Core::readContentWhenWritten(int id, quint64 token, int attempt)
+{
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end() || check->token != token || !check->reading || check->files.isEmpty())
+        return; // ended meanwhile
+    const ServerCheck::File file  = check->files.first();
+    const QString           found = findDownloaded(check->transferDir, QFileInfo(file.path).fileName());
+    if (!found.isEmpty() && isOpenForWriting(found) && attempt < kCheckWriteWaits) {
+        singleShotOwned(kCheckWritePollMs, this, [this, id, token, attempt] { readContentWhenWritten(id, token, attempt + 1); });
+        return;
+    }
+
+    if (check->contentState.method == uploadwait::Method::Full) {
+        const qint64 size = found.isEmpty() ? -1 : QFileInfo(found).size();
+        if (size < 0 || static_cast<quint64>(size) != file.size) {
+            // Missing: failed. Another length: other bytes (its length is what changes).
+            check->reading = false;
+            removeCheckDir(check->transferDir);
+            check->transferDir.clear();
+            onContentResult(id, size < 0 ? uploadwait::Bytes::Failed : uploadwait::Bytes::Different, size < 0 ? QByteArray() : QByteArray::number(size));
+            return;
+        }
+        // Hashed off the GUI thread (up to 16 MB), on a pool of its own (staging copies and probes on
+        // m_pool may take long; the message waits for this): joined in ~Core, the hash stops on its flag.
+        auto cancel       = std::make_shared<std::atomic<bool>>(false);
+        check->hashCancel = cancel;
+        QPointer<Core> self(this);
+        m_checkPool.start([self, id, token, found, cancel] {
+            QString          error;
+            const QByteArray digest = hashing::sha256File(found, cancel.get(), {}, &error);
+            if (cancel->load())
+                return;
+            if (Core* core = self.data()) {
+                QMetaObject::invokeMethod(core, [self, id, token, digest] {
+                    if (self)
+                        self->onContentHashed(id, token, digest);
+                }, Qt::QueuedConnection);
+            }
+        });
+        return;
+    }
+
+    // The tail: the last N bytes of what came, compared with the uploaded ones.
+    const quint64 n    = static_cast<quint64>(file.tail.size());
+    qint64        size = -1;
+    QByteArray    got;
+    if (!found.isEmpty()) {
+        QFile downloaded(found);
+        if (downloaded.open(QIODevice::ReadOnly)) {
+            size = downloaded.size();
+            if (static_cast<quint64>(size) >= n && downloaded.seek(size - static_cast<qint64>(n)))
+                got = downloaded.read(static_cast<qint64>(n));
+        }
+    }
+    check->reading = false;
+    removeCheckDir(check->transferDir);
+    check->transferDir.clear();
+    uploadwait::Bytes bytes = uploadwait::compareTail(file.tail, file.size, size, got);
+#ifdef TSMEDIA_TESTHOOKS
+    if (bytes == uploadwait::Bytes::Same && m_fakeTailZero > 0 && isLocalServer(check->sch)) {
+        --m_fakeTailZero;
+        got.fill('\0');
+        bytes = uploadwait::Bytes::Different;
+        ts3::log(QStringLiteral("[test] fake_tail_zero: the tail check of %1 sees zeros (%2 more to come)").arg(file.path).arg(m_fakeTailZero));
+    }
+#endif
+    // What changes while the upload arrives: the bytes there, or (a server that sends what it has) how many.
+    onContentResult(id, bytes, QByteArray::number(size) + ':' + hashing::sha256(got));
+}
+
+void Core::onContentHashed(int id, quint64 token, const QByteArray& digest)
+{
+    auto check = m_serverChecks.find(id);
+    if (check == m_serverChecks.end() || check->token != token || !check->reading || check->files.isEmpty())
+        return; // ended meanwhile
+    check->reading = false;
+    check->hashCancel.reset();
+    removeCheckDir(check->transferDir);
+    check->transferDir.clear();
+    const QByteArray expected = check->files.first().sha256;
+    const auto       bytes    = digest.size() != fileverify::kShaBytes ? uploadwait::Bytes::Failed
+                                : digest == expected                    ? uploadwait::Bytes::Same
+                                                                        : uploadwait::Bytes::Different;
+    onContentResult(id, bytes, digest);
+}
+
+void Core::onContentResult(int id, uploadwait::Bytes result, const QByteArray& fingerprint, bool answered)
+{
+    auto             check = m_serverChecks.find(id);
+    const UploadJob* job   = upload(id);
+    if (check == m_serverChecks.end())
+        return;
+    if (!job || job->state != UploadState::Posting || check->files.isEmpty()) {
+        dropServerCheck(id);
+        return;
+    }
+    const uint64                   sch    = check->sch;
+    const qint64                   now    = floodClockMs();
+    const ServerCheck::File        file   = check->files.first();
+    const uploadwait::Method       method = check->contentState.method;
+    if (answered && result == uploadwait::Bytes::Refused) {
+        // No permission to download files here: later files on this channel go after the size check at
+        // once (beginContentCheck) instead of asking to be refused again (until the connection ends).
+        m_checkRefused.insert(remoteDirKey(sch, job->channelId, {}));
+    }
+    // No answer (flood protection, the connection): it says nothing about the bytes; checked again the
+    // same way, within the same limits.
+    const uploadwait::Bytes        bytes  = answered ? result : uploadwait::Bytes::Different;
+    const uploadwait::ContentStep  step   = uploadwait::contentStep(check->contentState, bytes, answered ? fingerprint : QByteArray(), !file.sha256.isEmpty(),
+                                                                    file.size, check->state.deadline, now);
+    const qint64                   took   = now - check->state.startedAt;
+    switch (step.what) {
+    case uploadwait::Content::Retry:
+        if (answered && !check->contentWaited) {
+            fileverify::count(fileverify::Counter::ContentWaited);
+            ts3::log(LogLevel_INFO, sch, "The server's copy of %1 doesn't end like the uploaded file yet (%2 check): it is still arriving; the message waits",
+                     {ts3::file(file.path), ts3::pub(uploadwait::methodName(method))});
+            check->contentWaited = true;
+            check->waited        = true; // the line to the server is busy: its preview is checked too
+        }
+        check->dueAt = now + step.delayMs;
+        wake(m_serverCheckTimer, step.delayMs, &Core::runServerChecks);
+        return;
+    case uploadwait::Content::Full:
+        ts3::log(LogLevel_INFO, sch, "Couldn't read the end of %1 back from the server (%2); checking the whole file instead",
+                 {ts3::file(file.path), ts3::pub(result == uploadwait::Bytes::WrongLength ? QStringLiteral("it came back with another length")
+                                                 : result == uploadwait::Bytes::NotTheEnd ? QStringLiteral("it came back with bytes from elsewhere")
+                                                                                          : QStringLiteral("the download failed"))});
+        check->dueAt = now;
+        wake(m_serverCheckTimer, 0, &Core::runServerChecks);
+        return;
+    case uploadwait::Content::Confirmed:
+        fileverify::count(method == uploadwait::Method::Tail ? fileverify::Counter::ContentByTail : fileverify::Counter::ContentByFull);
+        ts3::log(LogLevel_DEBUG, sch, "Server has all of %1 (content checked: %2) after %3 ms", {ts3::file(file.path), ts3::pub(uploadwait::methodName(method)), ts3::pub(took)});
+        nextServerFile(id);
+        return;
+    case uploadwait::Content::SizeOnly: {
+        const QString why = result == uploadwait::Bytes::Refused ? QStringLiteral("no permission to download it")
+                            : file.sha256.isEmpty()                    ? QStringLiteral("no checksum to compare the whole file with")
+                            : file.size > uploadwait::kMaxFullCheckBytes ? QStringLiteral("too large to download whole")
+                            : result == uploadwait::Bytes::WrongLength || result == uploadwait::Bytes::NotTheEnd ? QStringLiteral("the server can't send its end alone")
+                                                                                                                  : QStringLiteral("its download failed");
+        if (check->sizeKnown) {
+            fileverify::count(fileverify::Counter::ContentSizeOnly);
+            ts3::log(LogLevel_INFO, sch, "Content check of %1 not possible (%2); posting it after the size check", {ts3::file(file.path), ts3::pub(why)});
+            ts3::log(LogLevel_DEBUG, sch, "Server has all of %1 (size only) after %2 ms", {ts3::file(file.path), ts3::pub(took)});
+            nextServerFile(id);
+        } else {
+            fileverify::count(fileverify::Counter::UploadsUnconfirmed);
+            ts3::log(LogLevel_INFO, sch, "Couldn't check whether the server has all of %1 (%2); posting it without waiting", {ts3::file(file.path), ts3::pub(why)});
+            finishServerCheck(id);
+        }
+        return;
+    }
+    case uploadwait::Content::TimedOut:
+    case uploadwait::Content::Stalled:
+        fileverify::count(fileverify::Counter::UploadsUnconfirmed);
+        ts3::log(LogLevel_WARNING, sch, "The server's copy of %1 still doesn't end like the uploaded file after %2 s (%3, %4 check); posting it anyway",
+                 {ts3::file(file.path), ts3::pub((took + 500) / 1000), ts3::pub(uploadwait::contentName(step.what)), ts3::pub(uploadwait::methodName(method))});
+        finishServerCheck(id);
+        return;
+    }
+}
+
+// Ends what the content check of check runs: its download is halted (its slot freed), its hash stops,
+// its folder goes. Results still on their way find another token.
+void Core::endContentTransfer(ServerCheck& check)
+{
+    ++check.token;
+    check.reading = false;
+    if (check.hashCancel) {
+        check.hashCancel->store(true);
+        check.hashCancel.reset();
+    }
+    if (check.transferId != 0) {
+        haltDownload(check.sch, check.transferId);
+        m_checkTransfers.remove(check.transferId);
+        --m_activeDownloads;
+        check.transferId = 0;
+        // Its slot is free (deferred: this runs deep inside other steps, and in ~Core, where the posted
+        // call goes with the object).
+        QMetaObject::invokeMethod(this, [this] { pumpDownloadQueue(); }, Qt::QueuedConnection);
+    }
+    check.transferDue = -1;
+    removeCheckDir(check.transferDir);
+    check.transferDir.clear();
+}
+
+void Core::removeCheckDir(const QString& dir)
+{
+    if (dir.isEmpty() || QDir(dir).removeRecursively())
+        return;
+    // TeamSpeak may hold a halted download's file a moment longer: once more later; what is still held
+    // then goes with the next check (sweepCheckDirs) or at the next start.
+    singleShotOwned(kCheckDirRetryMs, this, [dir] { QDir(dir).removeRecursively(); });
+}
+
+// Removes the folders of checks that are over (TeamSpeak held their file when they ended).
+void Core::sweepCheckDirs()
+{
+    QSet<QString> running; // folder names ("<id>_<n>", all right below serverCheckDir())
+    for (const ServerCheck& check : qAsConst(m_serverChecks)) {
+        if (!check.transferDir.isEmpty())
+            running.insert(QFileInfo(check.transferDir).fileName());
+    }
+    const QFileInfoList dirs = QDir(serverCheckDir()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& dir : dirs) {
+        if (!running.contains(dir.fileName()))
+            QDir(dir.absoluteFilePath()).removeRecursively();
+    }
+}
+
+void Core::noteServer(uint64 sch)
+{
+    if (!sch || m_serverInfo.contains(sch) || !ts3::isConnected(sch))
+        return;
+    const QString version  = serverVariable(sch, VIRTUALSERVER_VERSION);
+    const QString platform = serverVariable(sch, VIRTUALSERVER_PLATFORM);
+    if (version.isEmpty() && platform.isEmpty())
+        return; // not known yet: noted when Core needs it next
+    ServerInfo info;
+    info.description = platform.isEmpty() ? version : version.isEmpty() ? platform : version + QLatin1String(" on ") + platform;
+    // For the log and the diagnostic info only: the checks above work the same on every server.
+    info.teaSpeak = version.contains(QLatin1String("TeaSpeak"), Qt::CaseInsensitive) || platform.contains(QLatin1String("TeaSpeak"), Qt::CaseInsensitive);
+    m_serverInfo.insert(sch, info);
+    if (info.teaSpeak)
+        ts3::log(LogLevel_INFO, sch, "Server: %1 (looks like TeaSpeak: uploads may be preallocated, sent files are checked by their bytes)", {ts3::pub(info.description)});
+    else
+        ts3::log(LogLevel_INFO, sch, "Server: %1", {ts3::pub(info.description)});
+}
+
+QStringList Core::serverCheckDiagnostics() const
+{
+    QStringList servers;
+    for (auto it = m_serverInfo.cbegin(); it != m_serverInfo.cend(); ++it) {
+        if (!ts3::isConnected(it.key()))
+            continue;
+        const QString name = it->description.left(60);
+        servers << (it->teaSpeak ? i18n::t("%1 (TeaSpeak)").arg(name) : name);
+    }
+    servers.sort();
+    if (servers.isEmpty())
+        return {};
+    return {i18n::t("Servers: %1").arg(servers.join(QLatin1String("; ")))};
+}
+
+#ifdef TSMEDIA_TESTHOOKS
+void Core::setFakeTailZero(int n)
+{
+    m_fakeTailZero = qMax(0, n);
+    ts3::log(QStringLiteral("[test] fake_tail_zero: the next %1 tail checks of sent files see zeros (localhost servers only)").arg(m_fakeTailZero));
+}
+#endif
+
+// ---- receiver: a short or mismatching download waits for the sender's upload -------------------
+
+// seen: the download came out short (downloaded: its bytes) or didn't match (digest: what it hashed
+// to). The entry stays Downloading, waiting (no transfer, its slot is free), while the server is asked
+// for the file's size; onRefetchAnswer decides what comes next.
+void Core::beginRefetch(const QString& key, uploadwait::Seen seen, quint64 downloaded, const QByteArray& digest, bool wasAuto)
+{
+    auto it = m_entries.find(key);
+    if (it == m_entries.end())
+        return;
+    MediaEntry& e      = it.value();
+    e.state            = MediaState::Downloading;
+    e.waitingForUpload = true;
+    e.progress         = 0.0;
+    e.transferId       = 0;
+    e.check            = ShaCheck();
+    Refetch& r         = m_refetches[key]; // what earlier downloads of it showed stays (uploadwait::RefetchState)
+    r.seen             = seen;
+    r.downloaded       = downloaded;
+    r.digest           = digest;
+    r.wasAuto          = r.wasAuto || wasAuto;
+    r.download         = false;
+    r.zeroTail         = seen == uploadwait::Seen::ZeroTail;
+    r.dueAt            = floodClockMs();
+    r.query.clear();
+    noteServer(e.sch); // 2.3.2: which server this is goes into the log once
+    touch(e);
+    wake(m_refetchTimer, 0, &Core::runRefetches);
+}
+
+// Asks the questions and starts the downloads that are due (questions as the FloodGovernor allows).
+void Core::runRefetches()
+{
+    const qint64      now    = floodClockMs();
+    qint64            wakeAt = -1;
+    const QStringList keys   = m_refetches.keys();
+    for (const QString& key : keys) {
+        auto r = m_refetches.find(key);
+        if (r == m_refetches.end() || !r->query.isEmpty() || r->dueAt < 0)
+            continue; // gone, its question waits for the answer, or its download runs
+        auto e = m_entries.find(key);
+        if (e == m_entries.end() || e->state != MediaState::Downloading || !e->waitingForUpload) {
+            m_refetches.erase(r);
+            continue;
+        }
+        const uint64 sch = ts3::connectionForServerUid(e->link.serverUid);
+        if (!sch) {
+            // The server can't be asked: the download resumes once it is reachable again.
+            failDownload(key, MediaError::NotConnected, {});
+            continue;
+        }
+        // Questions and downloads both count on the general flood counter: they wait for room on it (a
+        // download refused for flooding would fail for good).
+        const FloodGovernor::Cost cost = r->download ? FloodGovernor::Cost::Transfer : FloodGovernor::Cost::FileInfo;
+        qint64                    due  = r->dueAt;
+        if (due <= now && !floodGovernor(sch).generalReady(cost, now))
+            due = qMax(now + 1, floodGovernor(sch).nextGeneralCheckMs(cost, now));
+        if (due > now) {
+            wakeAt = wakeAt < 0 ? due : qMin(wakeAt, due);
+            continue;
+        }
+        if (r->download) {
+            // Downloaded again. An automatic download as one: the rules for new links decide again
+            // (data saver, size limits, settings changed meanwhile), so it may wait for a click now.
+            const QString remote  = e->link.remoteFile();
+            const int     attempt = r->state.downloads + 1;
+            r->dueAt              = -1;
+            e->waitingForUpload   = false;
+            e->state              = MediaState::Idle;
+            e->progress           = 0.0;
+            if (!r->wasAuto)
+                startDownload(key);
+            else if (Settings::instance().inlinePreviews)
+                startAutoDownloads(key);
+            else
+                m_autoPending.insert(key);
+            auto again = m_entries.find(key);
+            if (again != m_entries.end() && again->state == MediaState::Idle) {
+                // Nothing started (it waits for a click now): the refetch ends here.
+                ts3::log(LogLevel_INFO, sch, "%1 waits for a click instead of being downloaded again (automatic downloads don't take it now)", {ts3::file(remote)});
+                m_autoDownloads.remove(key);
+                dropRefetch(again.value());
+                touch(again.value());
+                continue;
+            }
+            fileverify::count(fileverify::Counter::DownloadsRefetched);
+            ts3::log(LogLevel_INFO, sch, "Downloading %1 again (attempt %2)", {ts3::file(remote), ts3::pub(attempt)});
+            continue;
+        }
+        unsigned int  error = ERROR_ok;
+        const QString rc    = askFileSize(sch, e->link.channelId, e->link.remoteFile(), 0, key, &error);
+        r                   = m_refetches.find(key);
+        if (r == m_refetches.end())
+            continue;
+        if (rc.isEmpty() && error == ERROR_not_connected) {
+            failDownload(key, MediaError::NotConnected, {}); // resumed once connected again
+            continue;
+        }
+        if (rc.isEmpty()) {
+            onRefetchAnswer(key, {}, error == ERROR_file_not_found ? uploadwait::Answer::Missing : uploadwait::Answer::Refused, 0);
+            continue;
+        }
+        r->query = rc;
+    }
+    if (wakeAt >= 0)
+        wake(m_refetchTimer, wakeAt - now, &Core::runRefetches);
+}
+
+void Core::onRefetchAnswer(const QString& key, const QString& returnCode, uploadwait::Answer answer, quint64 size)
+{
+    auto r = m_refetches.find(key);
+    if (r == m_refetches.end() || r->query != returnCode || r->dueAt < 0)
+        return; // over, or asked again meanwhile
+    r->query.clear();
+    auto it = m_entries.find(key);
+    if (it == m_entries.end() || it->state != MediaState::Downloading || !it->waitingForUpload) {
+        m_refetches.erase(r);
+        return;
+    }
+    MediaEntry&                   e         = it.value();
+    const qint64                  now       = floodClockMs();
+    const bool                    firstSize = r->state.serverSize < 0;
+    const uploadwait::RefetchStep step      = uploadwait::nextStep(r->state, r->seen, e.link.size, r->downloaded, r->digest, answer, size, now);
+    const QString                 remote    = e.link.remoteFile();
+    const qint64                  waited    = (now - r->state.startedAt + 500) / 1000;
+    switch (step.next) {
+    case uploadwait::Next::Ask:
+        // No answer (flood protection, a timeout): the same question again; what was seen still waits
+        // for its answer.
+        ts3::log(LogLevel_DEBUG, e.sch, "No answer about the size of %1; asking again", {ts3::file(remote)});
+        r->download = false;
+        r->dueAt    = now + step.delayMs;
+        wake(m_refetchTimer, step.delayMs, &Core::runRefetches);
+        return;
+    case uploadwait::Next::Download:
+    case uploadwait::Next::Poll:
+        if (firstSize && answer == uploadwait::Answer::Size && size < e.link.size)
+            ts3::log(LogLevel_INFO, e.sch, "The server has %1 of %2 of %3 so far; waiting for the sender's upload",
+                     {ts3::pub(formatSize(size)), ts3::pub(formatSize(e.link.size)), ts3::file(remote)});
+        else if (answer != uploadwait::Answer::Size && step.next == uploadwait::Next::Download)
+            ts3::log(LogLevel_INFO, e.sch, "The server can't tell how much of %1 it has; downloading it again to find out", {ts3::file(remote)});
+        else if (r->zeroTail && step.next == uploadwait::Next::Download)
+            ts3::log(LogLevel_DEBUG, e.sch, "The server reports all of %1 (it preallocates uploads); downloading it again in %2 ms", {ts3::file(remote), ts3::pub(step.delayMs)});
+        r->download = step.next == uploadwait::Next::Download;
+        r->seen     = uploadwait::Seen::Poll; // a download's own result sets it again (beginRefetch)
+        r->dueAt    = now + step.delayMs;
+        wake(m_refetchTimer, step.delayMs, &Core::runRefetches);
+        return;
+    case uploadwait::Next::FailMissing:
+        failDownload(key, MediaError::NotFound, {});
+        return;
+    case uploadwait::Next::FailChanged:
+        noteRemoteSize(e.link, size);
+        failDownload(key, MediaError::NotFound, fileChangedText(), false, true);
+        return;
+    case uploadwait::Next::FailMismatch:
+        e.check.received = r->digest; // "Copy details"
+        if (step.confirmed) {
+            // A download started after the server reported the whole file gave the same wrong bytes as
+            // the one before: not the file that was sent (a made-up hash, or a replaced file). Later
+            // links with this hash fail at once.
+            m_knownDigests.note(remoteId(e.link), e.link.size, r->digest);
+            ts3::log(LogLevel_WARNING, e.sch, "%1 doesn't match its SHA-256 the second time either: the server's file isn't the one that was sent", {ts3::file(remote)});
+        } else {
+            // Never noted: nothing showed that the server had the whole file (or the bytes kept changing).
+            ts3::log(LogLevel_WARNING, e.sch, "%1 still doesn't match its SHA-256 after %2 downloads; giving up", {ts3::file(remote), ts3::pub(r->state.downloads + 1)});
+        }
+        if (answer == uploadwait::Answer::Size)
+            noteRemoteSize(e.link, size);
+        failDownload(key, MediaError::Mismatch, downloadErrorText(MediaError::Mismatch), false, true);
+        return;
+    case uploadwait::Next::FailIncomplete: {
+        if (r->zeroTail) {
+            // 2.3.2: a preallocating server: the file has its whole size, its end stayed zeros.
+            ts3::log(LogLevel_WARNING, e.sch, "The server's copy of %1 still ends in zeros after %2 s (data up to %3 of %4); giving up",
+                     {ts3::file(remote), ts3::pub(waited), ts3::pub(formatSize(r->state.longest)), ts3::pub(formatSize(e.link.size))});
+            if (step.confirmed) {
+                // The same bytes twice while the server reported the whole file: that is the server's file
+                // now, whatever the sender meant to upload. Noted like a confirmed mismatch, so links naming
+                // it with ever new made-up hashes aren't all downloaded again (a click on one still
+                // downloads it: download(), retry()).
+                m_knownDigests.note(remoteId(e.link), e.link.size, r->digest);
+                e.check.received = r->digest;
+                ts3::log(LogLevel_INFO, e.sch, "The server's copy of %1 stayed the same; later links to it with another SHA-256 aren't downloaded automatically", {ts3::file(remote)});
+            }
+            failDownload(key, MediaError::Other, incompleteUploadText(), false, true);
+            return;
+        }
+        ts3::log(LogLevel_WARNING, e.sch, "The server still doesn't have all of %1 after %2 s (it has %3 of %4); giving up",
+                 {ts3::file(remote), ts3::pub(waited), ts3::pub(r->state.serverSize < 0 ? QStringLiteral("?") : formatSize(static_cast<quint64>(r->state.serverSize))),
+                  ts3::pub(formatSize(e.link.size))});
+        // The race is ruled out now: the size it stopped at is the file's real one (as a short download
+        // of a plain link notes it), so other links naming this file with another size aren't fetched
+        // automatically (startDownload).
+        const quint64 stopped = answer == uploadwait::Answer::Size ? size : r->state.longest;
+        if (stopped > 0 && stopped < e.link.size)
+            noteRemoteSize(e.link, stopped);
+        failDownload(key, MediaError::Other, incompleteUploadText(), false, true);
+        return;
+    }
+    }
+}
+
+void Core::dropRefetch(MediaEntry& e)
+{
+    m_refetches.remove(e.link.key()); // an answer still on its way finds nothing to do
+    e.waitingForUpload = false;
+}
+
+// The user asks for a file that didn't match once more: whatever made it not match (the upload race, a
+// replaced file) may be over. A known digest that contradicts its link would refuse it at once: the
+// forged-hash guard lets this key through until its attempt ends (storeDownload, failDownload). Nothing
+// is forgotten, so other links naming the file with a made-up hash are still refused meanwhile; a match
+// notes the right digest (onCheckFinished), a confirmed mismatch the wrong one again.
+void Core::retryMismatch(MediaEntry& e)
+{
+    m_guardWaived.insert(e.link.key());
+    e.check = ShaCheck();
+    ts3::log(LogLevel_INFO, e.sch, "Downloading %1 again as asked, although it didn't match its SHA-256", {ts3::file(e.link.remoteFile())});
+}
+
+bool Core::knownDigestContradicts(const MediaEntry& e) const
+{
+    return e.link.sha256.size() == fileverify::kShaBytes
+           && m_knownDigests.check(remoteId(e.link), e.link.size, e.link.sha256) == fileverify::KnownDigests::Verdict::Contradicts;
 }
 
 // ============================================================================================
@@ -4395,6 +5631,32 @@ bool Core::isOwnReturnCode(const QString& returnCode) const
 {
     QMutexLocker lock(&m_returnCodesMutex);
     return m_returnCodes.contains(returnCode);
+}
+
+// 2.3.2: the size of a file Core asked about (askFileSize). The event names the file, not the question:
+// every question about that file still without a size takes it.
+void Core::onFileInfo(uint64 sch, uint64 channelId, const QString& name, quint64 size)
+{
+    QStringList answered;
+    bool        matched = false;
+    for (auto it = m_infoQueries.begin(); it != m_infoQueries.end(); ++it) {
+        if (it->sch != sch || it->channelId != channelId || it->hasSize || !uploadwait::sameRemoteFile(name, it->path))
+            continue;
+        matched     = true;
+        it->hasSize = true;
+        it->size    = size;
+        if (it->answered) // its return code came first
+            answered.append(it.key());
+    }
+    if (!matched && !m_infoQueries.isEmpty()) // someone else's question, or a name we don't recognise
+        ts3::log(LogLevel_DEBUG, sch, "File info for %1 in channel %2 answers none of our questions", {ts3::file(name), ts3::pub(channelId)});
+    for (const QString& rc : qAsConst(answered))
+        finishInfoQuery(rc, uploadwait::Answer::Size);
+}
+
+bool Core::wantsFileInfo() const
+{
+    return m_infoPending.load() > 0;
 }
 
 void Core::onTextMessage(uint64 sch, const QString& message, const QString& senderUid)
@@ -4508,6 +5770,57 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
     case OpType::PostMessage:
         finishPost(returnCode, error, message, permissionError, retryHint);
         break;
+
+    case OpType::FileInfo: { // 2.3.2
+        auto query = m_infoQueries.find(returnCode);
+        if (query == m_infoQueries.end())
+            break; // answered by its timeout already
+        if (ok && query->hasSize) {
+            finishInfoQuery(returnCode, uploadwait::Answer::Size);
+        } else if (ok) {
+            // The size comes as an event of its own, normally first: a moment's grace. Without it the
+            // server can't tell (as if refused): the message isn't held back for nothing.
+            query->answered = true;
+            singleShotOwned(kInfoSizeGraceMs, this, [this, returnCode] {
+                if (const auto late = m_infoQueries.constFind(returnCode); late != m_infoQueries.constEnd())
+                    ts3::log(LogLevel_INFO, late->sch, "The server answered about %1 without its size", {ts3::file(late->path)});
+                finishInfoQuery(returnCode, uploadwait::Answer::Refused);
+            });
+        } else if (flooded) {
+            finishInfoQuery(returnCode, uploadwait::Answer::None); // asked again after the pause
+        } else if (error == ERROR_file_not_found && !permissionError) {
+            finishInfoQuery(returnCode, uploadwait::Answer::Missing);
+        } else {
+            ts3::log(LogLevel_DEBUG, sch, "The server didn't tell the size of %1: %2", {ts3::file(query->path), ts3::pub(message)});
+            finishInfoQuery(returnCode, uploadwait::Answer::Refused);
+        }
+        break;
+    }
+
+    case OpType::CheckDownload: { // 2.3.2: the server refused a content check's download
+        if (ok)
+            break; // its transfer status follows
+        const auto owner = m_checkTransfers.constFind(op.transferId);
+        if (op.transferId == 0 || owner == m_checkTransfers.constEnd() || owner.value() != op.uploadId)
+            break; // ended meanwhile
+        auto check = m_serverChecks.find(op.uploadId);
+        if (check == m_serverChecks.end() || check->transferId != op.transferId || check->files.isEmpty())
+            break;
+        const QString path = check->files.first().path;
+        // It never started: its slot is free, nothing to halt.
+        m_checkTransfers.remove(op.transferId);
+        --m_activeDownloads;
+        check->transferId = 0;
+        endContentTransfer(check.value());
+        QMetaObject::invokeMethod(this, [this] { pumpDownloadQueue(); }, Qt::QueuedConnection);
+        ts3::log(LogLevel_DEBUG, sch, "The server refused the check of %1: %2", {ts3::file(path), ts3::pub(message)});
+        // Flooded: tried again after the pause; the file busy: other bytes; no permission: no way works
+        // (and later files on this channel aren't tried, onContentResult); else: the next way.
+        bool                    answered = true;
+        const uploadwait::Bytes bytes    = permissionError ? uploadwait::Bytes::Refused : checkFailure(error, &answered);
+        onContentResult(op.uploadId, bytes, {}, answered);
+        break;
+    }
     }
 }
 
@@ -4538,6 +5851,11 @@ void Core::onTransferStatus(anyID transferId, unsigned int status, const QString
         }
         return;
     }
+    // 2.3.2: a sender's check of its upload's bytes on the server.
+    if (auto it = m_checkTransfers.constFind(transferId); it != m_checkTransfers.constEnd()) {
+        onContentTransferDone(it.value(), transferId, status, message);
+        return;
+    }
     if (ownHalt)
         return;
     if (auto it = m_uploadsByTransfer.constFind(transferId); it != m_uploadsByTransfer.constEnd()) {
@@ -4566,6 +5884,8 @@ void Core::onConnectionLost(uint64 sch)
     QStringList previews;
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
         // 2.2 sha: a file being checked is complete already; the check goes on without the server.
+        // 2.3.2: one waiting for the sender's upload can't ask the server any more: it resumes once
+        // connected again, from the start.
         if (it->sch == sch && (it->state == MediaState::Downloading || it->state == MediaState::Queued) && !it->check.running)
             mains.append(it.key());
         if ((it->previewState == MediaState::Downloading || it->previewState == MediaState::Queued) && m_previewSch.value(it.key()) == sch)
@@ -4575,6 +5895,32 @@ void Core::onConnectionLost(uint64 sch)
         failDownload(key, MediaError::NotConnected, {});
     for (const QString& key : qAsConst(previews))
         failPreviewDownload(key, QStringLiteral("disconnected"), true);
+
+    // 2.3.2: a file whose message waited for the server to have all of it: TeamSpeak reported its upload
+    // complete, so it is on the server (or its last bytes are). Its message fails like any other that
+    // couldn't go any more, and Retry posts it without a second upload, after asking the server again
+    // (repostFailed).
+    for (auto check = m_serverChecks.begin(); check != m_serverChecks.end();) {
+        auto job = m_uploads.find(check.key());
+        if (job == m_uploads.end() || job->target.sch != sch) {
+            ++check;
+            continue;
+        }
+        ts3::log(LogLevel_INFO, sch, "Disconnected before the server confirmed all of %1; Retry asks it again before posting",
+                 {ts3::file(joinRemote(job->remoteDir, job->remoteName))});
+        job->uploaded = true;
+        endContentTransfer(check.value()); // 2.3.2: its content check's download goes with the connection
+        m_unconfirmedUploads.insert(job->id, check->files);
+        check = m_serverChecks.erase(check);
+    }
+    m_serverInfo.remove(sch); // 2.3.2: noted again for the next connection
+    const QString schPrefix = QString::number(sch) + QLatin1Char('|');
+    for (auto it = m_checkRefused.begin(); it != m_checkRefused.end();) { // 2.3.2: permissions may differ next time
+        if (it->startsWith(schPrefix))
+            it = m_checkRefused.erase(it);
+        else
+            ++it;
+    }
 
     QVector<int> ids;
     QList<int>   heldBatches; // sends with uploaded files whose message waits for earlier files or the rest of the album
@@ -4682,7 +6028,11 @@ void Core::clearCache()
     QStringList changed;
     for (auto e = m_entries.begin(); e != m_entries.end(); ++e) {
         bool modified = false;
-        if ((e->state == MediaState::Ready && !QFileInfo::exists(e->localPath)) || e->state == MediaState::Failed) {
+        // 2.3.2: a failed file whose link the forged-hash guard contradicts stays as it is (loaded again
+        // automatically it would only be refused, "File doesn't match what was sent" instead of what it
+        // said); a click still tries it.
+        const bool refused = e->state == MediaState::Failed && knownDigestContradicts(e.value());
+        if ((e->state == MediaState::Ready && !QFileInfo::exists(e->localPath)) || (e->state == MediaState::Failed && !refused)) {
             e->state    = MediaState::Idle;
             e->progress = 0.0;
             e->error    = MediaError::None;

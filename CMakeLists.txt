@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.3.1 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.3.2 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -116,6 +116,7 @@ add_library(tsmedia SHARED
     src/composewidgets.cpp    src/composewidgets.h  # 2.3 compose-v2: the send window's own controls
     # 2.2 sha
     src/fileverify.cpp        src/fileverify.h
+    src/uploadwait.cpp        src/uploadwait.h # 2.3.2: the upload race (messages wait for the server)
     # 2.2 spoiler
     src/spoiler.cpp           src/spoiler.h
     src/spoilercover.cpp      src/spoilercover.h
@@ -340,6 +341,9 @@ if(TSMEDIA_BUILD_TESTS)
         # 2.2 sha
         tests/tst_fileverify.cpp
         src/fileverify.cpp src/fileverify.h
+        # 2.3.2: the upload race: when a message may go, what a short or mismatching download does next
+        tests/tst_uploadwait.cpp
+        src/uploadwait.cpp src/uploadwait.h
         # 2.2 spoiler: reveal state, cover picture, crossfade (the drawing is checked by render_gallery)
         tests/tst_spoiler.cpp
         src/spoiler.cpp
@@ -466,7 +470,10 @@ if(TSMEDIA_BUILD_TESTS)
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
         TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update" # 2.2 updater: test manifests
-        TSMEDIA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}") # chat redesign: the sources (one header parser)
+        TSMEDIA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" # chat redesign: the sources (one header parser)
+        # Qt 5.15's QVector / QList operator== uses stdext::checked_array_iterator, which MSVC 14.44
+        # deprecates (STL4043, C4996 in tst_polls / tst_ownright): Qt's code, not ours.
+        _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()

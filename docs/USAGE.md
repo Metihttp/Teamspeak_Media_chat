@@ -179,7 +179,8 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 ### File checks
 
 - Every file sent with TS Media chat 2.2 carries its SHA-256 checksum in the link. After a download, the plugin checks that the file is the one that was sent; large files may show *Checking file…* for a moment.
-- A file that doesn't match (for example, it was replaced on the server) is never shown or saved: the preview says *File doesn't match what was sent* and *Ask the sender to send it again*. Right-click → **Copy details** copies both checksums and the file's path for a report.
+- A file that doesn't match (for example, it was replaced on the server) is never shown or saved: the preview says *File doesn't match what was sent* and *Click to try again*. Right-click → **Copy details** copies both checksums and the file's path for a report.
+- A file posted while its upload was still arriving at the server is downloaded again once the server has all of it; the preview says *Waiting for the sender's upload…* meanwhile. When you send, your message waits until the server has the whole file; if your connection drops meanwhile, the message fails, and **Retry** posts it once the server confirms the file (it isn't uploaded again).
 - In the viewer, the name's tooltip of a checked file says *SHA-256 verified: this is the file that was sent.*
 - Files from TS Media 2.1 or older and ordinary TeamSpeak links have no checksum; their size is still checked.
 

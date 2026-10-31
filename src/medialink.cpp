@@ -1011,9 +1011,9 @@ QString downloadErrorText(MediaError error, const QString& serverText)
         return i18n::t("Reconnect to this server to download the file. Interrupted downloads resume by themselves.");
     case MediaError::Quota:
         return i18n::t("This server's file transfer quota is used up. Ask a server admin.");
-    case MediaError::Mismatch: // 2.2 sha
+    case MediaError::Mismatch: // 2.2 sha; 2.3.2: a click tries again, so the sender is the last resort
         return i18n::t("The downloaded file is different from the one that was sent. It may have been replaced on the server, so it wasn't "
-                       "shown or saved. Ask the sender to send it again.");
+                       "shown or saved. If it keeps happening, ask the sender to send it again.");
     case MediaError::None:
     case MediaError::Other:
         break;

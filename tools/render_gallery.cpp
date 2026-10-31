@@ -420,6 +420,13 @@ QList<Sample> buildSamples()
             album(QStringLiteral("album_3_loading"), QStringLiteral("album: loading (blurhash, queued)"), specs);
         }
         {
+            // 2.3.2: the waiting glyph, never a 0% disc
+            QVector<TileSpec> specs         = readyAlbum(3);
+            specs[1]                        = withState(specs[1], MediaState::Downloading, 0.0);
+            specs[1].entry.waitingForUpload = true;
+            album(QStringLiteral("race_album_tile_waiting"), QStringLiteral("album: one tile waiting for the sender's upload"), specs);
+        }
+        {
             QVector<TileSpec> specs = readyAlbum(4);
             TileSpec          g     = ready(0);
             g.entry                 = makeEntry(QStringLiteral("funny_3f9a1c2e.gif"), 387333, gifStill.width(), gifStill.height(), 0, MediaState::Ready);
@@ -1023,7 +1030,7 @@ QList<Sample> buildSamples()
         const MediaEntry e = failed(photoReady, MediaError::Mismatch);
         return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
     });
-    add(QStringLiteral("sha_image_mismatch_blurhash"), QStringLiteral("image mismatch over its blurhash, hover (inert)"), [=](const PreviewStyle& st, QSize* ls) {
+    add(QStringLiteral("sha_image_mismatch_blurhash"), QStringLiteral("image mismatch over its blurhash, hover (click tries again)"), [=](const PreviewStyle& st, QSize* ls) {
         const MediaEntry e = failed(photoReady, MediaError::Mismatch);
         return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), hovered(st), ls);
     });
@@ -1051,8 +1058,38 @@ QList<Sample> buildSamples()
          checking(makeEntry(QStringLiteral("backup_2026.zip"), 536870912, 0, 0, 0, MediaState::Idle), 0.10, true));
     card(QStringLiteral("sha_card_mismatch"), QStringLiteral("card doesn't match what was sent"), failed(zip, MediaError::Mismatch));
     card(QStringLiteral("sha_card_mismatch_narrow"), QStringLiteral("card mismatch, narrow (240 px)"), failed(zip, MediaError::Mismatch), 240);
-    styled(QStringLiteral("sha_card_mismatch_hover"), QStringLiteral("card mismatch, hover (inert)"), failed(zip, MediaError::Mismatch),
+    styled(QStringLiteral("sha_card_mismatch_hover"), QStringLiteral("card mismatch, hover (click tries again)"), failed(zip, MediaError::Mismatch),
            [](const PreviewStyle& st) { return hovered(st); });
+
+    // ---- 2.3.2: a download waiting for the sender's upload to arrive at the server ----------------
+    auto waitingForUpload = [](MediaEntry e) {
+        e.state            = MediaState::Downloading;
+        e.progress         = 0.0;
+        e.waitingForUpload = true;
+        return e;
+    };
+    add(QStringLiteral("race_image_waiting"), QStringLiteral("image waiting for the sender's upload (preview behind)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = waitingForUpload(photoReady);
+        return renderPreview(e, pictureStill(fitScaled(photo, QSize(1280, 1280)), MediaStill::Preview, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("race_image_waiting_blurhash"), QStringLiteral("image waiting for the sender's upload (blurhash)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = waitingForUpload(photoReady);
+        return renderPreview(e, hashStill(photoHash, 4000, 3000, stillPixels(e, st)), st, ls);
+    });
+    add(QStringLiteral("race_video_waiting"), QStringLiteral("video waiting for the sender's upload (poster)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = waitingForUpload(clip);
+        return renderPreview(e, posterStill(e, st), st, ls);
+    });
+    add(QStringLiteral("race_video_waiting_play"), QStringLiteral("video waiting for the sender's upload (pressed play)"), [=](const PreviewStyle& st, QSize* ls) {
+        const MediaEntry e = waitingForUpload(clip);
+        PlaybackOverlay  o;
+        o.busy         = true;
+        o.busyProgress = shownDownloadProgress(e);
+        o.durationMs   = e.link.durationMs;
+        return renderVideo(e, QImage(), posterStill(e, st), o, st, ls);
+    });
+    card(QStringLiteral("race_card_waiting"), QStringLiteral("card waiting for the sender's upload"), waitingForUpload(zip));
+    card(QStringLiteral("race_card_waiting_narrow"), QStringLiteral("card waiting, narrow (240 px)"), waitingForUpload(zip), 240);
 
     // ---- 2.2 reactions: the row under media, the add button, hover / pressed -----------------------
     {
@@ -1288,6 +1325,15 @@ QList<Sample> buildSamples()
         PlaybackOverlay opening = audioOverlay(voiceReady);
         opening.busy            = true;
         voice(QStringLiteral("voice_opening"), QStringLiteral("voice message opening"), voiceReady, opening);
+    }
+    {
+        // 2.3.2: the text instead of the waveform, the ring without a percentage
+        MediaEntry e       = downloading(voiceIdle, 0.0);
+        e.waitingForUpload = true;
+        PlaybackOverlay o  = audioOverlay(e);
+        o.busy             = true;
+        o.busyProgress     = shownDownloadProgress(e);
+        voice(QStringLiteral("race_voice_waiting"), QStringLiteral("voice message waiting for the sender's upload (pressed play)"), e, o);
     }
     {
         PlaybackOverlay o = audioOverlay(voiceReady);

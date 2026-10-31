@@ -22,6 +22,7 @@
 #include "mediaprobe.h"
 #include "spoiler.h" // 2.2 spoiler
 #include "ts3api.h"
+#include "uploadwait.h"    // 2.3.2: the upload race
 #include "videocompress.h" // 2.4 compress
 
 class QTimer;
@@ -64,6 +65,11 @@ struct MediaEntry {
     // 2.2 data saver: Idle because data saver held back its automatic download (it waits for a click).
     bool       heldByDataSaver = false;
     int        revision        = 0; // bumped on every change (entryChanged)
+    // 2.3.2: Downloading, between two downloads: the last one came out short or didn't match while the
+    // sender's upload may still have been arriving at the server. No transfer runs; Core asks the server
+    // for the file's size and downloads it again once the server has all of it (uploadwait.h). Previews
+    // say "Waiting for the sender's upload…" (previewrenderer.h, isWaitingForUpload).
+    bool       waitingForUpload = false;
 
     // Small preview / video poster (link.previewFile), downloaded automatically when present.
     MediaState previewState      = MediaState::Idle;
@@ -212,6 +218,9 @@ class Core : public QObject
 
     // Downloads the main file if it is not Ready / in progress. With openWhenReady, emits
     // openRequested(key) once it is available (immediately if already Ready).
+    // 2.3.2: both download a file that didn't match what was sent (MediaError::Mismatch) again, the
+    // user asked for it: the forged-hash guard lets that attempt through (nothing it knows is
+    // forgotten). Files gone from the server stay as they are.
     void download(const QString& key, bool openWhenReady);
     void retry(const QString& key); // after a failure (no-op for NotFound)
 
@@ -362,6 +371,21 @@ class Core : public QObject
                        const QString& extraMessage = {});
     void onTransferStatus(anyID transferId, unsigned int status, const QString& message, uint64 sch);
     void onConnectionLost(uint64 sch);
+    // 2.3.2: TeamSpeak's answer to requestFileInfo (onFileInfoEvent; it carries no return code). Worth
+    // forwarding only while wantsFileInfo() (thread-safe) says Core waits for one.
+    void onFileInfo(uint64 sch, uint64 channelId, const QString& name, quint64 size);
+    bool wantsFileInfo() const;
+    // 2.3.2: once per connection (when it is established, or when Core first needs it): logs the
+    // server's version and platform ("Server: TeaSpeak 1.4.22 on Linux") and remembers whether it
+    // looks like TeaSpeak, for the log and the diagnostic info only (nothing depends on it).
+    void noteServer(uint64 sch);
+    // The "File checks" lines of the diagnostic info about it: the connected servers' versions.
+    QStringList serverCheckDiagnostics() const;
+#ifdef TSMEDIA_TESTHOOKS
+    // Test builds only (localhost servers): the next n tail checks of sent files see zeros, as on a
+    // preallocating server still receiving the upload (selftest_options.txt "fake_tail_zero=<n>").
+    void setFakeTailZero(int n);
+#endif
 
   signals:
     void entryChanged(const QString& key);
@@ -379,7 +403,8 @@ class Core : public QObject
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
   private:
-    enum class OpType { Download, MakeDirectory, Upload, PostMessage, RemoteDelete };
+    // CheckDownload (2.3.2): a sender's check of its upload's bytes on the server (uploadId).
+    enum class OpType { Download, MakeDirectory, Upload, PostMessage, RemoteDelete, FileInfo, CheckDownload };
     struct PendingOp {
         OpType  type       = OpType::Download;
         QString key;          // downloads; the remote path for RemoteDelete
@@ -514,6 +539,7 @@ class Core : public QObject
     void    forgetBatchIfDone(int batch);
     bool    batchCanStillPost(int batch, int exceptId) const; // a file of it is still on its way to the chat
     bool    batchPostInFlight(uint64 sch, int batch) const;
+    bool    postAwaitsServer(const PostItem& post) const; // 2.3.2: a file it announces is still being confirmed (a repost)
     void    enqueuePost(PostItem post, bool keepSeq);
     void    settleCaption(int origin, bool posted);
     void    seedCache(const UploadJob& job, const MediaLink& link);
@@ -565,12 +591,103 @@ class Core : public QObject
     // run finalizeStaged again on its worker and hand the result here before the upload starts.
     void onStagedFinalized(int id, const fileverify::StagedDigest& digest);
     void storeDownload(const QString& key, const QString& found); // a finished (and checked) download into the cache
-    bool startCheck(const QString& key, const QString& found);   // false: the link has no sha
+    bool startCheck(const QString& key, const QString& found, bool wasAuto); // false: the link has no sha
     void onCheckProgress(const QString& key, double fraction, bool secondPass);
     void onCheckFinished(const fileverify::Result& result);
     void showSlowChecks();
     bool refuseForgedHash(const QString& key); // its sha contradicts the file's known one: failed at once
     bool previewFileMatches(const QString& path, const QByteArray& previewSha);
+
+    // ---- 2.3.2: the upload race (uploadwait.h) ---------------------------------------------------
+    // Asking the server for a file's size (requestFileInfo). TeamSpeak sends the size as an event of its
+    // own (onFileInfo, without the return code) besides the return code's answer (onServerError), in
+    // either order. A question without any answer counts as Answer::None after a while, an ok without
+    // the size as Answer::Refused (the server can't tell).
+    struct InfoQuery {
+        uint64  sch       = 0;
+        uint64  channelId = 0;
+        QString path;             // the remote file asked about
+        int     uploadId = 0;     // asked for a sender's check ...
+        QString key;              // ... or for a receiver's refetch
+        bool    answered = false; // the return code's answer was ok: the size may still come
+        bool    hasSize  = false;
+        quint64 size     = 0;
+    };
+    // Sender: an uploaded file whose chat message waits until the server has all of it. Its preview was
+    // uploaded before it: asked about only when the file itself wasn't all there at once.
+    // 2.3.2 (preallocating servers, TeaSpeak): once a file's size is right (or the server can't tell),
+    // its bytes are checked (content): its tail read back from the server and compared with the
+    // uploaded one, or the whole file's SHA-256 (uploadwait::contentStep). The uploaded tail is kept in
+    // memory, so the check doesn't depend on the staged file or the cache copy still being there.
+    struct ServerCheck {
+        struct File {
+            QString    path;
+            quint64    size = 0;
+            QByteArray tail;   // its uploadwait::tailWindow() as uploaded: its last bytes (empty: not known, or no window)
+            QByteArray sha256; // the SHA-256 of all of it as uploaded (empty: not known)
+        };
+        QVector<File>            files;          // still to confirm, the one asked about first
+        uploadwait::ConfirmState state;
+        qint64                   dueAt  = 0;     // floodClockMs() of the next question (or content check)
+        QString                  query;          // the question waiting for its answer
+        bool                     waited = false; // the server didn't have all of the file at once
+        uint64                   sch    = 0;
+        // 2.3.2: the content check of files.first()
+        bool                     content   = false; // its size is confirmed (or can't be told): its bytes are checked
+        bool                     sizeKnown = false; // ... the server reported the whole size (not: it can't tell)
+        bool                     contentWaited = false; // ... a check found other bytes (logged and counted once)
+        uploadwait::ContentState contentState;
+        anyID                    transferId  = 0;  // the check's download while it runs (m_checkTransfers)
+        qint64                   transferDue = -1; // floodClockMs(): it hasn't finished by then (other bytes)
+        QString                  transferDir;      // its folder under serverCheckDir(), removed after each check
+        quint64                  token   = 0;      // of the current download: late results of older ones are dropped
+        bool                     reading = false;  // it finished: waiting until TeamSpeak has written it, or hashing it
+        std::shared_ptr<std::atomic<bool>> hashCancel; // the whole file's hash on m_checkPool while it runs
+    };
+    // Receiver: a download that came out short or didn't match while the sender's upload may still have
+    // been arriving. Between two steps the entry is Downloading with waitingForUpload set.
+    struct Refetch {
+        uploadwait::RefetchState state;
+        uploadwait::Seen         seen       = uploadwait::Seen::Short; // what the next answer is about
+        quint64                  downloaded = 0;     // Short / Mismatch: what that download brought (ZeroTail: the bytes before its zeros)
+        QByteArray               digest;             // Mismatch (and ZeroTail of a link with a sha): what it hashed to
+        bool                     wasAuto  = false;   // an automatic download: downloaded again as one
+        bool                     download = false;   // the next step downloads (else it asks the server)
+        bool                     zeroTail = false;   // the last download ended in zeros (a preallocating server): its size says nothing
+        qint64                   dueAt    = -1;      // floodClockMs() of the next step; -1 while a download runs
+        QString                  query;              // the question waiting for its answer
+    };
+    // The question's return code, or empty when it couldn't be asked (*error says why).
+    QString askFileSize(uint64 sch, uint64 channelId, const QString& path, int uploadId, const QString& key, unsigned int* error);
+    void    finishInfoQuery(const QString& returnCode, uploadwait::Answer answer);
+    void    wake(QTimer*& timer, qint64 delayMs, void (Core::*run)());
+    // false: the server can't be asked (the message goes at once). files: what a check the connection
+    // cut short still had to confirm (a repost); else the job's file and preview.
+    bool    startServerCheck(int id, const QVector<ServerCheck::File>* files = nullptr);
+    void    runServerChecks();
+    void    onServerCheckAnswer(int id, const QString& returnCode, uploadwait::Answer answer, quint64 size);
+    void    finishServerCheck(int id);
+    void    dropServerCheck(int id); // the check ends without its message (canceled, failed): its download stops
+    // 2.3.2: the content check of a server check's current file (ServerCheck::content)
+    QString serverCheckDir() const;   // <data>/servercheck: the checks' downloads (cleared at start)
+    void    beginContentCheck(int id, bool sizeKnown);
+    void    nextServerFile(int id);   // its current file is confirmed: the next one, or the message goes
+    void    startContentTransfer(int id);
+    void    onContentTransferDone(int id, anyID transferId, unsigned int status, const QString& message);
+    void    readContentWhenWritten(int id, quint64 token, int attempt);
+    void    onContentHashed(int id, quint64 token, const QByteArray& digest);
+    // answered: a check ran (false: it couldn't, e.g. flood protection; it is tried again the same way)
+    void    onContentResult(int id, uploadwait::Bytes result, const QByteArray& fingerprint, bool answered = true);
+    void    endContentTransfer(ServerCheck& check); // halts its download, stops its hash, removes its folder
+    void    removeCheckDir(const QString& dir);
+    void    sweepCheckDirs(); // removes the folders of checks that are over (TeamSpeak held them a while)
+    void    beginRefetch(const QString& key, uploadwait::Seen seen, quint64 downloaded, const QByteArray& digest, bool wasAuto);
+    void    abortShortDownload(const QString& key, quint64 announced); // the server announced fewer bytes than the link names
+    void    runRefetches();
+    void    onRefetchAnswer(const QString& key, const QString& returnCode, uploadwait::Answer answer, quint64 size);
+    void    dropRefetch(MediaEntry& e);   // forgets the refetch of e (it succeeded, failed or stopped)
+    void    retryMismatch(MediaEntry& e); // the user asks for a file that didn't match once more
+    bool    knownDigestContradicts(const MediaEntry& e) const; // its sha isn't the server file's known digest
 
     static MediaError mapError(unsigned int error);
     static QString    makeRemoteName(const QString& originalName);
@@ -642,8 +759,9 @@ class Core : public QObject
 
     // 2.2 sha
     struct RunningCheck {
-        qint64  startedAt = 0; // floodClockMs()
-        QString path;          // the downloaded file being checked (in its partial folder)
+        qint64  startedAt = 0;   // floodClockMs()
+        QString path;            // the downloaded file being checked (in its partial folder)
+        bool    wasAuto = false; // 2.3.2: an automatic download (fetched again as one)
     };
     struct PreviewDigest {
         qint64     size     = -1;
@@ -664,4 +782,30 @@ class Core : public QObject
     bool                     m_encodersAsked   = false;
     QString                  m_lastCompression;
     QHash<int, QString>      m_keptCompressed; // 2.2: failed upload id -> its compressed MP4 (<data>/compressed/<id>/)
+    // 2.3.2: the upload race
+    QHash<QString, InfoQuery> m_infoQueries;                // return code -> a question about a file's size
+    std::atomic<int>          m_infoPending{0};             // m_infoQueries.size(), read on TeamSpeak's thread (wantsFileInfo)
+    QHash<int, ServerCheck>   m_serverChecks;               // upload id -> its check, until its message may go
+    QTimer*                   m_serverCheckTimer = nullptr; // the next question of a check
+    QHash<QString, Refetch>   m_refetches;                  // key -> its refetch, until it succeeds or fails
+    QTimer*                   m_refetchTimer = nullptr;     // the next step of a refetch
+    QHash<QString, int>       m_partialSerial;              // key -> the number of its main file's partial folder (partialDir)
+    QSet<QString>             m_guardWaived;        // the user asked for these again after a mismatch: refuseForgedHash lets them through until they end
+    // Uploaded files whose check the connection cut short, with what it still had to confirm: a repost
+    // asks the server first.
+    QHash<int, QVector<ServerCheck::File>> m_unconfirmedUploads;
+    // 2.3.2: preallocating servers (TeaSpeak)
+    QHash<anyID, int> m_checkTransfers;        // a content check's download -> its upload id (counted in m_activeDownloads)
+    QSet<QString>     m_checkRefused;          // remoteDirKey(sch, channel, {}): a check's download was refused for lack of permission (this connection)
+    QThreadPool       m_checkPool;             // whole-file hashes of content checks (one thread); joined in ~Core
+    quint64           m_nextCheckToken  = 0;
+    quint64           m_nextCheckFolder = 0;
+    struct ServerInfo {
+        QString description; // "TeaSpeak 1.4.22 on Linux" (version and platform only)
+        bool    teaSpeak = false;
+    };
+    QHash<uint64, ServerInfo> m_serverInfo; // connection -> its server, noted once (noteServer)
+#ifdef TSMEDIA_TESTHOOKS
+    int m_fakeTailZero = 0; // setFakeTailZero
+#endif
 };

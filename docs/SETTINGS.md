@@ -203,7 +203,7 @@ Both travel through TeamSpeak's plugin commands only; nothing leaves TeamSpeak. 
 | --- | --- | --- |
 | Check for updates automatically | off until you agree | The plugin asks once (*Keep TS Media chat up to date?*). On: about once a day it asks GitHub whether there is a new version. Nothing is installed until you click **Update**. |
 
-- The status line shows your version and the last check (*Version 2.3.1 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
+- The status line shows your version and the last check (*Version 2.3.2 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
 - **Check now** checks once, also while automatic checks are off.
 - Versions you build yourself show *Updates are turned off in versions you build yourself* instead.
 - What is sent and how updates are checked: [updates](UPDATES.md).

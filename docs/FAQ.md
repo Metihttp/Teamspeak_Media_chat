@@ -23,7 +23,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.3.1 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.3.2 loaded`.
 
 ### How do I update?
 
@@ -140,7 +140,11 @@ The file is on a server you are not connected to, for example after a disconnect
 
 ### "File doesn't match what was sent"
 
-The downloaded file is different from the one the sender posted: it was most likely replaced or damaged on the server. TS Media chat deletes it and never shows or saves it, and there is no way to open it anyway. Ask the sender to send it again. Right-click → **Copy details** copies both checksums and the file's path if you want to report it.
+The downloaded file is different from the one the sender posted, twice in a row: it was most likely replaced or damaged on the server. TS Media chat deletes it and never shows or saves it, and there is no way to open it anyway. Click the preview to try once more, or ask the sender to send it again. Right-click → **Copy details** copies both checksums and the file's path if you want to report it.
+
+Since 2.3.2 a download that came out different (or too short) because the sender's upload was still arriving at the server waits for the upload instead (*Waiting for the sender's upload…*) and downloads the file again once the server has all of it, and senders with 2.3.2 post their message only once the server has the whole file.
+
+On TeaSpeak servers an upload that is still arriving already has its full size, with zeros where the rest will go. Senders with 2.3.2 therefore also read the end of the file back from the server (on every server; it costs a download of about 64 KB) and compare it with what they uploaded before posting, and receivers treat a download that ends in zeros as an upload still arriving, not as a different file. If the sender's upload never completes, the preview says *Download failed* (the file never arrived completely) with **Retry**, instead of *File doesn't match what was sent*.
 
 ### What do the messages on a preview mean?
 
@@ -155,8 +159,9 @@ When a download fails or waits, the preview or card says why:
 | --- | --- | --- |
 | No permission to download | Your server group may not download files in this channel. | Ask a server admin ([permissions](#no-permission-to-download)). |
 | File is no longer on the server | The file was deleted from the server, or replaced after it was sent. | Ask the sender to send it again. |
-| File doesn't match what was sent | The file on the server is not the one that was sent. | Ask the sender to send it again. |
+| File doesn't match what was sent | The file on the server is not the one that was sent. | Click to try again, or ask the sender to send it again. |
 | Checking file… | The download is being compared with its checksum. | Wait a moment. |
+| Waiting for the sender's upload… | The sender's upload is still arriving at the server; the file is downloaded again once it is all there. | Wait a moment. |
 | Channel is password protected | The file is stored in a password-protected channel. | Use TeamSpeak's file browser. |
 | Not connected to this server | You are not connected to the server the file is on. | Reconnect; the download resumes. |
 | Server transfer limit reached | The server's file transfer quota is used up. | Ask a server admin. |
@@ -164,7 +169,7 @@ When a download fails or waits, the preview or card says why:
 | Download failed | Something else went wrong. | Click the preview to try again. |
 | Can't preview this image | The image is too large to decode (above 80 megapixels) or can't be read. | Click it, then choose **Open with default app**. |
 
-Deleted files, files that don't match and files in password-protected channels can't be retried: their previews do nothing when clicked. For everything else, click the picture or the card's **Retry** button to try again. Point at a card to read the whole message.
+Deleted files and files in password-protected channels can't be retried: their previews do nothing when clicked. For everything else, including files that don't match, click the picture or the card's **Retry** button to try again. Point at a card to read the whole message.
 
 ## Reactions and presence
 

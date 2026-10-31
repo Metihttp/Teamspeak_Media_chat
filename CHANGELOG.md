@@ -5,6 +5,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.3.2] - 2026-10-31
+
+### Fixed
+
+- **"File doesn't match what was sent" for files that were fine.** TeamSpeak reports an upload as finished as soon as it has handed the last bytes to the network, so the message could reach the channel while part of the file was still on its way to the server. Whoever opened it right away downloaded an unfinished file. On TeaSpeak servers, which give an upload its full size from the start and fill in the bytes as they arrive, that unfinished file failed the checksum and was blocked for good.
+  - **Sending:** your message now waits until the server has the whole file. Before it posts the message, TS Media also reads the end of the file back from the server (about 64 KB) and compares it with what you sent; this matters on servers that preallocate uploads, such as TeaSpeak.
+  - **Receiving:** a download that came out short, or that ends in zeros because the sender's upload is still arriving, now waits (*Waiting for the sender's upload…*) and downloads the file again once it is all there. This also covers messages from senders with older versions.
+  - A file is only reported as different when two complete downloads agree on it. A click on *File doesn't match what was sent* tries once more.
+  - If the sender's upload never completes, the preview says *Download failed* (the file never arrived completely) with **Retry**.
+
+### Changed
+
+- The diagnostic info and the TeamSpeak log name the server software of each connection (for example `Server: TeaSpeak … on Linux`) and count uploads that were waited for and downloads that waited for an upload.
+
 ## [2.3.1] - 2026-10-12
 
 ### Added
@@ -248,6 +262,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.3.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.0...v2.2.1
