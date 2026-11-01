@@ -42,6 +42,8 @@ uint64  ownChannel(uint64 sch);
 QString ownUid(uint64 sch); // 2.2 album: our own unique identifier on sch (empty if not connected)
 QString serverUid(uint64 sch);
 QString serverName(uint64 sch);
+// 2.3.3: requestFileInfo is safe on sch (TeaSpeak's answer drops the connection: uploadwait::canAskFileInfo).
+bool    canAskFileInfo(uint64 sch);
 QString channelName(uint64 sch, uint64 channelId);
 bool    channelHasPassword(uint64 sch, uint64 channelId);
 anyID   clientIdByNickname(uint64 sch, const QString& nickname);

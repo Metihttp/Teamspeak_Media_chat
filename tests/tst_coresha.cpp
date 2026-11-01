@@ -185,6 +185,9 @@ class TestCoreSha : public QObject
     void mediaNeedsALongerZeroRun();
     void shaLessFileEndingInZerosIsKept();
     void shortZeroRunOfAMismatchWaits();
+    // 2.3.3: TeaSpeak drops the connection when asked for a file's size
+    void teaSpeakSenderIsNeverAskedForASize();
+    void teaSpeakReceiverIsNeverAskedForASize();
 
   private:
     void newCore();
@@ -2110,6 +2113,61 @@ void TestCoreSha::shortZeroRunOfAMismatchWaits()
     QTRY_COMPARE_WITH_TIMEOUT(entry(link)->state, MediaState::Ready, kCheckTimeoutMs);
     QVERIFY(entry(link)->check.verified);
     QCOMPARE(fileverify::counted(fileverify::Counter::ZeroTails), 1);
+}
+
+// ---- 2.3.3: TeaSpeak drops the connection when asked for a file's size ---------------------------
+
+void TestCoreSha::teaSpeakSenderIsNeverAskedForASize()
+{
+    // TeaSpeak answers requestFileInfo with a notification TeamSpeak can't parse, and the client drops
+    // the connection (seen live on TeaSpeak 1.5.6): the message waits for the file's bytes alone.
+    fakets3::enableFileInfo(true);
+    fakets3::setServerVersion(QStringLiteral("TeaSpeak 1.5.6-beta [Build: 1622043432]"), QStringLiteral("Linux"));
+    const QByteArray  bytes = pattern(300000, 80);
+    fakets3::Transfer upload;
+    int               id = 0;
+    sendArriving(QStringLiteral("teaspeak.zip"), bytes, bytes.size(), &upload, &id);
+    if (QTest::currentTestFailed())
+        return;
+    fakets3::putFile(upload.remotePath, zeroAfter(bytes, 150000)); // preallocated, still arriving
+    serveCheck(0);
+    if (QTest::currentTestFailed())
+        return;
+    QTRY_VERIFY_WITH_TIMEOUT(fakets3::logContains(QStringLiteral("doesn't end like the uploaded file yet")), 3000);
+    QVERIFY(fakets3::messages().isEmpty());
+    fakets3::putFile(upload.remotePath, bytes);
+    serveCheck(1);
+    if (QTest::currentTestFailed())
+        return;
+    QTRY_COMPARE_WITH_TIMEOUT(fakets3::messages().size(), 1, 3000);
+    QVERIFY(fakets3::logContains(QStringLiteral("(content checked: tail)")));
+    QVERIFY(fakets3::logContains(QStringLiteral("file sizes aren't asked")));
+    QVERIFY(fakets3::fileInfoRequests().isEmpty());
+    QCOMPARE(fileverify::counted(fileverify::Counter::UploadsUnconfirmed), 0);
+}
+
+void TestCoreSha::teaSpeakReceiverIsNeverAskedForASize()
+{
+    // A file still arriving at a TeaSpeak server: the receiver waits and downloads it again without
+    // asking the server for its size.
+    fakets3::enableFileInfo(true);
+    fakets3::setServerVersion(QStringLiteral("TeaSpeak 1.4.21-beta [Build: 1600246831]"), QStringLiteral("Linux"));
+    const QString    remote = QStringLiteral("/tsmedia/photo_5c5c5c5c.png");
+    const QByteArray bytes  = pattern(400000, 81);
+    fakets3::putFile(remote, zeroAfter(bytes, 150000));
+    const MediaLink link = linkTo(remote, bytes, hashing::sha256(bytes));
+    m_core->ensure(link);
+    QVERIFY(!fakets3::deliverServerFile(lastDownloadId()).isEmpty());
+    complete(lastDownloadId());
+    QTRY_VERIFY_WITH_TIMEOUT(entry(link)->waitingForUpload, kCheckTimeoutMs);
+    fakets3::putFile(remote, bytes);
+    QTRY_COMPARE_WITH_TIMEOUT(fakets3::downloads().size(), 2, kCheckTimeoutMs); // after a pause
+    QVERIFY(!fakets3::deliverServerFile(lastDownloadId()).isEmpty());
+    complete(lastDownloadId());
+    QTRY_COMPARE_WITH_TIMEOUT(entry(link)->state, MediaState::Ready, kCheckTimeoutMs);
+    QVERIFY(entry(link)->check.verified);
+    QVERIFY(fakets3::logContains(QStringLiteral("The server can't tell how much of ") + remote));
+    QVERIFY(fakets3::fileInfoRequests().isEmpty());
 }
 
 TSMEDIA_REGISTER_TEST(TestCoreSha)

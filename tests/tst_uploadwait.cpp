@@ -62,6 +62,8 @@ class TestUploadWait : public QObject
   private slots:
     void sameRemoteFile_data();
     void sameRemoteFile();
+    void canAskFileInfo_data(); // 2.3.3
+    void canAskFileInfo();
 
     // sender
     void pollDelaysBackOff();
@@ -156,6 +158,34 @@ void TestUploadWait::sameRemoteFile()
     QFETCH(QString, requested);
     QFETCH(bool, same);
     QCOMPARE(uploadwait::sameRemoteFile(reported, requested), same);
+}
+
+void TestUploadWait::canAskFileInfo_data()
+{
+    // 2.3.3: TeaSpeak's answer to a file info request drops the TeamSpeak client's connection.
+    QTest::addColumn<QString>("version");
+    QTest::addColumn<QString>("platform");
+    QTest::addColumn<bool>("teaSpeak");
+    QTest::addColumn<bool>("ask");
+    QTest::newRow("server 3.13") << "3.13.7 [Build: 1655727713]" << "Linux" << false << true;
+    QTest::newRow("server 3.0 on Windows") << "3.0.13.8 [Build: 1500452811]" << "Windows" << false << true;
+    QTest::newRow("TeaSpeak 1.5") << "TeaSpeak 1.5.6-beta [Build: 1622043432]" << "Linux" << true << false;
+    QTest::newRow("TeaSpeak 1.4") << "TeaSpeak 1.4.21-beta [Build: 1600246831]" << "Linux" << true << false;
+    QTest::newRow("TeaSpeak by its platform") << "3.13.7 [Build: 1655727713]" << "TeaSpeak" << true << false;
+    QTest::newRow("lower case") << "teaspeak 1.5.6" << "Linux" << true << false;
+    QTest::newRow("another server") << "MyServer 2.0" << "Linux" << false << false;
+    QTest::newRow("version not known yet") << "" << "Linux" << false << false;
+    QTest::newRow("nothing known") << "" << "" << false << false;
+}
+
+void TestUploadWait::canAskFileInfo()
+{
+    QFETCH(QString, version);
+    QFETCH(QString, platform);
+    QFETCH(bool, teaSpeak);
+    QFETCH(bool, ask);
+    QCOMPARE(uploadwait::looksLikeTeaSpeak(version, platform), teaSpeak);
+    QCOMPARE(uploadwait::canAskFileInfo(version, platform), ask);
 }
 
 // ---- sender ---------------------------------------------------------------------------------------

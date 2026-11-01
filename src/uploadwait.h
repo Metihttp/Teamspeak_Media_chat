@@ -76,6 +76,15 @@ enum class Answer {
 // "/a.png"). Core only compares it with questions on the same connection and channel.
 bool sameRemoteFile(const QString& reported, const QString& requested);
 
+// 2.3.3: TeaSpeak answers a file info request (requestFileInfo) with a notification the TeamSpeak client
+// can't parse ("Error while parsing packet: parameter not found"), and the client drops the connection
+// at once (seen on TeaSpeak 1.5.6 on Linux). So a file's size is asked only of servers that look
+// like TeamSpeak's own: a version such as "3.13.7 [Build: 1655727713]", nothing that names TeaSpeak.
+// Any other server (or one whose version isn't known yet) counts as one that can't tell
+// (Answer::Refused, without asking): the sender checks the file's bytes, the receiver downloads again.
+bool looksLikeTeaSpeak(const QString& version, const QString& platform);
+bool canAskFileInfo(const QString& version, const QString& platform);
+
 // ---- sender ---------------------------------------------------------------------------------------
 
 constexpr int    kFirstPollMs        = 300;              // the second question, after a short size

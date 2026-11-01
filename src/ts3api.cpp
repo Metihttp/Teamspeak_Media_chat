@@ -3,6 +3,7 @@
 #include <QDir>
 
 #include "pluginlog.h"
+#include "uploadwait.h"
 
 namespace ts3 {
 
@@ -139,6 +140,17 @@ QString serverName(uint64 sch)
     if (funcs.getServerVariableAsString(sch, VIRTUALSERVER_NAME, &value) != ERROR_ok)
         return {};
     return takeString(value);
+}
+
+bool canAskFileInfo(uint64 sch)
+{
+    const auto variable = [sch](size_t flag) -> QString {
+        char* value = nullptr;
+        if (!funcs.getServerVariableAsString || funcs.getServerVariableAsString(sch, flag, &value) != ERROR_ok || !value)
+            return {};
+        return takeString(value);
+    };
+    return funcs.requestFileInfo && uploadwait::canAskFileInfo(variable(VIRTUALSERVER_VERSION), variable(VIRTUALSERVER_PLATFORM));
 }
 
 QString channelName(uint64 sch, uint64 channelId)

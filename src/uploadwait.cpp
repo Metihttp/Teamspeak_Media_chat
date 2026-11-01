@@ -44,6 +44,18 @@ bool sameRemoteFile(const QString& reported, const QString& requested)
     return path.lastIndexOf(QLatin1Char('/')) == 0 && path.mid(1) == fileNameOf(requested);
 }
 
+bool looksLikeTeaSpeak(const QString& version, const QString& platform)
+{
+    return version.contains(QLatin1String("TeaSpeak"), Qt::CaseInsensitive) || platform.contains(QLatin1String("TeaSpeak"), Qt::CaseInsensitive);
+}
+
+bool canAskFileInfo(const QString& version, const QString& platform)
+{
+    // TeamSpeak's own servers report a bare version number ("3.13.7 [Build: ...]").
+    const QString trimmed = version.trimmed();
+    return !trimmed.isEmpty() && trimmed.at(0).isDigit() && !looksLikeTeaSpeak(version, platform);
+}
+
 // ---- sender ---------------------------------------------------------------------------------------
 
 int confirmPollDelayMs(int asked)

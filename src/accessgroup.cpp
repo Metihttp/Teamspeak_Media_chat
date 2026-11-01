@@ -1513,6 +1513,11 @@ void AccessGroup::execute(const QString& uid, const access::Command& command)
     }
     case Type::CheckIconFile:
         rc = newOp(op);
+        if (!ts3::canAskFileInfo(sch)) {
+            // 2.3.3: TeaSpeak's answer would drop the connection: as if the icon weren't there.
+            err = ERROR_not_implemented;
+            break;
+        }
         m_fileInfoOps.insert(sch, rc);
         err = ts3::funcs.requestFileInfo(sch, 0, "", access::iconRemotePath().toUtf8().constData(), rc.toUtf8().constData());
         break;

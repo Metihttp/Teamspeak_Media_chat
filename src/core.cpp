@@ -4701,7 +4701,8 @@ bool Core::previewFileMatches(const QString& path, const QByteArray& previewSha)
 QString Core::askFileSize(uint64 sch, uint64 channelId, const QString& path, int uploadId, const QString& key, unsigned int* error)
 {
     *error = ERROR_ok;
-    if (!ts3::funcs.requestFileInfo) {
+    if (!ts3::funcs.requestFileInfo || !ts3::canAskFileInfo(sch)) {
+        // 2.3.3: TeaSpeak's answer would drop the connection: the server counts as one that can't tell.
         *error = ERROR_not_implemented;
         return {};
     }
@@ -5338,11 +5339,15 @@ void Core::noteServer(uint64 sch)
         return; // not known yet: noted when Core needs it next
     ServerInfo info;
     info.description = platform.isEmpty() ? version : version.isEmpty() ? platform : version + QLatin1String(" on ") + platform;
-    // For the log and the diagnostic info only: the checks above work the same on every server.
-    info.teaSpeak = version.contains(QLatin1String("TeaSpeak"), Qt::CaseInsensitive) || platform.contains(QLatin1String("TeaSpeak"), Qt::CaseInsensitive);
+    // For the log and the diagnostic info (2.3.3: askFileSize asks only servers that look like
+    // TeamSpeak's own, uploadwait::canAskFileInfo).
+    info.teaSpeak = uploadwait::looksLikeTeaSpeak(version, platform);
     m_serverInfo.insert(sch, info);
     if (info.teaSpeak)
-        ts3::log(LogLevel_INFO, sch, "Server: %1 (looks like TeaSpeak: uploads may be preallocated, sent files are checked by their bytes)", {ts3::pub(info.description)});
+        ts3::log(LogLevel_INFO, sch, "Server: %1 (looks like TeaSpeak: uploads may be preallocated, sent files are checked by their bytes; file sizes aren't asked)",
+                 {ts3::pub(info.description)});
+    else if (!uploadwait::canAskFileInfo(version, platform))
+        ts3::log(LogLevel_INFO, sch, "Server: %1 (not TeamSpeak's own: file sizes aren't asked, sent files are checked by their bytes)", {ts3::pub(info.description)});
     else
         ts3::log(LogLevel_INFO, sch, "Server: %1", {ts3::pub(info.description)});
 }

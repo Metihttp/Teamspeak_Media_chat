@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.3.3] - 2026-11-01
+
+### Fixed
+
+- **TeamSpeak disconnected you from TeaSpeak servers when you sent a file with 2.3.2.** To make sure the server had the whole file, 2.3.2 asked the server for the file's size. TeaSpeak answers that request in a way TeamSpeak can't read, and TeamSpeak drops the connection ("parameter not found"). The same could happen while receiving a file that was still uploading. TS Media no longer asks TeaSpeak servers (or any server that isn't TeamSpeak's own) for a file's size: it only reads the end of the file back from the server, which already told whether the upload had arrived. Tested on a real TeaSpeak server: the message waited 4 to 8 seconds for the last bytes of a photo and a video, without a disconnect.
+
+### Changed
+
+- The TeamSpeak log notes for each server whether file sizes are asked (`Server: TeaSpeak … file sizes aren't asked`).
+
 ## [2.3.2] - 2026-10-31
 
 ### Fixed
@@ -262,6 +272,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.3.3]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.2.1...v2.3.0

@@ -23,7 +23,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.3.2 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.3.3 loaded`.
 
 ### How do I update?
 
@@ -82,6 +82,10 @@ People on TS Media 2.1 or older, and people without the plugin, can't blur it; t
 ### My caption appeared as its own message
 
 A caption that doesn't fit in the same chat message as the file (long file names, very long captions) is sent as its own message right above the file. It is never shortened.
+
+### TeamSpeak disconnects me right after I send a file
+
+That was a bug in 2.3.2 on TeaSpeak servers (the log says `Disconnected from server, no autoreconnect: parameter not found`). Update to 2.3.3 or later: **Check for updates…** in the plugin menu. The file you sent is in the channel's file browser; send it again once you have updated.
 
 ### Files end up in the channel root instead of `/tsmedia`
 
@@ -144,7 +148,7 @@ The downloaded file is different from the one the sender posted, twice in a row:
 
 Since 2.3.2 a download that came out different (or too short) because the sender's upload was still arriving at the server waits for the upload instead (*Waiting for the sender's upload…*) and downloads the file again once the server has all of it, and senders with 2.3.2 post their message only once the server has the whole file.
 
-On TeaSpeak servers an upload that is still arriving already has its full size, with zeros where the rest will go. Senders with 2.3.2 therefore also read the end of the file back from the server (on every server; it costs a download of about 64 KB) and compare it with what they uploaded before posting, and receivers treat a download that ends in zeros as an upload still arriving, not as a different file. If the sender's upload never completes, the preview says *Download failed* (the file never arrived completely) with **Retry**, instead of *File doesn't match what was sent*.
+On TeaSpeak servers an upload that is still arriving already has its full size, with zeros where the rest will go. Senders with 2.3.2 or later therefore also read the end of the file back from the server (on every server; it costs a download of about 64 KB) and compare it with what they uploaded before posting (since 2.3.3 that is all they do on TeaSpeak: asking TeaSpeak for a file's size disconnects TeamSpeak), and receivers treat a download that ends in zeros as an upload still arriving, not as a different file. If the sender's upload never completes, the preview says *Download failed* (the file never arrived completely) with **Retry**, instead of *File doesn't match what was sent*.
 
 ### What do the messages on a preview mean?
 
