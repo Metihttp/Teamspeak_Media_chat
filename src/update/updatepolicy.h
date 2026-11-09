@@ -10,6 +10,8 @@
 
 namespace upd {
 
+struct Version; // updatemanifest.h
+
 // ---- addresses ---------------------------------------------------------------------------------
 
 // Not user-configurable. The plugin builds every URL itself from the validated version.
@@ -25,6 +27,9 @@ QUrl legacyManifestUrl();                    // .../releases/latest/download/tsm
 QUrl assetUrl(const QString& tag, const QString& asset); // .../releases/download/<tag>/<asset>
 QUrl releaseNotesUrl(const QString& tag);    // .../releases/tag/<tag>
 QUrl latestReleaseUrl();                     // .../releases/latest (the manual download page)
+// .../releases/download/v<version>/TSMedia-<version>-important.json: the marker of that release only
+// (never from releases/latest), built from the version validated from the v2 file. Empty if invalid.
+QUrl importantUrl(const Version& version);
 
 // Requests and every redirect hop must go to https://github.com or https://<sub>.githubusercontent.com
 // on port 443, without user info. Only TSMEDIA_TESTHOOKS builds can add one local test origin.

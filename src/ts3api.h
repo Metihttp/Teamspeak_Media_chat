@@ -49,6 +49,13 @@ bool    channelHasPassword(uint64 sch, uint64 channelId);
 anyID   clientIdByNickname(uint64 sch, const QString& nickname);
 QString clientUid(uint64 sch, anyID client);           // CLIENT_UNIQUE_IDENTIFIER, empty if unknown
 anyID   clientIdByUid(uint64 sch, const QString& uid); // 0 if no such client is on the server (now)
+// 2.4 auto-load: someone by identity on sch now: one of their clients (the one in our channel when there is one; 0:
+// nobody), and whether any client of theirs is in our channel (two TeamSpeak instances, a bot with the same identity).
+struct UidPresence {
+    anyID client       = 0;
+    bool  inOwnChannel = false;
+};
+UidPresence uidPresence(uint64 sch, const QString& uid);
 
 bool getServerAddress(uint64 sch, QString* host, quint16* port);
 
@@ -72,5 +79,9 @@ void print(uint64 sch, const QString& bbcode);
 void setChatDark(bool dark);
 void printInfo(uint64 sch, const QString& text);
 void printWarning(uint64 sch, const QString& text);
+// 2.3.4: printInfo's line plus one link, in ONE line (so the link is part of TS Media's own row,
+// layoutdoc's ownPrint), always into sch's channel tab. text and linkText are escaped; url goes in as it
+// is and is refused (nothing printed) when it has '[', ']', quotes, spaces or control characters.
+void printInfoLink(uint64 sch, const QString& text, const QString& url, const QString& linkText);
 
 } // namespace ts3

@@ -16,7 +16,7 @@ Open the settings with **Plugins → TS Media chat → Settings…**, by typing 
 | [Sending](#sending-tab) | Sending, Note for people without the plugin, Dropping files, Videos |
 | [Receiving & playback](#receiving--playback-tab) | Receiving (with data saver), Playback, Spoilers |
 | [Servers](#servers-tab) | Servers (settings for single servers), Server access (for server admins) |
-| [Privacy & updates](#privacy--updates-tab) | Privacy (reactions and presence), Updates |
+| [Privacy & updates](#privacy--updates-tab) | Privacy (reactions and presence), Link previews, Updates |
 
 - <kbd>Ctrl</kbd>+<kbd>Tab</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> switch tabs, and the dialog opens on the tab you used last. On a small screen the tabs scroll; the window keeps its size when you switch tabs.
 - **OK** saves and closes, **Apply** saves and keeps the dialog open, **Cancel** closes without saving.
@@ -193,18 +193,29 @@ For server admins: creates and repairs the `tsmediachat` server group whose memb
 | Setting | Default | Range and notes |
 | --- | --- | --- |
 | Show reactions | on | Reaction rows (under media and, from 2.3, under text messages), the add button and *Add reaction*. Off: no reactions are shown or sent. |
-| Tell people in your channel that you have TS Media | on | Lets the send window show who will see your media in the chat. Your TS Media version is shared with people in your channel and with private-chat partners you send to. Off: the plugin says goodbye to them, and the send window shows no count. Polls then send only the votes you cast (no questions about earlier votes, no answers to others). |
+| Tell people in your channel that you have TS Media | on | Lets the send window show who will see your media in the chat. Your TS Media version is shared with people in your channel and with private-chat partners you send to. Off: the plugin says goodbye to them, and the send window shows no count. Polls then send only the votes you cast (no questions about earlier votes, no answers to others). It also tells them whether you make link previews; with it off, their PCs may load your links from the website before your preview arrives. |
 
 Both travel through TeamSpeak's plugin commands only; nothing leaves TeamSpeak. Details: [privacy & security](PRIVACY-SECURITY.md#what-your-channel-sees).
+
+### Link previews
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Show previews for links to other websites | on | YouTube links get a card with the title, channel and thumbnail, and links to pictures, GIFs and videos show them inline. Previews made by the sender come from the TeamSpeak server; other links are loaded from their website by your PC (see the next setting). Off: no card and no preview anywhere, and no new link-preview download or website request (website loads that are running are canceled). While *Show images, videos and file cards in the chat* is off, no card shows and nothing is downloaded for them either. |
+| Load link previews automatically | on | Links without a preview made by their sender (people without TS Media 2.4, the server chat) load their preview from the website by themselves while they are on your screen: YouTube's title and thumbnail always, pictures and GIFs within *Download images, GIFs and voice messages automatically up to*, videos within *Download videos and audio automatically* (while that is *Off (download when played)*, within the image limit), and with data saver only YouTube. That connects your PC to the website, which sees your IP address. When the sender makes previews, the plugin waits for theirs instead (*Waiting for the sender's preview…*). A larger file shows **Load preview** with its size (or that it is over the limit, when the website doesn't say). Off: such links show **Load preview** and load only when you click. Your own links show from your own download either way. Needs *Show previews for links to other websites* (greyed out while that is off). |
+| Make previews for links I send | on | When you send such a link, your PC loads it once from that website and shares the preview through the TeamSpeak server (the channel's files), so people with TS Media see it without contacting the website. Off: nothing is loaded or shared for your links. Needs *Show previews for links to other websites* (greyed out while that is off). |
+
+Details: [privacy & security](PRIVACY-SECURITY.md#link-previews).
 
 ### Updates
 
 | Setting | Default | Range and notes |
 | --- | --- | --- |
-| Check for updates automatically | off until you agree | The plugin asks once (*Keep TS Media chat up to date?*). On: about once a day it asks GitHub whether there is a new version. Nothing is installed until you click **Update**. |
+| Check for updates automatically | off until you agree | The plugin asks once (*Keep TS Media chat up to date?*). On: about once a day it asks GitHub whether there is a new version. Important fixes signed by the author install by themselves and start with the next TeamSpeak start (2.4.0 and later, [important updates](UPDATES.md#important-updates)); anything else waits for your click on **Update**. Off: nothing is checked or installed by itself. |
 
-- The status line shows your version and the last check (*Version 2.3.3 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**) or a skipped version (**Undo**).
-- **Check now** checks once, also while automatic checks are off.
+- The status line shows your version and the last check (*Version 2.4.0 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**, also after an important update installed by itself) or a skipped version (**Undo**). Skipping a version doesn't hold back an important update; a version that rolled back is never installed by itself again, whatever **Undo** does.
+- **Check now** checks once, also while automatic checks are off, and never installs anything without your click.
+- The newer-version hint (*Someone in this channel has TS Media chat X*) has no setting: it is only shown to you, and its **Check for updates** link checks once, like **Check now**. See [updates](UPDATES.md#someone-in-this-channel-has-a-newer-version).
 - Versions you build yourself show *Updates are turned off in versions you build yourself* instead.
 - What is sent and how updates are checked: [updates](UPDATES.md).
 
@@ -222,6 +233,7 @@ For reference, the keys 2.2 added. Values outside their range are corrected when
 | `chatLayout` (0 = TeamSpeak classic, 1 = Cozy, 2 = Compact), `chatGroupMessages`, `chatHoverActions`, `chatAvatars`, `chatMentions`, `chatCollapseEvents`, `chatLayoutIntroShown`, `chatBubbles`, `chatOwnRight` | Chat layout |
 | `dataSaver`, `revealSpoilers` | data saver, *Show spoilers without blurring* |
 | `showReactions`, `sharePresence` | Privacy |
+| `showLinkPreviews`, `autoLoadLinkPreviews`, `makeLinkPreviews` | Link previews (2.4) |
 | (no keys) | Polls and live music have no settings. The music volume is remembered in `music.ini`, votes in `polls.json`, both next to `settings.ini`. |
 | `updateCheck` (0 = not asked, 1 = on, 2 = off), `updateConsentAsked`, `updateSkipVersion` | Updates |
 | `[server_<id>]` groups: `name`, `dataSaver`, `uploadDirectory`, `uploadMaxMB`, `addRequiredNotice` | Servers (`<id>` is 12 hex digits derived from the server's unique ID) |

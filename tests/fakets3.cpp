@@ -29,6 +29,12 @@ struct State {
     bool                       resumeSupported = true;
     bool                       resumeFromStart = false;
     QStringList                deletedWhileChecking;
+    QStringList                channelPrints; // 2.3.4
+    // 2.4 link previews
+    QHash<anyID, Client>       clients;
+    QString                    ownUid;
+    uint64                     ownChannel = kChannel;
+    QList<PluginCommand>       pluginCommands;
 };
 
 State& state()
@@ -119,8 +125,19 @@ unsigned int getClientID(uint64, anyID* result)
     return ERROR_ok;
 }
 
-unsigned int getChannelOfClient(uint64, anyID, uint64* result)
+unsigned int getChannelOfClient(uint64, anyID client, uint64* result)
 {
+    if (client == kOwnClient) {
+        *result = state().ownChannel;
+        return ERROR_ok;
+    }
+    if (!state().clients.isEmpty()) { // 2.4 link previews: the client table
+        const auto found = state().clients.constFind(client);
+        if (found == state().clients.constEnd())
+            return ERROR_client_invalid_id;
+        *result = found->channel;
+        return ERROR_ok;
+    }
     *result = kChannel;
     return ERROR_ok;
 }
@@ -139,17 +156,61 @@ unsigned int getChannelVariableAsString(uint64, uint64, size_t, char** result)
 
 unsigned int getClientList(uint64, anyID** result)
 {
-    auto* list = static_cast<anyID*>(std::malloc(2 * sizeof(anyID)));
-    list[0]    = kOwnClient;
-    list[1]    = 0;
-    *result    = list;
+    const QList<anyID> others = state().clients.keys();
+    auto*              list   = static_cast<anyID*>(std::malloc((static_cast<size_t>(others.size()) + 2) * sizeof(anyID)));
+    int                n      = 0;
+    list[n++]                 = kOwnClient;
+    for (const anyID id : others)
+        list[n++] = id;
+    list[n] = 0;
+    *result = list;
     return ERROR_ok;
 }
 
-unsigned int getClientVariableAsString(uint64, anyID, size_t, char** result)
+unsigned int getClientVariableAsString(uint64, anyID client, size_t flag, char** result)
 {
+    if (!state().clients.isEmpty() || !state().ownUid.isEmpty()) { // 2.4 link previews: the client table
+        if (client == kOwnClient) {
+            *result = copyString((flag == CLIENT_UNIQUE_IDENTIFIER ? state().ownUid : QStringLiteral("Tester")).toUtf8());
+            return ERROR_ok;
+        }
+        const auto found = state().clients.constFind(client);
+        if (found == state().clients.constEnd())
+            return ERROR_client_invalid_id;
+        *result = copyString((flag == CLIENT_UNIQUE_IDENTIFIER ? found->uid : found->nickname).toUtf8());
+        return ERROR_ok;
+    }
     *result = copyString("Tester");
     return ERROR_ok;
+}
+
+// 2.4 link previews
+unsigned int getClientVariableAsInt(uint64, anyID client, size_t flag, int* result)
+{
+    const auto found = state().clients.constFind(client);
+    if (client != kOwnClient && found == state().clients.constEnd())
+        return ERROR_client_invalid_id;
+    *result = flag == CLIENT_TYPE && client != kOwnClient && found->serverQuery ? ClientType_SERVERQUERY : 0;
+    return ERROR_ok;
+}
+
+unsigned int getClientSelfVariableAsString(uint64, size_t flag, char** result)
+{
+    if (flag != CLIENT_UNIQUE_IDENTIFIER || state().ownUid.isEmpty())
+        return ERROR_parameter_invalid;
+    *result = copyString(state().ownUid.toUtf8());
+    return ERROR_ok;
+}
+
+void sendPluginCommand(uint64, const char*, const char* command, int targetMode, const anyID* targetIDs, const char* returnCode)
+{
+    PluginCommand c;
+    c.payload    = QByteArray(command);
+    c.targetMode = targetMode;
+    for (const anyID* it = targetIDs; it && *it; ++it)
+        c.clients.append(*it);
+    c.returnCode = QString::fromUtf8(returnCode);
+    state().pluginCommands.append(c);
 }
 
 unsigned int getServerConnectInfo(uint64, char* host, unsigned short* port, char* password, size_t maxLen)
@@ -273,9 +334,11 @@ unsigned int requestSendServerTextMsg(uint64, const char* message, const char* r
     return ERROR_ok;
 }
 
-void printMessage(uint64, const char* message, enum PluginMessageTarget)
+void printMessage(uint64, const char* message, enum PluginMessageTarget target)
 {
     state().log.append(QStringLiteral("[chat] ") + QString::fromUtf8(message));
+    if (target == PLUGIN_MESSAGE_TARGET_CHANNEL)
+        state().channelPrints.append(QString::fromUtf8(message));
 }
 
 void printMessageToCurrentTab(const char* message)
@@ -306,6 +369,9 @@ void install(const QString& configDir)
     f.getChannelVariableAsString     = getChannelVariableAsString;
     f.getClientList                  = getClientList;
     f.getClientVariableAsString      = getClientVariableAsString;
+    f.getClientVariableAsInt         = getClientVariableAsInt;         // 2.4 link previews
+    f.getClientSelfVariableAsString  = getClientSelfVariableAsString;  // 2.4 link previews
+    f.sendPluginCommand              = sendPluginCommand;              // 2.4 link previews
     f.getServerConnectInfo           = getServerConnectInfo;
     f.createReturnCode               = createReturnCode;
     f.requestFile                    = requestFile;
@@ -326,6 +392,40 @@ void install(const QString& configDir)
 void setConnected(bool connected)
 {
     state().connected = connected;
+}
+
+// 2.4 link previews
+void addClient(const Client& client)
+{
+    state().clients.insert(client.id, client);
+}
+
+void removeClient(anyID id)
+{
+    state().clients.remove(id);
+}
+
+void moveClient(anyID id, uint64 channel)
+{
+    if (id == kOwnClient)
+        state().ownChannel = channel;
+    else if (state().clients.contains(id))
+        state().clients[id].channel = channel;
+}
+
+void setOwnUid(const QString& uid)
+{
+    state().ownUid = uid;
+}
+
+void setOwnChannel(uint64 channel)
+{
+    state().ownChannel = channel;
+}
+
+QList<PluginCommand> pluginCommands()
+{
+    return state().pluginCommands;
 }
 
 void enableFileInfo(bool enabled)
@@ -423,6 +523,11 @@ QList<Directory> directories()
 QStringList logLines()
 {
     return state().log;
+}
+
+QStringList channelPrints()
+{
+    return state().channelPrints;
 }
 
 bool logContains(const QString& text)

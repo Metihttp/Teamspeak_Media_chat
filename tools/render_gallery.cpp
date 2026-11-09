@@ -40,6 +40,10 @@
 #include "layoutdoc.h"   // chat redesign
 #include "layoutformat.h" // chat redesign
 #include "tschat.h"      // chat redesign: TeamSpeak-like chat documents (tests/)
+#include "layoutart.h"     // 2.4 link previews
+#include "layoutbubbles.h" // 2.4 link previews: the chats with bubbles
+#include "linkpreview/linkcard.h"
+#include "linkpreview/linkdoc.h"
 #include "uiutil.h"
 
 namespace {
@@ -1997,6 +2001,476 @@ void writeSheet(const QList<Rendered>& items, bool dark, qreal dpr, const QFont&
 
 } // namespace
 
+// ============================================================================================
+// 2.4 link previews: every card state on the chat and on a bubble (<outdir>/linkpreviews/cards_<theme>_<dpr>x.png),
+// and the cards and a link's media (picture, GIF, video poster and player) in chats: TeamSpeak classic, Cozy with
+// bubbles (yours on the right, others on the left) and Compact (<outdir>/linkpreviews/chat_<look>_<theme>_<dpr>x.png).
+// Made-up people and addresses; the pictures are drawn here.
+// ============================================================================================
+
+namespace linkpages {
+
+using layoutart::Mode;
+using linkcard::Look;
+using linkpreview::Kind;
+
+QImage scenery(const QSize& size, int variant)
+{
+    QImage img(size, QImage::Format_RGB32);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    QLinearGradient sky(0, 0, 0, size.height());
+    const QColor tops[]    = {QColor(0x1f, 0x6f, 0xb2), QColor(0x5b, 0x2a, 0x86), QColor(0xf0, 0x8a, 0x4b), QColor(0x13, 0x8a, 0x8f)};
+    const QColor bottoms[] = {QColor(0x9f, 0xd8, 0xf5), QColor(0xd9, 0x6c, 0xc8), QColor(0x2b, 0x1d, 0x4e), QColor(0x0c, 0x2f, 0x3d)};
+    sky.setColorAt(0, tops[variant % 4]);
+    sky.setColorAt(1, bottoms[variant % 4]);
+    p.fillRect(img.rect(), sky);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(255, 236, 170, 220));
+    p.drawEllipse(QPointF(size.width() * 0.72, size.height() * 0.3), size.height() * 0.12, size.height() * 0.12);
+    QPainterPath hills;
+    hills.moveTo(0, size.height());
+    hills.lineTo(0, size.height() * 0.7);
+    hills.cubicTo(size.width() * 0.25, size.height() * 0.45, size.width() * 0.45, size.height() * 0.85, size.width() * 0.7, size.height() * 0.6);
+    hills.cubicTo(size.width() * 0.85, size.height() * 0.5, size.width(), size.height() * 0.65, size.width(), size.height() * 0.6);
+    hills.lineTo(size.width(), size.height());
+    p.setBrush(QColor(0x12, 0x3d, 0x2a, 230));
+    p.drawPath(hills);
+    p.end();
+    return img;
+}
+
+PreviewStyle styleFor(bool dark, qreal dpr, int maxWidth, const QVector<QColor>& bubbles = {})
+{
+    PreviewStyle s;
+    s.dark      = dark;
+    s.font      = chatpages::chatFont();
+    s.dpr       = dpr;
+    s.maxWidth  = maxWidth;
+    s.maxHeight = 300;
+    s.bubbles   = bubbles;
+    return s;
+}
+
+struct CardSample {
+    QString           label;
+    linkcard::Card    card;
+    linkcard::Pointer pointer;
+};
+
+QList<CardSample> cardSamples()
+{
+    QList<CardSample> out;
+    const auto add = [&](const QString& label, Look look, Kind kind, const QString& host, const std::function<void(linkcard::Card&, linkcard::Pointer&)>& more = {}) {
+        CardSample s;
+        s.label     = label;
+        s.card.look = look;
+        s.card.kind = kind;
+        s.card.host = host;
+        if (more)
+            more(s.card, s.pointer);
+        out.append(s);
+    };
+    add(QStringLiteral("click: YouTube"), Look::Click, Kind::YouTube, QStringLiteral("youtube.com"));
+    add(QStringLiteral("click: picture"), Look::Click, Kind::Image, QStringLiteral("cdn.example.org"));
+    add(QStringLiteral("click: GIF (hovered)"), Look::Click, Kind::Gif, QStringLiteral("media.example.net"), [](linkcard::Card&, linkcard::Pointer& p) {
+        p.over  = true;
+        p.hover = linkcard::Zone::Load;
+    });
+    add(QStringLiteral("click: video (hide hovered)"), Look::Click, Kind::Video, QStringLiteral("files.example.com"), [](linkcard::Card&, linkcard::Pointer& p) {
+        p.over  = true;
+        p.hover = linkcard::Zone::Hide;
+    });
+    add(QStringLiteral("loading 40%"), Look::Loading, Kind::Image, QStringLiteral("cdn.example.org"), [](linkcard::Card& c, linkcard::Pointer&) { c.progress = 0.4; });
+    add(QStringLiteral("loading (size unknown)"), Look::Loading, Kind::YouTube, QStringLiteral("youtube.com"));
+    // 2.4 auto-load: the waits and a file above the automatic limit (the strips keep one size).
+    add(QStringLiteral("own message: making the preview"), Look::Loading, Kind::Video, QStringLiteral("files.example.com"),
+        [](linkcard::Card& c, linkcard::Pointer&) { c.waiting = linkcard::Waiting::Own; });
+    add(QStringLiteral("waiting for the sender's preview"), Look::Loading, Kind::Image, QStringLiteral("cdn.example.org"),
+        [](linkcard::Card& c, linkcard::Pointer&) { c.waiting = linkcard::Waiting::Sender; });
+    add(QStringLiteral("checking for the sender's preview"), Look::Loading, Kind::Image, QStringLiteral("cdn.example.org"),
+        [](linkcard::Card& c, linkcard::Pointer&) { c.waiting = linkcard::Waiting::Checking; });
+    add(QStringLiteral("click: over the automatic limit (size unknown)"), Look::Click, Kind::Video, QStringLiteral("files.example.com"),
+        [](linkcard::Card& c, linkcard::Pointer&) {
+            c.overAutoLimit = true;
+            c.autoLimit     = 15LL * 1024 * 1024;
+        });
+    add(QStringLiteral("click: above the automatic limit"), Look::Click, Kind::Video, QStringLiteral("files.example.com"),
+        [](linkcard::Card& c, linkcard::Pointer&) { c.size = 38LL * 1024 * 1024; });
+    // Connection problems all read the same (linkstate::errorText): the reason is in the log only.
+    add(QStringLiteral("error"), Look::Error, Kind::Gif, QStringLiteral("media.example.net"));
+    add(QStringLiteral("error (video gone)"), Look::Error, Kind::YouTube, QStringLiteral("www.youtube.com"),
+        [](linkcard::Card& c, linkcard::Pointer&) { c.error = QStringLiteral("This video isn't available"); });
+    add(QStringLiteral("too large"), Look::TooLarge, Kind::Video, QStringLiteral("files.example.com"),
+        [](linkcard::Card& c, linkcard::Pointer&) { c.size = 87LL * 1024 * 1024; });
+    add(QStringLiteral("YouTube (sender's preview)"), Look::YouTube, Kind::YouTube, QStringLiteral("youtube.com"), [](linkcard::Card& c, linkcard::Pointer&) {
+        c.title     = QStringLiteral("Lakeside timelapse: a whole day in four minutes, from sunrise to the stars");
+        c.author    = QStringLiteral("Quiet Places");
+        c.thumbnail = scenery(QSize(640, 360), 0);
+    });
+    add(QStringLiteral("YouTube (hovered)"), Look::YouTube, Kind::YouTube, QStringLiteral("youtube.com"), [](linkcard::Card& c, linkcard::Pointer& p) {
+        c.title     = QStringLiteral("Night drive");
+        c.author    = QStringLiteral("Synth Roads");
+        c.thumbnail = scenery(QSize(640, 360), 1);
+        p.over      = true;
+        p.hover     = linkcard::Zone::Open;
+    });
+    add(QStringLiteral("YouTube (loaded here: hqdefault 4:3 with bars)"), Look::YouTube, Kind::YouTube, QStringLiteral("youtu.be"), [](linkcard::Card& c, linkcard::Pointer&) {
+        c.title  = QStringLiteral("Morning on the coast");
+        c.author = QStringLiteral("Quiet Places");
+        // YouTube's 480 x 360 thumbnail: the 16:9 picture between black bars; the card shows only the picture.
+        QImage hq(480, 360, QImage::Format_RGB32);
+        hq.fill(Qt::black);
+        QPainter p(&hq);
+        p.drawImage(QPointF(0, 45), scenery(QSize(480, 270), 3));
+        p.end();
+        c.thumbnail = hq;
+    });
+    add(QStringLiteral("YouTube (thumbnail loading)"), Look::YouTube, Kind::YouTube, QStringLiteral("youtube.com"), [](linkcard::Card& c, linkcard::Pointer&) {
+        c.title            = QStringLiteral("Lakeside timelapse");
+        c.author           = QStringLiteral("Quiet Places");
+        c.thumbnailLoading = true;
+    });
+    add(QStringLiteral("video poster (too large to play)"), Look::Poster, Kind::Video, QStringLiteral("files.example.com"), [](linkcard::Card& c, linkcard::Pointer&) {
+        c.thumbnail  = scenery(QSize(640, 360), 2);
+        c.durationMs = 754000;
+    });
+    add(QStringLiteral("hidden"), Look::Hidden, Kind::Image, QStringLiteral("cdn.example.org"));
+    return out;
+}
+
+// A sheet: each card on the chat's background and on a bubble, labelled.
+QImage cardSheet(bool dark, qreal dpr, int maxWidth = 400)
+{
+    const QColor            base    = dark ? QColor(0x2f, 0x31, 0x36) : QColor(Qt::white);
+    const layoutart::Colors colors  = layoutart::colorsFor(dark, base, dark ? QColor(0xdc, 0xdd, 0xde) : QColor(Qt::black), dark ? QColor(0x1c, 0xb0, 0xf4) : QColor(0x1c, 0x82, 0xcc));
+    const QVector<QColor>   bubbles = layoutart::bubbleSurfaces(colors);
+    const QList<CardSample> samples = cardSamples();
+    const int               colW    = maxWidth + 30;
+    int                     y       = 12;
+    QList<QPair<int, CardSample>> rows;
+    for (const CardSample& s : samples) {
+        const QSize a = linkcard::layout(s.card, styleFor(dark, dpr, maxWidth)).size;
+        rows.append({y, s});
+        y += 20 + qMax(a.height(), a.height()) + 22;
+    }
+    QImage img(QSize(colW * 2 + 24, y) * dpr, QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(dpr);
+    img.fill(base);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    QFont label = chatpages::chatFont();
+    label.setPixelSize(11);
+    for (const auto& row : rows) {
+        const CardSample& s = row.second;
+        p.setFont(label);
+        p.setPen(dark ? QColor(0x94, 0x9b, 0xa4) : QColor(0x5c, 0x5e, 0x66));
+        p.drawText(QPointF(12, row.first + 12), s.label);
+        p.drawText(QPointF(colW + 24, row.first + 12), s.label + QStringLiteral(" (on a bubble)"));
+        const QImage plain = linkcard::render(s.card, styleFor(dark, dpr, maxWidth), s.pointer);
+        p.drawImage(QPointF(12, row.first + 20), plain);
+        // On a bubble: the bubble's surface under it, with its padding.
+        const PreviewStyle onBubble = styleFor(dark, dpr, maxWidth, bubbles);
+        const QImage       bubbled  = linkcard::render(s.card, onBubble, s.pointer);
+        const QSizeF       size     = QSizeF(bubbled.size()) / dpr;
+        QPainterPath       shape;
+        shape.addRoundedRect(QRectF(colW + 24 - 10, row.first + 20 - 6, size.width() + 20, size.height() + 12), 14, 14);
+        p.fillPath(shape, bubbles.value(1, bubbles.value(0)));
+        p.drawImage(QPointF(colW + 24, row.first + 20), bubbled);
+    }
+    p.end();
+    return img;
+}
+
+// ---- the chats --------------------------------------------------------------------------------------------
+
+const QString kAlice = QStringLiteral("q0Xn6AliceAAAAAAAAAAAAAAAAA=");
+const QString kBob   = QStringLiteral("q0Xn6BobAAAAAAAAAAAAAAAAAAA=");
+const QString kMe    = QStringLiteral("q0Xn6MineAAAAAAAAAAAAAAAAAA=");
+
+enum class Show { Card, Picture, Gif, VideoPoster, VideoPlaying, PictureDownloading };
+struct Planned {
+    Show           show = Show::Card;
+    linkcard::Card card;
+};
+
+void fill(QTextDocument& doc, const tschat::Skin& s, int width)
+{
+    chatpages::setup(doc, width);
+    const auto msg = [&](const char* time, int clid, const QString& uid, const QString& nick, const QString& html, bool out = false) {
+        tschat::append(&doc, tschat::messageHtml(s, QString::fromLatin1(time), clid, uid, nick, html, out));
+    };
+    const auto a = [&](const char* url) { return tschat::linkHtml(s, QString::fromLatin1(url)); };
+    tschat::append(&doc, tschat::dayHtml(s, QStringLiteral("10/10/2026"), false));
+    tschat::append(&doc, tschat::systemHtml(s, QStringLiteral("20:00:01"), QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(s, QStringLiteral("Home"))));
+    msg("20:01:00", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("this is so calm ") + a("https://www.youtube.com/watch?v=aBcDeFgHiJk"));
+    msg("20:01:40", 7, kMe, QStringLiteral("Robin"), QStringLiteral("saving it for later ") + a("https://youtu.be/xYz123AbC_d"), true);
+    msg("20:02:10", 18, kBob, QStringLiteral("Bob"), a("https://cdn.example.org/pics/lake.png") + QStringLiteral(" from last summer"));
+    msg("20:02:40", 7, kMe, QStringLiteral("Robin"), a("https://media.example.net/party-cat.gif"), true);
+    msg("20:03:20", 17, kAlice, QStringLiteral("Alice"), a("https://files.example.com/clips/sunset.mp4"));
+    msg("20:03:50", 18, kBob, QStringLiteral("Bob"), QStringLiteral("and the long one ") + a("https://files.example.com/clips/full-match.mp4"));
+    msg("20:04:30", 7, kMe, QStringLiteral("Robin"), a("https://files.example.com/clips/goal.webm"), true);
+    msg("20:05:00", 17, kAlice, QStringLiteral("Alice"), a("https://img.example.org/raw/wall.jpg") + QStringLiteral(" ") + a("https://img.example.org/raw/door.webp"));
+    msg("20:05:30", 18, kBob, QStringLiteral("Bob"), a("https://slow.example.net/huge.gif"));
+    msg("20:06:00", 7, kMe, QStringLiteral("Robin"), a("https://cdn.example.org/pics/old.png"), true);
+    msg("20:06:30", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("not a preview: ") + a("https://example.com/article"));
+    msg("20:07:00", 18, kBob, QStringLiteral("Bob"), a("https://cdn.example.org/pics/beach.jpg") + QStringLiteral(" (its preview still coming from the server)"));
+}
+
+// What each link of the chat shows, in document order.
+QVector<Planned> plan()
+{
+    QVector<Planned> out;
+    const auto card = [&](Look look, Kind kind, const QString& host, const std::function<void(linkcard::Card&)>& more = {}) {
+        Planned p;
+        p.card.look = look;
+        p.card.kind = kind;
+        p.card.host = host;
+        if (more)
+            more(p.card);
+        out.append(p);
+    };
+    const auto media = [&](Show show) {
+        Planned p;
+        p.show = show;
+        out.append(p);
+    };
+    card(Look::YouTube, Kind::YouTube, QStringLiteral("youtube.com"), [](linkcard::Card& c) {
+        c.title     = QStringLiteral("Lakeside timelapse: a whole day in four minutes");
+        c.author    = QStringLiteral("Quiet Places");
+        c.thumbnail = scenery(QSize(640, 360), 0);
+    });
+    // 2.4 auto-load: our own message while our pipeline loads it (never "Load preview" there).
+    card(Look::Loading, Kind::YouTube, QStringLiteral("youtu.be"), [](linkcard::Card& c) { c.waiting = linkcard::Waiting::Own; });
+    media(Show::Picture);
+    media(Show::Gif);
+    media(Show::VideoPoster);
+    card(Look::Poster, Kind::Video, QStringLiteral("files.example.com"), [](linkcard::Card& c) {
+        c.thumbnail  = scenery(QSize(640, 360), 3);
+        c.durationMs = 5412000;
+    });
+    media(Show::VideoPlaying);
+    card(Look::Loading, Kind::Image, QStringLiteral("img.example.org"), [](linkcard::Card& c) { c.progress = 0.62; });
+    card(Look::Hidden, Kind::Image, QStringLiteral("img.example.org"));
+    // 2.4 auto-load: above the automatic limit, a click card with its size (nothing big loads by itself).
+    card(Look::Click, Kind::Gif, QStringLiteral("slow.example.net"), [](linkcard::Card& c) { c.size = 41LL * 1024 * 1024; });
+    card(Look::Error, Kind::Image, QStringLiteral("cdn.example.org"), [](linkcard::Card& c) { c.error = QStringLiteral("The file isn't on the website any more"); }); // linkstate::errorText(notFound)
+    media(Show::PictureDownloading); // a sender's preview on its way from the TeamSpeak server
+    return out;
+}
+
+MediaEntry entryFor(const QString& name, int w, int h, qint64 durationMs)
+{
+    MediaEntry e;
+    e.link.serverUid  = QStringLiteral("tsmedia-web");
+    e.link.channelId  = 1;
+    e.link.path       = QStringLiteral("/web/x");
+    e.link.fileName   = name;
+    e.link.protocol   = MediaLink::kProtocol;
+    e.link.width      = w;
+    e.link.height     = h;
+    e.link.durationMs = durationMs;
+    e.link.size       = 4 * 1024 * 1024;
+    e.kind            = kindForFileName(name);
+    e.state           = MediaState::Ready;
+    e.progress        = 1.0;
+    return e;
+}
+
+// A link's media as ChatIntegration draws it (its picture padded with the preview gaps, 14 above, 4 below).
+QImage mediaPicture(Show show, const PreviewStyle& style, QSize* size)
+{
+    QImage img;
+    switch (show) {
+    case Show::Picture: {
+        const MediaEntry e = entryFor(QStringLiteral("lake.png"), 1600, 1000, 0);
+        MediaStill       still;
+        still.image  = scenery(previewLogicalSize(e, style) * style.dpr, 0);
+        still.source = MediaStill::Full;
+        img          = renderPreview(e, still, style, size);
+        break;
+    }
+    case Show::Gif: {
+        const MediaEntry e = entryFor(QStringLiteral("party-cat.gif"), 480, 360, 0);
+        img                = renderAnimatedFrame(e, scenery(QSize(480, 360), 1), style, size);
+        break;
+    }
+    case Show::VideoPoster: {
+        const MediaEntry e = entryFor(QStringLiteral("sunset.mp4"), 1280, 720, 15000);
+        MediaStill       poster;
+        poster.image  = scenery(QSize(640, 360), 2);
+        poster.source = MediaStill::Preview;
+        PlaybackOverlay o;
+        o.durationMs = 15000;
+        img          = renderVideo(e, QImage(), poster, o, style, size);
+        break;
+    }
+    case Show::VideoPlaying: {
+        const MediaEntry e = entryFor(QStringLiteral("goal.webm"), 1280, 720, 9000);
+        PlaybackOverlay  o;
+        o.durationMs      = 9000;
+        o.positionMs      = 3400;
+        o.playing         = true;
+        o.controlsVisible = true;
+        img               = renderVideo(e, scenery(QSize(1280, 720) / 2, 3), MediaStill(), o, style, size);
+        break;
+    }
+    case Show::PictureDownloading: {
+        MediaEntry e = entryFor(QStringLiteral("beach.jpg"), 1200, 800, 0);
+        e.state      = MediaState::Downloading;
+        e.progress   = 0.45;
+        img          = renderPreview(e, MediaStill(), style, size);
+        break;
+    }
+    case Show::Card:
+        break;
+    }
+    if (img.isNull())
+        return img;
+    const qreal dpr = img.devicePixelRatio();
+    QImage      out(img.width(), img.height() + qRound(18 * dpr), QImage::Format_ARGB32_Premultiplied);
+    out.setDevicePixelRatio(dpr);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.drawImage(QPointF(0, 14), img);
+    p.end();
+    return out;
+}
+
+QImage chatPage(Mode mode, bool bubbles, bool dark, qreal dpr, int width, int* failures)
+{
+    const tschat::Skin skin  = dark ? tschat::darkSkin() : tschat::lightSkin();
+    QTextDocument      doc, plain;
+    fill(doc, skin, width - 8);
+    fill(plain, skin, width - 8);
+    layoutdoc::Env env = chatpages::envFor(mode == Mode::Classic ? Mode::Cozy : mode, dark, dpr, width);
+    env.tokens         = layoutart::tokensFor(mode == Mode::Classic ? Mode::Cozy : mode, chatpages::chatFont(), false, bubbles);
+    env.ownRight       = bubbles;
+    env.collapse       = false;
+    const QVector<QColor> surfaces = bubbles ? layoutart::bubbleSurfaces(env.colors) : QVector<QColor>();
+    // The width ChatLinkPreviews::styleOf gives the cards: ChatIntegration::styleFor's (the preview area less 48 and
+    // the layout's indent, at least 160, at most the 400 of the settings), then the content column less the
+    // document's margins and the right margin (a bubble's).
+    const int          indent  = mode == Mode::Classic ? 0 : mode == Mode::Compact ? env.tokens.L : env.tokens.G;
+    const int          right   = qMax(12, bubbles ? env.tokens.bubbleRight + 2 : 0);
+    const int          base    = qMin(400, qMax(160, width - 48 - indent));
+    const PreviewStyle style   = styleFor(dark, dpr, qMax(160, qMin(base, width - indent - 8 - right)), surfaces);
+
+    // The slots, as ChatLinkPreviews puts them (back to front), then the layout on top.
+    const QVector<linkdoc::Link> links = linkdoc::findLinks(&doc);
+    const QVector<Planned>       want  = plan();
+    if (links.size() != want.size()) {
+        QTextStream(stderr) << "error: linkpreviews: " << links.size() << " links found, " << want.size() << " planned\n";
+        ++*failures;
+    }
+    for (int i = qMin(links.size(), want.size()) - 1; i >= 0; --i) {
+        const Planned& p    = want.at(i);
+        const QString  name = (p.show == Show::Card ? linkdoc::cardPrefix() : linkdoc::mediaPrefix()) + QStringLiteral("g%1").arg(i);
+        QSize          size;
+        QImage         picture;
+        if (p.show == Show::Card) {
+            const QImage card = linkcard::render(p.card, style, linkcard::Pointer());
+            size              = linkcard::layout(p.card, style).size;
+            picture           = QImage(card.width(), card.height() + qRound(8 * dpr), QImage::Format_ARGB32_Premultiplied);
+            picture.setDevicePixelRatio(dpr);
+            picture.fill(Qt::transparent);
+            QPainter painter(&picture);
+            painter.drawImage(QPointF(0, 4), card);
+            painter.end();
+            size.setHeight(size.height() + 8);
+        } else {
+            picture = mediaPicture(p.show, style, &size);
+            size.setHeight(size.height() + 18);
+        }
+        doc.addResource(QTextDocument::ImageResource, QUrl(name), picture);
+        if (!linkdoc::insertSlot(&doc, links.at(i), name, QSizeF(size))) {
+            QTextStream(stderr) << "error: linkpreviews: slot " << i << " not inserted\n";
+            ++*failures;
+        }
+    }
+    if (mode != Mode::Classic) {
+        layoutdoc::styleAll(&doc, env);
+        layoutdoc::renderAll(&doc, env, env.today);
+        QSet<int> own;
+        for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+            if (layoutformat::isOwnRight(b))
+                own.insert(b.blockNumber());
+        }
+        layoutdoc::settle(&doc, {}, env, own);
+    }
+    doc.documentLayout()->documentSize();
+    // Every slot fits its message's column: a card wider than that would stick out of it (and its bubble).
+    for (const linkdoc::Slot& slot : linkdoc::allSlots(&doc)) {
+        const QTextBlock block = doc.findBlock(slot.object);
+        const QTextLine  line  = block.layout() ? block.layout()->lineForTextPosition(slot.object - block.position()) : QTextLine();
+        if (!line.isValid())
+            continue;
+        const qreal left  = doc.documentLayout()->blockBoundingRect(block).left() + line.cursorToX(slot.object - block.position());
+        const qreal limit = doc.textWidth() - doc.documentMargin() - block.blockFormat().rightMargin();
+        const qreal start = doc.documentMargin() + block.blockFormat().leftMargin();
+        if (left + slot.size.width() > limit + 0.5 || slot.size.width() > limit - start + 0.5) {
+            QTextStream(stderr) << "error: linkpreviews: " << slot.name << " ends at " << qRound(left + slot.size.width()) << ", its column at " << qRound(limit)
+                                << " (chat " << width << " px, " << (mode == Mode::Classic ? "classic" : mode == Mode::Compact ? "compact" : "cozy")
+                                << (bubbles ? " bubbles" : "") << ", " << (dark ? "dark" : "light") << ")\n";
+            ++*failures;
+        }
+    }
+    const int h = qCeil(doc.size().height());
+    QImage    img(QSize(width, h) * dpr, QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(dpr);
+    img.fill(env.colors.base);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    if (bubbles)
+        layoutbubbles::paint(p, layoutbubbles::itemsIn(&doc, 0, doc.blockCount() - 1, env), env, QPointF(0, 0), layoutbubbles::State());
+    QAbstractTextDocumentLayout::PaintContext ctx;
+    ctx.palette.setColor(QPalette::Text, env.colors.text);
+    doc.documentLayout()->draw(&p, ctx);
+    p.end();
+
+    // Given back exactly: the layout, then the slots.
+    if (mode != Mode::Classic)
+        layoutdoc::restoreAll(&doc);
+    linkdoc::removeAll(&doc);
+    if (doc.toHtml() != plain.toHtml()) {
+        QTextStream(stderr) << "error: linkpreviews: the chat isn't given back exactly\n";
+        ++*failures;
+    }
+    return img;
+}
+
+int render(const QString& outDir)
+{
+    const QString dir = outDir + QStringLiteral("/linkpreviews");
+    QDir().mkpath(dir);
+    int failures = 0;
+    int written  = 0;
+    for (const bool dark : {false, true}) {
+        for (const qreal dpr : {1.0, 2.0}) {
+            const QString suffix = QStringLiteral("%1_%2x").arg(dark ? QStringLiteral("dark") : QStringLiteral("light"), QString::number(dpr));
+            cardSheet(dark, dpr).save(QStringLiteral("%1/cards_%2.png").arg(dir, suffix));
+            cardSheet(dark, dpr, 200).save(QStringLiteral("%1/cards_narrow_%2.png").arg(dir, suffix)); // a 300 px chat
+            written += 2;
+            const struct {
+                const char* name;
+                Mode        mode;
+                bool        bubbles;
+            } looks[] = {{"classic", Mode::Classic, false}, {"cozy_bubbles", Mode::Cozy, true}, {"compact", Mode::Compact, false}};
+            for (const auto& look : looks) {
+                for (const int width : {300, 520, 900}) { // a narrow chat panel, TeamSpeak's default, a wide window
+                    chatPage(look.mode, look.bubbles, dark, dpr, width, &failures)
+                        .save(QStringLiteral("%1/chat_%2_%3_w%4.png").arg(dir, QString::fromLatin1(look.name), suffix).arg(width));
+                    ++written;
+                }
+            }
+        }
+    }
+    QTextStream(stdout) << "rendered " << written << " link preview pages into " << QDir::toNativeSeparators(dir) << "\n";
+    return failures;
+}
+
+} // namespace linkpages
+
 int main(int argc, char* argv[])
 {
     QGuiApplication app(argc, argv);
@@ -2008,6 +2482,12 @@ int main(int argc, char* argv[])
     // Pictures used in the samples (e.g. created with ffmpeg, see README): defaults to ./testmedia.
     g_mediaDir           = argc > 2 ? QDir::fromNativeSeparators(QString::fromLocal8Bit(argv[2])) : QStringLiteral("testmedia");
     QDir().mkpath(outDir);
+    // 2.4 link previews: "--links" renders their pages only.
+    if (argc > 2 && QString::fromLatin1(argv[2]) == QLatin1String("--links")) {
+        const int failures = linkpages::render(outDir);
+        emoji::shutdown();
+        return failures == 0 ? 0 : 1;
+    }
     if (checkDisplayFileName() != 0)
         return 1;
     if (checkSpoilerCovers() != 0) // 2.2 spoiler
@@ -2047,11 +2527,12 @@ int main(int argc, char* argv[])
     }
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
     const int chatLayout       = chatpages::render(outDir); // chat redesign
+    const int linkPages        = linkpages::render(outDir); // 2.4 link previews
     const int contrastFailures = contrastReport(outDir);
     const int dragCard         = checkDragCardContrast(); // 2.2 drag-out
     if (g_layoutFailures)
         QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
     // 2.2 album: and every grid's size (g_layoutErrors)
     emoji::shutdown(); // 2.2 emoji: the renderer's worker and engines
-    return contrastFailures == 0 && dragCard == 0 && chatLayout == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
+    return contrastFailures == 0 && dragCard == 0 && chatLayout == 0 && linkPages == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
 }

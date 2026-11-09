@@ -8,6 +8,8 @@
 #include <QThreadPool>
 #include <QVector>
 
+#include <functional>
+
 #include "core.h"
 #include "previewrenderer.h"
 
@@ -18,6 +20,7 @@ class ChatReplies;   // 2.2 reply
 class ChatEmoji;     // 2.2 emoji
 class ChatLayout;    // chat redesign
 class ChatPolls;     // 2.3 poll
+class ChatLinkPreviews; // 2.4 link previews
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -62,6 +65,10 @@ class ChatIntegration : public QObject
     // the file chooser for the chat of source (the chat input the paperclip is in), then the send window.
     void    pickFiles(QWidget* source, bool media);
     ChatPolls* polls() const { return m_polls; } // 2.3 poll
+    // 2.4 link previews: the cards under web links (integration: linkPreviews()->setHub(<the link-preview hub>, <the peer directory>)).
+    ChatLinkPreviews* linkPreviews() const { return m_links; }
+    // A Core key shown as a web link's media (its message has text reactions, the file has none of its own).
+    bool isLinkPreviewKey(const QString& key) const;
     void    refreshAll(); // after settings changes
     QString dumpWidgetTree() const;
 
@@ -76,6 +83,11 @@ class ChatIntegration : public QObject
 
     // 2.2 reply: the "Reply to the last message" hotkey (chatreplies.h).
     void replyToLatest();
+
+    // 2.3.4: links in TS Media's own chat lines (ts3::printInfoLink) that the plugin handles itself (the
+    // newer-version hint, "#tsmupd-" in the address). handler(href, false) at the press: "is it ours";
+    // handler(href, true) at the release on the same link: run it. Empty: none (TeamSpeak opens them).
+    void setOwnLinkHandler(std::function<bool(const QString& href, bool activate)> handler);
 
     // 2.2 diagnostics: how many of TeamSpeak's chat views and input lines are hooked (counts only).
     int hookedChatViews() const { return m_views.size(); }
@@ -115,6 +127,7 @@ class ChatIntegration : public QObject
     friend class ChatReplies;   // 2.2 reply: reply lines, the reply bar and menu items (chatreplies.cpp)
     friend class ChatLayout;    // chat redesign: the chat layout (chatlayout.cpp)
     friend class ChatPolls;     // 2.3 poll: poll cards in the chat (chatpolls.cpp)
+    friend class ChatLinkPreviews; // 2.4 link previews: the cards and media under web links (chatlinkpreviews.cpp)
 #ifdef TSMEDIA_TESTHOOKS
     friend class SelfTest; // test builds: the scripted live-test driver (selftest.cpp)
 #endif
@@ -292,6 +305,11 @@ class ChatIntegration : public QObject
     static bool    isFileAnchor(const QTextCharFormat& format);
     static bool    atBottom(QTextBrowser* browser);
 
+    // ---- 2.4 link previews ---------------------------------------------------------------------------------
+    // key's picture for a preview object of a link's slot (its resource added, as insertPreview does) and the
+    // object's size (the gaps included); empty when key has no entry.
+    QSizeF linkPreviewObject(QTextBrowser* browser, const QString& key);
+
     // ---- chat redesign (chatlayout.cpp) -------------------------------------------------------------------
     // The first preview of block that can get reactions (an album: its grid), or empty.
     QString         reactableKeyIn(QTextBrowser* browser, int block);
@@ -353,4 +371,12 @@ class ChatIntegration : public QObject
     ChatEmoji*                              m_emoji     = nullptr; // 2.2 emoji: HD emoji in the chats, the input's emoji button
     ChatLayout*                             m_layout    = nullptr; // chat redesign: the Cozy / Compact layout
     ChatPolls*                              m_polls     = nullptr; // 2.3 poll
+    ChatLinkPreviews*                       m_links     = nullptr; // 2.4 link previews
+    // 2.3.4: the own-link handler and the press it took (TeamSpeak saw neither press nor release).
+    std::function<bool(const QString&, bool)> m_ownLinkHandler;
+    QString                                   m_ownLinkPressed;
+    QPointer<QTextBrowser>                    m_ownLinkBrowser;
+    bool                                      m_ownLinkDouble = false; // the press was a double click's
+
+    bool filterOwnLink(QObject* watched, QEvent* event);
 };

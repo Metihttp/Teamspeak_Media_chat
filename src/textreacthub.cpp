@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "emojidata.h"
+#include "linkpreview/lphub.h" // 2.4 link previews: announcements wait for their message too
 #include "peers.h"
 #include "pluginlink.h"
 #include "settings.h"
@@ -239,6 +240,8 @@ void TextReactHub::indexChanged()
 {
     if (!m_waiting.isEmpty())
         matchWaiting();
+    if (linkpreview::Hub* previews = linkpreview::Hub::instance())
+        previews->indexChanged(); // 2.4 link previews
 }
 
 void TextReactHub::matchWaiting()

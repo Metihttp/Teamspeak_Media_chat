@@ -46,6 +46,8 @@ void log(const QString& text, LogLevel level = LogLevel_INFO)
 
 constexpr const char* kCheck = "check";
 
+constexpr int kMaxAutoAttempts = 2; // silent installs of one version; then it is offered the normal way
+
 QString processExePath()
 {
     std::vector<wchar_t> buffer(32768);
@@ -179,6 +181,7 @@ Updater::Updater(const QString& dataDir, Hooks hooks, QObject* parent)
     , m_settings(UpdateSettings::load(m_settingsFile))
     , m_hooks(std::move(hooks))
     , m_current(Version::parse(QString::fromLatin1(TSMEDIA_VERSION)))
+    , m_hints(PeerHints::newNonce())
 {
     g_instance     = this;
     m_tick         = new QTimer(this);
@@ -273,9 +276,12 @@ void Updater::start()
     // Every build settles the install state: the started marker for the helper, applied -> done.
     const StartupNotice notice = onStarted(m_layout, m_current, GetCurrentProcessId());
     if (notice.kind == StartupNotice::Updated) {
-        log(latin("now running ") + notice.version.toString());
-        queueNotice(i18n::t("Updated to TS Media chat %1.").arg(notice.version.toString()), false,
-                    releaseNotesUrl(latin("v") + notice.version.toString()).toString(), i18n::t("What's new in %1").arg(notice.version.toString()), true);
+        log(latin("now running ") + notice.version.toString() + (notice.automatic ? latin(" (installed automatically)") : QString()));
+        queueNotice((notice.automatic ? i18n::t("Updated to TS Media chat %1 (an important update, installed automatically).")
+                                      : i18n::t("Updated to TS Media chat %1."))
+                        .arg(notice.version.toString()),
+                    false, releaseNotesUrl(latin("v") + notice.version.toString()).toString(), i18n::t("What's new in %1").arg(notice.version.toString()),
+                    true);
     } else if (notice.kind == StartupNotice::RolledBack) {
         log(latin("the update to ") + notice.version.toString() + latin(" didn't start; ") + notice.restored.toString() + latin(" was restored"),
             LogLevel_WARNING);
@@ -302,6 +308,14 @@ void Updater::start()
     }
 #endif
     setPhase(restartPending(m_layout, m_current) ? Phase::RestartPending : Phase::Idle);
+    StateFile st(m_layout.stateFile());
+    m_latestKnown = st.versionValue(kCheck, "latest"); // the newer-version hint's floor
+    // Once: those who turned automatic checks on before 2.3.4 agreed to "asks before installing anything".
+    // Noted as said only once the line is printed (flushNotices); until then nothing installs by itself.
+    if (m_settings.check == CheckSetting::On && !st.autoAnnounced())
+        queueNotice(i18n::t("Important fixes for TS Media chat now install automatically when they are signed by its author; they start "
+                            "with the next TeamSpeak start. You can turn automatic updates off in Settings → Privacy & updates."),
+                    false, QString(), QString(), false, true);
     m_earliestCheck = QDateTime::currentDateTimeUtc().addMSecs(initialDelayMs(QRandomGenerator::global()->generate()));
     if (shouldAskConsent(m_settings.check, m_settings.timesAsked))
         m_consentTimer->start(kConsentDelayMs);
@@ -376,6 +390,12 @@ void Updater::setAutomatic(bool on)
     m_settings.check = wanted;
     saveSettings();
     log(on ? latin("automatic checks turned on") : latin("automatic checks turned off"));
+    if (on) {
+        StateFile(m_layout.stateFile()).setAutoAnnounced(); // the Settings hint says what that means now
+    } else if (m_autoInstall && m_phase == Phase::Downloading && m_link) {
+        log(latin("automatic download canceled"));
+        m_link->cancel = true; // onPrepareDone: Available, nothing installed
+    }
     m_consentTimer->stop();
     m_consentPending = false;
     if (m_consent)
@@ -416,6 +436,7 @@ void Updater::showConsent()
     connect(window, &ConsentWindow::turnOn, this, [this] {
         m_settings.check = CheckSetting::On;
         saveSettings();
+        StateFile(m_layout.stateFile()).setAutoAnnounced(); // the window said that important fixes install by themselves
         log(latin("automatic checks turned on (consent window)"));
         schedule();
         emit statusChanged();
@@ -447,6 +468,8 @@ void Updater::checkNow(Origin origin)
     if (busy()) {
         if (origin != Origin::Automatic && m_dialog)
             m_dialog->show();
+        if (origin == Origin::Chat) // an automatic check or an important update may be running, without a window
+            ts3::printInfo(ts3::currentConnection(), i18n::t("TS Media chat is already checking for or installing an update."));
         return;
     }
     if (m_phase == Phase::RestartPending && origin != Origin::Automatic) {
@@ -470,7 +493,11 @@ void Updater::startCheck(Origin origin)
     m_link           = std::make_shared<WorkerLink>();
     m_link->receiver = this;
     const QSet<int> revoked = StateFile(m_layout.stateFile()).revokedKeys();
-    void* thread = UpdateWorker::startCheck(m_link, trustedKeys(), revoked, [this, origin](const CheckOutcome& outcome) { onCheckDone(outcome, origin); });
+    // The important marker only for an automatic check with automatic checks on: a manual check stays
+    // one request and never installs anything by itself.
+    const Version markerAbove = origin == Origin::Automatic && m_settings.check == CheckSetting::On ? effectiveInstalled(m_layout, m_current) : Version();
+    void* thread = UpdateWorker::startCheck(m_link, trustedKeys(), revoked, markerAbove, m_layout.arch,
+                                            [this, origin](const CheckOutcome& outcome) { onCheckDone(outcome, origin); });
     if (!thread) {
         log(latin("couldn't start the update thread"), LogLevel_WARNING);
         setPhase(before == Phase::Checking ? Phase::Idle : before);
@@ -489,6 +516,19 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
     const QDateTime now      = QDateTime::currentDateTimeUtc();
     const quint32   rand     = QRandomGenerator::global()->generate();
     const Phase     restPhase = restartPending(m_layout, m_current) ? Phase::RestartPending : Phase::Idle;
+    // The check the newer-version hint's link started (always Origin::Chat). Cleared here for every path.
+    const Version hinted = origin == Origin::Chat ? m_hintCheck : Version();
+    m_hintCheck          = Version();
+    // Nothing newer than latest: the hinted version isn't released (a test build, or made up). Said
+    // instead of "You have the latest version", and it isn't hinted again this session.
+    const auto notReleased = [this, &hinted](const Version& latest, const Version& have) {
+        if (!hinted.isValid() || !(hinted > latest))
+            return false;
+        ts3::printInfo(ts3::currentConnection(),
+                       i18n::t("TS Media chat %1 isn't released yet. You have the latest release (%2).").arg(hinted.toString(), have.toString()));
+        m_hints.markNotReleased(hinted);
+        return true;
+    };
 
     if (outcome.httpError == http::Error::NotFound) {
         // The latest release has no manifest (yet): not an error, keep the normal schedule.
@@ -500,8 +540,11 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
         m_lastError.clear();
         m_manualUpToDate = origin != Origin::Automatic;
         setPhase(restPhase);
-        if (origin == Origin::Chat)
-            ts3::printInfo(ts3::currentConnection(), i18n::t("You have the latest version of TS Media chat (%1).").arg(m_current.toString()));
+        if (origin == Origin::Chat) {
+            const Version installed = effectiveInstalled(m_layout, m_current);
+            if (!notReleased(installed, installed))
+                ts3::printInfo(ts3::currentConnection(), i18n::t("You have the latest version of TS Media chat (%1).").arg(m_current.toString()));
+        }
         schedule();
         emit statusChanged();
         return;
@@ -555,11 +598,17 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
     st.setInt(kCheck, "failures", 0);
     st.setTime(kCheck, "nextUtc", nextAfterSuccess(now, rand));
     st.setValue(kCheck, "latest", m.version.toString());
+    m_latestKnown = m.version;
     m_lastError.clear();
 
     const Offer o = offerFor(m, effectiveInstalled(m_layout, m_current), m_settings.skipped, m_layout.arch);
     log(latin("latest release ") + m.version.toString() + latin(" (") + outcome.file + latin(", ")
         + (m.isSigned() ? latin("signed with key ") + QString::number(m.signedBy) : latin("unsigned")) + latin(", host ") + outcome.host + latin(")"));
+    if (outcome.markerFetched && startAutoInstall(outcome, origin, o)) {
+        schedule(); // nothing while it downloads; again when it's done
+        emit statusChanged();
+        return;
+    }
     switch (o) {
     case Offer::No:
         st.setValue(kCheck, "lastResult", latin("upToDate"));
@@ -567,10 +616,11 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
         m_manualUpToDate = origin != Origin::Automatic;
         setPhase(restPhase);
         if (origin == Origin::Chat) {
+            const Version installed = effectiveInstalled(m_layout, m_current);
+            const bool    said      = notReleased(qMax(m.version, installed), installed);
             if (restPhase == Phase::RestartPending)
-                ts3::printInfo(ts3::currentConnection(), i18n::t("TS Media chat %1 is installed. Restart TeamSpeak to start using it.")
-                                                             .arg(effectiveInstalled(m_layout, m_current).toString()));
-            else
+                ts3::printInfo(ts3::currentConnection(), i18n::t("TS Media chat %1 is installed. Restart TeamSpeak to start using it.").arg(installed.toString()));
+            else if (!said)
                 ts3::printInfo(ts3::currentConnection(), i18n::t("You have the latest version of TS Media chat (%1).").arg(m_current.toString()));
         }
         break;
@@ -609,9 +659,96 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
     emit statusChanged();
 }
 
+// An important update is installed without a click only after an automatic check with automatic
+// checks on, for a valid signed marker of this very release, a version that would be offered (the
+// user's skip doesn't count) and isn't on the never-auto list, at most kMaxAutoAttempts times per
+// version. The marker's result is only logged: it never counts as a failed check and touches no
+// schedule, error or window. True: the silent download started (or already fell back to the offer).
+bool Updater::startAutoInstall(const CheckOutcome& outcome, Origin origin, Offer o)
+{
+    const Manifest& m = outcome.manifest;
+    const QString   v = m.version.toString();
+    if (outcome.markerHttp == http::Error::NotFound) {
+        log(v + latin(" isn't marked as an important update"));
+        return false;
+    }
+    if (outcome.markerHttp != http::Error::None) {
+        log(latin("couldn't read the important marker of ") + v + latin(": ") + http::errorCode(outcome.markerHttp));
+        return false;
+    }
+    if (outcome.markerError != ManifestError::None) {
+        log(latin("the important marker of ") + v + latin(" was rejected: ") + errorCode(outcome.markerError)
+                + (outcome.markerDetail.isEmpty() ? QString() : latin(" (") + outcome.markerDetail + latin(")")),
+            outcome.markerError == ManifestError::NotImportant ? LogLevel_INFO : LogLevel_WARNING);
+        return false;
+    }
+    const ImportantMarker& marker = outcome.marker;
+    QString                why;
+    if (!sameRelease(marker.manifest, m, &why)) {
+        log(latin("the important marker of ") + v + latin(" doesn't match the release: ") + why, LogLevel_WARNING);
+        return false;
+    }
+    StateFile              st(m_layout.stateFile());
+    const QVector<Version> never = st.neverAutoVersions();
+    if (never.contains(m.version)) {
+        log(v + latin(" is an important update, but it rolled back here or was replaced by hand: never installed automatically"), LogLevel_WARNING);
+        return false;
+    }
+    if ((o != Offer::Yes && o != Offer::Skipped) || !autoInstallAllowed(marker.manifest, effectiveInstalled(m_layout, m_current), never, m_layout.arch)) {
+        log(v + latin(" is an important update, but it can't be installed automatically"), LogLevel_WARNING);
+        return false;
+    }
+    if (origin != Origin::Automatic || m_settings.check != CheckSetting::On || m_autoCanceled) {
+        log(v + latin(" is an important update; not installed automatically now"));
+        return false;
+    }
+    if (!st.autoAnnounced()) {
+        // Users who agreed before 2.3.4 learn first that important fixes install by themselves (start()).
+        log(v + latin(" is an important update; offered the normal way until the chat has said that such updates install by themselves"));
+        return false;
+    }
+    if (st.autoAttempts(m.version) >= kMaxAutoAttempts) {
+        log(v + latin(" is an important update; installing it automatically didn't work before, so it is offered instead"));
+        return false;
+    }
+    log(latin("important update ") + v + latin(" (signed with key ") + QString::number(marker.signedBy) + latin(", until ")
+        + marker.until.toString(Qt::ISODate) + latin("): installing it automatically"));
+    st.noteAutoAttempt(m.version);
+    st.setValue(kCheck, "lastResult", latin("available"));
+    m_manifest     = marker.manifest; // the signed one: every downloaded byte is checked against its hashes
+    m_haveManifest = true;
+    m_autoInstall  = true;
+    setPhase(Phase::Available); // no offer(): no window
+    startDownload();
+    return true;
+}
+
 #else
 void Updater::onCheckDone(const CheckOutcome&, Origin) {}
+bool Updater::startAutoInstall(const CheckOutcome&, Origin, Offer)
+{
+    return false;
+}
 #endif
+
+// A silent install that didn't work out (nothing was changed): the version is offered the normal way,
+// a prompt that waits until TeamSpeak is active, or not at all if the user skipped it. No error window.
+void Updater::fallBackToOffer()
+{
+    m_autoInstall = false;
+    if (!m_haveManifest || m_settings.skipped == m_manifest.version) {
+        setPhase(restartPending(m_layout, m_current) ? Phase::RestartPending : Phase::Idle);
+        if (m_dialog)
+            m_dialog->dismiss();
+    } else {
+        setPhase(Phase::Available);
+        if (m_dialog && m_dialog->isVisible())
+            openUpdateDialog(); // a window the user opened meanwhile: from the progress to the offer
+        offer(Origin::Automatic);
+    }
+    schedule();
+    emit statusChanged();
+}
 
 // ---- prompt --------------------------------------------------------------------------------------
 
@@ -733,9 +870,22 @@ void Updater::openUpdateDialog()
     info.notes     = m_manifest.notes;
     info.notesUrl  = releaseNotesUrl(latin("v") + info.version).toString();
     info.skipped   = m_settings.skipped == m_manifest.version;
-    if (m_phase != Phase::Downloading && m_phase != Phase::Installing)
+    if (m_phase == Phase::Downloading || m_phase == Phase::Installing)
+        showProgress(d); // also in a window created only now (an important update downloads without one)
+    else
         d->showAvailable(info);
     d->show();
+}
+
+void Updater::showProgress(UpdateDialog* d)
+{
+    const QString version = m_manifest.version.toString();
+    if (m_phase == Phase::Installing)
+        d->showWorking(version, i18n::t("Installing…"));
+    else if (m_lastTotal > 0 && m_lastDone >= m_lastTotal) // downloaded: the worker now checks the files (about 2 s)
+        d->showWorking(version, i18n::t("Checking the files…"));
+    else
+        d->showDownloading(version, m_lastDone, m_lastTotal);
 }
 
 void Updater::showError(const QString& heading, const QString& body, int action)
@@ -760,6 +910,10 @@ void Updater::startDownload()
     if (!m_haveManifest || busy())
         return;
     if (!m_manifest.file(FileKind::Plugin, m_layout.arch)) {
+        if (m_autoInstall) { // checked before (autoInstallAllowed); never a window for it
+            fallBackToOffer();
+            return;
+        }
         const ErrorCopy copy = manualInstallError(m_manifest.version.toString());
         showError(copy.heading, copy.body, copy.action);
         return;
@@ -767,26 +921,36 @@ void Updater::startDownload()
     setPhase(Phase::Downloading);
     m_lastProgressPercent = -1;
     const qint64 total    = downloadBytes(m_manifest, m_layout.arch);
-    if (UpdateDialog* d = dialog(true)) {
+    m_lastDone            = 0;
+    m_lastTotal           = total;
+    // An important update downloads without a window; one that is open already shows the progress
+    // without coming to the front.
+    if (UpdateDialog* d = dialog(!m_autoInstall)) {
         d->showDownloading(m_manifest.version.toString(), 0, total);
-        d->show();
+        if (!m_autoInstall)
+            d->show();
     }
-    log(latin("downloading ") + m_manifest.version.toString());
+    log(latin("downloading ") + m_manifest.version.toString() + (m_autoInstall ? latin(" (important update)") : QString()));
     pruneThreads();
     m_link           = std::make_shared<WorkerLink>();
     m_link->receiver = this;
     void* thread     = UpdateWorker::startPrepare(
         m_link, m_layout, m_manifest,
         [this](qint64 done, qint64 all) {
-            if (m_phase != Phase::Downloading || !m_dialog)
+            if (m_phase != Phase::Downloading)
                 return;
-            if (all > 0 && done >= all) // downloaded: the worker now checks the files (about 2 s)
-                m_dialog->showWorking(m_manifest.version.toString(), i18n::t("Checking the files…"));
-            else
-                m_dialog->showDownloading(m_manifest.version.toString(), done, all);
+            m_lastDone  = done;
+            m_lastTotal = all;
+            if (m_dialog)
+                showProgress(m_dialog);
         },
         [this](const PrepareOutcome& outcome) { onPrepareDone(outcome); });
     if (!thread) {
+        if (m_autoInstall) {
+            log(latin("couldn't start the update thread"), LogLevel_WARNING);
+            fallBackToOffer();
+            return;
+        }
         setPhase(Phase::Available);
         showError(i18n::t("The update couldn't start"), i18n::t("Try again later. Nothing was changed."), TryAgain);
         return;
@@ -799,11 +963,65 @@ void Updater::startDownload()
 void Updater::onPrepareDone(const PrepareOutcome& outcome)
 {
     using F = PrepareOutcome::Failure;
+    // The link's flag decides: a cancel during a stalled download may come back as a network error.
+    if (m_autoInstall && (outcome.failure == F::Canceled || (m_link && m_link->cancel))) {
+        // The user canceled the important update's download (its window, or automatic checks turned
+        // off): it stays available, and isn't installed silently again this session.
+        log(latin("automatic download canceled"));
+        m_autoInstall  = false;
+        m_autoCanceled = true;
+        setPhase(Phase::Available);
+        if (m_dialog)
+            m_dialog->dismiss();
+        schedule();
+        emit statusChanged();
+        return;
+    }
     if (outcome.ok() && m_link && m_link->cancel) {
         // Canceled just as the download finished: install nothing.
         log(latin("download canceled"));
         setPhase(Phase::Available);
         return;
+    }
+    if (m_autoInstall) {
+        const QString v = m_manifest.version.toString();
+        if (!outcome.ok()) {
+            QString why;
+            switch (outcome.failure) {
+            case F::Network:
+                why = latin("download failed: ") + http::errorCode(outcome.httpError) + latin(" (error ") + QString::number(outcome.winError) + latin(")");
+                break;
+            case F::Mismatch:
+            case F::WrongMachine:
+                why = latin("a downloaded file failed its check: ") + outcome.fileName;
+                break;
+            case F::Quarantined:
+                why = latin("a staged file changed or vanished (antivirus?): ") + outcome.fileName;
+                break;
+            case F::Imports:
+                why = latin("the new version imports what this TeamSpeak doesn't have: ") + outcome.missingImports.mid(0, 5).join(latin(", "));
+                break;
+            case F::DiskSpace:
+                why = latin("not enough disk space");
+                break;
+            default:
+                why = latin("can't write the update files (error ") + QString::number(outcome.winError) + latin(")");
+                break;
+            }
+            log(latin("the important update ") + v + latin(" wasn't installed automatically: ") + why, LogLevel_WARNING);
+            fallBackToOffer();
+            return;
+        }
+        // Once more before anything changes: automatic checks still on, still not on the never-auto
+        // list, still newer than what runs after the next start.
+        const bool newer = m_manifest.version > effectiveInstalled(m_layout, m_current);
+        if (m_settings.check != CheckSetting::On || StateFile(m_layout.stateFile()).neverAutoVersions().contains(m_manifest.version) || !newer) {
+            log(latin("the important update ") + v + latin(" isn't installed automatically after all"), LogLevel_WARNING);
+            if (!newer)
+                m_haveManifest = false; // installed meanwhile (another TeamSpeak): nothing to offer
+            fallBackToOffer();
+            return;
+        }
     }
     if (outcome.ok()) {
         install(outcome);
@@ -869,19 +1087,41 @@ void Updater::install(const PrepareOutcome& outcome)
     setPhase(Phase::Installing);
     if (m_dialog)
         m_dialog->showWorking(m_manifest.version.toString(), i18n::t("Installing…"));
-    const ApplyResult result = applyUpdate(m_layout, outcome.plugins, m_current, m_manifest.version);
+    const ApplyResult result    = applyUpdate(m_layout, outcome.plugins, m_current, m_manifest.version);
+    const bool        automatic = m_autoInstall;
+    m_autoInstall               = false;
     if (result.ok()) {
         StateFile st(m_layout.stateFile());
         if (outcome.hasHelper)
             st.setValue("install", "helper", QString::fromLatin1(outcome.helper.sha256.toHex()));
         else
             st.remove("install", "helper");
-        log(latin("installed ") + m_manifest.version.toString() + latin("; it starts with the next TeamSpeak start"));
+        // For the next start's line (applyUpdate keeps the [install] keys it doesn't know, so a manual
+        // install removes it).
+        if (automatic)
+            st.setValue("install", "automatic", m_manifest.version.toString()); // the version: never inherited by another install
+        else
+            st.remove("install", "automatic");
+        const QString version = m_manifest.version.toString();
+        log(latin("installed ") + version + (automatic ? latin(" automatically (important update)") : QString())
+            + latin("; it starts with the next TeamSpeak start"));
         m_haveManifest = false;
         setPhase(Phase::RestartPending);
-        UpdateDialog* d = dialog(true);
-        d->showInstalled(m_manifest.version.toString(), connectedServers(), m_hooks.runningUploads ? m_hooks.runningUploads() : 0);
-        d->show();
+        if (automatic) {
+            // No window and never a restart. A window the user opened meanwhile shows it, without coming
+            // to the front.
+            if (m_dialog)
+                m_dialog->showInstalled(version, connectedServers(), m_hooks.runningUploads ? m_hooks.runningUploads() : 0);
+            queueNotice(i18n::t("TS Media chat %1 is an important update and was installed automatically. It starts the next time you open "
+                                "TeamSpeak; to restart now, use Check for updates in the TS Media chat plugin menu.")
+                            .arg(version),
+                        false, releaseNotesUrl(latin("v") + version).toString(), i18n::t("What's new in %1").arg(version));
+            schedule(); // the daily checks go on
+        } else {
+            UpdateDialog* d = dialog(true);
+            d->showInstalled(version, connectedServers(), m_hooks.runningUploads ? m_hooks.runningUploads() : 0);
+            d->show();
+        }
         emit statusChanged();
         return;
     }
@@ -889,6 +1129,8 @@ void Updater::install(const PrepareOutcome& outcome)
     setPhase(Phase::Available);
     log(latin("install failed (step ") + QString::number(static_cast<int>(result.error)) + latin(", error ") + QString::number(result.winError) + latin(")"),
         LogLevel_WARNING);
+    if (automatic)
+        schedule(); // the daily checks go on (they paused while it downloaded)
     if (!result.unchanged) {
         // The undo failed too: the user must act before TeamSpeak's next start.
         const QString copy = result.copyPath.isEmpty() ? m_layout.rollbackDir(m_current) : result.copyPath;
@@ -896,6 +1138,10 @@ void Updater::install(const PrepareOutcome& outcome)
         ts3::printWarning(ts3::currentConnection(), i18n::t(what).arg(QDir::toNativeSeparators(copy), QDir::toNativeSeparators(m_layout.pluginsDir), result.missingFile));
         m_folderToShow = fs::isDir(copy) ? copy : QFileInfo(copy).absolutePath();
         showError(i18n::t("The update didn't finish"), i18n::t(what).arg(displayPath(copy), displayPath(m_layout.pluginsDir), result.missingFile), ShowFolder);
+        return;
+    }
+    if (automatic) {
+        fallBackToOffer(); // nothing was changed: the normal offer, no error window
         return;
     }
     switch (result.error) {
@@ -995,11 +1241,54 @@ void Updater::restartNow()
     }
 }
 
+// ---- newer-version hint (2.3.4) ------------------------------------------------------------------
+
+void Updater::notePeerVersion(quint64 sch, const QString& version, bool inOwnChannel)
+{
+    // Channel members only: a private partner's line could only go into whatever tab is in front.
+    if (!builtIn() || m_phase == Phase::Disabled || !inOwnChannel || busy())
+        return;
+    // From memory first (most HELLOs name the same or an older version); state.ini only for a newcomer.
+    Version floor = qMax(m_current, m_latestKnown);
+    if (m_haveManifest)
+        floor = qMax(floor, m_manifest.version);
+    floor = qMax(floor, m_settings.skipped);
+    if (m_hints.check(version, floor) != PeerHints::Verdict::Show)
+        return;
+    floor = qMax(floor, effectiveInstalled(m_layout, m_current)); // an update installed, not started yet
+    if (m_hints.check(version, floor) != PeerHints::Verdict::Show)
+        return;
+    const Version v = Version::parse(version);
+    m_hints.markShown(v);
+    log(latin("someone in the channel has a newer version: ") + v.toString()); // the version only, never who
+    ts3::printInfoLink(sch, PeerHints::text(v, m_current), m_hints.linkUrl(v), PeerHints::linkText());
+}
+
+bool Updater::handleHintLink(const QString& href, bool activate)
+{
+    Version hinted;
+    if (!builtIn() || !m_hints.parseLink(href, &hinted))
+        return false;
+    if (!activate)
+        return true;
+    log(latin("the newer-version hint's link for ") + hinted.toString() + latin(" was clicked"));
+    if (busy()) {
+        checkNow(Origin::Chat); // says that a check or an install is running
+        return true;
+    }
+    m_hintCheck = hinted;
+    checkNow(Origin::Chat); // a manual check: one request, never the marker, never an install by itself
+    if (m_phase != Phase::Checking)
+        m_hintCheck = Version(); // no check started
+    return true;
+}
+
 // ---- chat lines ----------------------------------------------------------------------------------
 
-void Updater::queueNotice(const QString& text, bool warning, const QString& linkUrl, const QString& linkText, bool startupNotice)
+void Updater::queueNotice(const QString& text, bool warning, const QString& linkUrl, const QString& linkText, bool startupNotice,
+                          bool announcement)
 {
-    m_notices.append(Notice{text, warning, linkUrl, linkText, startupNotice});
+    m_notices.append(Notice{text, warning, linkUrl, linkText, startupNotice, announcement});
     m_noticeUntil = QDateTime::currentDateTimeUtc().addSecs(30 * 60);
     flushNotices();
     if (!m_notices.isEmpty())
@@ -1016,7 +1305,8 @@ void Updater::flushNotices()
         }
         return;
     }
-    bool startup = false;
+    bool startup   = false;
+    bool announced = false;
     for (const Notice& n : qAsConst(m_notices)) {
         if (n.warning)
             ts3::printWarning(sch, n.text);
@@ -1025,12 +1315,15 @@ void Updater::flushNotices()
         // The address is built from a validated version; the text is the plugin's own.
         if (!n.linkUrl.isEmpty())
             ts3::print(sch, latin("[url=") + n.linkUrl + latin("]") + n.linkText + latin("[/url]"));
-        startup = startup || n.startupNotice;
+        startup   = startup || n.startupNotice;
+        announced = announced || n.announcement;
     }
     m_notices.clear();
     m_noticeTimer->stop();
     if (startup)
         markNoticeShown(m_layout);
+    if (announced)
+        StateFile(m_layout.stateFile()).setAutoAnnounced();
 }
 
 } // namespace upd

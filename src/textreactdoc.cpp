@@ -14,15 +14,17 @@
 #include "polldoc.h" // 2.3: a poll message reads the same before and after it became a card
 #include "replydoc.h"
 #include "textreact.h"
+#include "linkpreview/linkdoc.h" // 2.4 link previews
 
 namespace textreactdoc {
 
 namespace {
 
-// ChatIntegration's preview objects, cards and album grids are named "tsmedia:<key>" (kScheme there).
+// ChatIntegration's preview objects, cards and album grids are named "tsmedia:<key>" (kScheme there). 2.4: a
+// web link's media (a slot of ChatLinkPreviews, linkdoc.h) is not: the message stays a text message.
 bool isPreview(const QTextCharFormat& format)
 {
-    return format.isImageFormat() && format.toImageFormat().name().startsWith(QLatin1String("tsmedia:"));
+    return format.isImageFormat() && format.toImageFormat().name().startsWith(QLatin1String("tsmedia:")) && !linkdoc::isSlotObject(format);
 }
 
 bool isFileLink(const QTextCharFormat& format)

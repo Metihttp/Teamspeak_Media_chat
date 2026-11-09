@@ -134,6 +134,8 @@ class Index
         QString      hash;
         qint64       estimatedSec = 0; // now - age, by our clock
         qint64       toleranceSec = kToleranceSec;
+        // 2.4 link previews: only a message of reactorUid's (an announcement speaks for its own message).
+        bool         senderOnly = false;
     };
     // The local key of the message a reaction means: the same hash in a chat that fits the scope (a known
     // server chat never; a channel reaction not in a known private chat; a private one only on a message

@@ -14,12 +14,20 @@
 // Unknown types and unknown fields are ignored by receivers; "tsm2" and later are ignored too.
 //
 // Messages (v1):
-//   HELLO pv=1 v=2.2.0 caps=p,r rr=1   I'm here (to the channel, or to one private-chat partner).
-//   HI    pv=1 v=2.2.0 caps=p,r        the answer, only to whoever asked.
+//   HELLO pv=1 v=2.2.0 caps=p,r,l rr=1 I'm here (to the channel, or to one private-chat partner).
+//                                      2.4: caps l = "I make previews of the links I send"; a change of our
+//                                      caps goes to the channel as one HELLO with rr=0 (nobody answers).
+//   HI    pv=1 v=2.2.0 caps=p,r,l      the answer, only to whoever asked.
 //   BYE                                presence switched off or the plugin unloads.
 //   R     s=c|p [y=1] i=<key>:<codes>,... [e=<key>:<emoji>.<emoji>,...]
 //                                      my complete reaction set on each media (idempotent).
 //   SYNC  s=c m=<key>,...              a late joiner asks present members for their own reactions.
+//   LP    s=c|p m=<hash>-<age> u=<url key> k=y|i|g|v c=<channel> p= h= ps= [f= fh= fs=] [w= ht=] [d=] [t= a=]
+//                                      2.4 link previews: a preview the sender made of a link in its own
+//                                      message and uploaded (linkpreview/announcement.h has every rule).
+//   LPNO  s=c|p m=<hash>-<age> u=<url key>
+//                                      2.4 auto-load: the sender's plugin will not announce a preview of that
+//                                      link of that message (receivers waiting for it load it themselves).
 // The sender's identity is never in the payload: receivers take the invoker that the server fills in.
 //
 // 2.2 emoji: any emoji can be a reaction. i= keeps the six v1 codes (what every 2.2 client reads; an
@@ -132,8 +140,8 @@ QByteArray serialize(const Message& message);
 // HELLO and HI.
 struct Hello {
     bool        hi = false;     // a HI (an answer)
-    QString     version;        // the sender's TS Media version, display only; empty if malformed
-    QStringList caps;           // what it supports: "p" presence, "r" reactions; unknown ones too
+    QString     version;        // the sender's TS Media version (untrusted: display, the newer-version hint); empty if malformed
+    QStringList caps;           // what it supports: "p" presence, "r" reactions, "l" link previews (2.4); unknown ones too
     bool        replyRequested = false; // rr=1
 
     bool hasCap(const char* cap) const;

@@ -20,6 +20,7 @@
 class ChatIntegration;
 class Core;
 class QTimer;
+class QUrl;
 class QWidget;
 
 class SelfTest : public QObject
@@ -33,6 +34,10 @@ class SelfTest : public QObject
     };
 
     SelfTest(Core* core, ChatIntegration* chat, Hooks hooks, QObject* parent);
+
+  public slots:
+    // 2.4 live pass B: QDesktopServices' http/https handler while "browser.capture" is on (no browser opens).
+    void capturedUrl(const QUrl& url);
 
   private:
     void poll();
@@ -70,6 +75,17 @@ class SelfTest : public QObject
     bool                      runPart4(const QString& cmd, const QJsonObject& c, bool* handled);
     // 2.3 live pass A (chat and protocol): avatars on the localhost test server, text reaction rows with the mouse.
     bool                      runPart6(const QString& cmd, const QJsonObject& c, bool* handled);
+    // 2.4 live pass A (link previews): the Settings window's check boxes, the hub's counters, hand-made LPs.
+    bool                      runPart7(const QString& cmd, const QJsonObject& c, bool* handled);
+    // 2.4 live pass B (click-to-load, network safety): browser calls captured, the event loop's longest gaps.
+    bool                      runPart8(const QString& cmd, const QJsonObject& c, bool* handled);
+    QTimer*                   m_stall      = nullptr; // stall.start .. stall.stop
+    qint64                    m_stallStart = 0;
+    qint64                    m_stallLast  = 0;
+    qint64                    m_stallMax   = 0;
+    qint64                    m_stallMaxAt = 0;
+    int                       m_stallTicks = 0;
+    int                       m_stallOver[3] = {0, 0, 0}; // gaps over 100, 250 and 1000 ms
 };
 
 #endif

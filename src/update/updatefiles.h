@@ -4,7 +4,7 @@
 // worker thread can use them too; no TeamSpeak API, so the unit tests and the harness can.
 //
 // <data>/update/             data = <TeamSpeak config>/plugins/tsmedia
-//   state.ini                machine state (not settings): [check], [install], [trust]
+//   state.ini                machine state (not settings): [check], [install], [trust], [auto]
 //   download/                *.part files while downloading
 //   staging/<ver>/           verified files waiting to be installed: <name>.new
 //   rollback/<ver>/          the previous version's DLLs: <name>.bak
@@ -78,6 +78,8 @@ quint64 freeBytes(const QString& dir); // 0 if unknown
 
 } // namespace fs
 
+constexpr int kMaxNeverAuto = 16; // [auto] never: the oldest entry drops off (the read buffer is 512 characters)
+
 // state.ini through GetPrivateProfileStringW / WritePrivateProfileStringW: no Qt caching (the helper
 // writes it too) and nothing of ours stays in Qt state. Values are ASCII only.
 class StateFile
@@ -103,6 +105,18 @@ class StateFile
 
     QSet<int> revokedKeys() const;
     bool      addRevokedKeys(const QSet<int>& ids);
+
+    // [auto], the important updates installed without a click. Skip, Undo and Restore defaults never
+    // touch it. never: the versions never installed that way again (they rolled back here, or were
+    // replaced by hand with an older version), oldest first, at most kMaxNeverAuto.
+    QVector<Version> neverAutoVersions() const;
+    bool             addNeverAuto(const Version& version); // idempotent
+    // Silent install attempts of one version (counting starts again for another version).
+    int  autoAttempts(const Version& version) const;
+    void noteAutoAttempt(const Version& version);
+    // The one-time notice that important updates install by themselves was queued.
+    bool autoAnnounced() const;
+    bool setAutoAnnounced();
 
     const QString& path() const { return m_path; }
 

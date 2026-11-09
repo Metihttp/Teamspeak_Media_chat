@@ -4,6 +4,7 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\build.ps1 [-Release] [-Sign] [-Qt64 <dir>] [-Qt32 <dir>] [-No32] [-Install]
 #                                                             [-SigningDir <dir>] [-KeyId <n>] [-RevokeKeys <ids>] [-BridgeManifest <file>]
+#                                                             [-Important [-ImportantDays <n>]]
 #                                                             [-CaptureReference <TeamSpeak folder>] [-VerifyPublished [-VerifyFrom <url>]]
 #
 # -No32       skip the 32-bit build (package then lists win64 only); refused when tsmedia-update.json is
@@ -17,7 +18,8 @@
 #   tsmedia-update-v2.json  unsigned: what 2.2.1 and later read; every file is checked against its SHA-256
 #   tsmedia-update.json     signed: the only file 2.2.0 reads. For 2.2.1 (the bridge) it is signed with
 #                           key 1 automatically; later releases reuse the published signed file of
-#                           v2.2.1, so 2.2.0 users still update to 2.2.1 first and from there on. No key needed.
+#                           v2.2.1 byte for byte (pinned by its SHA-256), so 2.2.0 users still update to
+#                           2.2.1 first and from there on. No key needed.
 # -Release also needs final notes (docs\release-notes\v<version>.md without its DRAFT comment) and the
 # release date in CHANGELOG.md ("## [<version>] - YYYY-MM-DD").
 # -Sign       also sign tsmedia-update.json for this version (2.2.0 users then update to it directly).
@@ -25,11 +27,17 @@
 #             C:\dev\tsmedia-devtools\signing), DPAPI, no prompt.
 # -KeyId <n>, -RevokeKeys <ids>  the signing key, and key ids a signed release revokes for good
 # -BridgeManifest <file>  the signed tsmedia-update.json of v2.2.1 to reuse, instead of downloading it
+# -Important  a release (implies -Release) that 2.3.4 and later with automatic checks on install without a
+#             click: also writes TSMedia-<ver>-important.json (the format 1 envelope around a format 3
+#             payload), always signed with key 1. tsmedia-update.json stays the bridge. Refused for 2.3.4
+#             and older, with -RevokeKeys and with a -KeyId other than 1.
+# -ImportantDays <n>  how long the marker counts after the release date (default 30, 1 to 60)
 # -CaptureReference <dir>  save the exports of TeamSpeak's Qt DLLs in <dir> as reference\ts-exports\<arch>.txt
 #             (once per TeamSpeak version); later builds check every Qt symbol the plugin imports against it
 # -VerifyPublished  download both manifests of the latest release and every file they list, and check
 #             sizes, SHA-256 and the signature of tsmedia-update.json, that the signed file still serves
-#             2.2.0 users on both architectures, and that the manifest is the latest release's own
+#             2.2.0 users on both architectures (and is the pinned bridge when it is 2.2.1's), that the
+#             manifest is the latest release's own, and the release's important marker if it has one
 #             (network: github.com), then stop.
 #             -VerifyFrom <url> checks another server with GitHub's paths instead (tests).
 
@@ -45,6 +53,8 @@ param(
     [int]$KeyId = 1,
     [int[]]$RevokeKeys = @(),
     [string]$BridgeManifest = "",
+    [switch]$Important,
+    [int]$ImportantDays = 30,
     [string]$CaptureReference = "",
     [switch]$VerifyPublished,
     [string]$VerifyFrom = ""
@@ -62,21 +72,30 @@ if (-not $SigningDir) { $SigningDir = if ($env:TSMEDIA_SIGNING_DIR) { $env:TSMED
 # The first version that reads tsmedia-update-v2.json. 2.2.0 reads only a signed tsmedia-update.json,
 # so this release is signed, and later releases publish its signed file again (the bridge).
 $bridgeVersion = [version]"2.2.1"
+# The SHA-256 of that signed file (published in v2.2.1, and again in every release since): it is reused
+# byte for byte, never re-signed.
+$bridgeSha256 = '6e6d802c71a89762f00b2d5da6dc50240f122e18ce25348b122ea238321a58fc'
 $v2Name = "tsmedia-update-v2.json"
 $legacyName = "tsmedia-update.json"
+# Important updates (-Important): 2.3.4 is the first version that reads the marker, so the first release
+# one makes sense for is 2.3.5. The marker is always signed with the daily key 1, never the recovery key.
+$lastWithoutMarker = [version]"2.3.4"
+$importantKeyId = 1
+$maxImportantDays = 60 # kMaxImportantDays in src\update\updatemanifest.h
 
 # ---- helpers for the update manifests -------------------------------------------------------------
 
-# The public keys built into the plugin, read from src\update\updatekeys.h: id -> 64 bytes X||Y.
-# The test key 99 only for tests against a local server (release builds don't trust it).
+# The public keys built into the plugin, read from src\update\updatekeys.h: id -> @{ XY = 64 bytes X||Y;
+# Recovery = the key's recovery flag }. The test key 99 only for tests against a local server (release
+# builds don't trust it).
 function Get-TrustedKeys([switch]$WithTestKey) {
     $text = Get-Content -Raw (Join-Path $root "src\update\updatekeys.h")
     $keys = @{}
-    foreach ($m in [regex]::Matches($text, '\{\s*(\d+)\s*,\s*(?:true|false)\s*,\s*\{([^}]*)\}\}')) {
+    foreach ($m in [regex]::Matches($text, '\{\s*(\d+)\s*,\s*(true|false)\s*,\s*\{([^}]*)\}\}')) {
         $id = [int]$m.Groups[1].Value
         if ($id -eq 99 -and -not $WithTestKey) { continue }
-        $bytes = [byte[]]@($m.Groups[2].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_.Substring(2), 16) })
-        if ($bytes.Length -eq 64) { $keys[$id] = $bytes }
+        $bytes = [byte[]]@($m.Groups[3].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_.Substring(2), 16) })
+        if ($bytes.Length -eq 64) { $keys[$id] = @{ XY = $bytes; Recovery = ($m.Groups[2].Value -eq "true") } }
     }
     return $keys
 }
@@ -84,8 +103,9 @@ function Get-TrustedKeys([switch]$WithTestKey) {
 function Test-ManifestSignature([string]$json, [hashtable]$keys) {
     $outer = $json | ConvertFrom-Json
     if ($outer.format -ne 1) { throw "Manifest format is not 1." }
-    $xy = $keys[[int]$outer.key]
-    if (-not $xy) { throw "Manifest is signed with key $($outer.key), which the plugin doesn't have." }
+    $key = $keys[[int]$outer.key]
+    if (-not $key) { throw "Manifest is signed with key $($outer.key), which the plugin doesn't have." }
+    $xy = $key.XY
     $payload = [Convert]::FromBase64String($outer.payload)
     $sig = [Convert]::FromBase64String($outer.sig)
     $params = New-Object System.Security.Cryptography.ECParameters
@@ -99,7 +119,8 @@ function Test-ManifestSignature([string]$json, [hashtable]$keys) {
 }
 
 # Either manifest format, checked like the plugin does (the plugin's own parser is stricter still):
-# format 2 = plain and unsigned (no signature fields allowed), format 1 = signed (signature must verify).
+# format 2 = plain and unsigned (no signature fields allowed), format 1 = signed (signature must verify,
+# and the payload must be format 1 too: 2.2.0 refuses any other, such as an important marker's 3).
 # Returns @{ Payload; Signed; KeyId; Version; Tag }.
 function Read-Manifest([string]$json, [hashtable]$keys) {
     $outer = $json | ConvertFrom-Json
@@ -110,6 +131,7 @@ function Read-Manifest([string]$json, [hashtable]$keys) {
         $payload = $outer; $signed = $false; $key = 0
     } elseif ($outer.format -eq 1) {
         $payload = Test-ManifestSignature $json $keys; $signed = $true; $key = [int]$outer.key
+        if ($payload.format -ne 1) { throw "A signed (format 1) manifest carries a format '$($payload.format)' payload (an important marker?): 2.2.0 refuses it." }
     } else {
         throw "Unknown manifest format '$($outer.format)'."
     }
@@ -130,7 +152,75 @@ function Get-AssetName([string]$fileKey, [string]$version) {
     return $null
 }
 
+# The important marker of a release (the plugin builds the same name from the validated version).
+function Get-ImportantAssetName([string]$version) { return "TSMedia-$version-important.json" }
+
 function Get-Sha256([string]$file) { (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLower() }
+
+function Get-BytesSha256([byte[]]$bytes) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) } finally { $sha.Dispose() }
+}
+
+# A yyyy-MM-dd field as the plugin reads it (exactly that form), or $null.
+function ConvertFrom-IsoDate($value) {
+    if ($value -is [DateTime]) { $value = $value.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture) } # PowerShell 7 parses dates itself
+    $date = [DateTime]::MinValue
+    if ($value -isnot [string] -or $value -notmatch '^\d{4}-\d{2}-\d{2}$') { return $null }
+    if (-not [DateTime]::TryParseExact($value, "yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) { return $null }
+    return $date
+}
+
+# Deep equality of two values from ConvertFrom-Json: objects by property name (in any order), arrays
+# element by element, strings case-sensitive, and a string never equals a number or a boolean.
+function Test-JsonEqual($a, $b) {
+    if ($null -eq $a -or $null -eq $b) { return ($null -eq $a) -and ($null -eq $b) }
+    if ($a -is [System.Management.Automation.PSCustomObject] -or $b -is [System.Management.Automation.PSCustomObject]) {
+        if (-not ($a -is [System.Management.Automation.PSCustomObject] -and $b -is [System.Management.Automation.PSCustomObject])) { return $false }
+        $names = @($a.PSObject.Properties.Name | Sort-Object)
+        if (($names -join "`n") -cne (@($b.PSObject.Properties.Name | Sort-Object) -join "`n")) { return $false }
+        foreach ($name in $names) { if (-not (Test-JsonEqual $a.$name $b.$name)) { return $false } }
+        return $true
+    }
+    if ($a -is [array] -or $b -is [array]) {
+        if (-not ($a -is [array] -and $b -is [array]) -or $a.Count -ne $b.Count) { return $false }
+        for ($i = 0; $i -lt $a.Count; $i++) { if (-not (Test-JsonEqual $a[$i] $b[$i])) { return $false } }
+        return $true
+    }
+    if (($a -is [string]) -ne ($b -is [string]) -or ($a -is [bool]) -ne ($b -is [bool])) { return $false }
+    return $a -ceq $b
+}
+
+# TSMedia-<ver>-important.json: the format 1 envelope around a format 3 payload, checked like the plugin
+# does against the tsmedia-update-v2.json of the same release ($v2, from Read-Manifest): signed by a
+# trusted daily key (a recovery key never makes anything important), payload format 3, important true,
+# the same product, version and tag, published <= importantUntil <= published + 60 days, and the same
+# files, package and minFromVersion as v2. Throws on any problem.
+# Returns @{ Payload; KeyId; Version; Tag; Published; Until; Expired (UTC today is after Until) }.
+function Read-ImportantMarker([string]$json, [hashtable]$keys, $v2) {
+    if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt 64KB) { throw "The marker is larger than 64 KiB." }
+    $outer = $json | ConvertFrom-Json
+    $payload = Test-ManifestSignature $json $keys
+    $key = [int]$outer.key
+    if ($keys[$key].Recovery) { throw "The marker is signed with the recovery key $key, which never marks anything important." }
+    if ($payload.format -ne 3) { throw "The marker's payload is format '$($payload.format)', not 3." }
+    if ($payload.important -isnot [bool] -or -not $payload.important) { throw "The marker's 'important' is not true." }
+    if ($payload.product -ne "tsmedia") { throw "The marker's product is '$($payload.product)'." }
+    if ($payload.version -ne $v2.Payload.version -or $payload.tag -ne $v2.Tag -or $payload.tag -ne "v$($payload.version)") {
+        throw "The marker is for $($payload.version) ($($payload.tag)), the release for $($v2.Version) ($($v2.Tag))."
+    }
+    $published = ConvertFrom-IsoDate $payload.published
+    if (-not $published) { throw "The marker has no valid 'published' date." }
+    $until = ConvertFrom-IsoDate $payload.importantUntil
+    if (-not $until -or $until -lt $published -or $until -gt $published.AddDays($maxImportantDays)) {
+        throw "The marker's importantUntil '$($payload.importantUntil)' is not between its published date $($payload.published) and $maxImportantDays days later."
+    }
+    if (-not (Test-JsonEqual $payload.files $v2.Payload.files)) { throw "The marker's files differ from $v2Name's." }
+    if (-not (Test-JsonEqual $payload.package $v2.Payload.package)) { throw "The marker's package differs from $v2Name's." }
+    if (-not (Test-JsonEqual $payload.minFromVersion $v2.Payload.minFromVersion)) { throw "The marker's minFromVersion differs from $v2Name's." }
+    return @{ Payload = $payload; KeyId = $key; Version = [version]$payload.version; Tag = $payload.tag; Published = $published; Until = $until
+              Expired = ([DateTime]::UtcNow.Date -gt $until) }
+}
 
 # Downloads $url to $file; $false on 404, throws on anything else (after 3 tries for network errors).
 # A time limit per try: without one, a connection that stalls keeps the build waiting for good.
@@ -232,6 +322,10 @@ if ($VerifyPublished) {
             foreach ($arch in @("win64", "win32") | Where-Object { (Get-PluginArchs $legacy.Payload) -notcontains $_ }) {
                 Write-Host "FAILED: $legacyName has no $arch DLL: users of 2.2.0 on $arch TeamSpeak get no update."; $failed++
             }
+            # The bridge is published again byte for byte, never signed anew.
+            if ($legacy.Version -eq $bridgeVersion -and (Get-Sha256 (Join-Path $temp $legacyName)) -ne $bridgeSha256) {
+                Write-Host "FAILED: $legacyName is for $bridgeVersion but isn't the pinned bridge (SHA-256 $bridgeSha256)."; $failed++
+            }
         }
         if ($v2) {
             Write-Host "2.2.1 and later are offered $($v2.Version)."
@@ -241,6 +335,24 @@ if ($VerifyPublished) {
                 Write-Host "FAILED: $legacyName is for $($legacy.Version): it must be the signed file of $bridgeVersion or later, or users of 2.2.0 are never updated."; $failed++
             }
             foreach ($arch in @("win64", "win32") | Where-Object { (Get-PluginArchs $v2.Payload) -notcontains $_ }) { Write-Host "  note: $v2Name has no $arch DLL: $arch users of 2.2.1 and later are not offered $($v2.Version)." }
+            # The important marker of that release (never from releases/latest, like the plugin). None is normal.
+            $markerName = Get-ImportantAssetName $v2.Payload.version
+            $url = "$base/releases/download/$($v2.Tag)/$markerName"
+            Write-Host "Fetching $url"
+            $markerFile = Join-Path $temp $markerName
+            if (-not (Save-Url $url $markerFile)) {
+                Write-Host "  not marked important: $($v2.Version) is offered the normal way (a click on Update)."
+            } else {
+                try {
+                    $marker = Read-ImportantMarker (Read-Utf8 $markerFile) $keys $v2
+                    $until = $marker.Until.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
+                    Write-Host "  signed with key $($marker.KeyId), important until ${until}: 2.3.4 and later with automatic checks on install $($v2.Version) without a click (it starts with their next TeamSpeak start); older versions and manual checks get the normal offer."
+                    if ($marker.Expired) { Write-Host "  note: the marker expired after ${until}: $($v2.Version) is now offered the normal way." }
+                    if ($marker.Payload.PSObject.Properties.Name -contains "revokeKeys") { Write-Host "  note: the marker lists revokeKeys; the plugin never reads them from a marker." }
+                } catch {
+                    Write-Host "  FAILED: ${markerName}: $($_.Exception.Message)"; $failed++
+                }
+            }
         } elseif ($legacy -and $legacy.Version -ge $bridgeVersion) {
             Write-Host "FAILED: $v2Name is missing (every release since $bridgeVersion has it)."; $failed++
         } elseif ($legacy) {
@@ -343,6 +455,17 @@ $version = (Select-String -Path (Join-Path $root "CMakeLists.txt") -Pattern 'pro
 $description = (Select-String -Path (Join-Path $root "CMakeLists.txt") -Pattern 'set\(PLUGIN_DESCRIPTION\s+"([^"]+)"\)').Matches[0].Groups[1].Value
 if (-not $description) { throw "PLUGIN_DESCRIPTION not found in CMakeLists.txt" }
 
+if ($Important) {
+    # The marker makes 2.3.4 and later install this release without a click: refused when it can't help
+    # or would be signed with anything but the daily key 1.
+    if ($ImportantDays -lt 1 -or $ImportantDays -gt $maxImportantDays) { throw "-ImportantDays must be 1 to $maxImportantDays (the plugin refuses a longer marker)." }
+    if ([version]$version -le $lastWithoutMarker) { throw "-Important: $version can't be marked important (2.3.4 is the first version that reads a marker, so only releases after $lastWithoutMarker can be)." }
+    if ($RevokeKeys.Count -gt 0) { throw "-Important can't be combined with -RevokeKeys: a marker never revokes keys, and -RevokeKeys would sign tsmedia-update.json again." }
+    if ($KeyId -ne $importantKeyId) { throw "-Important: the marker is always signed with key $importantKeyId (the daily key); -KeyId $KeyId is refused." }
+    $Release = $true # but not -Sign: tsmedia-update.json stays the bridge, byte for byte
+} elseif ($PSBoundParameters.ContainsKey("ImportantDays")) {
+    throw "-ImportantDays needs -Important."
+}
 if ($RevokeKeys.Count -gt 0) { $Sign = $true } # only a signed manifest can revoke keys
 if ($Sign) { $Release = $true }
 $notesFile = Join-Path $root "docs\release-notes\v$version.md"
@@ -362,6 +485,11 @@ if ($Release) {
     # or 2.2.0 users on 32-bit TeamSpeak are never updated.
     if ($signNow -and $No32) { throw "-No32: $version gets a signed tsmedia-update.json for users of 2.2.0, so it must contain the 32-bit files too. Build both architectures." }
     $signTool = Join-Path $SigningDir "tsmedia-keys.ps1"
+    if ($Important) {
+        $haveKey = (Test-Path $signTool) -and ((Test-Path (Join-Path $SigningDir "release-key-$importantKeyId.dpapi")) -or (Test-Path (Join-Path $SigningDir "release-key-$importantKeyId.pkey")))
+        if (-not $haveKey) { throw "-Important: release key $importantKeyId or tsmedia-keys.ps1 not found in $SigningDir. The marker is always signed with key $importantKeyId." }
+        Write-Host "Release $version`: an important update (TSMedia-$version-important.json, signed with key $importantKeyId, counts for $ImportantDays days): 2.3.4 and later with automatic checks on install it without a click."
+    }
     if ($signNow) {
         $haveKey = (Test-Path $signTool) -and ((Test-Path (Join-Path $SigningDir "release-key-$KeyId.dpapi")) -or (Test-Path (Join-Path $SigningDir "release-key-$KeyId.pkey")))
         if (-not $haveKey) {
@@ -392,6 +520,8 @@ if ($Release) {
                 Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
             }
         }
+        $bridgeHash = Get-BytesSha256 $bridgeBytes
+        if ($bridgeHash -ne $bridgeSha256) { throw "The bridge manifest ($bridgeFrom) has SHA-256 $bridgeHash, not ${bridgeSha256}: it must be the published signed file of v$bridgeVersion, byte for byte." }
         $bridge = Read-Manifest ([System.Text.Encoding]::UTF8.GetString($bridgeBytes)) $keys
         if (-not $bridge.Signed) { throw "The bridge manifest ($bridgeFrom) is not signed: 2.2.0 couldn't read it." }
         if ($bridge.Version -lt $bridgeVersion -or $bridge.Version -ge [version]$version) { throw "The bridge manifest ($bridgeFrom) is for $($bridge.Version); it must be $bridgeVersion or later and older than $version." }
@@ -528,21 +658,46 @@ if ($Release) {
         Copy-Item -LiteralPath $helper -Destination $helperAsset -Force
         $files["helper/tsmedia_update_helper_$arch.exe"] = [ordered]@{ size = (Get-Item $helperAsset).Length; sha256 = (Get-Sha256 $helperAsset); machine = $machine }
     }
+    # One date for every payload of this release (a build across midnight UTC must not give two);
+    # Gregorian in every locale.
+    $publishedDay = [DateTime]::UtcNow.Date
+    $published = $publishedDay.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
+    $importantUntil = $publishedDay.AddDays($ImportantDays).ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
+    # format 2: tsmedia-update-v2.json, 1: the signed tsmedia-update.json, 3: the important marker's payload.
     function New-Payload([int]$format) {
         $p = [ordered]@{
             format    = $format
             product   = "tsmedia"
             version   = $version
             tag       = "v$version"
-            published = [DateTime]::UtcNow.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture) # Gregorian in every locale
-            package   = [ordered]@{ name = "TSMedia-$version.ts3_plugin"; size = (Get-Item $plugin).Length; sha256 = (Get-Sha256 $plugin) }
-            files     = $files
-            notes     = @($notes)
+            published = $published
         }
+        if ($format -eq 3) { $p["important"] = $true; $p["importantUntil"] = $importantUntil }
+        $p["package"] = [ordered]@{ name = "TSMedia-$version.ts3_plugin"; size = (Get-Item $plugin).Length; sha256 = (Get-Sha256 $plugin) }
+        $p["files"] = $files
+        $p["notes"] = @($notes)
         if ($format -eq 1 -and $RevokeKeys.Count -gt 0) { $p["revokeKeys"] = @($RevokeKeys) }
         $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($p | ConvertTo-Json -Compress -Depth 6))
         if ($bytes.Length -gt 48KB) { throw "The manifest is larger than 48 KiB." }
         return , $bytes
+    }
+    # The format 1 envelope around these exact payload bytes, signed with key $keyId through
+    # tsmedia-keys.ps1 (the signature covers the bytes as they are: never serialize them again). $tag
+    # names the temporary files.
+    function New-SignedEnvelope([byte[]]$payload, [int]$keyId, [string]$tag) {
+        $payloadFile = Join-Path $dist "$tag.payload.tmp"
+        $sigFile = Join-Path $dist "$tag.sig.tmp"
+        try {
+            [System.IO.File]::WriteAllBytes($payloadFile, $payload)
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $signTool Sign -KeyId $keyId -InFile $payloadFile -OutFile $sigFile -Dir $SigningDir -Quiet
+            if ($LASTEXITCODE) { throw "Signing failed." }
+            $sig = [System.IO.File]::ReadAllBytes($sigFile)
+        } finally {
+            Remove-Item -LiteralPath $payloadFile, $sigFile -ErrorAction SilentlyContinue
+        }
+        $envelope = '{"format":1,"key":' + $keyId + ',"payload":"' + [Convert]::ToBase64String($payload) + '","sig":"' + [Convert]::ToBase64String($sig) + '"}'
+        if ($envelope.Length -gt 64KB) { throw "The signed file ($tag) is larger than 64 KiB, which the plugin refuses." }
+        return $envelope
     }
     $keys = Get-TrustedKeys
 
@@ -554,21 +709,18 @@ if ($Release) {
     # tsmedia-update.json: signed, for 2.2.0.
     $legacyFile = Join-Path $upload $legacyName
     if ($signNow) {
-        $payloadBytes = New-Payload 1
-        $payloadFile = Join-Path $dist "tsmedia-update.payload.tmp"
-        $sigFile = Join-Path $dist "tsmedia-update.sig.tmp"
-        [System.IO.File]::WriteAllBytes($payloadFile, $payloadBytes)
-        try {
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $signTool Sign -KeyId $KeyId -InFile $payloadFile -OutFile $sigFile -Dir $SigningDir -Quiet
-            if ($LASTEXITCODE) { throw "Signing failed." }
-            $sig = [System.IO.File]::ReadAllBytes($sigFile)
-        } finally {
-            Remove-Item -LiteralPath $payloadFile, $sigFile -ErrorAction SilentlyContinue
-        }
-        $manifest = '{"format":1,"key":' + $KeyId + ',"payload":"' + [Convert]::ToBase64String($payloadBytes) + '","sig":"' + [Convert]::ToBase64String($sig) + '"}'
+        $manifest = New-SignedEnvelope (New-Payload 1) $KeyId "tsmedia-update"
         [System.IO.File]::WriteAllText($legacyFile, $manifest, (New-Object System.Text.UTF8Encoding($false)))
     } else {
-        [System.IO.File]::WriteAllBytes($legacyFile, $bridgeBytes)
+        [System.IO.File]::WriteAllBytes($legacyFile, $bridgeBytes) # verbatim, never signed again
+    }
+
+    # TSMedia-<ver>-important.json (-Important): the same format 1 envelope around a format 3 payload,
+    # signed with key 1. 2.3.4 and later with automatic checks on install this release without a click.
+    if ($Important) {
+        $markerFile = Join-Path $upload (Get-ImportantAssetName $version)
+        $marker = New-SignedEnvelope (New-Payload 3) $importantKeyId "tsmedia-important"
+        [System.IO.File]::WriteAllText($markerFile, $marker, (New-Object System.Text.UTF8Encoding($false)))
     }
 
     # Self-check, as -VerifyPublished checks the published files: both manifests read back, and every
@@ -581,6 +733,21 @@ if ($Release) {
     if ($signNow) {
         if ($legacy.Version -ne [version]$version) { throw "Self-check of $legacyName read version $($legacy.Version)." }
         $own += $legacy
+    } elseif ((Get-Sha256 $legacyFile) -ne $bridgeSha256) {
+        throw "Self-check of ${legacyName}: it is not the pinned bridge of v$bridgeVersion."
+    }
+    if ($Important) {
+        # As the plugin reads it, with the release keys only (a marker signed with the test key 99 fails here).
+        try {
+            $markerRead = Read-ImportantMarker (Read-Utf8 $markerFile) $keys $v2
+        } catch {
+            throw "Self-check of $(Split-Path -Leaf $markerFile): $($_.Exception.Message)"
+        }
+        if ($markerRead.KeyId -ne $importantKeyId) { throw "Self-check of the marker: signed with key $($markerRead.KeyId), not $importantKeyId." }
+        if ($markerRead.Payload.published -ne $published -or $markerRead.Payload.importantUntil -ne $importantUntil -or $markerRead.Expired) {
+            throw "Self-check of the marker: published $($markerRead.Payload.published), importantUntil $($markerRead.Payload.importantUntil) (expected $published and $importantUntil)."
+        }
+        $own += $markerRead
     }
     foreach ($m in $own) {
         foreach ($p in $m.Payload.files.PSObject.Properties) {
@@ -591,6 +758,9 @@ if ($Release) {
     }
     $legacyText = if ($signNow) { "signed with key $KeyId" } else { "the signed manifest of $($legacy.Version), unchanged" }
     Write-Host "Manifests: $v2Name (unsigned, $($notes.Count) highlights) and $legacyName ($legacyText); self-check passed."
+    if ($Important) {
+        Write-Host "Marker: $(Split-Path -Leaf $markerFile) (signed with key $importantKeyId, valid until $importantUntil): 2.3.4 and later with automatic checks on install it by themselves; it starts with their next TeamSpeak start. It must be in the release before the release is published."
+    }
 
     $uploadRel = "dist\upload-$version"
     $assetArgs = (Get-ChildItem -LiteralPath $upload | Sort-Object Name | ForEach-Object { "`"$uploadRel\$($_.Name)`"" }) -join " "

@@ -61,7 +61,21 @@ class ChatTextReactions : public QObject
     QAction* menuAction(QMenu* menu, QTextBrowser* browser, int block);
 
     // ---- tests and the live-test driver -----------------------------------------------------------
-    QString keyOf(QTextBrowser* browser, int block);
+    // 2.4 link previews: the chat's days, read once for several keyOf() calls over a document that doesn't change
+    // in between (a message read again reads every day line of the chat: 2 ms in a 4000-line chat, per message).
+    struct KeyDays {
+        QVector<QDate> dates;
+        bool           read = false;
+    };
+    // sender (2.4 auto-load): the message header's uid (textreactdoc::identify) of a message with a key, else empty.
+    QString keyOf(QTextBrowser* browser, int block, KeyDays* days = nullptr, QString* sender = nullptr);
+    // 2.4 auto-load: what kind of chat browser is (as the last classification found it; Unknown without one).
+    struct ChatInfo {
+        textreact::ChatKind kind = textreact::ChatKind::Unknown;
+        QString             serverUid;
+        QString             partnerUid;
+    };
+    ChatInfo chatInfo(QTextBrowser* browser) const;
     int     rowCount(QTextBrowser* browser) const;
     // A pill's rect (viewport coordinates) of block's row; empty without one.
     QRect   pillRect(QTextBrowser* browser, int block, int reaction);

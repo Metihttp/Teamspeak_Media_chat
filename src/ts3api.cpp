@@ -194,6 +194,29 @@ QString clientUid(uint64 sch, anyID client)
     return takeString(value);
 }
 
+UidPresence uidPresence(uint64 sch, const QString& uid)
+{
+    UidPresence found;
+    anyID*      clients = nullptr;
+    if (uid.isEmpty() || !funcs.getClientList || funcs.getClientList(sch, &clients) != ERROR_ok || !clients)
+        return found;
+    const uint64 own = ownChannel(sch);
+    for (anyID* it = clients; *it; ++it) {
+        if (clientUid(sch, *it) != uid)
+            continue;
+        if (!found.client)
+            found.client = *it;
+        uint64 channel = 0;
+        if (own != 0 && funcs.getChannelOfClient && funcs.getChannelOfClient(sch, *it, &channel) == ERROR_ok && channel == own) {
+            found.client       = *it;
+            found.inOwnChannel = true;
+            break;
+        }
+    }
+    funcs.freeMemory(clients);
+    return found;
+}
+
 anyID clientIdByUid(uint64 sch, const QString& uid)
 {
     anyID* clients = nullptr;
@@ -259,13 +282,20 @@ void setChatDark(bool dark)
     chatDark = dark;
 }
 
+namespace {
+// TeamSpeak draws plugin lines in dark blue (#00008b): 1.2:1 on its dark chat (live test 2.2), so
+// there they get a light colour of their own (prefixes and links inside keep theirs).
+QByteArray printable(const QString& bbcode)
+{
+    return (chatDark ? QString::fromLatin1("[color=#dcddde]") + bbcode + QString::fromLatin1("[/color]") : bbcode).toUtf8();
+}
+} // namespace
+
 void print(uint64 sch, const QString& bbcode)
 {
     if (!sch)
         return;
-    // TeamSpeak draws plugin lines in dark blue (#00008b): 1.2:1 on its dark chat (live test 2.2), so
-    // there they get a light colour of their own (prefixes and links inside keep theirs).
-    const QByteArray utf8 = (chatDark ? QString::fromLatin1("[color=#dcddde]") + bbcode + QString::fromLatin1("[/color]") : bbcode).toUtf8();
+    const QByteArray utf8 = printable(bbcode);
     // The tab the user is looking at (a private chat, the server tab) when it belongs to that connection.
     if (sch == currentConnection() && funcs.printMessageToCurrentTab)
         funcs.printMessageToCurrentTab(utf8.constData());
@@ -286,6 +316,22 @@ void printWarning(uint64 sch, const QString& text)
     writeLog(LogLevel_WARNING, sch, quotedNamesLog(text));
     const QString color = QString::fromLatin1(chatDark ? "#f0b232" : "#b54708");
     print(sch, QStringLiteral("[color=%1][b]TS Media chat ⚠[/b][/color] ").arg(color) + escapeBBCode(text));
+}
+
+void printInfoLink(uint64 sch, const QString& text, const QString& url, const QString& linkText)
+{
+    if (!sch || !funcs.printMessage || url.isEmpty())
+        return;
+    for (const QChar c : url) {
+        if (c == QLatin1Char('[') || c == QLatin1Char(']') || c == QLatin1Char('"') || c == QLatin1Char('\'') || c.isSpace() || c.unicode() < 0x20
+            || c.unicode() == 0x7f)
+            return;
+    }
+    const QString color = QString::fromLatin1(chatDark ? "#949cf7" : "#4752c4");
+    const QString line  = QStringLiteral("[color=%1][b]TS Media chat[/b][/color] ").arg(color) + escapeBBCode(text) + QString::fromLatin1(" [url=") + url
+                         + QString::fromLatin1("]") + escapeBBCode(linkText) + QString::fromLatin1("[/url]");
+    // The channel tab even when another tab of sch is in front (print() would use that one).
+    funcs.printMessage(sch, printable(line).constData(), PLUGIN_MESSAGE_TARGET_CHANNEL);
 }
 
 } // namespace ts3

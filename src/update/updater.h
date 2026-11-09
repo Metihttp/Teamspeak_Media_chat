@@ -11,8 +11,19 @@
 // manifest, signature) and load check passes; the new version starts with the next TeamSpeak start
 // ("Restart TeamSpeak now" or later).
 //
-// A manual check (Settings, the plugin menu, /tsmedia update) is explicit consent for that one
-// request and works with automatic checks off.
+// Important updates (2.3.4): an automatic check that finds a newer version also fetches its signed
+// important marker. A valid one for that very release is downloaded and installed without a click and
+// without a dialog (at most twice per version, never a version on the never-auto list); it starts
+// with the next TeamSpeak start, TeamSpeak is never restarted for it. Anything that doesn't work out
+// falls back to the normal offer.
+//
+// A manual check (Settings, the plugin menu, /tsmedia update, the newer-version hint's link) is
+// explicit consent for that one request and works with automatic checks off. It never fetches the
+// marker or installs by itself.
+//
+// Newer-version hint (2.3.4, updatehint.h): someone in the user's channel announces a newer TS Media
+// version (untrusted) -> one line in the user's own chat with a "Check for updates" link; nothing is
+// sent before that click.
 //
 // Only builds with TSMEDIA_UPDATER (official releases: scripts/build.ps1 -Release) check anything.
 // Other builds still settle the install state at start (onStarted) and show the "turned off in
@@ -27,6 +38,7 @@
 #include <memory>
 
 #include "updatefiles.h"
+#include "updatehint.h"
 #include "updatemanifest.h"
 #include "updatesettings.h"
 
@@ -81,6 +93,13 @@ class Updater : public QObject
     void restartNow();          // Settings: "Restart now"; the dialog's button
     Status status() const;
 
+    // 2.3.4 newer-version hint. A peer's HELLO / HI version (UNTRUSTED, PeerDirectory::versionSeen):
+    // one line in sch's channel tab when it is newer than anything known here (PeerHints' rules).
+    void notePeerVersion(quint64 sch, const QString& version, bool inOwnChannel);
+    // A click on a link in TS Media's own chat line. activate false: only "is it the hint's link of this
+    // load" (at press time); true: runs the check (Origin::Chat). False: not ours (TeamSpeak opens it).
+    bool handleHintLink(const QString& href, bool activate);
+
   signals:
     void statusChanged();
 
@@ -89,16 +108,19 @@ class Updater : public QObject
     void evaluate();
     void startCheck(Origin origin);
     void onCheckDone(const CheckOutcome& outcome, Origin origin);
+    bool startAutoInstall(const CheckOutcome& outcome, Origin origin, Offer offer); // true: it took over (silent download)
+    void fallBackToOffer(); // a silent install that didn't work out: the normal offer
     void offer(Origin origin);
     bool tryPrompt();
     void startDownload();
+    void showProgress(UpdateDialog* d); // the Downloading/Working page from the last progress
     void onPrepareDone(const PrepareOutcome& outcome);
     void install(const PrepareOutcome& outcome);
     void showError(const QString& heading, const QString& body, int action);
     void showConsent();
     void tryShowConsent();
     void queueNotice(const QString& text, bool warning, const QString& linkUrl = QString(), const QString& linkText = QString(),
-                     bool startupNotice = false);
+                     bool startupNotice = false, bool announcement = false);
     void flushNotices();
     void saveSettings();
     void setPhase(Phase phase);
@@ -125,6 +147,13 @@ class Updater : public QObject
     bool            m_promptPending  = false;
     bool            m_consentPending = false;
     int             m_lastProgressPercent = -1;
+    qint64          m_lastDone  = 0; // the running download's progress (a dialog opened later shows it)
+    qint64          m_lastTotal = 0;
+    bool            m_autoInstall  = false; // the running download/install is an important update's: no dialog
+    bool            m_autoCanceled = false; // the user canceled one: no silent install again this session
+    PeerHints       m_hints;       // 2.3.4: the newer-version hints of this load (its own link nonce)
+    Version         m_hintCheck;   // the hinted version while the check its link started runs
+    Version         m_latestKnown; // [check] latest, kept in memory (a HELLO reads nothing from disk first)
 
     QTimer* m_tick;          // next due check / 30-minute re-evaluation
     QTimer* m_consentTimer;  // 45 s after start
@@ -137,6 +166,7 @@ class Updater : public QObject
         QString linkUrl;
         QString linkText;
         bool    startupNotice;
+        bool    announcement; // 2.3.4: the one-time "important fixes install automatically" line
     };
     QVector<Notice> m_notices;
 

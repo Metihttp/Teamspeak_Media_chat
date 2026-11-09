@@ -416,6 +416,51 @@ class TestTextReact : public QObject
         QVERIFY(!keysOf(live, client, now).value(0).key.isEmpty());
     }
 
+    void liveLinesAfterTheHistoryAreToday()
+    {
+        // 2.4 live test: a chat opened with its history (its last day line 11/1), then today's session. TeamSpeak
+        // shows no day line for today: the lines after "End of chat history" are today's, never the history's
+        // day (their keys must match the sender's, who knows when it sent them). A rejected day line in the
+        // history keeps the day before it. Read whole, in steps (ChatLayout: only the new lines), unstyled and
+        // in the Cozy layout: the same days.
+        const tschat::Skin skin  = tschat::darkSkin();
+        const QDate        today = QDate(2026, 11, 8);
+        const int          now   = 19 * 3600 + 50 * 60;
+        for (int styled = 0; styled < 2; ++styled) {
+            QTextDocument doc;
+            setup(doc);
+            tschat::append(&doc, tschat::dayHtml(skin, QStringLiteral("11/1/2026"), false));                                                                    // 0
+            tschat::append(&doc, tschat::messageHtml(skin, QStringLiteral("11:21:26"), 7, kAlice, QStringLiteral("Alice"), QStringLiteral("from the history"))); // 1
+            tschat::append(&doc, tschat::dayHtml(skin, QStringLiteral("10/30/2026"), false));                                                                   // 2 rejected
+            tschat::append(&doc, tschat::messageHtml(skin, QStringLiteral("11:30:00"), 7, kAlice, QStringLiteral("Alice"), QStringLiteral("still the first")));  // 3
+            tschat::append(&doc, tschat::historyEndHtml(skin));                                                                                                 // 4
+            tschat::append(&doc, tschat::systemHtml(skin, QStringLiteral("19:48:07"), QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(skin, QStringLiteral("Home")))); // 5
+            tschat::append(&doc, tschat::messageHtml(skin, QStringLiteral("19:48:38"), 7, kAlice, QStringLiteral("Alice"), QStringLiteral("live today")));        // 6
+            if (styled)
+                layoutdoc::styleAll(&doc, envFor(layoutart::Mode::Cozy));
+            QCOMPARE(doc.blockCount(), 7);
+            const QVector<QDate> dates = layoutdoc::datesOf(&doc, today);
+            QCOMPARE(dates.value(1), QDate(2026, 11, 1));
+            QVERIFY(!dates.value(2).isValid());
+            QCOMPARE(dates.value(3), QDate(2026, 11, 1));
+            QVERIFY(!dates.value(6).isValid());
+            for (int from = 0; from < doc.blockCount(); ++from) {
+                QVector<QDate> part = dates.mid(0, from);
+                layoutdoc::extendDates(&doc, today, &part, from);
+                QCOMPARE(part, dates);
+            }
+            const QMap<int, QString> expected = {{1, QStringLiteral("2026-11-01 11:21:26")}, {3, QStringLiteral("2026-11-01 11:30:00")}, {6, QStringLiteral("2026-11-08 19:48:38")}};
+            for (auto it = expected.constBegin(); it != expected.constEnd(); ++it) {
+                const textreactdoc::Identity id = textreactdoc::identify(doc.findBlockByNumber(it.key()));
+                QVERIFY(id.eligible());
+                const QDate day = textreactdoc::dayOf(dates.value(it.key()), id.seconds, today, now);
+                qint64      t   = 0;
+                QVERIFY(!textreactdoc::localKeyOf(id, day, 0, &t).isEmpty());
+                QCOMPARE(QDateTime::fromSecsSinceEpoch(t, Qt::UTC).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")), it.value());
+            }
+        }
+    }
+
     void whichBlocksAreEligible()
     {
         const tschat::Skin skin = tschat::darkSkin();

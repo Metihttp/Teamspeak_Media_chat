@@ -6,7 +6,10 @@
 //
 // The signed vectors in tests/data/update were made with the test key 99, whose private key lives
 // outside the repository (C:/dev/tsmedia-devtools/signing). This test is built without
-// TSMEDIA_TESTHOOKS, so trustedKeys() must not accept them. unsigned.json needs no key.
+// TSMEDIA_TESTHOOKS, so trustedKeys() must not accept them. unsigned.json needs no key. The
+// important-*.json markers (2.3.4) mirror unsigned.json's files and package: important-valid
+// (published 2026-11-02, until 2026-12-31), important-false, important-format1 (a format 1 payload)
+// and important-mismatch (another win64 SHA-256); each made with make-manifest.ps1 -KeyId 99.
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -23,6 +26,7 @@
 #include "crypto.h"
 #include "update/pecheck.h"
 #include "update/updatefiles.h"
+#include "update/updatehint.h"
 #include "update/updateinstaller.h"
 #include "update/updatekeys.h"
 #include "update/updatemanifest.h"
@@ -122,6 +126,34 @@ QJsonObject withWin64Field(const QJsonObject& payload, const QString& field, con
     QJsonObject entry = payload.value(QStringLiteral("files")).toObject().value(QStringLiteral("plugins/tsmedia_win64.dll")).toObject();
     entry.insert(field, value);
     return withFile(payload, QStringLiteral("plugins/tsmedia_win64.dll"), entry);
+}
+
+// A valid important marker payload (format 3), to be broken one field at a time.
+QJsonObject importantPayload()
+{
+    QJsonObject p = basePayload();
+    p.insert(QStringLiteral("format"), 3);
+    p.insert(QStringLiteral("published"), QStringLiteral("2026-11-02"));
+    p.insert(QStringLiteral("important"), true);
+    p.insert(QStringLiteral("importantUntil"), QStringLiteral("2026-12-02"));
+    return p;
+}
+
+ManifestError parseImportant(const QJsonObject& payload, ImportantMarker* out = nullptr, QString* detail = nullptr)
+{
+    ImportantMarker     marker;
+    const ManifestError e = parseImportantPayload(toJson(payload), &marker, detail);
+    if (out)
+        *out = marker;
+    return e;
+}
+
+QString versionList(const QVector<Version>& versions)
+{
+    QStringList parts;
+    for (const Version& v : versions)
+        parts.append(v.toString());
+    return parts.join(QLatin1Char(','));
 }
 
 QString systemDll(bool x86)
@@ -730,6 +762,395 @@ class TestUpdater : public QObject
         QCOMPARE(checkDownload(text, textFile), DownloadCheck::WrongMachine);
     }
 
+    // ---- important updates (2.3.4: TSMedia-<ver>-important.json) --------------------------------
+    void importantMarker()
+    {
+        const QByteArray valid = readData("important-valid.json");
+        const QDate      today(2026, 11, 10);
+        ImportantMarker  marker;
+        QString          detail;
+        QCOMPARE(readImportant(valid, testKeys(), {}, today, &marker, &detail), ManifestError::None);
+        QVERIFY2(detail.isEmpty(), qPrintable(detail));
+        QCOMPARE(marker.signedBy, 99);
+        QCOMPARE(marker.manifest.signedBy, 99);
+        QCOMPARE(marker.until, QDate(2026, 12, 31));
+        QCOMPARE(marker.manifest.version.toString(), QStringLiteral("9.0.1"));
+        QCOMPARE(marker.manifest.published, QDate(2026, 11, 2));
+        QCOMPARE(marker.manifest.files.size(), 4);
+        QVERIFY(marker.manifest.package.present);
+        QVERIFY(marker.manifest.revokeKeys.isEmpty());
+
+        // The last day still counts; after it the release is offered the normal way.
+        QCOMPARE(readImportant(valid, testKeys(), {}, QDate(2026, 12, 31), &marker), ManifestError::None);
+        QCOMPARE(readImportant(valid, testKeys(), {}, QDate(2027, 1, 1), &marker, &detail), ManifestError::Expired);
+        QCOMPARE(detail, QStringLiteral("importantUntil 2026-12-31"));
+        QCOMPARE(marker.signedBy, 0); // nothing filled in
+        QVERIFY(!marker.manifest.version.isValid());
+        QCOMPARE(readImportant(valid, testKeys(), {}, QDate(), &marker), ManifestError::Expired);
+
+        // The signer: never a recovery key, never a revoked or unknown one.
+        QCOMPARE(readImportant(valid, testKeys(true), {}, today, &marker), ManifestError::RecoveryKey);
+        QCOMPARE(readImportant(valid, testKeys(), {99}, today, &marker), ManifestError::RevokedKey);
+        QCOMPARE(readImportant(valid, trustedKeys(), {}, today, &marker), ManifestError::UnknownKey);
+
+        // Tampered.
+        const QJsonObject outer   = QJsonDocument::fromJson(valid).object();
+        QByteArray        payload = QByteArray::fromBase64(outer.value(QStringLiteral("payload")).toString().toLatin1());
+        QVERIFY(payload.contains("2026-12-31"));
+        payload.replace("2026-12-31", "2027-01-01");
+        QJsonObject changed = outer;
+        changed.insert(QStringLiteral("payload"), QString::fromLatin1(payload.toBase64()));
+        QCOMPARE(readImportant(toJson(changed), testKeys(), {}, today, &marker), ManifestError::BadSignature);
+        QByteArray sig = QByteArray::fromBase64(outer.value(QStringLiteral("sig")).toString().toLatin1());
+        sig[3]         = static_cast<char>(sig[3] ^ 0x10);
+        changed        = outer;
+        changed.insert(QStringLiteral("sig"), QString::fromLatin1(sig.toBase64()));
+        QCOMPARE(readImportant(toJson(changed), testKeys(), {}, today, &marker), ManifestError::BadSignature);
+        changed.insert(QStringLiteral("sig"), QString::fromLatin1(sig.left(63).toBase64()));
+        QCOMPARE(readImportant(toJson(changed), testKeys(), {}, today, &marker), ManifestError::BadEncoding);
+        changed = outer;
+        changed.insert(QStringLiteral("key"), 1); // a real key, but it didn't sign this
+        QCOMPARE(readImportant(toJson(changed), testKeys(), {}, today, &marker), ManifestError::BadSignature);
+        changed = outer;
+        changed.insert(QStringLiteral("format"), 3); // the envelope is always format 1
+        QCOMPARE(readImportant(toJson(changed), testKeys(), {}, today, &marker), ManifestError::UnsupportedFormat);
+        QCOMPARE(readImportant(QByteArray(70 * 1024, ' '), testKeys(), {}, today, &marker), ManifestError::TooLarge);
+        QCOMPARE(readImportant(QByteArray("[1]"), testKeys(), {}, today, &marker), ManifestError::NotJson);
+
+        // Other signed or unsigned files are never markers.
+        QCOMPARE(readImportant(readData("valid.json"), testKeys(), {}, today, &marker, &detail), ManifestError::BadPayload);
+        QCOMPARE(detail, QStringLiteral("format"));
+        // A format 1 payload saying "important" is just a tsmedia-update.json: that's why markers are format 3.
+        QCOMPARE(readImportant(readData("important-format1.json"), testKeys(), {}, today, &marker), ManifestError::BadPayload);
+        Manifest m;
+        QCOMPARE(readManifest(readData("important-format1.json"), testKeys(), {}, &m), ManifestError::None);
+        QCOMPARE(readImportant(readData("unsigned.json"), testKeys(), {}, today, &marker), ManifestError::UnsupportedFormat);
+        QCOMPARE(readImportant(readData("important-false.json"), testKeys(), {}, today, &marker, &detail), ManifestError::NotImportant);
+        QCOMPARE(detail, QStringLiteral("important"));
+
+        // The old path (tsmedia-update.json, 2.2.0 to 2.3.3) refuses a marker.
+        QCOMPARE(readManifest(valid, testKeys(), {}, &m), ManifestError::BadPayload);
+    }
+
+    void importantPayloadFields()
+    {
+        ImportantMarker marker;
+        QCOMPARE(parseImportant(importantPayload(), &marker), ManifestError::None);
+        QCOMPARE(marker.until, QDate(2026, 12, 2));
+        QCOMPARE(marker.manifest.version.toString(), QStringLiteral("2.2.0"));
+        QCOMPARE(marker.signedBy, 0); // only readImportant knows the signer
+
+        const QJsonObject base = importantPayload();
+        auto set = [&base](const char* key, const QJsonValue& value) {
+            QJsonObject p = base;
+            if (value.isUndefined())
+                p.remove(QLatin1String(key));
+            else
+                p.insert(QLatin1String(key), value);
+            return p;
+        };
+        // "important" must be JSON true.
+        QString detail;
+        for (const QJsonValue& value : {QJsonValue(false), QJsonValue(QStringLiteral("true")), QJsonValue(1), QJsonValue(), QJsonValue(QJsonValue::Undefined)}) {
+            QCOMPARE(parseImportant(set("important", value), nullptr, &detail), ManifestError::NotImportant);
+            QCOMPARE(detail, QStringLiteral("important"));
+        }
+
+        // Both dates are required and exact; until is at most kMaxImportantDays after published.
+        QCOMPARE(parseImportant(set("importantUntil", QStringLiteral("2026-11-02"))), ManifestError::None);
+        QCOMPARE(parseImportant(set("importantUntil", QStringLiteral("2027-01-01"))), ManifestError::None); // + 60 days
+        const struct {
+            const char* name;
+            QJsonObject payload;
+        } cases[] = {
+            {"until + 61 days", set("importantUntil", QStringLiteral("2027-01-02"))},
+            {"until before published", set("importantUntil", QStringLiteral("2026-11-01"))},
+            {"until missing", set("importantUntil", QJsonValue::Undefined)},
+            {"until number", set("importantUntil", 20261202)},
+            {"until short", set("importantUntil", QStringLiteral("2026-12-2"))},
+            {"until slashes", set("importantUntil", QStringLiteral("2026/12/02"))},
+            {"until with time", set("importantUntil", QStringLiteral("2026-12-02T00:00:00"))},
+            {"until garbage", set("importantUntil", QStringLiteral("soon"))},
+            {"published missing", set("published", QJsonValue::Undefined)},
+            {"published short", set("published", QStringLiteral("2026-11-2"))},
+            {"format 1", set("format", 1)},
+            {"format 2", set("format", 2)},
+            {"tag mismatch", set("tag", QStringLiteral("v2.2.1"))},
+            {"sha uppercase", withWin64Field(base, QStringLiteral("sha256"), QString(64, QLatin1Char('A')))},
+            {"no plugin left", withFile(withFile(base, QStringLiteral("plugins/tsmedia_win64.dll"), QJsonValue::Undefined),
+                                        QStringLiteral("plugins/tsmedia_win32.dll"), QJsonValue::Undefined)},
+        };
+        for (const auto& c : cases)
+            QVERIFY2(parseImportant(c.payload) == ManifestError::BadPayload, c.name);
+
+        // A marker never revokes keys.
+        QCOMPARE(parseImportant(set("revokeKeys", QJsonArray{1, 2}), &marker), ManifestError::None);
+        QVERIFY(marker.manifest.revokeKeys.isEmpty());
+        QCOMPARE(parseImportant(set("revokeKeys", QStringLiteral("not read")), &marker), ManifestError::None);
+
+        QCOMPARE(parseImportantPayload(QByteArray("[]"), &marker), ManifestError::BadPayload);
+        QCOMPARE(parseImportantPayload(QByteArray(49 * 1024, ' '), &marker), ManifestError::TooLarge);
+    }
+
+    void sameReleaseChecks()
+    {
+        Manifest v2;
+        QCOMPARE(readManifest(readData("unsigned.json"), trustedKeys(), {}, &v2), ManifestError::None);
+        ImportantMarker marker;
+        QCOMPARE(readImportant(readData("important-valid.json"), testKeys(), {}, QDate(2026, 11, 10), &marker), ManifestError::None);
+        const Manifest& s = marker.manifest;
+        QString         why;
+        QVERIFY2(sameRelease(s, v2, &why), qPrintable(why));
+        QVERIFY(why.isEmpty());
+
+        ImportantMarker other;
+        QCOMPARE(readImportant(readData("important-mismatch.json"), testKeys(), {}, QDate(2026, 11, 10), &other), ManifestError::None);
+        QVERIFY(!sameRelease(other.manifest, v2, &why));
+        QCOMPARE(why, QStringLiteral("files plugins/tsmedia_win64.dll"));
+
+        // Not compared: the date each file was written, the notes, the signer.
+        Manifest same    = v2;
+        same.published   = QDate(2026, 11, 3);
+        same.notes       = QStringList{QStringLiteral("Other notes")};
+        same.signedBy    = 5;
+        QVERIFY(sameRelease(s, same));
+
+        const auto changed = [&v2](const auto& change) {
+            Manifest m = v2;
+            change(m);
+            return m;
+        };
+        const struct {
+            const char* name;
+            Manifest    v2;
+        } cases[] = {
+            {"version", changed([](Manifest& m) { m.version = Version::parse(QStringLiteral("9.0.2")); })},
+            {"size", changed([](Manifest& m) { m.files[0].size += 1; })},
+            {"sha256", changed([](Manifest& m) { m.files[0].sha256[0] = static_cast<char>(m.files[0].sha256[0] ^ 0x01); })},
+            {"machine", changed([](Manifest& m) { m.files[0].machine = m.files[0].machine == kMachineX64 ? kMachineX86 : kMachineX64; })},
+            {"missing file", changed([](Manifest& m) { m.files.removeLast(); })},
+            {"other architecture", changed([](Manifest& m) { m.files[0].arch = m.files[0].arch == Arch::Win64 ? Arch::Win32 : Arch::Win64; })},
+            {"no package", changed([](Manifest& m) { m.package = PackageInfo(); })},
+            {"package name", changed([](Manifest& m) { m.package.name = QStringLiteral("TSMedia-9.0.2.ts3_plugin"); })},
+            {"package size", changed([](Manifest& m) { m.package.size += 1; })},
+            {"package sha256", changed([](Manifest& m) { m.package.sha256[31] = static_cast<char>(m.package.sha256[31] ^ 0x01); })},
+            {"minFromVersion", changed([](Manifest& m) { m.minFromVersion = Version::parse(QStringLiteral("9.0.0")); })},
+            {"needsNewerUpdater", changed([](Manifest& m) { m.needsNewerUpdater = true; })},
+        };
+        for (const auto& c : cases) {
+            QVERIFY2(!sameRelease(s, c.v2), c.name);
+            QVERIFY2(!sameRelease(c.v2, s), c.name);
+        }
+        QVERIFY(!sameRelease(Manifest(), Manifest()));
+    }
+
+    void autoInstallRules()
+    {
+        ImportantMarker marker;
+        QCOMPARE(readImportant(readData("important-valid.json"), testKeys(), {}, QDate(2026, 11, 10), &marker), ManifestError::None);
+        const Manifest& m    = marker.manifest; // 9.0.1, both architectures
+        const Version   v900 = Version::parse(QStringLiteral("9.0.0"));
+        const Version   v901 = Version::parse(QStringLiteral("9.0.1"));
+        QVERIFY(autoInstallAllowed(m, v900, {}, Arch::Win64));
+        QVERIFY(autoInstallAllowed(m, v900, {}, Arch::Win32));
+        // The user skipped it: still installed (skip is ignored here).
+        QCOMPARE(offerFor(m, v900, v901, Arch::Win64), Offer::Skipped);
+        QVERIFY(autoInstallAllowed(m, v900, {}, Arch::Win64));
+
+        // Rolled back here or replaced by hand: never again without a click.
+        QVERIFY(!autoInstallAllowed(m, v900, {v901}, Arch::Win64));
+        QVERIFY(!autoInstallAllowed(m, v900, {Version::parse(QStringLiteral("8.0.0")), v901}, Arch::Win64));
+        QVERIFY(autoInstallAllowed(m, v900, {v900, Version::parse(QStringLiteral("9.0.2"))}, Arch::Win64));
+
+        // Not newer than what runs after the next restart.
+        QVERIFY(!autoInstallAllowed(m, v901, {}, Arch::Win64));
+        QVERIFY(!autoInstallAllowed(m, Version::parse(QStringLiteral("9.1.0")), {}, Arch::Win64));
+        QVERIFY(!autoInstallAllowed(m, Version(), {}, Arch::Win64));
+
+        // A manual install needed.
+        Manifest later       = m;
+        later.minFromVersion = v900;
+        QVERIFY(!autoInstallAllowed(later, Version::parse(QStringLiteral("8.9.9")), {}, Arch::Win64));
+        QVERIFY(autoInstallAllowed(later, v900, {}, Arch::Win64));
+        Manifest newer          = m;
+        newer.needsNewerUpdater = true;
+        QVERIFY(!autoInstallAllowed(newer, v900, {}, Arch::Win64));
+
+        // No build for this architecture.
+        Manifest only64 = m;
+        for (int i = only64.files.size() - 1; i >= 0; --i) {
+            if (only64.files.at(i).kind == FileKind::Plugin && only64.files.at(i).arch == Arch::Win32)
+                only64.files.removeAt(i);
+        }
+        QVERIFY(!autoInstallAllowed(only64, v900, {}, Arch::Win32));
+        QVERIFY(autoInstallAllowed(only64, v900, {}, Arch::Win64));
+    }
+
+    void importantNames()
+    {
+        const Version v = Version::parse(QStringLiteral("2.3.5"));
+        QCOMPARE(importantAssetName(v), QStringLiteral("TSMedia-2.3.5-important.json"));
+        // Always from that release, never from releases/latest.
+        QCOMPARE(importantUrl(v).toString(), QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/download/v2.3.5/TSMedia-2.3.5-important.json"));
+        QVERIFY(isAllowedUrl(importantUrl(v)));
+        QVERIFY(importantAssetName(Version()).isEmpty());
+        QVERIFY(importantUrl(Version()).isEmpty());
+        QVERIFY(!isAllowedUrl(importantUrl(Version())));
+        QCOMPARE(errorCode(ManifestError::RecoveryKey), QStringLiteral("recoveryKey"));
+        QCOMPARE(errorCode(ManifestError::Expired), QStringLiteral("expired"));
+        QCOMPARE(errorCode(ManifestError::NotImportant), QStringLiteral("notImportant"));
+    }
+
+    // ---- newer-version hint (2.3.4) -------------------------------------------------------------
+    void peerHintPolicy()
+    {
+        using V                  = PeerHints::Verdict;
+        const auto    v          = [](const char* text) { return Version::parse(QString::fromLatin1(text)); };
+        const auto    s          = [](const char* text) { return QString::fromLatin1(text); };
+        const Version current    = v("2.3.4");
+        PeerHints     h(s("0123456789abcdef"));
+        QCOMPARE(kMaxPeerHintsPerSession, 2);
+        QCOMPARE(h.check(s("2.3.5"), current), V::Show);
+        QCOMPARE(h.check(s("2.4.0"), current), V::Show);
+        QCOMPARE(h.check(s("2.3.4"), current), V::NotNewer);
+        QCOMPARE(h.check(s("2.3.3"), current), V::NotNewer);
+        QCOMPARE(h.check(s("1.9.9"), current), V::NotNewer);
+        // The floor is anything known here (installed, offered, skipped, the latest release).
+        QCOMPARE(h.check(s("2.3.5"), v("2.3.5")), V::NotNewer);
+        QCOMPARE(h.check(s("2.3.6"), v("2.3.5")), V::Show);
+        // At most one major version ahead.
+        QCOMPARE(h.check(s("3.0.0"), current), V::Show);
+        QCOMPARE(h.check(s("3.999.999"), current), V::Show);
+        QCOMPARE(h.check(s("4.0.0"), current), V::Implausible);
+        // Once per version, then only higher ones, at most kMaxPeerHintsPerSession per load.
+        h.markShown(v("2.3.5"));
+        QCOMPARE(h.shownCount(), 1);
+        QCOMPARE(h.check(s("2.3.5"), current), V::AlreadyHinted);
+        QCOMPARE(h.check(s("2.3.6"), current), V::Show);
+        h.markShown(v("2.3.6"));
+        QCOMPARE(h.check(s("2.3.6"), current), V::AlreadyHinted);
+        QCOMPARE(h.check(s("2.3.5"), current), V::AlreadyHinted);
+        QCOMPARE(h.check(s("2.3.7"), current), V::Capped);
+        QCOMPARE(h.check(s("3.0.0"), current), V::Capped);
+        // markShown keeps the list ascending and without duplicates.
+        h.markShown(v("2.3.5"));
+        h.markShown(v("2.3.6"));
+        h.markShown(Version());
+        QCOMPARE(h.shownCount(), 2);
+
+        // A version a check found unreleased isn't hinted again; a higher one still is.
+        PeerHints n(s("0123456789abcdef"));
+        n.markNotReleased(v("2.3.5"));
+        n.markNotReleased(Version());
+        QCOMPARE(n.check(s("2.3.5"), current), V::NotReleased);
+        QCOMPARE(n.check(s("2.3.6"), current), V::Show);
+        n.markShown(v("2.3.7"));
+        QCOMPARE(n.check(s("2.3.6"), current), V::NotHigher);
+        QCOMPARE(n.check(s("2.3.8"), current), V::Show);
+        // The floor wins over everything (a release installed meanwhile).
+        QCOMPARE(n.check(s("2.3.8"), v("2.3.8")), V::NotNewer);
+    }
+
+    // Anyone can claim any version: a liar costs at most kMaxPeerHintsPerSession lines per plugin load.
+    void peerHintLiar()
+    {
+        using V               = PeerHints::Verdict;
+        const Version current = Version::parse(QStringLiteral("2.3.4"));
+        const QString nonce   = QStringLiteral("00000000deadbeef");
+        // Strict versions only (the protocol accepts 4 parts and leading zeros).
+        PeerHints h(nonce);
+        for (const char* bad : {"", "2.3.4.1", "02.3.5", "2.03.5", "2.3.05", "2.3", "2", "v2.3.5", "2.3.5 ", " 2.3.5", "2.3.5\n", "2.3.5-beta",
+                                "2.3.1000", "-1.0.0", "2..5", "2.3.5.", "\xd9\xa2.3.5", "+2.3.5"})
+            QCOMPARE(h.check(QString::fromUtf8(bad), current), V::Malformed);
+        QCOMPARE(h.check(QStringLiteral("99.0.0"), current), V::Implausible);
+        QCOMPARE(h.check(QStringLiteral("999.999.999"), current), V::Implausible);
+        // A high one first: everything below it is refused for the rest of the load.
+        h.markShown(Version::parse(QStringLiteral("3.0.0")));
+        QCOMPARE(h.check(QStringLiteral("2.3.5"), current), V::NotHigher);
+        QCOMPARE(h.check(QStringLiteral("2.9.9"), current), V::NotHigher);
+        // Counting up one version per HELLO stops at the cap.
+        PeerHints up(nonce);
+        int       shown = 0;
+        for (int patch = 5; patch < 200; ++patch) {
+            const QString text = QStringLiteral("2.3.%1").arg(patch);
+            if (up.check(text, current) == V::Show) {
+                up.markShown(Version::parse(text));
+                ++shown;
+            }
+        }
+        QCOMPARE(shown, kMaxPeerHintsPerSession);
+        QCOMPARE(up.shownCount(), kMaxPeerHintsPerSession);
+        // Counting down: only the first.
+        PeerHints down(nonce);
+        shown = 0;
+        for (int patch = 199; patch >= 5; --patch) {
+            const QString text = QStringLiteral("2.3.%1").arg(patch);
+            if (down.check(text, current) == V::Show) {
+                down.markShown(Version::parse(text));
+                ++shown;
+            }
+        }
+        QCOMPARE(shown, 1);
+    }
+
+    void peerHintLink()
+    {
+        const Version v = Version::parse(QStringLiteral("2.3.5"));
+        PeerHints     h(QStringLiteral("0123456789abcdef"));
+        QVERIFY(h.linkUrl(v).startsWith(QLatin1String("https://")));
+        QVERIFY(!h.parseLink(h.linkUrl(v), nullptr)); // not shown yet: never ours
+        h.markShown(v);
+        const QString url = h.linkUrl(v);
+        QCOMPARE(url, QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest#tsmupd-0123456789abcdef-2.3.5"));
+        // Nothing in it could end TeamSpeak's [url=...] tag (ts3::printInfoLink refuses those).
+        for (const QChar c : url)
+            QVERIFY(c.unicode() > 0x20 && c.unicode() < 0x7f && c != QLatin1Char('[') && c != QLatin1Char(']') && c != QLatin1Char('"') && c != QLatin1Char('\''));
+        Version hinted;
+        QVERIFY(h.parseLink(url, &hinted));
+        QCOMPARE(hinted, v);
+        QVERIFY(h.parseLink(url, nullptr));
+
+        // Exactly that text: no other nonce, version, repository, scheme, or anything added or missing.
+        PeerHints other(QStringLiteral("fedcba9876543210"));
+        other.markShown(v);
+        QVERIFY(!h.parseLink(other.linkUrl(v), nullptr));
+        QVERIFY(!other.parseLink(url, nullptr));
+        const QString base = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest");
+        for (const QString& bad : {url + QLatin1Char('0'), url + QLatin1Char(' '), url + QLatin1Char('/'), url.toUpper(), QLatin1Char(' ') + url,
+                                   base, base + QStringLiteral("#tsmupd-0123456789abcdef-"), base + QStringLiteral("#tsmupd-0123456789abcdef-2.3.6"),
+                                   base + QStringLiteral("#tsmupd-0123456789abcdef-02.3.5"), base + QStringLiteral("#tsmupd-0123456789abcdef-2.3.5.0"),
+                                   base + QStringLiteral("#tsmupd-0123456789abcdeF-2.3.5"), base + QStringLiteral("#tsmupd-0123456789abcde-2.3.5"),
+                                   base + QStringLiteral("/#tsmupd-0123456789abcdef-2.3.5"), base + QStringLiteral("?x#tsmupd-0123456789abcdef-2.3.5"),
+                                   QStringLiteral("http://github.com/Metihttp/Teamspeak_Media_chat/releases/latest#tsmupd-0123456789abcdef-2.3.5"),
+                                   QStringLiteral("https://github.com/Someone/Teamspeak_Media_chat/releases/latest#tsmupd-0123456789abcdef-2.3.5"),
+                                   QStringLiteral("https://evil.example/releases/latest#tsmupd-0123456789abcdef-2.3.5"),
+                                   QStringLiteral("#tsmupd-0123456789abcdef-2.3.5"), QStringLiteral("tsmedia://tsmupd-0123456789abcdef-2.3.5"), QString()})
+            QVERIFY2(!h.parseLink(bad, nullptr), qPrintable(bad));
+
+        // A nonce that isn't 16 lowercase hex digits makes no links and accepts none.
+        for (const QString& badNonce : {QString(), QStringLiteral("0123456789ABCDEF"), QStringLiteral("0123456789abcde"), QStringLiteral("0123456789abcdefa"),
+                                        QStringLiteral("0123456789abcdeg")}) {
+            PeerHints bad(badNonce);
+            bad.markShown(v);
+            QVERIFY(bad.linkUrl(v).isEmpty());
+            QVERIFY(!bad.parseLink(url, nullptr));
+        }
+        QVERIFY(h.linkUrl(Version()).isEmpty());
+
+        // A fresh nonce per Updater: 16 lowercase hex digits.
+        const QString a = PeerHints::newNonce();
+        const QString b = PeerHints::newNonce();
+        QCOMPARE(a.size(), 16);
+        QVERIFY(a != b);
+        PeerHints fresh(a);
+        fresh.markShown(v);
+        QVERIFY(fresh.parseLink(fresh.linkUrl(v), nullptr));
+
+        // The line and the link text (ts3::printInfoLink escapes both).
+        QCOMPARE(PeerHints::text(v, Version::parse(QStringLiteral("2.3.4"))), QStringLiteral("Someone in this channel has TS Media chat 2.3.5 (you have 2.3.4)."));
+        QCOMPARE(PeerHints::linkText(), QStringLiteral("Check for updates"));
+    }
+
     // ---- policy ---------------------------------------------------------------------------------
     void urlAllowlist()
     {
@@ -923,8 +1344,12 @@ class TestUpdater : public QObject
         QCOMPARE(notice.kind, StartupNotice::RolledBack);
         QCOMPARE(notice.version, to);
         QCOMPARE(notice.restored, from);
+        QVERIFY(!notice.automatic);
+        // Never installed without a click again, whatever the user skips or undoes later.
+        QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.2.0"));
         markNoticeShown(box.layout);
         QCOMPARE(onStarted(box.layout, from, 1234).kind, StartupNotice::None);
+        QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.2.0"));
         QByteArray marker;
         QVERIFY(fs::readAll(box.layout.markerFile(from), &marker, 100));
         QCOMPARE(marker, QByteArray("1234"));
@@ -942,7 +1367,9 @@ class TestUpdater : public QObject
         StartupNotice notice = onStarted(box.layout, to, 77);
         QCOMPARE(notice.kind, StartupNotice::Updated);
         QCOMPARE(notice.version, to);
+        QVERIFY(!notice.automatic);
         StateFile st(box.layout.stateFile());
+        QVERIFY(st.neverAutoVersions().isEmpty());
         QCOMPARE(st.value("install", "status"), QStringLiteral("done"));
         QCOMPARE(st.value("install", "bootAttempts"), QStringLiteral("0"));
         // Later starts don't count any more.
@@ -1121,6 +1548,108 @@ class TestUpdater : public QObject
         QCOMPARE(effectiveInstalled(l, current), current);
     }
 
+    void neverAutoList()
+    {
+        const Version from = Version::parse(QStringLiteral("2.1.1"));
+        const Version to   = Version::parse(QStringLiteral("2.2.0"));
+        {
+            // A rollback recorded by an older version or the helper, its notice shown already: the
+            // status alone counts.
+            Sandbox   box;
+            StateFile st(box.layout.stateFile());
+            st.setValue("install", "status", QStringLiteral("rolledBack"));
+            st.setValue("install", "from", from.toString());
+            st.setValue("install", "to", to.toString());
+            st.setValue("install", "notice", QStringLiteral("shown"));
+            QCOMPARE(onStarted(box.layout, from, 1).kind, StartupNotice::None);
+            QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.2.0"));
+            QCOMPARE(onStarted(box.layout, from, 2).kind, StartupNotice::None);
+            QCOMPARE(st.value("auto", "never"), QStringLiteral("2.2.0")); // idempotent
+        }
+        {
+            // The rollback failed and the new version keeps running.
+            Sandbox   box;
+            StateFile st(box.layout.stateFile());
+            st.setValue("install", "status", QStringLiteral("rollbackFailed"));
+            st.setValue("install", "from", from.toString());
+            st.setValue("install", "to", to.toString());
+            onStarted(box.layout, to, 1);
+            QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.2.0"));
+        }
+        {
+            // Updated fine, then the older version was installed again by hand.
+            Sandbox             box;
+            QVector<StagedFile> staged;
+            QVERIFY(box.setUp(to, &staged));
+            QVERIFY(applyUpdate(box.layout, staged, from, to).ok());
+            StateFile st(box.layout.stateFile());
+            QCOMPARE(onStarted(box.layout, from, 1).kind, StartupNotice::None); // waiting for the restart: no reason
+            QVERIFY(st.neverAutoVersions().isEmpty());
+            QCOMPARE(bootGuard(box.layout, to), BootGuard::Continue);
+            QCOMPARE(onStarted(box.layout, to, 2).kind, StartupNotice::Updated);
+            markNoticeShown(box.layout);
+            QVERIFY(st.neverAutoVersions().isEmpty());
+            QCOMPARE(onStarted(box.layout, from, 3).kind, StartupNotice::None);
+            QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.2.0"));
+            QCOMPARE(onStarted(box.layout, to, 4).kind, StartupNotice::None); // the newer one again: the list stays
+            QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.2.0"));
+        }
+    }
+
+    void automaticNotice()
+    {
+        Sandbox             box;
+        const Version       from = Version::parse(QStringLiteral("2.1.1"));
+        const Version       to   = Version::parse(QStringLiteral("2.2.0"));
+        QVector<StagedFile> staged;
+        QVERIFY(box.setUp(to, &staged));
+        QVERIFY(applyUpdate(box.layout, staged, from, to).ok());
+        StateFile st(box.layout.stateFile());
+        st.setValue("install", "automatic", QStringLiteral("2.2.0")); // what an automatic install writes: its version
+        QCOMPARE(bootGuard(box.layout, to), BootGuard::Continue);
+        StartupNotice notice = onStarted(box.layout, to, 5);
+        QCOMPARE(notice.kind, StartupNotice::Updated);
+        QVERIFY(notice.automatic);
+        QVERIFY(onStarted(box.layout, to, 6).automatic); // not shown yet: still marked next time
+        markNoticeShown(box.layout);
+        QVERIFY(st.value("install", "automatic").isEmpty()); // said: gone
+        notice = onStarted(box.layout, to, 7);
+        QCOMPARE(notice.kind, StartupNotice::None);
+        QVERIFY(!notice.automatic);
+        // A key left by another install (an older updater keeps keys it doesn't know) isn't inherited.
+        st.setValue("install", "automatic", QStringLiteral("2.1.9"));
+        st.setValue("install", "notice", QStringLiteral("pending"));
+        notice = onStarted(box.layout, to, 8);
+        QCOMPARE(notice.kind, StartupNotice::Updated);
+        QVERIFY(!notice.automatic);
+        // A manual install removes the key.
+        st.remove("install", "automatic");
+        notice = onStarted(box.layout, to, 9);
+        QCOMPARE(notice.kind, StartupNotice::Updated);
+        QVERIFY(!notice.automatic);
+    }
+
+    void handDowngradeWithoutTheUpdater()
+    {
+        // A package installed by hand leaves no [install] trace; going back below it still keeps it from
+        // being installed without a click.
+        Sandbox       box;
+        StateFile     st(box.layout.stateFile());
+        const Version older = Version::parse(QStringLiteral("2.3.4"));
+        const Version newer = Version::parse(QStringLiteral("2.3.5"));
+        st.setValue("check", "latest", QStringLiteral("2.3.5")); // state.ini exists (the updater was used)
+        QCOMPARE(onStarted(box.layout, older, 1).kind, StartupNotice::None);
+        QVERIFY(st.neverAutoVersions().isEmpty());
+        QCOMPARE(onStarted(box.layout, newer, 2).kind, StartupNotice::None); // installed by hand
+        QVERIFY(st.neverAutoVersions().isEmpty());
+        QCOMPARE(onStarted(box.layout, newer, 3).kind, StartupNotice::None);
+        QVERIFY(st.neverAutoVersions().isEmpty());
+        QCOMPARE(onStarted(box.layout, older, 4).kind, StartupNotice::None); // put back by hand
+        QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.3.5"));
+        QCOMPARE(onStarted(box.layout, older, 5).kind, StartupNotice::None); // idempotent
+        QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.3.5"));
+    }
+
     void updateSettings()
     {
         QTemporaryDir dir;
@@ -1171,6 +1700,83 @@ class TestUpdater : public QObject
         QVERIFY(st.remove("check", "lastResult"));
         QCOMPARE(st.value("check", "lastResult"), QString());
         QVERIFY(!st.versionValue("install", "to").isValid());
+    }
+
+    void stateFileAuto()
+    {
+        QTemporaryDir dir;
+        StateFile     st(dir.path() + QStringLiteral("/sub/state.ini"));
+        const Version a = Version::parse(QStringLiteral("2.3.5"));
+        const Version b = Version::parse(QStringLiteral("2.3.7"));
+
+        // [auto] never: round trip, idempotent, oldest first.
+        QVERIFY(st.neverAutoVersions().isEmpty());
+        QVERIFY(st.addNeverAuto(a));
+        QVERIFY(st.addNeverAuto(b));
+        QVERIFY(st.addNeverAuto(a));
+        QCOMPARE(st.value("auto", "never"), QStringLiteral("2.3.5,2.3.7"));
+        QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.3.5,2.3.7"));
+        QVERIFY(!st.addNeverAuto(Version()));
+        QCOMPARE(st.value("auto", "never"), QStringLiteral("2.3.5,2.3.7"));
+        // Garbage: only strict versions, each once.
+        st.setValue("auto", "never", QStringLiteral("2.3.5,x,02.3.1, 2.4.0 ,,2.3.5,1.2,2.3.6-beta,2.3.6.1,-1.0.0"));
+        QCOMPARE(versionList(st.neverAutoVersions()), QStringLiteral("2.3.5,2.4.0"));
+        QVERIFY(st.addNeverAuto(b));
+        QCOMPARE(st.value("auto", "never"), QStringLiteral("2.3.5,2.4.0,2.3.7")); // rewritten clean
+        // Capped: the oldest drop off.
+        QVERIFY(st.remove("auto", "never"));
+        for (int i = 0; i < 20; ++i)
+            QVERIFY(st.addNeverAuto(Version::parse(QStringLiteral("2.%1.0").arg(i + 10))));
+        QVector<Version> capped = st.neverAutoVersions();
+        QCOMPARE(capped.size(), kMaxNeverAuto);
+        QCOMPARE(capped.first().toString(), QStringLiteral("2.14.0"));
+        QCOMPARE(capped.last().toString(), QStringLiteral("2.29.0"));
+        // A longer list (edited by hand) is read as its newest entries; the longest list fits the read buffer.
+        QStringList longest;
+        for (int i = 0; i < 20; ++i)
+            longest.append(QStringLiteral("999.999.%1").arg(980 + i));
+        st.setValue("auto", "never", longest.join(QLatin1Char(',')));
+        capped = st.neverAutoVersions();
+        QCOMPARE(capped.size(), kMaxNeverAuto);
+        QCOMPARE(capped.first().toString(), QStringLiteral("999.999.984"));
+        QCOMPARE(capped.last().toString(), QStringLiteral("999.999.999"));
+        QVERIFY(st.addNeverAuto(a));
+        QCOMPARE(st.neverAutoVersions().size(), kMaxNeverAuto);
+        QCOMPARE(st.neverAutoVersions().last(), a);
+        QVERIFY(st.value("auto", "never").size() < 512);
+
+        // Silent attempts, per version.
+        QCOMPARE(st.autoAttempts(a), 0);
+        st.noteAutoAttempt(a);
+        QCOMPARE(st.autoAttempts(a), 1);
+        st.noteAutoAttempt(a);
+        QCOMPARE(st.autoAttempts(a), 2);
+        QCOMPARE(st.autoAttempts(b), 0);
+        st.noteAutoAttempt(b); // another version starts again
+        QCOMPARE(st.autoAttempts(b), 1);
+        QCOMPARE(st.autoAttempts(a), 0);
+        QCOMPARE(st.value("auto", "attemptVersion"), QStringLiteral("2.3.7"));
+        st.setValue("auto", "attempts", QStringLiteral("abc"));
+        QCOMPARE(st.autoAttempts(b), 0);
+        st.setValue("auto", "attempts", QStringLiteral("-4"));
+        QCOMPARE(st.autoAttempts(b), 0);
+        st.setValue("auto", "attempts", QStringLiteral("99999"));
+        QCOMPARE(st.autoAttempts(b), 1000);
+        st.setValue("auto", "attemptVersion", QStringLiteral("2.3.7x"));
+        QCOMPARE(st.autoAttempts(b), 0);
+        QCOMPARE(st.autoAttempts(Version()), 0);
+        st.noteAutoAttempt(Version());
+        QCOMPARE(st.value("auto", "attemptVersion"), QStringLiteral("2.3.7x")); // untouched
+
+        // The one-time notice.
+        QVERIFY(!st.autoAnnounced());
+        QVERIFY(st.setAutoAnnounced());
+        QVERIFY(st.autoAnnounced());
+        QCOMPARE(st.value("auto", "announced"), QStringLiteral("1"));
+        st.setValue("auto", "announced", QStringLiteral("yes"));
+        QVERIFY(!st.autoAnnounced());
+        // The list survives all of it.
+        QCOMPARE(st.neverAutoVersions().last(), a);
     }
 };
 

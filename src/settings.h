@@ -81,6 +81,16 @@ struct Settings {
     // 2.2 protocol: Privacy (both global, never per server)
     bool showReactions = true; // reaction rows, the add button and "Add reaction"; off: none sent or shown
     bool sharePresence = true; // HELLO / HI to the channel and private-chat partners you send to
+    // 2.4 link previews (all global, never per server).
+    // showLinkPreviews: "Show previews for links to other websites"; off: no card, and no link-preview
+    // download or website request of any kind (receiving or sending).
+    // autoLoadLinkPreviews: "Load link previews automatically": links without a sender-made preview load their
+    // preview from the website by themselves (on screen, within the automatic download limits); off: a click
+    // ("Load preview"). Needs showLinkPreviews.
+    // makeLinkPreviews: "Make previews for links I send" (the sender pipeline; needs showLinkPreviews too).
+    bool showLinkPreviews     = true;
+    bool autoLoadLinkPreviews = true;
+    bool makeLinkPreviews     = true;
     // 2.2.1 voice: voice messages have no settings any more (TeamSpeak's microphone, muted while
     // recording, the start and stop sounds); 2.2.0's voice* keys in the ini are ignored.
 

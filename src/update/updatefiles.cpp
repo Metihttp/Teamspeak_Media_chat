@@ -24,6 +24,8 @@ std::wstring wide(const char* text)
     return QString::fromLatin1(text).toStdWString();
 }
 
+constexpr const char* kAuto = "auto";
+
 // Any address inside this module.
 void moduleAnchor() {}
 
@@ -352,6 +354,61 @@ bool StateFile::addRevokedKeys(const QSet<int>& ids)
     for (int id : sorted)
         parts.append(QString::number(id));
     return setValue("trust", "revoked", parts.join(QLatin1Char(',')));
+}
+
+QVector<Version> StateFile::neverAutoVersions() const
+{
+    QVector<Version> versions;
+    for (const QString& part : value(kAuto, "never").split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const Version v = Version::parse(part.trimmed());
+        if (v.isValid() && !versions.contains(v))
+            versions.append(v);
+    }
+    while (versions.size() > kMaxNeverAuto)
+        versions.removeFirst();
+    return versions;
+}
+
+bool StateFile::addNeverAuto(const Version& version)
+{
+    if (!version.isValid())
+        return false;
+    QVector<Version> versions = neverAutoVersions();
+    if (versions.contains(version))
+        return true;
+    versions.append(version);
+    while (versions.size() > kMaxNeverAuto)
+        versions.removeFirst(); // the oldest drops off
+    QStringList parts;
+    for (const Version& v : versions)
+        parts.append(v.toString());
+    return setValue(kAuto, "never", parts.join(QLatin1Char(',')));
+}
+
+int StateFile::autoAttempts(const Version& version) const
+{
+    if (!version.isValid() || versionValue(kAuto, "attemptVersion") != version)
+        return 0;
+    return intValue(kAuto, "attempts", 0, 0, 1000);
+}
+
+void StateFile::noteAutoAttempt(const Version& version)
+{
+    if (!version.isValid())
+        return;
+    const int attempts = qMin(autoAttempts(version) + 1, 1000);
+    setValue(kAuto, "attemptVersion", version.toString());
+    setInt(kAuto, "attempts", attempts);
+}
+
+bool StateFile::autoAnnounced() const
+{
+    return value(kAuto, "announced") == QLatin1String("1");
+}
+
+bool StateFile::setAutoAnnounced()
+{
+    return setValue(kAuto, "announced", QString::fromLatin1("1"));
 }
 
 } // namespace upd

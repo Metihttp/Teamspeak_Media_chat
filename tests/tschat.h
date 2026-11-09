@@ -139,6 +139,13 @@ inline QString historyHtml(const Skin& s, const QString& dateTime, bool serverTa
            + QStringLiteral("*** %1 begins %2</span>").arg(serverTab ? QStringLiteral("Log") : QStringLiteral("Chat"), dateTime);
 }
 
+// The line TeamSpeak adds after the history it loaded when a chat opens (2.4 live test): "*** End of chat
+// history" in the day lines' grey, with the info icon and no time. The live session's lines follow it.
+inline QString historyEndHtml(const Skin& s)
+{
+    return QStringLiteral("<span style=\"color:%1\">").arg(s.day) + icon("MESSAGE_INFO") + QStringLiteral("*** End of chat history</span>");
+}
+
 inline QString channelHtml(const Skin& s, int id, const QString& name)
 {
     return QStringLiteral("<a href=\"channelid://%1\" style=\"color:%2;font-weight:bold;text-decoration:none\">\"%3\"</a>").arg(id).arg(s.nick, escaped(name));
@@ -149,6 +156,14 @@ inline QString printHtml(const Skin& s, const QString& text)
 {
     return QStringLiteral("<span style=\"color:%1\"><span style=\"color:%2;font-weight:bold\">TS Media chat</span> %3</span>")
         .arg(s.dark ? QStringLiteral("#dcddde") : QStringLiteral("#00008b"), s.dark ? QStringLiteral("#949cf7") : QStringLiteral("#4752c4"), escaped(text));
+}
+
+// 2.3.4: ts3api's printInfoLink: printInfo's line, a space, then one link in the same line.
+inline QString printLinkHtml(const Skin& s, const QString& text, const QString& url, const QString& label)
+{
+    return QStringLiteral("<span style=\"color:%1\"><span style=\"color:%2;font-weight:bold\">TS Media chat</span> %3 %4</span>")
+        .arg(s.dark ? QStringLiteral("#dcddde") : QStringLiteral("#00008b"), s.dark ? QStringLiteral("#949cf7") : QStringLiteral("#4752c4"), escaped(text),
+             linkHtml(s, url, label));
 }
 
 const char kKaiUid[]  = "kTkVNcL7gLaJrl7oa+KDuugw/Zo=";

@@ -367,6 +367,22 @@ StartupNotice onStarted(const Layout& layout, const Version& current, unsigned l
     const Version from   = st.versionValue(kInstall, "from");
     const bool    unseen = st.value(kInstall, "notice") == latin("pending");
 
+    // Never installed without a click again: a version that rolled back here (whoever recorded it: the
+    // new version's boot guard, the helper, an older version; shown or not), and one that was replaced
+    // by hand with this older version. Idempotent, and independent of the user's skip.
+    if ((state == status::rolledBack() || state == status::rollbackFailed()) && to.isValid())
+        st.addNeverAuto(to);
+    else if (state == status::done() && to > current)
+        st.addNeverAuto(to);
+    // The highest version that ever started here: running an older one means it was put back (by hand,
+    // even from a package the updater never saw, or by a rollback), so that one isn't installed without a
+    // click again either.
+    const Version highest = st.versionValue("auto", "highestStarted");
+    if (!highest.isValid() || current > highest)
+        st.setValue("auto", "highestStarted", current.toString());
+    else if (current < highest)
+        st.addNeverAuto(highest);
+
     if ((state == status::applied() || state == latin("applying") || state == status::unverified()) && to == current) {
         st.setValue(kInstall, "status", status::done());
         st.setInt(kInstall, "bootAttempts", 0);
@@ -379,7 +395,10 @@ StartupNotice onStarted(const Layout& layout, const Version& current, unsigned l
         st.setValue(kInstall, "status", status::none());
         st.remove(kInstall, "journal");
     } else if (state == status::applied() && to != current && pe::fileVersion(Layout::ownModulePath()) == current.toString()) {
-        // Waiting for a version that will never start: this version was installed again by hand.
+        // Waiting for a version that will never start: this version was installed again by hand. 2.3.4:
+        // that one is never installed without a click again.
+        if (to > current)
+            st.addNeverAuto(to);
         st.setValue(kInstall, "status", status::none());
     } else if (state == status::done() && unseen && to == current) {
         notice.kind    = StartupNotice::Updated; // not shown last time (no chat was open)
@@ -389,12 +408,17 @@ StartupNotice onStarted(const Layout& layout, const Version& current, unsigned l
         notice.version  = to;
         notice.restored = from.isValid() ? from : current;
     }
+    // Only the install that wrote it: the key names its version (an older updater keeps keys it doesn't know).
+    if (notice.kind != StartupNotice::None)
+        notice.automatic = st.versionValue(kInstall, "automatic") == notice.version;
     return notice;
 }
 
 void markNoticeShown(const Layout& layout)
 {
-    StateFile(layout.stateFile()).setValue(kInstall, "notice", latin("shown"));
+    StateFile st(layout.stateFile());
+    st.setValue(kInstall, "notice", latin("shown"));
+    st.remove(kInstall, "automatic"); // said; a later install never inherits it
 }
 
 Version effectiveInstalled(const Layout& layout, const Version& current)

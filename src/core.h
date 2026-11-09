@@ -73,6 +73,7 @@ struct MediaEntry {
 
     // Small preview / video poster (link.previewFile), downloaded automatically when present.
     MediaState previewState      = MediaState::Idle;
+    MediaError previewError      = MediaError::None; // when previewState == Failed (2.4 link previews read it)
     QString    previewPath; // exists when previewState == Ready
     anyID      previewTransferId = 0;
 
@@ -121,6 +122,10 @@ struct SendItem {
     bool        voice      = false; // a recorded voice message (vm=1; .m4a, sent as voice_message_<hex>)
     qint64      durationMs = 0;     // voice: the recorder's length (else the probe's)
     QByteArray  waveform;           // voice: MediaLink::kWaveformLevels levels of 0..15
+    // 2.4 link previews (linkpreview::SenderPipeline): previewJpeg goes up as the file's preview (none is
+    // made from the file); previewOnly: the file is itself a preview and goes into the previews folder.
+    QByteArray  previewJpeg;
+    bool        previewOnly = false;
 };
 
 struct SendRequest {
@@ -131,6 +136,11 @@ struct SendRequest {
     // 2.2 reply: a quote line (replies::quoteLine, BBCode as is) that goes before the caption, in the same
     // message; the send is then a reply. Empty: not a reply.
     QString           replyLead;
+    // 2.4 link previews: the files of a link preview. They go up like any other (folders, the flood
+    // governor, SHA-256, the 2.3.2 server check: never a file info question on TeaSpeak), but quietly: no
+    // toast, no chat warning, no compression, no album and NO chat message. Core::backgroundFinished
+    // reports each file instead.
+    bool              background = false;
 };
 
 struct UploadJob {
@@ -159,6 +169,7 @@ struct UploadJob {
     QString     displayName;      // SendItem::displayName (see displayNameFor)
     bool        spoiler = false;  // SendItem::spoiler
     bool        inAlbum = false;  // posted together with the other pictures/videos of its album
+    bool        background = false; // 2.4 link previews: SendRequest::background (no toast, no retry)
 
     // Filled by the probe step (worker thread) before uploading.
     LocalMediaInfo info;
@@ -261,6 +272,17 @@ class Core : public QObject
     // now save data stop (their items wait for a click), held items of servers that no longer do
     // start again once they are shown. Downloads the user asked for are never touched.
     void onDataSaverChanged();
+
+    // ---- 2.4 link previews ---------------------------------------------------------------------
+    // A picture, GIF or video loaded from a website (a click or an automatic load, linkpreview::Fetcher) shown like received
+    // media: an entry for link (made up by ChatLinkPreviews; it is never on a TeamSpeak server) that is Ready
+    // with path as its file and posterPath (may be empty) as its preview / video poster. Core never downloads
+    // or retries it; files in the cache folder (where ChatLinkPreviews keeps them) are cleared and evicted
+    // like any cached file, and the entry is then Idle until it is adopted again. Stills, frames, the inline
+    // players, the viewer, Save as and drags work as for any entry. Returns the key (empty: path isn't a file,
+    // or the key is a real link's).
+    QString adoptLocalFile(const MediaLink& link, const QString& path, const QString& posterPath = QString());
+    bool    isLocalFile(const QString& key) const { return m_localOnly.contains(key); }
 
     // ---- spoilers (2.2) -------------------------------------------------------------------------
     // A picture, GIF or video seen with sp=1 (on any of its links this session) that the user hasn't
@@ -400,6 +422,11 @@ class Core : public QObject
     // At most once per batch with a caption; a retry that carries the caption on reports it under the
     // batch it came from.
     void captionSettled(int batch, bool posted);
+    // 2.4 link previews: a file of a background send (SendRequest::background) is on the server and the
+    // server has all of it (ok, link: what a chat message would have announced), or it failed or was
+    // canceled (ok false). Once per file, emitted from inside Core's upload steps: connect queued, or
+    // don't call back into Core's sending from the slot.
+    void backgroundFinished(int batch, int id, bool ok, const MediaLink& link);
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
   private:
@@ -426,6 +453,7 @@ class Core : public QObject
         fileverify::StagedDigest digest;      // 2.2 sha: of the final staged bytes (finalizeStaged)
         bool       hashed = false;            // 2.2 sha: digest is set (empty sha = couldn't be read)
         int        floodRetries = 0;          // folder / upload requests sent again after 0x020c
+        bool       previewChecked = false;    // 2.4 link previews: its check ran before the file went up (startPreviewCheck)
     };
 
     // ---- 2.2 pacing of the sender's file requests -----------------------------------------------
@@ -451,6 +479,7 @@ class Core : public QObject
         bool              captionDone = false; // queued with a unit (or handed on to a retry)
         int               captionOrigin = 0;   // the batch captionSettled() reports it under (a retry carries it on)
         QString           lead;                // 2.2 reply: SendRequest::replyLead, posted with the caption
+        bool              background = false;  // 2.4 link previews: SendRequest::background
         QVector<PostUnit> units;
     };
     // One chat message waiting in its connection's queue.
@@ -492,7 +521,7 @@ class Core : public QObject
     void    finishPreviewDownload(const QString& key);
     void    finishWhenWritten(const QString& key, bool preview, int attempt);
     void    failDownload(const QString& key, MediaError error, const QString& text, bool interrupted = false, bool exactText = false);
-    void    failPreviewDownload(const QString& key, const QString& text, bool interrupted = false);
+    void    failPreviewDownload(const QString& key, const QString& text, bool interrupted = false, MediaError error = MediaError::Other);
     void    abortOversizedAutoDownload(const QString& key);
     void    abortChangedDownload(const QString& key, quint64 actualSize);
     quint64 autoDownloadLimit(const MediaEntry& e) const;
@@ -643,6 +672,9 @@ class Core : public QObject
         quint64                  token   = 0;      // of the current download: late results of older ones are dropped
         bool                     reading = false;  // it finished: waiting until TeamSpeak has written it, or hashing it
         std::shared_ptr<std::atomic<bool>> hashCancel; // the whole file's hash on m_checkPool while it runs
+        // 2.4 link previews: the preview of a background send, checked while the job still prepares (before
+        // its file goes up, startPreviewCheck); when it is over the file's upload starts.
+        bool                     previewFirst = false;
     };
     // Receiver: a download that came out short or didn't match while the sender's upload may still have
     // been arriving. Between two steps the entry is Downloading with waitingForUpload set.
@@ -664,6 +696,13 @@ class Core : public QObject
     // false: the server can't be asked (the message goes at once). files: what a check the connection
     // cut short still had to confirm (a repost); else the job's file and preview.
     bool    startServerCheck(int id, const QVector<ServerCheck::File>* files = nullptr);
+    // 2.4 link previews: a background send's preview on a server that can't be asked for a file's size
+    // (TeaSpeak) is checked as soon as its upload is reported complete, before the file goes up. false: not
+    // such a send (the file goes up at once, as before).
+    bool    startPreviewCheck(int id);
+    static ServerCheck::File previewCheckFile(const QString& path, const QByteArray& jpeg);
+    // The check is still wanted: its job uploaded and its message waiting (a previewFirst check: still preparing).
+    static bool serverCheckWanted(const ServerCheck& check, const UploadJob* job);
     void    runServerChecks();
     void    onServerCheckAnswer(int id, const QString& returnCode, uploadwait::Answer answer, quint64 size);
     void    finishServerCheck(int id);
@@ -711,6 +750,7 @@ class Core : public QObject
     QHash<QString, int>        m_resumeAttempts;      // key -> automatic restarts without a success in between
     QHash<QString, int>        m_inUse;               // key -> number of users (players, viewer, animations)
     SpoilerState               m_spoilers;            // 2.2 spoiler: flagged and revealed keys (this session)
+    QSet<QString>              m_localOnly;           // 2.4 link previews: entries of files from websites (adoptLocalFile)
 
     QHash<int, UploadJob>   m_uploads;
     QHash<int, UploadExtra> m_uploadExtra;

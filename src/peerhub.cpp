@@ -16,6 +16,7 @@
 #include "emojidata.h" // 2.2 emoji
 #include "floodgovernor.h"
 #include "i18n.h"
+#include "linkpreview/lphub.h" // 2.4 link previews
 #include "pluginlink.h"
 #include "presenceline.h"
 #include "settings.h"
@@ -164,6 +165,7 @@ PeerHub::PeerHub(Core* core, QObject* parent)
     m_directory = new peers::PeerDirectory(*m_env, *m_link, this);
     m_store     = new ReactionStore(this);
     m_text      = new TextReactHub(core, m_link, m_directory, this); // 2.3 text reactions: the same transport and presence
+    m_previews  = new linkpreview::Hub(core, m_link, &m_text->index(), this); // 2.4 link previews: the same transport, the text index
 
     // Member timers only (children): nothing of ours can be pending once the hub is gone.
     m_timer = new QTimer(this);
@@ -231,6 +233,8 @@ PeerHub::~PeerHub()
     g_queuedCommands = 0;
     compose::setPresenceLineFactory(nullptr);
     // Before m_env goes: they hold references to it.
+    delete m_previews; // 2.4 link previews: before the index (m_text) and the transport it uses
+    m_previews = nullptr;
     delete m_text; // 2.3 text reactions: before the transport it sends with
     m_text = nullptr;
     delete m_directory;
@@ -261,6 +265,7 @@ void PeerHub::start()
     m_store->load(reactionsPath(), QDateTime::currentSecsSinceEpoch());
     m_dirty = false;
     m_text->start(); // 2.3 text reactions: text-reactions.json
+    m_previews->start(); // 2.4 link previews: link-previews.json
     applySettings();
     for (const uint64 sch : ts3::connections()) {
         if (!ts3::isConnected(sch))
@@ -276,6 +281,7 @@ void PeerHub::prepareShutdown()
     if (m_shuttingDown)
         return;
     m_shuttingDown = true;
+    m_previews->prepareShutdown(); // 2.4 link previews: the sender pipeline stops (fetch, worker, upload)
     compose::setPresenceLineFactory(nullptr);
     m_timer->stop();
     m_coalesce->stop();
@@ -300,7 +306,8 @@ void PeerHub::prepareShutdown()
 void PeerHub::applySettings()
 {
     const Settings& s = Settings::instance();
-    m_directory->setLocal({QString::fromLatin1(TSMEDIA_VERSION), s.sharePresence, s.showReactions});
+    m_directory->setLocal({QString::fromLatin1(TSMEDIA_VERSION), s.sharePresence, s.showReactions, s.showLinkPreviews && s.makeLinkPreviews});
+    m_previews->applySettings(); // 2.4 link previews
 }
 
 // ---- receiving ------------------------------------------------------------------------------------

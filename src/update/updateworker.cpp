@@ -1,5 +1,6 @@
 #include "updateworker.h"
 
+#include <QDateTime>
 #include <QMetaObject>
 
 #include <windows.h>
@@ -71,10 +72,13 @@ void* launch(Job* job)
 class CheckJob : public Job
 {
   public:
-    CheckJob(std::shared_ptr<WorkerLink> link, QVector<TrustedKey> keys, QSet<int> revoked, std::function<void(const CheckOutcome&)> done)
+    CheckJob(std::shared_ptr<WorkerLink> link, QVector<TrustedKey> keys, QSet<int> revoked, Version markerAbove, Arch arch,
+             std::function<void(const CheckOutcome&)> done)
         : Job(std::move(link))
         , m_keys(std::move(keys))
         , m_revoked(std::move(revoked))
+        , m_markerAbove(markerAbove)
+        , m_arch(arch)
         , m_done(std::move(done))
     {
     }
@@ -84,10 +88,12 @@ class CheckJob : public Job
         CheckOutcome   outcome;
         http::Response response = fetch(manifestUrl());
         outcome.file            = QString::fromLatin1(kManifestName);
+        bool legacy             = false;
         if (response.error == http::Error::NotFound && !canceled()) {
             // A release without the format 2 file (made the 2.2.0 way): its signed file instead.
             response     = fetch(legacyManifestUrl());
             outcome.file = QString::fromLatin1(kLegacyManifestName);
+            legacy       = true;
         }
         outcome.httpError     = response.error;
         outcome.httpStatus    = response.status;
@@ -96,6 +102,17 @@ class CheckJob : public Job
         outcome.host          = response.finalHost;
         if (response.error == http::Error::None)
             outcome.manifestError = readManifest(response.body, m_keys, m_revoked, &outcome.manifest, &outcome.detail);
+        // Is this newer release an important update? Its marker sits in that release only (the URL is
+        // built from the version just validated), never after the legacy fallback.
+        if (!legacy && outcome.ok() && m_markerAbove.isValid() && outcome.manifest.version > m_markerAbove
+            && outcome.manifest.file(FileKind::Plugin, m_arch) && !canceled()) {
+            const http::Response marker = fetch(importantUrl(outcome.manifest.version));
+            outcome.markerFetched       = true;
+            outcome.markerHttp          = marker.error;
+            if (marker.error == http::Error::None)
+                outcome.markerError = readImportant(marker.body, m_keys, m_revoked, QDateTime::currentDateTimeUtc().date(), &outcome.marker,
+                                                    &outcome.markerDetail);
+        }
         auto done = m_done;
         post([done, outcome] { done(outcome); });
     }
@@ -113,6 +130,8 @@ class CheckJob : public Job
 
     QVector<TrustedKey>                      m_keys;
     QSet<int>                                m_revoked;
+    Version                                  m_markerAbove;
+    Arch                                     m_arch;
     std::function<void(const CheckOutcome&)> m_done;
 };
 
@@ -355,9 +374,9 @@ class PrepareJob : public Job
 } // namespace
 
 void* UpdateWorker::startCheck(const std::shared_ptr<WorkerLink>& link, const QVector<TrustedKey>& keys, const QSet<int>& revoked,
-                               std::function<void(const CheckOutcome&)> done)
+                               const Version& markerAbove, Arch arch, std::function<void(const CheckOutcome&)> done)
 {
-    return launch(new CheckJob(link, keys, revoked, std::move(done)));
+    return launch(new CheckJob(link, keys, revoked, markerAbove, arch, std::move(done)));
 }
 
 void* UpdateWorker::startPrepare(const std::shared_ptr<WorkerLink>& link, const Layout& layout, const Manifest& manifest,

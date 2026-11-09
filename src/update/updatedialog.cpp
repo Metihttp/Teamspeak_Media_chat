@@ -277,12 +277,13 @@ ConsentWindow::ConsentWindow(QWidget* parent)
 
     auto* heading = label(i18n::t("Keep TS Media chat up to date?"), this);
     makeHeading(heading);
-    auto* body = label(i18n::t("TS Media chat can check GitHub once a day for a new version. If there is one, it shows you what's new and asks "
-                               "before installing anything."),
+    auto* body = label(i18n::t("TS Media chat can check GitHub once a day for a new version. Important fixes signed by the author install by "
+                               "themselves and start with the next TeamSpeak start; anything else shows you what's new and waits for your "
+                               "click on Update."),
                        this);
-    auto* hint = label(i18n::t("This is the only internet connection the plugin makes. GitHub sees your IP address, and Windows may check "
-                               "GitHub's certificate with its issuer. No names, servers or chats are sent. You can change this later in "
-                               "Settings → Updates."),
+    auto* hint = label(i18n::t("Apart from link previews, this is the only internet connection the plugin makes. GitHub sees your IP address, "
+                               "and Windows may check GitHub's certificate with its issuer. No names, servers or chats are sent. You can "
+                               "change this later in Settings → Privacy & updates."),
                        this, "hint");
     auto* no = button(i18n::t("&No thanks"), this);
     auto* on = button(i18n::t("&Turn on"), this, true);

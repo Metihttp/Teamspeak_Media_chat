@@ -331,6 +331,43 @@ class TestChatLayout : public QObject
         QCOMPARE(layoutdoc::systemKindOf(QStringLiteral("\"Bob\" was banned"), nullptr), K::Danger);
     }
 
+    // 2.3.4: the newer-version hint's link is the plugin's only in TS Media's own line (ts3::printInfoLink),
+    // unstyled and styled, never where users or servers write (ChatIntegration::filterOwnLink).
+    void ownPrintLinks()
+    {
+        const QString href  = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest#tsmupd-0123456789abcdef-2.3.5");
+        const QString label = QStringLiteral("Check for updates");
+        for (const bool dark : {true, false}) {
+            const tschat::Skin s = dark ? tschat::darkSkin() : tschat::lightSkin();
+            for (const Mode mode : {Mode::Classic, Mode::Cozy, Mode::Compact}) {
+                QTextDocument doc;
+                fillChat(doc, s);
+                tschat::append(&doc, tschat::printLinkHtml(s, QStringLiteral("Someone in this channel has TS Media chat 2.3.5 (you have 2.3.4)."), href, label));
+                const int own = doc.blockCount() - 1;
+                // The same link in a message (also one imitating our prefix), a system row, a server's
+                // welcome and another plugin's line.
+                tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("20:16:00"), 17, kUidAlice, QStringLiteral("Alice"), tschat::linkHtml(s, href, label)));
+                tschat::append(&doc, tschat::messageHtml(s, QString(), 17, kUidAlice, QStringLiteral("Alice"),
+                                                         QStringLiteral("<b>TS Media chat</b> ") + tschat::linkHtml(s, href, label)));
+                tschat::append(&doc, tschat::systemHtml(s, QStringLiteral("20:16:02"), tschat::linkHtml(s, href, label)));
+                tschat::append(&doc, tschat::statusHtml(s, QStringLiteral("20:16:03"), QStringLiteral("<b>TS Media chat</b> ") + tschat::linkHtml(s, href, label),
+                                                        QStringLiteral("#0aa537"), true));
+                tschat::append(&doc, QStringLiteral("<span style=\"color:#00008b\">Some plugin ") + tschat::linkHtml(s, href, label) + QStringLiteral("</span>"));
+                if (mode != Mode::Classic)
+                    QVERIFY(layoutdoc::styleAll(&doc, envFor(mode, dark)) > 0);
+                const QString where = QStringLiteral("%1 %2").arg(dark ? QStringLiteral("dark") : QStringLiteral("light")).arg(static_cast<int>(mode));
+                QVERIFY2(layoutdoc::read(doc.findBlockByNumber(own)).ownPrint, qPrintable(where));
+                QVERIFY2(layoutdoc::ownPrintLink(doc.findBlockByNumber(own), href), qPrintable(where));
+                QVERIFY(!layoutdoc::ownPrintLink(doc.findBlockByNumber(own), href + QLatin1Char('0')));
+                QVERIFY(!layoutdoc::ownPrintLink(doc.findBlockByNumber(own), QString()));
+                QVERIFY(!layoutdoc::ownPrintLink(doc.findBlockByNumber(blockWith(doc, QStringLiteral("2 files sent"))), href)); // ours, without it
+                for (int n = own + 1; n < doc.blockCount(); ++n)
+                    QVERIFY2(!layoutdoc::ownPrintLink(doc.findBlockByNumber(n), href), qPrintable(where + QStringLiteral(" block %1").arg(n)));
+                QVERIFY(!layoutdoc::ownPrintLink(QTextBlock(), href));
+            }
+        }
+    }
+
     // Review: Qt's font cache keeps a font's family after the plugin is unloaded, so a family must never
     // be a QStringLiteral (its data is in our DLL): QString::fromLatin1, like setStyleSheet and QSettings.
     void noLiteralFontFamilies()

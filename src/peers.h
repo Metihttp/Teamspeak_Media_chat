@@ -14,6 +14,9 @@
 //    unloaded) makes someone "without" at once.
 //  * Private chats: one HELLO to the partner, at most once a minute per person.
 //  * The server chat never asks anyone.
+//  * 2.4: a change of our capabilities (caps=p,r,l) is told to the channel with one HELLO rr=0 (nobody
+//    answers), after the settle time and at most once per helloMinIntervalMs; rapid changes make one. A lost
+//    one (flood protection, no answer) goes again like a HELLO. Private partners ask again (recheckPartner).
 // Nothing is kept on disk. People are counted by identity (UID): clones and ServerQuery clients are
 // left out.
 
@@ -128,9 +131,13 @@ class PeerDirectory : public QObject
     // Our own HELLO / HI content.
     struct Local {
         QString version;
-        bool    presence  = true; // Settings::sharePresence
-        bool    reactions = true; // Settings::showReactions (caps "r")
+        bool    presence     = true;  // Settings::sharePresence
+        bool    reactions    = true;  // Settings::showReactions (caps "r")
+        bool    linkPreviews = false; // 2.4: Settings::showLinkPreviews && makeLinkPreviews (caps "l": I make link previews)
     };
+
+    // 2.4 auto-load: what is known of someone's capability (capabilityState).
+    enum class CapState { Unknown, Checking, Yes, No };
 
     PeerDirectory(Env& env, Sender& sender, QObject* parent = nullptr);
     PeerDirectory(Env& env, Sender& sender, const Limits& limits, QObject* parent = nullptr);
@@ -153,8 +160,17 @@ class PeerDirectory : public QObject
     // For a send target (TextMessageTarget_* mode). A private target is checked when it is unknown.
     PresenceSummary summary(quint64 sch, int targetMode, ClientId partner);
     void            checkPartner(quint64 sch, ClientId client); // at most once a minute per person
+    // 2.4 auto-load: someone who told us their caps (HELLO / HI) longer than partnerPingMs ago is asked again (at most
+    // once per partnerPingMs; nobody else): they may have changed them outside our channel, where their re-announce
+    // doesn't reach us. capabilityState() says Checking until they answer or memberTimeoutMs passes.
+    void            recheckPartner(quint64 sch, ClientId client);
     PeerState       stateOf(quint64 sch, const QString& uid) const;
     bool            hasCapability(quint64 sch, const QString& uid, const char* cap) const;
+    // 2.4 auto-load: uid's cap on sch: Yes / No once they said HELLO or HI (No also after BYE or a member time-out),
+    // Checking while our HELLO waits for their answer (a member of our channel, or a private ping, also a recheck of
+    // someone who said they don't have cap), Unknown when nobody asked (presence off or commands blocked here, not in
+    // our channel and never pinged, no connection).
+    CapState        capabilityState(quint64 sch, const QString& uid, const char* cap) const;
     bool            channelHasCapability(quint64 sch, const char* cap) const; // a member of our channel
     bool            isAvailable(quint64 sch) const; // presence on and commands not blocked
     quint64         channelOf(quint64 sch) const;   // our channel as the directory saw us enter it
@@ -174,6 +190,10 @@ class PeerDirectory : public QObject
     void presenceChanged(quint64 sch);
     // Reactions: a while after entering a channel with someone that supports reactions (SYNC).
     void syncDue(quint64 sch);
+    // 2.3.4: a HELLO / HI named the sender's TS Media version (the newer-version hint, upd::PeerHints).
+    // UNTRUSTED: anyone can claim any version. Only for a visible person (not a ServerQuery client, not
+    // our own identity on another client); inOwnChannel: they are in our channel. Never for BYE.
+    void versionSeen(quint64 sch, ClientId client, const QString& version, bool inOwnChannel);
 
   private:
     struct PeerInfo {
@@ -199,6 +219,9 @@ class PeerDirectory : public QObject
         qint64                   enteredMs = -1;
         qint64                   helloDue  = -1;
         qint64                   lastHelloMs = -1;
+        qint64                   capsDue   = -1; // 2.4: our changed caps go out (HELLO rr=0) then
+        QString                  capsSent;       // ... what our last HELLO to the channel said (joined: no QList ==)
+        int                      capsAttempts = 0; // ... sent for the latest change (a lost one goes again)
         int                      helloAttempts = 0;
         bool                     helloInFlight = false;
         bool                     announced = false;
@@ -217,6 +240,9 @@ class PeerDirectory : public QObject
     void    enterChannel(quint64 sch, quint64 channel);
     void    addMember(Conn& c, quint64 sch, ClientId client, qint64 deadlineMs);
     void    sendHello(quint64 sch);
+    void    sendCaps(quint64 sch); // 2.4: our changed caps to the channel, HELLO rr=0
+    void    capsDone(quint64 sch, quint64 generation, const QString& sent, peers::SendResult result);
+    void    ping(quint64 sch, ClientId client, bool recheck); // checkPartner / recheckPartner
     void    sendHi(quint64 sch);
     void    helloDone(quint64 sch, quint64 generation, peers::SendResult result);
     void    reschedule();

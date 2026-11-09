@@ -29,6 +29,9 @@
 class PluginLink;
 class QTimer;
 class TextReactHub; // 2.3 text reactions
+namespace linkpreview {
+class Hub; // 2.4 link previews
+}
 
 class PeerHub : public QObject
 {
@@ -42,12 +45,13 @@ class PeerHub : public QObject
 
     void start();           // reactions.json, HELLO on the servers already connected, the presence line
     void prepareShutdown(); // BYE where we said hello (no waiting), reactions.json written, timers off
-    void applySettings();   // Settings::sharePresence / showReactions changed
+    void applySettings();   // Settings::sharePresence / showReactions / the 2.4 link-preview settings changed
 
     peers::PeerDirectory* directory() const { return m_directory; }
     PluginLink*           link() const { return m_link; }
     ReactionStore*        store() const { return m_store; }
     TextReactHub*         textReactions() const { return m_text; } // 2.3 text reactions (textreacthub.h)
+    linkpreview::Hub*     linkPreviews() const { return m_previews; } // 2.4 link previews (linkpreview/lphub.h)
 
     // ---- reactions (GUI) -----------------------------------------------------------------------
     // 2.2 emoji: TooMany: no room for another reaction (yours: kMaxReactionsPerSet; the media's:
@@ -126,6 +130,7 @@ class PeerHub : public QObject
     peers::PeerDirectory*    m_directory = nullptr;
     ReactionStore*           m_store     = nullptr;
     TextReactHub*            m_text      = nullptr; // 2.3 text reactions: reactions on messages without media
+    linkpreview::Hub*        m_previews  = nullptr; // 2.4 link previews: LP over the same transport, the text index
     QTimer*                  m_timer     = nullptr; // debounced sends, scheduled SYNC answers
     QTimer*                  m_coalesce  = nullptr; // reactionsChanged
     QTimer*                  m_saveTimer = nullptr;

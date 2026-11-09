@@ -258,12 +258,19 @@ class TestProtocol : public QObject
     void presenceOffSendsNothing();
     void partnerCheck();
     void queryClientsAndClonesExcluded();
+    void versionSeenSignal();
     void syncDueNeedsReactionPeer();
     void blockedHidesPresence();
     void floodedHelloIsRetried();
     void presenceOffDropsHeldHello();
     void presenceTexts();
     void presenceNames();
+    // 2.4 auto-load: the link-preview capability
+    void capsIncludeLinkPreviews();
+    void capsChangeIsReannounced();
+    void lostCapsChangeIsSentAgain();
+    void capabilityState();
+    void partnerAskedAgainForChangedCaps();
 
     // reactions
     void storeMergeRules();
@@ -1117,6 +1124,70 @@ void TestProtocol::queryClientsAndClonesExcluded()
     QCOMPARE(s.has.size(), 1);
 }
 
+// 2.3.4: the newer-version hint's input. Every HELLO / HI with a version from someone visible, who isn't a
+// ServerQuery client or our own identity on another client (also before we entered a channel); never BYE.
+void TestProtocol::versionSeenSignal()
+{
+    struct Seen {
+        quint64 sch;
+        quint16 client;
+        QString version;
+        bool    inChannel;
+    };
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    env.add(3, kUidReza, QStringLiteral("Reza"), 20);                    // elsewhere on the server
+    env.add(4, kUidMe, QStringLiteral("Me too"), 10);                    // our own clone
+    env.add(5, QStringLiteral("serveradmin"), QStringLiteral("bot"), 10, true);
+    env.add(6, QStringLiteral("q0Xn6Ghost000000000000000000="), QStringLiteral("Ghost"), 0); // not visible
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    QVector<Seen> seen;
+    connect(&dir, &peers::PeerDirectory::versionSeen, this,
+            [&seen](quint64 sch, peers::ClientId client, const QString& version, bool inChannel) { seen.append({sch, client, version, inChannel}); });
+    const auto from = [&dir](quint16 client, const QString& uid, const char* raw) { dir.received(1, client, uid, QStringLiteral("x"), *proto::parse(raw)); };
+
+    // Before connected(): the clone is still ours; Sara counts, not yet as in our channel.
+    from(4, kUidMe, "tsm1 HELLO pv=1 v=2.3.9 caps=p,r rr=1");
+    QCOMPARE(seen.size(), 0);
+    from(2, kUidSara, "tsm1 HI pv=1 v=2.3.5");
+    QCOMPARE(seen.size(), 1);
+    QVERIFY(!seen.last().inChannel);
+
+    dir.connected(1);
+    advance(env, dir, 900);
+    seen.clear();
+    from(2, kUidSara, "tsm1 HELLO pv=1 v=2.3.5 caps=p,r rr=1");
+    QCOMPARE(seen.size(), 1);
+    QCOMPARE(seen.last().sch, quint64(1));
+    QCOMPARE(seen.last().client, quint16(2));
+    QCOMPARE(seen.last().version, QStringLiteral("2.3.5"));
+    QVERIFY(seen.last().inChannel);
+    from(2, kUidSara, "tsm1 HI pv=1 v=2.3.5"); // every HELLO / HI (the hint dedupes)
+    QCOMPARE(seen.size(), 2);
+    from(3, kUidReza, "tsm1 HI pv=1 v=2.4.0");
+    QCOMPARE(seen.size(), 3);
+    QCOMPARE(seen.last().version, QStringLiteral("2.4.0"));
+    QVERIFY(!seen.last().inChannel);
+    // The protocol's looser version text passes through (PeerHints parses it strictly).
+    from(2, kUidSara, "tsm1 HI pv=1 v=2.3.4.1");
+    QCOMPARE(seen.size(), 4);
+    QCOMPARE(seen.last().version, QStringLiteral("2.3.4.1"));
+
+    // Never: BYE, no or a malformed version, our clone, a ServerQuery client, someone not visible.
+    from(2, kUidSara, "tsm1 BYE");
+    from(2, kUidSara, "tsm1 HELLO pv=1 caps=p,r rr=1");
+    from(2, kUidSara, "tsm1 HI pv=1 v=1.2.3.4.5");
+    from(4, kUidMe, "tsm1 HI pv=1 v=2.3.9");
+    from(5, QStringLiteral("serveradmin"), "tsm1 HI pv=1 v=2.3.9");
+    from(6, QStringLiteral("q0Xn6Ghost000000000000000000="), "tsm1 HI pv=1 v=2.3.9");
+    QCOMPARE(seen.size(), 4);
+    // Nor a second connection's clone of us.
+    dir.received(2, 4, kUidMe, QStringLiteral("Me too"), *proto::parse("tsm1 HI pv=1 v=2.3.9"));
+    QCOMPARE(seen.size(), 4);
+}
+
 void TestProtocol::syncDueNeedsReactionPeer()
 {
     FakeEnv    env;
@@ -1290,6 +1361,319 @@ void TestProtocol::presenceNames()
     const QString longName = peers::presenceName(QString(40, QLatin1Char('x')));
     QCOMPARE(longName.size(), 32);
     QVERIFY(longName.endsWith(QChar(0x2026)));
+}
+
+// ---- 2.4 auto-load: "l", I make link previews -------------------------------------------------------------
+
+void TestProtocol::capsIncludeLinkPreviews()
+{
+    const auto capsOf = [](bool reactions, bool links) {
+        FakeEnv    env;
+        FakeSender sender;
+        env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+        peers::PeerDirectory dir(env, sender);
+        dir.setAutoTimer(false);
+        dir.setLocal({QStringLiteral("2.4.0"), true, reactions, links});
+        dir.connected(1);
+        advance(env, dir, 1000);
+        dir.received(1, 2, kUidSara, QStringLiteral("Sara"), hello()); // asks: we answer with a HI
+        advance(env, dir, 1000);
+        dir.checkPartner(1, 2); // a private HELLO (Sara answered just now: no ping), so another partner
+        env.add(3, kUidReza, QStringLiteral("Reza"), 77);
+        dir.checkPartner(1, 3);
+        QStringList out;
+        for (const char* type : {"HELLO", "HI"}) {
+            for (const FakeSender::Sent& s : sender.sent) {
+                if (s.message.type == type)
+                    out << QString::fromLatin1(type) + QLatin1Char(' ') + QString::fromLatin1(s.message.value("caps"));
+            }
+        }
+        return out;
+    };
+    QCOMPARE(capsOf(true, true), QStringList({QStringLiteral("HELLO p,r,l"), QStringLiteral("HELLO p,r,l"), QStringLiteral("HI p,r,l")}));
+    QCOMPARE(capsOf(true, false), QStringList({QStringLiteral("HELLO p,r"), QStringLiteral("HELLO p,r"), QStringLiteral("HI p,r")}));
+    QCOMPARE(capsOf(false, true), QStringList({QStringLiteral("HELLO p,l"), QStringLiteral("HELLO p,l"), QStringLiteral("HI p,l")}));
+    // The default Local (every 2.2/2.3 caller) says nothing about link previews.
+    QVERIFY(!peers::PeerDirectory::Local().linkPreviews);
+    // 2.3.x and older read l as an unknown cap: ignored, the rest as before.
+    const std::optional<proto::Hello> h = proto::readHello(*proto::parse("tsm1 HELLO pv=1 v=2.4.0 caps=p,r,l rr=1"));
+    QVERIFY(h);
+    QVERIFY(h->hasCap("r"));
+    QVERIFY(h->hasCap("l"));
+}
+
+void TestProtocol::capsChangeIsReannounced()
+{
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    dir.connected(1);
+    advance(env, dir, 1000);
+    QCOMPARE(sender.count("HELLO"), 1);
+    advance(env, dir, 10000);
+    // "Make previews for links I send" off: one HELLO rr=0 with the new caps after the settle time.
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, false});
+    advance(env, dir, 799);
+    QCOMPARE(sender.count("HELLO"), 1);
+    advance(env, dir, 1);
+    QCOMPARE(sender.count("HELLO"), 2);
+    const auto* h = sender.last("HELLO");
+    QVERIFY(h->target.channel);
+    QCOMPARE(h->message.value("caps"), QByteArray("p,r"));
+    QVERIFY(h->message.value("rr") != "1"); // nobody answers
+    QVERIFY(!proto::readHello(h->message)->replyRequested);
+    advance(env, dir, 60000);
+    QCOMPARE(sender.count("HELLO"), 2);
+    // Two toggles within the settle time: one HELLO with the last caps; the HELLO interval (3 s) is kept.
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 300);
+    dir.setLocal({QStringLiteral("2.4.0"), true, false, true});
+    advance(env, dir, 800);
+    QCOMPARE(sender.count("HELLO"), 3);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,l"));
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 900); // settled, but within 3 s of the last HELLO
+    QCOMPARE(sender.count("HELLO"), 3);
+    advance(env, dir, 2200);
+    QCOMPARE(sender.count("HELLO"), 4);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,r,l"));
+    // Toggled back before it went: nothing (the channel knows these caps).
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, false});
+    advance(env, dir, 100);
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 4);
+    // The same caps again: nothing.
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 4);
+    // A HELLO already due carries them (entering a channel): no second one.
+    env.clients[1].channel = 11;
+    dir.clientMoved(1, 1, 10, 11);
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, false});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 5);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,r"));
+    QCOMPARE(sender.last("HELLO")->message.value("rr"), QByteArray("1"));
+    // Presence off: BYE, and no caps HELLO for a change meanwhile; commands blocked: none either.
+    dir.setLocal({QStringLiteral("2.4.0"), false, true, false});
+    dir.setLocal({QStringLiteral("2.4.0"), false, true, true});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 5);
+    QCOMPARE(sender.count("BYE"), 1);
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true}); // on again: one full HELLO
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 6);
+    QCOMPARE(sender.last("HELLO")->message.value("rr"), QByteArray("1"));
+    sender.isBlocked = true;
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, false});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 6);
+    sender.isBlocked = false;
+    QCOMPARE(dir.nextWakeMs(), qint64(-1));
+
+    // The receiving side: a HELLO rr=0 updates what it knows and asks for no answer.
+    FakeEnv    them;
+    FakeSender theirSender;
+    them.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    peers::PeerDirectory other(them, theirSender);
+    other.setAutoTimer(false);
+    other.connected(1);
+    advance(them, other, 1000);
+    other.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HI pv=1 v=2.4.0 caps=p,r,l"));
+    QCOMPARE(other.capabilityState(1, kUidSara, "l"), peers::PeerDirectory::CapState::Yes);
+    const int his = theirSender.count("HI");
+    other.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HELLO pv=1 v=2.4.0 caps=p,r rr=0"));
+    QCOMPARE(other.capabilityState(1, kUidSara, "l"), peers::PeerDirectory::CapState::No);
+    advance(them, other, 5000);
+    QCOMPARE(theirSender.count("HI"), his);
+}
+
+void TestProtocol::capabilityState()
+{
+    using Cap = peers::PeerDirectory::CapState;
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    env.add(3, kUidReza, QStringLiteral("Reza"), 10);
+    env.add(5, QStringLiteral("q0Xn6Pari0000000000000000000="), QStringLiteral("Pari"), 77);
+    const QString pari = QStringLiteral("q0Xn6Pari0000000000000000000=");
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Unknown); // no connection yet
+    dir.connected(1);
+    // Members of our channel before they answered (our HELLO is still settling, then on its way): checking.
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Checking);
+    advance(env, dir, 1000);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Checking);
+    QCOMPARE(dir.capabilityState(1, pari, "l"), Cap::Unknown); // a stranger (another channel, never pinged)
+    QCOMPARE(dir.capabilityState(1, QString(), "l"), Cap::Unknown);
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HI pv=1 v=2.4.0 caps=p,r,l"));
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Yes);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "r"), Cap::Yes);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "x"), Cap::No);
+    // Reza never answers: No once his time is up.
+    QCOMPARE(dir.capabilityState(1, kUidReza, "l"), Cap::Checking);
+    advance(env, dir, 4000);
+    QCOMPARE(dir.capabilityState(1, kUidReza, "l"), Cap::No);
+    // A 2.3 HI (no l): No.
+    dir.received(1, 3, kUidReza, QStringLiteral("Reza"), *proto::parse("tsm1 HI pv=1 v=2.3.3 caps=p,r"));
+    QCOMPARE(dir.capabilityState(1, kUidReza, "l"), Cap::No);
+    QCOMPARE(dir.capabilityState(1, kUidReza, "r"), Cap::Yes);
+    // A re-announce without l turns Yes into No, with l back again.
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HELLO pv=1 v=2.4.0 caps=p,r rr=0"));
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::No);
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HELLO pv=1 v=2.4.0 caps=p,l rr=0"));
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Yes);
+    // BYE: No.
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), proto::makeBye());
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::No);
+    // A private ping pending: checking; its answer: Yes; no answer: No.
+    dir.checkPartner(1, 5);
+    QCOMPARE(dir.capabilityState(1, pari, "l"), Cap::Checking);
+    advance(env, dir, 4000);
+    QCOMPARE(dir.capabilityState(1, pari, "l"), Cap::No);
+    dir.received(1, 5, pari, QStringLiteral("Pari"), *proto::parse("tsm1 HI pv=1 v=2.4.0 caps=p,l"));
+    QCOMPARE(dir.capabilityState(1, pari, "l"), Cap::Yes);
+    QCOMPARE(dir.capabilityState(2, pari, "l"), Cap::Unknown); // another connection
+
+    // Our presence off: nobody is asked, so a member who hasn't spoken is Unknown (never "checking" for good);
+    // what someone told us themselves still counts.
+    FakeEnv    quiet;
+    FakeSender quietSender;
+    quiet.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    quiet.add(3, kUidReza, QStringLiteral("Reza"), 10);
+    peers::PeerDirectory off(quiet, quietSender);
+    off.setAutoTimer(false);
+    off.setLocal({QStringLiteral("2.4.0"), false, true, true});
+    off.connected(1);
+    advance(quiet, off, 60000);
+    QCOMPARE(off.capabilityState(1, kUidReza, "l"), Cap::Unknown);
+    off.received(1, 2, kUidSara, QStringLiteral("Sara"), hello(true, "p,r,l"));
+    QCOMPARE(off.capabilityState(1, kUidSara, "l"), Cap::Yes);
+    QVERIFY(quietSender.sent.isEmpty());
+}
+
+// 2.4 auto-load: a caps HELLO the server's flood protection dropped (or that got no answer) goes again like a HELLO:
+// until the channel hears it, everyone keeps our old caps (an old "no l" makes them load our links from the websites
+// while we share previews).
+void TestProtocol::lostCapsChangeIsSentAgain()
+{
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, false});
+    dir.connected(1);
+    advance(env, dir, 1000);
+    QCOMPARE(sender.count("HELLO"), 1);
+    advance(env, dir, 10000);
+    // "Make previews for links I send" on, and its HELLO rr=0 is lost: again after helloRetryMs, helloRetries times.
+    sender.result = peers::SendResult::Flooded;
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 800);
+    QCOMPARE(sender.count("HELLO"), 2);
+    advance(env, dir, 4999);
+    QCOMPARE(sender.count("HELLO"), 2);
+    sender.result = peers::SendResult::Failed; // no answer in time: the same
+    advance(env, dir, 1);
+    QCOMPARE(sender.count("HELLO"), 3);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,r,l"));
+    QVERIFY(sender.last("HELLO")->target.channel);
+    QVERIFY(!proto::readHello(sender.last("HELLO")->message)->replyRequested);
+    advance(env, dir, 5000);
+    QCOMPARE(sender.count("HELLO"), 4);
+    advance(env, dir, 60000);
+    QCOMPARE(sender.count("HELLO"), 4); // given up: the next HELLO (a channel entry) carries them
+    // Delivered: once.
+    sender.result = peers::SendResult::Ok;
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, false});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 5);
+    advance(env, dir, 60000);
+    QCOMPARE(sender.count("HELLO"), 5);
+    // Lost, then changed again before its retry: the newer caps go, once.
+    sender.result = peers::SendResult::Flooded;
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 3000);
+    QCOMPARE(sender.count("HELLO"), 6);
+    sender.result = peers::SendResult::Ok;
+    dir.setLocal({QStringLiteral("2.4.0"), true, false, true});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 7);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,l"));
+    advance(env, dir, 60000);
+    QCOMPARE(sender.count("HELLO"), 7);
+    // Superseded (a newer HELLO went instead) or blocked: no retry.
+    sender.result = peers::SendResult::Superseded;
+    dir.setLocal({QStringLiteral("2.4.0"), true, true, true});
+    advance(env, dir, 60000);
+    QCOMPARE(sender.count("HELLO"), 8);
+    sender.result = peers::SendResult::Blocked;
+    dir.setLocal({QStringLiteral("2.4.0"), true, false, true});
+    advance(env, dir, 60000);
+    QCOMPARE(sender.count("HELLO"), 9);
+    QCOMPARE(dir.nextWakeMs(), qint64(-1));
+}
+
+// 2.4 auto-load: someone who said they don't make link previews may have switched it on outside our channel (their
+// re-announce goes to their channel only). Their private link asks them again, once that is older than a minute.
+void TestProtocol::partnerAskedAgainForChangedCaps()
+{
+    using Cap = peers::PeerDirectory::CapState;
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10); // in our channel at first
+    env.add(3, kUidReza, QStringLiteral("Reza"), 11); // never said HELLO or HI
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    dir.connected(1);
+    advance(env, dir, 1000);
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HI pv=1 v=2.4.0 caps=p,r"));
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::No);
+    env.clients[2].channel = 11;
+    dir.clientMoved(1, 2, 10, 11);
+    const int hellos = sender.count("HELLO");
+    // Heard from her within the last minute: not asked again.
+    advance(env, dir, 30000);
+    dir.recheckPartner(1, 2);
+    QCOMPARE(sender.count("HELLO"), hellos);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::No);
+    // Later: one private HELLO asking for an answer; checking until she answers.
+    advance(env, dir, 31000);
+    dir.recheckPartner(1, 2);
+    QCOMPARE(sender.count("HELLO"), hellos + 1);
+    const auto* h = sender.last("HELLO");
+    QVERIFY(!h->target.channel);
+    QCOMPARE(h->target.clients, QVector<peers::ClientId>({2}));
+    QVERIFY(proto::readHello(h->message)->replyRequested);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Checking);
+    dir.recheckPartner(1, 2); // at most once a minute
+    advance(env, dir, 1000);
+    dir.recheckPartner(1, 2);
+    QCOMPARE(sender.count("HELLO"), hellos + 1);
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HI pv=1 v=2.4.0 caps=p,r,l"));
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Yes);
+    // She switches it off again and doesn't answer the next question: No once the answer is overdue.
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HELLO pv=1 v=2.4.0 caps=p,r rr=0"));
+    advance(env, dir, 61000);
+    dir.recheckPartner(1, 2);
+    QCOMPARE(sender.count("HELLO"), hellos + 2);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Checking);
+    advance(env, dir, 4000);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::No);
+    QCOMPARE(dir.stateOf(1, kUidSara), peers::PeerState::Has); // she still has TS Media
+    // Someone who never told us their caps isn't asked by it (checkPartner asks them); nor anyone with presence off.
+    dir.recheckPartner(1, 3);
+    QCOMPARE(sender.count("HELLO"), hellos + 2);
+    advance(env, dir, 120000);
+    dir.setLocal({QStringLiteral("2.4.0"), false, true, true});
+    dir.recheckPartner(1, 2);
+    QCOMPARE(sender.count("HELLO"), hellos + 2);
 }
 
 // ---- reactions ------------------------------------------------------------------------------------

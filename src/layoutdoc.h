@@ -75,6 +75,9 @@ struct Row {
 // "*** " ([MESSAGE_INFO icon]<time> text: the server tab, private chats); "*** <date>" is a day line and
 // "*** Chat begins <date> <time>" (or an icon-less "*** " line) a history marker.
 Row read(const QTextBlock& block);
+// 2.3.4: block is TS Media's own line (ownPrint) and has a link to exactly href (ts3::printInfoLink). A
+// user's message never is one: it always has TeamSpeak's nickname header.
+bool ownPrintLink(const QTextBlock& block, const QString& href);
 // The system row's kind from its text ("Alice connected to channel ...").
 SystemKind systemKindOf(const QString& text, bool* keepFormatting);
 // A status line's kind (one without "*** ") from TeamSpeak's own English words, names and channels given as

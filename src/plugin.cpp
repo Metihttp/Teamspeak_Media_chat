@@ -33,6 +33,8 @@
 #include "fileverify.h"         // 2.2 sha: its diagnostics section
 #include "i18n.h"
 #include "inlinemedia.h"
+#include "chatlinkpreviews.h"   // 2.4 link previews: the chat's cards get the hub's store
+#include "linkpreview/lphub.h" // 2.4 link previews: our own messages with web links
 #include "music/musiccontroller.h" // 2.3 live music
 #include "music/musicengine.h"     // 2.3 live music: TeamSpeak's audio callbacks
 #include "ownedtimer.h"
@@ -55,6 +57,9 @@
 #include <QTextDocument>
 #include <QTextFrame>
 #include "layoutdoc.h"
+#include "linkpreview/linkdoc.h"   // 2.4 live pass B: link slots left after unload
+#include "linkpreview/lpmessage.h" // 2.4 live pass A: the sender's identity hash of a message
+#include <QScrollBar>              // 2.4 live pass B: the reader's place at unload
 
 #include "selftest.h" // test builds: the scripted live-test driver
 void selfTestMusicShutdown(); // 2.3 live music (selftestmusic.cpp)
@@ -218,6 +223,9 @@ void cancelUploads(uint64 sch)
     // canceled, nothing may be posted after all.
     int canceled = 0;
     for (int id : g_core->uploadIds()) {
+        const UploadJob* job = g_core->upload(id);
+        if (job && job->background)
+            continue; // 2.4 link previews: not the user's sends (the pipeline stops its own)
         if (g_core->canCancelUpload(id)) {
             g_core->cancelUpload(id);
             ++canceled;
@@ -241,7 +249,7 @@ int runningUploads()
     if (g_core) {
         for (int id : g_core->uploadIds()) {
             const UploadJob* job = g_core->upload(id);
-            if (job
+            if (job && !job->background // 2.4 link previews: a preview may be lost, a send may not
                 && (job->state == UploadState::Preparing || job->state == UploadState::Compressing || job->state == UploadState::Uploading
                     || job->state == UploadState::Posting))
                 ++running;
@@ -266,6 +274,8 @@ void serverSettingsChanged()
 {
     if (g_core)
         g_core->onDataSaverChanged();
+    if (g_chat && g_chat->linkPreviews())
+        g_chat->linkPreviews()->limitsChanged(); // 2.4 auto-load: a link's automatic load stops there too
     updateMenus();
     if (g_settings)
         g_settings->reloadServers(); // rows not edited in an open dialog show the new value
@@ -534,6 +544,10 @@ TS3_EXPORT int ts3plugin_init()
                                   i18n::t("Pictures cached: %1 (%2 KB), waiting: %3").arg(cache.entries).arg(cache.bytes / 1024).arg(cache.pending)}};
         });
         chat->start();
+        // 2.4 link previews: the chat's cards show the senders' previews the hub accepted (link-previews.json), wait
+        // for them (the peers' capability, the senders' LPNO) and show our own links from our pipeline's download.
+        if (chat->linkPreviews() && peers->linkPreviews())
+            chat->linkPreviews()->setHub(peers->linkPreviews(), peers->directory());
         // 2.3 live music: the paperclip menu's "Live music", the bar above the chat input (after the chat).
         // Deleted early in ts3plugin_shutdown.
         g_music = new MusicController(MusicController::pluginHost());
@@ -549,6 +563,15 @@ TS3_EXPORT int ts3plugin_init()
         // consent window / daily check are scheduled. Deleted first in ts3plugin_shutdown.
         g_updater = new upd::Updater(ts3::dataDir(), upd::Updater::Hooks{[] { return runningUploads(); }});
         g_updater->start();
+        // 2.3.4 newer-version hint: a channel member's version (untrusted) goes to the updater (gone with
+        // it), and the hint line's "Check for updates" link back to it (the handler is cleared before
+        // the updater is deleted).
+        QObject::connect(peers->directory(), &peers::PeerDirectory::versionSeen, g_updater.data(),
+                         [](quint64 sch, peers::ClientId, const QString& version, bool inOwnChannel) {
+                             if (g_updater)
+                                 g_updater->notePeerVersion(sch, version, inOwnChannel);
+                         });
+        chat->setOwnLinkHandler([](const QString& href, bool activate) { return g_updater && g_updater->handleHintLink(href, activate); });
         ts3::log(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded");
     }, Qt::QueuedConnection);
     return 0;
@@ -557,10 +580,14 @@ TS3_EXPORT int ts3plugin_init()
 TS3_EXPORT void ts3plugin_shutdown()
 {
     // The order matters; each step may still use what the later ones delete:
-    //   1. presence BYE and saved reactions          5. our windows (viewer, settings, send window, editor)
-    //   2. a voice recording (mic given back)        6. the chat (inline players), leftovers in TeamSpeak
-    //   3. compressions (transcode worker joined)    7. AccessGroup, PeerHub, then Core (its pools)
-    //   4. diagnostics hooks, the updater            8. Media Foundation, then the plugin log
+    //   1. presence BYE and saved reactions; every link-preview fetch stopped (sender and chat)
+    //   2. a voice recording (mic given back)
+    //   3. compressions (transcode worker joined)
+    //   4. diagnostics hooks, the updater
+    //   5. our windows (viewer, settings, send window, editor)
+    //   6. the chat (inline players), leftovers in TeamSpeak
+    //   7. AccessGroup, PeerHub, then Core (its pools)
+    //   8. Media Foundation, then the plugin log
     auto cleanup = [] {
 #ifdef TSMEDIA_TESTHOOKS
         QElapsedTimer shutdownClock;
@@ -568,8 +595,15 @@ TS3_EXPORT void ts3plugin_shutdown()
         ts3::log(QStringLiteral("[test] shutdown: start"));
 #endif
         // 2.2 protocol: BYE where we said hello (not waiting for an answer), reactions.json written.
+        // 2.4 link previews: the sender pipeline stops with it (its fetch, worker and upload; link-previews.json).
         if (g_peers)
             g_peers->prepareShutdown();
+        // 2.4 link previews: the chat's website fetches canceled and joined (the cards go with the chat below).
+        if (g_chat && g_chat->linkPreviews())
+            g_chat->linkPreviews()->prepareShutdown();
+#ifdef TSMEDIA_TESTHOOKS
+        ts3::log(QStringLiteral("[test] shutdown: link previews stopped (sender and chat fetchers joined) at %1 ms").arg(shutdownClock.elapsed()));
+#endif
 
         // 2.2 voice: a recording stops first: its capture or encode worker is joined and TeamSpeak's
         // microphone given back (MicGuard) while every connection is still there; its window goes too.
@@ -590,7 +624,10 @@ TS3_EXPORT void ts3plugin_shutdown()
         diag::setDialogOpener(nullptr); // 2.2 diagnostics (its window is closed below and waits for its worker)
         diag::setLogTailProvider(nullptr);
         // 2.2 updater: cancels a running check or download (waits at most 1 s; a job still in a network
-        // read keeps the DLL pinned and ends on its own) and closes its windows.
+        // read keeps the DLL pinned and ends on its own) and closes its windows. 2.3.4: the chat's link
+        // handler goes first.
+        if (g_chat)
+            g_chat->setOwnLinkHandler(nullptr);
         delete g_updater.data();
 
         // Our windows must be gone before the DLL is unloaded. Deleting one window can delete
@@ -610,28 +647,48 @@ TS3_EXPORT void ts3plugin_shutdown()
             for (QTextBrowser* tb : g_chat->mainWindow()->findChildren<QTextBrowser*>())
                 chatsShown.append(tb);
         }
+        // 2.4 live pass B: the reader's place in each shown chat before and after the chat layer goes.
+        const auto placeOf = [](QTextBrowser* tb) {
+            const QTextBlock top = tb->cursorForPosition(QPoint(0, 0)).block();
+            return QString::fromLatin1("scroll %1/%2, top block %3 \"%4\"")
+                .arg(tb->verticalScrollBar()->value())
+                .arg(tb->verticalScrollBar()->maximum())
+                .arg(top.blockNumber())
+                .arg(top.text().left(32).replace(QChar(0xfffc), QLatin1Char('#')));
+        };
+        QStringList placesBefore;
+        for (const QPointer<QTextBrowser>& tb : chatsShown)
+            placesBefore << (tb && tb->isVisible() && !tb->document()->isEmpty() ? placeOf(tb) : QString());
 #endif
         delete g_chat.data(); // destroys the inline players
 #ifdef TSMEDIA_TESTHOOKS
-        for (const QPointer<QTextBrowser>& tb : chatsShown) {
-            QTextDocument* doc = tb ? tb->document() : nullptr;
+        for (int i = 0; i < chatsShown.size(); ++i) {
+            const QPointer<QTextBrowser>& tb  = chatsShown.at(i);
+            QTextDocument*                doc = tb ? tb->document() : nullptr;
             if (!doc || doc->isEmpty())
                 continue;
-            int ours = 0, sides = 0;
+            int ours = 0, sides = 0, linkSlots = 0;
             for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
                 ours += layoutdoc::hasOurs(b) ? 1 : 0;
                 const QTextBlockFormat f = b.blockFormat();
                 sides += f.leftMargin() != 0 || f.rightMargin() != 0 || f.textIndent() != 0 ? 1 : 0;
+                for (auto it = b.begin(); !it.atEnd(); ++it) { // 2.4 link previews: a card, its media or line break left
+                    const QTextCharFormat cf = it.fragment().charFormat();
+                    linkSlots += linkdoc::carriesSlot(cf) || (cf.isImageFormat() && cf.toImageFormat().name().startsWith(linkdoc::cardPrefix())) ? 1 : 0;
+                }
             }
             const QTextFrameFormat ff = doc->rootFrame()->frameFormat();
-            ts3::log(QString::fromLatin1("[test] shutdown: chat %1 blocks, %2 with ours, %3 with side margins or indent; frame margin %4 top %5 bottom %6, end gap ours %7")
+            ts3::log(QString::fromLatin1("[test] shutdown: chat %1 blocks, %2 with ours, %3 with side margins or indent; frame margin %4 top %5 bottom %6, end gap ours %7, link slots left %8")
                          .arg(doc->blockCount())
                          .arg(ours)
                          .arg(sides)
                          .arg(ff.margin())
                          .arg(ff.topMargin())
                          .arg(ff.bottomMargin())
-                         .arg(layoutdoc::hasEndGap(doc) ? 1 : 0));
+                         .arg(layoutdoc::hasEndGap(doc) ? 1 : 0)
+                         .arg(linkSlots));
+            if (i < placesBefore.size() && !placesBefore.at(i).isEmpty())
+                ts3::log(QString::fromLatin1("[test] shutdown: reader's place %1 -> %2").arg(placesBefore.at(i), placeOf(tb)));
         }
 #endif
 
@@ -645,10 +702,19 @@ TS3_EXPORT void ts3plugin_shutdown()
         for (const QPointer<QWidget>& w : leftovers)
             delete w.data();
 
+#ifdef TSMEDIA_TESTHOOKS
+        ts3::log(QStringLiteral("[test] shutdown: chat gone at %1 ms").arg(shutdownClock.elapsed()));
+#endif
         delete g_access.data(); // 2.2 servergroup: stops its timers and a running icon upload
         delete g_peers.data(); // 2.2 protocol: the store, the presence directory, the transport
+#ifdef TSMEDIA_TESTHOOKS
+        ts3::log(QStringLiteral("[test] shutdown: peers and link-preview hub gone at %1 ms").arg(shutdownClock.elapsed()));
+#endif
 
         delete g_core.data(); // waits for probe workers
+#ifdef TSMEDIA_TESTHOOKS
+        ts3::log(QStringLiteral("[test] shutdown: core gone at %1 ms").arg(shutdownClock.elapsed()));
+#endif
 
         // 2.2 emoji: joins the renderer's worker, releases its DirectWrite / Direct2D objects and pictures.
         emoji::shutdown();
@@ -1035,6 +1101,36 @@ TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, an
     if (ffIgnored)
         return 0;
     const QString text = str(message);
+#ifdef TSMEDIA_TESTHOOKS
+    // 2.4 live pass A: what TeamSpeak hands over for messages with web links (our own come back here too), and
+    // the hash the sender's pipeline computes from it (receivers compute theirs from the chat document).
+    if (text.contains(QLatin1String("http"), Qt::CaseInsensitive) || text.contains(QLatin1String("www."), Qt::CaseInsensitive)) {
+        const uint64  tSch  = serverConnectionHandlerID;
+        const QString tUid  = str(fromUniqueIdentifier);
+        const int     tMode = targetMode;
+        onGuiThread([tSch, tMode, toID, fromID, tUid, text] {
+            ts3::log(QString::fromLatin1("[test] textmsg: mode %1 to %2 from %3 (own id %4, own uid %5) sender hash %6 bbcode \"%7\"")
+                         .arg(tMode)
+                         .arg(toID)
+                         .arg(fromID)
+                         .arg(fromID == ts3::ownClientId(tSch) ? 1 : 0)
+                         .arg(tUid == ts3::ownUid(tSch) ? 1 : 0)
+                         .arg(linkpreview::message::identityHash(tUid, text), text.left(600)));
+        });
+    }
+#endif
+    // 2.4 link previews: our own messages with web links (the sender makes their previews; linkpreview/lphub.h
+    // checks on the GUI thread that the message is ours and in a channel or private chat).
+    if ((text.contains(QLatin1String("http"), Qt::CaseInsensitive) || text.contains(QLatin1String("www."), Qt::CaseInsensitive))
+        && !text.contains(QLatin1String("ts3file"), Qt::CaseInsensitive)) {
+        const uint64  lpSch = serverConnectionHandlerID;
+        const QString lpUid = str(fromUniqueIdentifier);
+        const int     mode  = targetMode;
+        onGuiThread([lpSch, mode, toID, fromID, lpUid, text] {
+            if (linkpreview::Hub* hub = linkpreview::Hub::instance())
+                hub->onTextMessage(lpSch, mode, toID, fromID, lpUid, text);
+        });
+    }
     if (!text.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
         return 0;
     const uint64  sch         = serverConnectionHandlerID;

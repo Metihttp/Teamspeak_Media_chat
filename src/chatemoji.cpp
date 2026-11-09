@@ -32,6 +32,7 @@
 #include "emojitext.h"
 #include "i18n.h"
 #include "layoutformat.h" // chat redesign: messages in TS Media's chat layout
+#include "linkpreview/linkdoc.h" // 2.4 link previews: the slot under a link is no text
 #include "replydoc.h"     // 2.2 reply: its line breaks are no text
 #include "polldoc.h"      // 2.3 poll: a poll card copies as its text
 #include "settings.h"
@@ -197,7 +198,8 @@ bool selectionNeedsFix(const QTextCursor& selection)
             const QTextFragment f = it.fragment();
             if (f.isValid() && f.position() < to && f.position() + f.length() > from
                 && (isOurs(f.charFormat()) || layoutformat::isOurs(f.charFormat()) || polldoc::isObject(f.charFormat()) // 2.3 poll: its card
-                    || textreactdoc::isRowObject(f.charFormat()) || textreactdoc::isRowSeparator(f.charFormat()))) // 2.3 text reactions: a row
+                    || textreactdoc::isRowObject(f.charFormat()) || textreactdoc::isRowSeparator(f.charFormat()) // 2.3 text reactions: a row
+                    || linkdoc::isSlotObject(f.charFormat()) || linkdoc::isSlotSeparator(f.charFormat()))) // 2.4 link previews: a slot
                 return true;
         }
     }
@@ -854,6 +856,14 @@ QString ChatEmoji::originalText(QTextDocument* document, int from, int to)
                 const QString original = originalOf(cf);
                 for (int i = start; i < end; ++i)
                     out += original;
+                continue;
+            }
+            // 2.4 link previews: the card or media under a link and its line breaks give nothing (the link is
+            // TeamSpeak's text before them; text of TeamSpeak's that took their format over stays).
+            if (linkdoc::isSlotObject(cf) || linkdoc::isSlotSeparator(cf)) {
+                QString text = f.text().mid(start - f.position(), end - start);
+                text.remove(linkdoc::isSlotObject(cf) ? QChar::ObjectReplacementCharacter : QChar::LineSeparator);
+                out += text;
                 continue;
             }
             // 2.3 poll: a poll card gives the poll's text as TeamSpeak showed it; its line break nothing.

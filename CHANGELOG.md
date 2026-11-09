@@ -5,6 +5,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.4.0] - 2026-11-09
+
+2.4.0 includes everything prepared for 2.3.4, which was never released on its own.
+
+### Added
+
+- **Link previews** ([issue #1](https://github.com/Metihttp/Teamspeak_Media_chat/issues/1)). Web links in the chat get a preview under them, in every chat layout and in channel, private and server chats. [How link previews work](docs/USAGE.md#link-previews).
+  - **YouTube** links (`youtube.com/watch`, `youtu.be`, `shorts`, also typed without `https://`) show a card with the channel, the title and the thumbnail (cut to 16:9, without YouTube's black bars); a click opens the video in your default browser.
+  - **Links to pictures, GIFs and videos** (`.png .jpg .jpeg .gif .webp .mp4 .webm .mov .m4v`) show the file like one sent in the chat: the gallery viewer, animated GIFs, inline video with its controls. A video too large to play shows its poster with **Open in browser**.
+  - **Made by the sender:** when you send such a link in a channel or private chat, your plugin loads it once and shares the preview through the channel's files with one plugin command. People with TS Media see it from the TeamSpeak server and never contact the website; it is only accepted from the sender of that message, and checked against its SHA-256. Previews are remembered in `link-previews.json`, so they come back when the chat history reloads.
+  - **Your own links** show their preview at once from your own download (*Making the preview…* until then), before it is uploaded.
+  - **Waiting for the sender:** when the sender makes previews, your PC waits for theirs (*Waiting for the sender's preview…*, also for their earlier links' previews, which their plugin makes first) instead of contacting the website; if their plugin can't make one it says so with a small plugin command, and your PC loads the link itself. [The exceptions](docs/PRIVACY-SECURITY.md#link-previews).
+  - **Other links load by themselves** (*Load link previews automatically*, on by default): links from people without the plugin, links in the server chat and links whose sender's preview doesn't come load their preview from the website when they show on your screen, at most 2 at a time (one per person) and a few per person in a row: YouTube always, pictures, GIFs and videos within your automatic download limit for images (videos use your video limit if you set one), only YouTube with data saver. A larger file shows **Load preview** with its size (a click loads pictures and GIFs up to 25 MB, videos up to 50 MB). Previously loaded links show from the cache without any request. Turn the switch off to load them only on a click; the card's tool tip says that loading connects your PC to that website.
+  - **Hide preview** per card (× or right-click), **Open in browser** and **Copy link** in the right-click menu. Text reactions and replies on such messages work as before.
+  - Pictures, GIFs and videos only over https, at most 3 links per message; web pages, other http links and the plugin's own links never get a preview. Website requests use no cookies, no Referer and a generic User-Agent, refuse addresses of your own network, follow at most 5 checked redirects and stop at the size limits.
+  - **Your Windows proxy** is used when one is set (a proxy server, a setup script or automatic detection), so previews also work behind a proxy-based VPN. [What that means for privacy](docs/PRIVACY-SECURITY.md#link-previews).
+  - A preview that can't be loaded says *Couldn't load the preview* with **Retry**, whatever the reason; the reason is in the plugin's log, which names websites only by their host.
+  - **Clear cache** also clears the link previews (`link-previews.json` and the files loaded from websites, which stay within about 200 MB).
+- **Important updates install by themselves.** With automatic checks on, a release the author marks as important (a fix that shouldn't wait) is downloaded and installed without a click and without a window, and starts with your next TeamSpeak start; TeamSpeak is never restarted for it. The chat says so, with a *What's new* link; to start it right away, use **Check for updates…** in the plugin menu. [How important updates work](docs/UPDATES.md#important-updates).
+  - It needs the author's signature: the release must carry a marker (`TSMedia-X-important.json`) signed with the release key for exactly that release, and every downloaded file must match the signed SHA-256. A marker counts for at most 60 days.
+  - *Skip this version* doesn't hold it back, but a version that rolled back on your PC, or that you replaced by hand with an older one, is never installed by itself again. After 2 attempts that didn't work out, a version is only offered the normal way.
+  - Manual checks (**Check now**, **Check for updates…**, `/tsmedia update`) never install anything without a click, and versions before 2.4.0 always ask. Turning automatic checks off turns this off too.
+  - The daily check makes one more small request for the marker, only when it finds a newer version.
+- **"Someone in this channel has a newer version."** When someone in your channel has a newer TS Media chat than you, your own chat shows one line with a **Check for updates** link. Only you see it, it names nobody, and nothing is sent until you click; the click checks GitHub once. Anyone can claim any version, so a version GitHub doesn't have is answered with *isn't released yet*, and at most 2 such lines appear per TeamSpeak session.
+
+### Changed
+
+- **Settings → Privacy & updates → Link previews**: *Show previews for links to other websites*, *Load link previews automatically* and *Make previews for links I send*, all on by default, each saying who contacts the website. The README and [privacy & security](docs/PRIVACY-SECURITY.md#link-previews) describe the new web requests.
+- The consent window and **Settings → Privacy & updates** say that important fixes signed by the author install by themselves. With automatic checks already on, the first start of 2.4.0 says it once in the chat.
+- The consent window no longer calls the update check the plugin's only internet connection (link previews are one too), and names **Settings → Privacy & updates** as the place to change it.
+- After an important update, the next start says *Updated to TS Media chat X (an important update, installed automatically).*
+- `/tsmedia update` while a check or an install is running now says *TS Media chat is already checking for or installing an update.* instead of nothing.
+- Releases: `scripts\build.ps1 -Important` writes and checks the signed marker, `-VerifyPublished` checks it on GitHub, and the reused `tsmedia-update.json` of 2.2.1 is pinned by its SHA-256.
+
+### Fixed
+
+- The update window opened while an update was downloading or installing showed an empty offer; it now shows the progress.
+
 ## [2.3.3] - 2026-11-01
 
 ### Fixed
@@ -272,6 +310,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.4.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.0...v2.3.1

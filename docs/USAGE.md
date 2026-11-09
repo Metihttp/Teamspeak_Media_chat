@@ -2,10 +2,10 @@
 
 [← Back to README](../README.md)
 
-How to send files, polls, voice messages and live music, reply to messages, use HD emoji, what you see in the chat and how it looks, how the gallery viewer works, and the chat commands.
+How to send files, polls, voice messages and live music, reply to messages, use HD emoji, what you see in the chat (link previews too) and how it looks, how the gallery viewer works, and the chat commands.
 
 - [Sending files](#sending-files): [the paperclip](#the-paperclip), [the send window](#the-send-window), [editing a picture](#editing-a-picture), [large videos](#large-videos), [upload progress](#upload-progress), [file names and folders](#file-names-and-folders)
-- [Viewing media](#viewing-media): [albums](#albums), [spoilers](#spoilers), [audio](#audio-files), [reactions](#reactions), [file checks](#file-checks), [data saver](#data-saver)
+- [Viewing media](#viewing-media): [albums](#albums), [spoilers](#spoilers), [audio](#audio-files), [reactions](#reactions), [link previews](#link-previews), [file checks](#file-checks), [data saver](#data-saver)
 - [Voice messages](#voice-messages), [live music](#live-music) and [polls](#polls)
 - [Chat layout](#chat-layout)
 - [Replies](#replies) and [emoji](#emoji)
@@ -176,6 +176,19 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - If a reaction can't be sent (not connected, TeamSpeak limiting messages, plugin commands blocked on the server), it is taken back and the tooltip says why.
 - Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions* (Privacy & updates) turns reactions off: none are shown or sent.
 
+### Link previews
+
+Since 2.4, web links in the chat get a preview under them (in channel, private and server chats, in every chat layout):
+
+- **YouTube videos** (`youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/shorts/…`) show a card with the channel, the title and the thumbnail. A click opens the video in your default browser; there is no player inside TeamSpeak.
+- **Links to pictures, GIFs and videos** (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.mp4`, `.webm`, `.mov`, `.m4v`) show the file itself, like a file sent in the chat: pictures open in the gallery viewer, GIFs animate, videos play inline with the usual controls. A video that is too large to play here shows its poster with **Open in browser**.
+- **Who loads it:** when the sender has TS Media 2.4 and sent the link in a channel or private chat, their plugin made the preview when they sent it and put it in the channel's files. You see it from your TeamSpeak server, like any other file, and never contact the website; until it arrives the card says *Waiting for the sender's preview…* (*Checking for the sender's preview…* while your PC asks whether they make one). Your own links show at once from your own download (*Making the preview…* first). Other links load from the website by themselves when they show on your screen (**Load link previews automatically**, on by default), which shows that website your IP address: YouTube always, pictures, GIFs and videos within your automatic download limit for images (15 MB by default; videos use your video limit if you set one), and with data saver only YouTube; 2 at a time, one per person, and a link waiting its turn shows **Load preview** until then. A larger file shows **Load preview** with its size (or that it is over your limit); a click loads pictures and GIFs up to 25 MB and videos up to 50 MB, larger ones say *Too large to preview here* with **Open in browser**. With the switch off, every such link waits for your click on **Load preview** (point at the card to read that this connects your PC to that website). When the sender's preview arrives before a link was loaded here, the card switches to it; when it is gone from the server (or isn't the file that was announced), the link is loaded like other links.
+- **Which links:** YouTube videos (also written without `https://`, which TeamSpeak links as `http://`) and https links to those files, at most 3 per message; other web pages, other http links and the plugin's own links never get a preview (for a GIF site's page such as `klipy.com/gifs/…`, copy the GIF's own address, ending in `.gif`, `.webp` or `.mp4`). A preview that can't be loaded says *Couldn't load the preview* with **Retry**. Previews go through your Windows proxy if you have one ([details](PRIVACY-SECURITY.md#link-previews)).
+- **Hide a preview:** point at the card and click **×**, or right-click it → **Hide preview**; the card becomes a small *Preview hidden · Show* pill until TeamSpeak restarts. Right-click also offers **Open in browser** and **Copy link** (the web address).
+- **Your links:** when you send such a link, your plugin loads it once and shares the preview through the TeamSpeak server (you need upload permission in that channel). Turn that off with **Settings → Privacy & updates → Make previews for links I send**.
+- **Turn previews off:** **Settings → Privacy & updates → Show previews for links to other websites**. Every card and preview goes, and nothing is loaded for them any more. To keep previews but load other people's links only on a click, turn off **Load link previews automatically**. Details: [privacy & security](PRIVACY-SECURITY.md#link-previews).
+- Reactions and replies on a message with a link work as on any text message; the preview itself has no reactions of its own.
+
 ### File checks
 
 - Every file sent with TS Media chat 2.2 carries its SHA-256 checksum in the link. After a download, the plugin checks that the file is the one that was sent; large files may show *Checking file…* for a moment.
@@ -295,7 +308,9 @@ Right-click any preview or card. The item in bold is what a click on the preview
 | Save as… | downloaded files (confirms *Saved to …* with the folder's name) |
 | Copy file | downloaded files (paste it into a folder with <kbd>Ctrl</kbd>+<kbd>V</kbd>) |
 | Copy image | downloaded images and GIFs (confirms *Image copied*) |
-| Copy link | always (copies the `ts3file://` link and confirms *Link copied*) |
+| Copy link | always (copies the `ts3file://` link and confirms *Link copied*; for a [link preview](#link-previews), the web address) |
+| Load preview / Retry / Open in browser / Show preview | [link previews](#link-previews): what a click on the card does |
+| Open in browser, Hide preview | [link previews](#link-previews) |
 | Copy details | files that don't match what was sent (both checksums and the path) |
 | Add reaction | pictures, GIFs, videos, albums, audio and voice messages, and (2.3) text messages, outside the server chat (with counts and who reacted, and *More reactions…* for any emoji) |
 | Reply / View N replies | at the top, for the message the preview is in ([replies](#replies)) |

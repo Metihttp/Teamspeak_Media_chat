@@ -2,7 +2,7 @@
 
 # TS Media chat
 
-**Discord-style images, GIFs, videos, voice messages, polls, live music, replies and HD emoji in the TeamSpeak 3 chat**
+**Discord-style images, GIFs, videos, voice messages, polls, live music, link previews, replies and HD emoji in the TeamSpeak 3 chat**
 
 [![Download TS Media chat](https://img.shields.io/github/v/release/Metihttp/Teamspeak_Media_chat?style=for-the-badge&label=Download&color=5865F2)](https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest)
 
@@ -33,13 +33,14 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 - **Anonymous polls.** Ask the channel, vote on the card, see the results; nobody sees who voted for what.
 - **Live music.** Play a song to your channel through your own voice and keep talking over it.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
+- **Link previews.** YouTube links show their title, channel and thumbnail; links to pictures, GIFs and videos show and play inline. Previews of links people with the plugin send come from your TeamSpeak server, so your PC never contacts that website. Other links load from their website by themselves; you can switch that to click-to-load.
 - **A modern chat.** Names, avatars and times above grouped messages, Telegram-like bubbles with yours on the right, and centred system lines, only in your own view.
 - **Reply and react.** Reply to any message, Discord-style, and react to any message or media with any emoji.
 - **HD emoji.** Sharp Windows 11 emoji in the chat, TeamSpeak's own emoji button opening an HD picker, and big emoji for messages of only emoji.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
 - **Works for everyone.** People without the plugin get a normal TeamSpeak download link.
 - **Stays on your server.** Files go to the channel's file browser, never to a cloud service.
-- **Keeps itself up to date.** If you agree, updates from GitHub install with one click, every file checked against its SHA-256.
+- **Keeps itself up to date.** If you agree, updates from GitHub install with one click, every file checked against its SHA-256. Important fixes signed by the author install by themselves and start with your next TeamSpeak start.
 
 ## Install
 
@@ -54,7 +55,7 @@ If nothing happens, enable the plugin in **Tools → Options → Addons**.
 <details>
 <summary><b>Updates, uninstall and portable installs</b></summary>
 
-- **Updates:** from 2.2.0 on, the plugin asks once whether to check GitHub for updates, then asks before installing each one ([how updates work](docs/UPDATES.md)). From 2.1 or older, install the latest version by hand once: close TeamSpeak, double-click the new `.ts3_plugin`. Settings and the cache are kept.
+- **Updates:** from 2.2.0 on, the plugin asks once whether to check GitHub for updates, then asks before installing each one; from 2.4.0 on, important fixes signed by the author install without asking and start with the next TeamSpeak start ([how updates work](docs/UPDATES.md)). From 2.1 or older, install the latest version by hand once: close TeamSpeak, double-click the new `.ts3_plugin`. Settings and the cache are kept.
 - **Uninstall:** use **Tools → Options → Addons**, or close TeamSpeak and delete `tsmedia_win64.dll` and `tsmedia_win32.dll` from `%APPDATA%\TS3Client\plugins`; delete the `tsmedia` folder there to remove the settings, cache and log too. Sent files stay on the servers.
 - **Portable TeamSpeak:** uses the `config` folder inside the TeamSpeak folder instead of `%APPDATA%\TS3Client`.
 
@@ -98,6 +99,7 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 - **Videos and audio files** play inline. Other files appear as cards that open in their default app.
 - **Reactions with any emoji:** click the round button on a picture, or right-click → **Add reaction**; **+** opens the emoji picker. Text messages, links, replies and polls get them too (point at the message → **Add reaction**, or right-click → **Add reaction…**).
 - **Checked downloads:** a file that differs from the one that was sent is blocked (*File doesn't match what was sent*).
+- **Link previews:** YouTube cards, and pictures, GIFs and videos under their web links ([below](#link-previews)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/album-dark.png">
@@ -105,6 +107,20 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 </picture>
 
 Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as…, Copy file and more, or drag it out into a folder ([right-click menu and shortcuts](docs/USAGE.md#right-click-menu)).
+
+## Link previews
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/link-previews-dark.png">
+  <img src="docs/images/link-previews-light.png" width="100%" alt="Link previews in the TeamSpeak chat in the Cozy layout with bubbles. Left: Alice's YouTube link with a card showing the channel Quiet Places, the title Lakeside timelapse: a whole day in four minutes, the thumbnail with a play button and youtube.com, and reactions under it; below it your own link to a picture on the right, with a small card reading img.example.org, Making the preview…, while your plugin loads and shares it. Right: Dave's link to a GIF, from someone without the plugin, the GIF loaded by itself and playing under it; and Carol's link to a video with its poster, a play button and 0:15">
+</picture>
+
+- **YouTube** links get a card with the title, channel and thumbnail; a click opens the video in your browser.
+- **Links to pictures, GIFs and videos** show the file right in the chat, like one sent with TS Media: the gallery viewer, animated GIFs, inline video.
+- **Made by the sender:** when someone with TS Media sends such a link in a channel or private chat, their plugin loads it once and puts the preview in the channel's files. You see it from your TeamSpeak server and never contact that website.
+- **Your own links** show their preview at once from your own download (*Making the preview…* until then).
+- **Other links** (from people without the plugin) load their preview from the website by themselves when they show on your screen, which shows that website your IP address: YouTube always, pictures, GIFs and videos within your automatic download limit (15 MB by default; videos use your video limit if you set one). Larger files get a **Load preview** card with their size. Turn off **Load link previews automatically** to load them only when you click.
+- On by default: turn them off in **Settings → Privacy & updates**, or right-click one → **Hide preview**. Previews use your Windows proxy if you have one ([more about link previews](docs/USAGE.md#link-previews)).
 
 ## Voice messages
 
@@ -186,7 +202,7 @@ Password-protected channels are not supported, and clients must reach the file t
 ## Privacy & security
 
 - **Your files stay on your TeamSpeak server.** No cloud, no telemetry.
-- **The only web request is the update check**, to GitHub, and only after you turn it on.
+- **Web requests: the update check and link previews.** The update check goes to GitHub, automatically only after you turn it on. **Link previews** (on by default, three switches in **Settings → Privacy & updates**): when you send a YouTube link or a link to a picture, GIF or video in a channel or private chat, your PC loads it once from that website and puts the preview in the channel's files; people with TS Media then see it from your TeamSpeak server and never contact the website. With **Load link previews automatically** on (the default), a link from someone without the plugin is loaded from its website by your PC, which sees your IP address; turn it off to load such links only when you click **Load preview**. Previews go through your Windows proxy if one is set. [Details](docs/PRIVACY-SECURITY.md#link-previews).
 - **Your channel sees that you have TS Media** (and its version), and your reactions. Both go through TeamSpeak only and can be turned off in **Settings → Privacy & updates**.
 - **A reply quotes the original:** its author's name and the start of the message, readable by everyone in that chat.
 - **The microphone is only on** while you hold the microphone button, or while the *Voice message* window shows *Recording*.

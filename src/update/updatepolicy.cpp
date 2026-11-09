@@ -1,5 +1,7 @@
 #include "updatepolicy.h"
 
+#include "updatemanifest.h"
+
 namespace upd {
 
 namespace {
@@ -68,6 +70,13 @@ QUrl releaseNotesUrl(const QString& tag)
 QUrl latestReleaseUrl()
 {
     return QUrl(latin("https://github.com/") + latin(kRepository) + latin("/releases/latest"), QUrl::StrictMode);
+}
+
+QUrl importantUrl(const Version& version)
+{
+    if (!version.isValid())
+        return QUrl();
+    return assetUrl(latin("v") + version.toString(), importantAssetName(version));
 }
 
 bool isAllowedUrl(const QUrl& url)

@@ -13,6 +13,9 @@
 // The signature is ECDSA P-256 over SHA-256 of the exact payload bytes, so no JSON canonicalisation
 // is involved. The payload is parsed only after the signature checks out, and is still validated
 // field by field. Unknown fields are ignored in both formats so later releases can add some.
+//
+// TSMedia-<ver>-important.json in release v<ver> (2.3.4 and later, see readImportant below): the same
+// format 1 envelope around a format 3 payload, which marks that release as an important update.
 
 #include <QByteArray>
 #include <QDate>
@@ -107,6 +110,9 @@ enum class ManifestError {
     RecoveryWithoutRevocation,
     BadSignature,      // also: signature fields in an unsigned (format 2) manifest
     BadPayload,
+    RecoveryKey,       // an important marker signed with a recovery key: not important
+    Expired,           // an important marker past its importantUntil date
+    NotImportant,      // an important marker whose "important" isn't true
 };
 QString errorCode(ManifestError error); // for logs and state.ini: "badSignature", ...
 
@@ -128,6 +134,7 @@ QVector<TrustedKey> trustedKeys();
 
 constexpr int kFormatSigned    = 1; // tsmedia-update.json
 constexpr int kFormatUnsigned  = 2; // tsmedia-update-v2.json
+constexpr int kFormatImportant = 3; // the payload of TSMedia-<ver>-important.json (its envelope is format 1)
 constexpr int kMaxOuterBytes   = 64 * 1024;
 constexpr int kMaxPayloadBytes = 48 * 1024;
 constexpr int kMaxNotes        = 5;
@@ -170,5 +177,47 @@ enum class Offer {
 // effectiveInstalled: the version that runs after the next restart (state.ini "to" while an update
 // is applied but not started yet, otherwise this build's version).
 Offer offerFor(const Manifest& manifest, const Version& effectiveInstalled, const Version& skipped, Arch arch);
+
+// ---- important updates (2.3.4) -----------------------------------------------------------------
+//
+// A release can carry TSMedia-<ver>-important.json: the format 1 envelope around a format 3 payload,
+//   {"format":3,"product":"tsmedia","version":"2.3.5","tag":"v2.3.5","published":"2026-11-02",
+//    "important":true,"importantUntil":"2026-12-02","package":{...},"files":{...},"notes":[...]}
+// signed by a trusted daily key. With automatic checks on, such a release is installed without a
+// click (it starts with the next TeamSpeak start). The payload format keeps the domains apart: no
+// format 1 payload (the 2.2.1 bridge, a signed tsmedia-update.json) can be replayed as a marker, and
+// versions before 2.3.4 refuse a format 3 payload. Importance never comes from unsigned data, and a
+// marker never revokes keys.
+
+constexpr int kMaxImportantDays = 60; // importantUntil is at most this many days after published
+
+struct ImportantMarker {
+    Manifest manifest; // the signed release; every download is checked against these hashes
+    QDate    until;    // importantUntil
+    int      signedBy = 0;
+};
+
+QString importantAssetName(const Version& version); // TSMedia-2.3.5-important.json (empty if invalid)
+
+// Only for payload bytes whose signature has been checked: the format 3 fields (as in a format 1
+// payload, without revokeKeys), "important" must be JSON true (NotImportant), and published and
+// importantUntil must be yyyy-MM-dd dates with published <= until <= published + kMaxImportantDays.
+ManifestError parseImportantPayload(const QByteArray& payload, ImportantMarker* out, QString* detail = nullptr);
+
+// The marker file: at most kMaxOuterBytes, parseSigned + verifySigned, a recovery signer gives
+// RecoveryKey, then parseImportantPayload, and Expired once todayUtc (pinned by the caller) is after
+// importantUntil. *out is filled only on None.
+ManifestError readImportant(const QByteArray& bytes, const QVector<TrustedKey>& keys, const QSet<int>& revoked, const QDate& todayUtc,
+                            ImportantMarker* out, QString* detail = nullptr);
+
+// Do the signed marker and tsmedia-update-v2.json describe the same release? Version, the files (by
+// kind and architecture: size, SHA-256, machine), the package, minFromVersion and needsNewerUpdater;
+// not published or notes. *why names the first difference.
+bool sameRelease(const Manifest& signedOne, const Manifest& v2, QString* why = nullptr);
+
+// May this signed release be installed without a click? Only if it would be offered (newer, no manual
+// install needed, a build for this architecture; the user's skip doesn't count) and its version isn't
+// in neverAuto (StateFile::neverAutoVersions: it rolled back here, or was replaced by hand).
+bool autoInstallAllowed(const Manifest& signedOne, const Version& effectiveInstalled, const QVector<Version>& neverAuto, Arch arch);
 
 } // namespace upd

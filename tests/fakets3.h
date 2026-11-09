@@ -88,6 +88,33 @@ void setResumeFromStart(bool fromStart);
 QStringList deletedWhileChecking();
 QStringList     logLines();  // what Core wrote to TeamSpeak's log
 bool            logContains(const QString& text);
+// 2.3.4: the lines printed with printMessage(..., PLUGIN_MESSAGE_TARGET_CHANNEL) (not into the current tab).
+QStringList     channelPrints();
+
+// 2.4 link previews: other clients on the server. Without any (install()), every client is in kChannel and
+// every uid reads "Tester", as before. With some: getChannelOfClient, getClientList and the client
+// variables answer from this table (the own client too: setOwnUid), unknown clients are not visible.
+struct Client {
+    anyID   id = 0;
+    QString uid;
+    uint64  channel = kChannel;
+    QString nickname;
+    bool    serverQuery = false;
+};
+void addClient(const Client& client);
+void removeClient(anyID id);
+void moveClient(anyID id, uint64 channel);
+// The own identity (getClientSelfVariableAsString CLIENT_UNIQUE_IDENTIFIER; empty until set) and channel.
+void setOwnUid(const QString& uid);
+void setOwnChannel(uint64 channel);
+// 2.4 link previews: plugin commands sent (sendPluginCommand), in order. Nobody answers: the test does.
+struct PluginCommand {
+    QByteArray   payload;
+    int          targetMode = 0;
+    QList<anyID> clients;
+    QString      returnCode;
+};
+QList<PluginCommand> pluginCommands();
 
 // Writes bytes into a download's destination as TeamSpeak would (<localDir>/<file name>). The test
 // then calls core.onTransferStatus(id, ERROR_file_transfer_complete, ...).

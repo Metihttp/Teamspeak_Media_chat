@@ -785,6 +785,18 @@ Row read(const QTextBlock& block)
     return row;
 }
 
+bool ownPrintLink(const QTextBlock& block, const QString& href)
+{
+    if (href.isEmpty() || !block.isValid() || !read(block).ownPrint)
+        return false;
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment f = it.fragment();
+        if (f.isValid() && f.charFormat().isAnchor() && !f.charFormat().isImageFormat() && f.charFormat().anchorHref() == href)
+            return true;
+    }
+    return false;
+}
+
 // ============================================================================================
 // Planning
 // ============================================================================================
@@ -1632,6 +1644,45 @@ QDate acceptDate(const QDate& date, const QDate& previous, const QDate& today)
     return date;
 }
 
+namespace {
+
+// What a line means for the days of the lines after it (extendDates). Cheap first: only "*** " lines (or our
+// dividers) are read; a styled system row only has its prefix looked at.
+enum class DayMark { None, Divider, HistoryEnd };
+
+DayMark dayMarkOf(const QTextBlock& block, Row* row)
+{
+    const QString text = block.text();
+    if (text.isEmpty())
+        return DayMark::None;
+    const Lead lead = text.at(0) == QChar::ObjectReplacementCharacter ? leadOf(block) : Lead();
+    if (lead.styled && lead.kind == SystemPrefix) {
+        // TeamSpeak's "*** End of chat history" (in the client's language), restyled: see below.
+        QString prefix = runsText(runsOf(lead.format)); // "[icon]<time> *** " as TeamSpeak wrote it
+        if (prefix.startsWith(QChar::ObjectReplacementCharacter))
+            prefix.remove(0, 1);
+        int length = 0;
+        return leadingTime(prefix, &length).isEmpty() && prefix.trimmed().startsWith(QLatin1String("***")) ? DayMark::HistoryEnd : DayMark::None;
+    }
+    if (lead.styled ? lead.kind != Divider : !text.contains(QLatin1String("***")))
+        return DayMark::None;
+    *row = read(block);
+    // A day line, or a history marker with its date ("Chat begins 2026-10-10 04:44:02"): the day of the lines
+    // after it.
+    if (row->type == RowType::Day || (row->type == RowType::History && row->date.isValid()))
+        return DayMark::Divider;
+    // TeamSpeak's "*** End of chat history" after the history it loaded: a "*** " line with neither a time nor a
+    // date (with timestamps on, TeamSpeak's other "*** " lines all have a time). The lines after it are the live
+    // session's: their day is today's (no date here: textreactdoc::dayOf), never the day the history ended.
+    // TeamSpeak shows no day line when a session starts, so without this every message of today read as one of
+    // that day, and its key matched no one else's (2.4 live test: no link preview was ever matched).
+    if (row->type == RowType::System && !row->ownPrint && row->time.isEmpty())
+        return DayMark::HistoryEnd;
+    return DayMark::None;
+}
+
+} // namespace
+
 void extendDates(QTextDocument* doc, const QDate& today, QVector<QDate>* dates, int from)
 {
     if (!doc || !dates)
@@ -1639,28 +1690,33 @@ void extendDates(QTextDocument* doc, const QDate& today, QVector<QDate>* dates, 
     from = qBound(0, from, dates->size());
     dates->resize(from);
     dates->reserve(doc->blockCount());
-    // The day so far: dates change only at accepted dividers, so it is the last valid one before from.
+    // The day so far: the day of the nearest line before from that isn't a divider (dividers keep their own:
+    // a rejected one has none, and the day before it went on), or an accepted divider's.
     QDate current;
-    for (int i = from - 1; i >= 0 && !current.isValid(); --i)
+    for (int i = from - 1; i >= 0; --i) {
+        Row row;
+        if (!dates->at(i).isValid() && dayMarkOf(doc->findBlockByNumber(i), &row) == DayMark::Divider)
+            continue;
         current = dates->at(i);
-    QDate lastDivider = current;
+        break;
+    }
+    QDate lastDivider;
+    for (int i = from - 1; i >= 0 && !lastDivider.isValid(); --i)
+        lastDivider = dates->at(i);
     for (QTextBlock b = doc->findBlockByNumber(from); b.isValid(); b = b.next()) {
-        const QString text = b.text();
-        // Cheap first: only lines that could be a day line are read.
-        if (text.contains(QLatin1String("***")) || (text.size() == 1 && text.at(0) == QChar::ObjectReplacementCharacter)) {
-            const Row row = read(b);
-            // A day line, or a history marker with its date ("Chat begins 2026-10-10 04:44:02"): the day of
-            // the lines after it.
-            if (row.type == RowType::Day || (row.type == RowType::History && row.date.isValid())) {
-                const QDate accepted = acceptDate(row.date, lastDivider, today);
-                if (accepted.isValid()) {
-                    current     = accepted;
-                    lastDivider = accepted;
-                }
-                dates->append(accepted);
-                continue;
+        Row           row;
+        const DayMark mark = dayMarkOf(b, &row);
+        if (mark == DayMark::Divider) {
+            const QDate accepted = acceptDate(row.date, lastDivider, today);
+            if (accepted.isValid()) {
+                current     = accepted;
+                lastDivider = accepted;
             }
+            dates->append(accepted);
+            continue;
         }
+        if (mark == DayMark::HistoryEnd)
+            current = QDate();
         dates->append(current);
     }
 }

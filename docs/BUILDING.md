@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 - **Output:** `dist\TSMedia-<version>.ts3_plugin`, containing `tsmedia_win64.dll` and `tsmedia_win32.dll` in the same layout as packages from myteamspeak.com. The version comes from `project(... VERSION ...)` in `CMakeLists.txt`.
-- **Your build has no update check.** Without `-Release`, `build.ps1` builds with `TSMEDIA_UPDATER` off, so a copy you build yourself never replaces itself with an official release and never loads `winhttp.dll`. Settings → Privacy & updates says *Updates are turned off in versions you build yourself*.
+- **Your build has no update check.** Without `-Release`, `build.ps1` builds with `TSMEDIA_UPDATER` off, so a copy you build yourself never replaces itself with an official release and never contacts GitHub (it still loads `winhttp.dll` for link previews). Settings → Privacy & updates says *Updates are turned off in versions you build yourself*.
 - **Cloned without `--recursive`?** Run `git submodule update --init`. The TeamSpeak plugin SDK is a git submodule.
 
 ### `build.ps1` options
@@ -40,9 +40,11 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | `-Sign` | also sign `tsmedia-update.json` for this version with key 1, so users of 2.2.0 update to it directly (needs the key; 2.2.1 is signed automatically) |
 | `-SigningDir <dir>` | where the signing key and tool are (default `$env:TSMEDIA_SIGNING_DIR`, then the developer tools folder) |
 | `-KeyId <n>` / `-RevokeKeys <ids>` | the key that signs (1, default) and key ids a signed release revokes for good |
-| `-BridgeManifest <file>` | the signed `tsmedia-update.json` of v2.2.1 to reuse, instead of downloading it from GitHub |
+| `-BridgeManifest <file>` | the signed `tsmedia-update.json` of v2.2.1 to reuse, instead of downloading it from GitHub (either way it must match the pinned SHA-256) |
+| `-Important` | an important update: `-Release` plus `TSMedia-<version>-important.json`, signed with key 1, so 2.3.4 and later with automatic checks on install this release without a click ([important updates](UPDATES.md#mark-a-release-as-an-important-update)). Needs key 1; refused for 2.3.4 and older, with `-RevokeKeys` and with a `-KeyId` other than 1. `tsmedia-update.json` stays the bridge |
+| `-ImportantDays <n>` | how many days after the release date the marker counts (default 30, 1 to 60; only with `-Important`) |
 | `-CaptureReference <TeamSpeak folder>` | save the exports of TeamSpeak's Qt DLLs as `reference\ts-exports\<arch>.txt` (once per TeamSpeak version), then stop |
-| `-VerifyPublished` | download both manifests of the latest release and every file they list, check sizes, SHA-256 and the signature of `tsmedia-update.json`, that the signed file still serves 2.2.0 users on both architectures, and that the manifest belongs to the latest release (network: github.com), then stop. `-VerifyFrom <url>` checks a local test server with GitHub's paths instead |
+| `-VerifyPublished` | download both manifests of the latest release and every file they list, check sizes, SHA-256 and the signature of `tsmedia-update.json`, that the signed file still serves 2.2.0 users on both architectures (and is the pinned bridge when it is 2.2.1's), that the manifest belongs to the latest release, and that release's important marker if it has one (network: github.com), then stop. `-VerifyFrom <url>` checks a local test server with GitHub's paths instead (and also trusts the test key 99) |
 
 Every build also checks the DLLs' imports: a DLL outside an allowlist (`winhttp.dll` must be loaded on demand only) fails the build, and with a reference list each imported Qt symbol must exist in TeamSpeak's own Qt DLLs. A plugin that doesn't load on a user's PC could never update itself again.
 
@@ -63,7 +65,7 @@ cmake --build build --config Release
 
 ## Unit tests
 
-The 64-bit build also builds `tsmedia_tests`, one executable with a test class per area: link format and chat messages, the send pipeline against a fake TeamSpeak (`tests/fakets3.*`), file checks, albums, spoilers, presence and reactions, replies, emoji (the table, the renderer, HD emoji in chat documents, together with reply lines), audio, drag-out and per-server settings, the server group, diagnostics and the updater (test manifests in `tests/data/update`). Run them from a *Developer PowerShell for VS 2022*:
+The 64-bit build also builds `tsmedia_tests`, one executable with a test class per area: link format and chat messages, the send pipeline against a fake TeamSpeak (`tests/fakets3.*`), file checks, albums, spoilers, presence and reactions, replies, emoji (the table, the renderer, HD emoji in chat documents, together with reply lines), audio, drag-out and per-server settings, the server group, diagnostics and the updater, with important updates and the newer-version hint (test manifests in `tests/data/update`). Run them from a *Developer PowerShell for VS 2022*:
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure
@@ -88,13 +90,14 @@ The 64-bit build also builds these in `build\Release`. Put Qt's `bin` folder on 
 
 ## Official releases
 
-`build.ps1 -Release` makes an official release. No password is needed, and no key either, except once for 2.2.1 (key 1 on the build PC, read without a prompt):
+`build.ps1 -Release` makes an official release. No password is needed, and no key either, except once for 2.2.1 and for important updates (key 1 on the build PC, read without a prompt):
 
 - It turns `TSMEDIA_UPDATER` on and writes `dist\upload-<version>\` with exactly the files of the GitHub release: `TSMedia-<version>.ts3_plugin`, the raw update files (`TSMedia-<version>-win64.update`, `-win32.update`, `-helper-win64.update`, `-helper-win32.update`), `tsmedia-update-v2.json` (unsigned; lists the size and SHA-256 of every file) and `tsmedia-update.json` (signed, for users of 2.2.0).
-- `tsmedia-update.json`: for 2.2.1, the bridge release, the build signs it with key 1 from the signing folder (DPAPI, no prompt) and stops if the key isn't there. Every later release reuses the published, signed file of v2.2.1 (downloaded and checked by the build), so users of 2.2.0 update to 2.2.1 first and from there to the newest version. Details: [the bridge](UPDATES.md#the-bridge-for-220).
+- `tsmedia-update.json`: for 2.2.1, the bridge release, the build signs it with key 1 from the signing folder (DPAPI, no prompt) and stops if the key isn't there. Every later release reuses the published, signed file of v2.2.1 byte for byte (downloaded, and checked against its signature and its pinned SHA-256 by the build), so users of 2.2.0 update to 2.2.1 first and from there to the newest version. Details: [the bridge](UPDATES.md#the-bridge-for-220).
+- `build.ps1 -Important` (2.3.5 and later) also writes `TSMedia-<version>-important.json`, signed with key 1: 2.3.4 and later with automatic checks on install that release without a click. The build reads it back with the release keys and checks it against `tsmedia-update-v2.json` and the release folder. Key 1 then matters again: back it up ([the signing keys](UPDATES.md#the-signing-keys)).
 - The manifests' *What's new* comes from the first five bullets under `### Highlights` in `docs\release-notes\v<version>.md`; the build fails without them, while the notes still contain a `DRAFT` comment, or while `CHANGELOG.md` has no `## [<version>] - YYYY-MM-DD` heading for the release.
 - The build reads both manifests back, checks every file they list, and prints the draft-first `gh release` command. Uploading all files of `dist\upload-<version>\` through GitHub's web page (*Draft a new release*, then drop the files in) works too.
-- After publishing, `build.ps1 -VerifyPublished` downloads the latest release's manifests and files and checks them.
+- After publishing, `build.ps1 -VerifyPublished` downloads the latest release's manifests, files and important marker (if any) and checks them.
 - Since the GitHub repository is what users trust, protect the account: two-factor authentication is recommended. Never rename or delete the account (someone else could take its name) or rename the repository, and never delete the v2.2.1 release ([details](UPDATES.md#protect-the-github-account)).
 - Private keys never belong in the repository: `*.dpapi`, `*.pkey` and `*.backup` are in `.gitignore`.
 

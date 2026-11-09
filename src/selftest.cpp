@@ -48,6 +48,9 @@
 //                                   hover the message, then the pill of emoji (or the add pill): its tool tip, a click
 //   setting {key: chatBubbles}      also the 2.3 bubbles (2.3.1: chatOwnRight, your messages on the right)
 //   winsize {w, h, chat}            the main window's size and the chat pane's height (the second test client only)
+// 2.3.4 newer-version hint:
+//   hint.inject {version, inChannel}  as if a peer's hello named that version (Updater::notePeerVersion)
+//   hint.click                      a left click on the newest hint link of the visible chat (runPart6)
 
 #ifdef TSMEDIA_TESTHOOKS
 
@@ -60,6 +63,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QElapsedTimer>
 #include <QHelpEvent>
 #include <QToolTip>
@@ -106,6 +110,14 @@
 #include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatintegration.h"
 #include "chatpolls.h"     // 2.3 poll: the poll.* commands
+#include "chatlinkpreviews.h" // 2.4 link previews: the links.* commands
+#include "linkpreview/announcement.h" // 2.4 live pass A: lp.forge
+#include "linkpreview/linkurl.h"
+#include "linkpreview/lphub.h"
+#include "linkpreview/previewstore.h"
+#include "linkpreview/senderpipeline.h"
+#include "pluginlink.h"
+#include "textreact.h"
 #include "chatreactions.h" // part 3: the add-reaction button
 #include "chattextreactions.h" // 2.3 text reactions
 #include "textreactdoc.h"      // 2.3 text reactions
@@ -129,6 +141,7 @@
 #include "peerhub.h"
 #include "settings.h"
 #include "ts3api.h"
+#include "update/updater.h" // 2.3.4: hint.inject
 
 // plugin.cpp's entry points, called the way TeamSpeak calls them (same DLL).
 extern "C" int  ts3plugin_processCommand(uint64 serverConnectionHandlerID, const char* command);
@@ -415,7 +428,9 @@ void SelfTest::logEntries(const QString& match) const
                 .arg(e->link.albumIndex)
                 .arg(e->link.albumCount)
                 .arg(mediaStateName(e->previewState))
-                .arg(e->errorText.left(200)));
+                .arg(e->errorText.left(200))
+            + (e->link.serverUid == QLatin1String("tsmedia-web") ? QString::fromLatin1(" [from a website]") // 2.4 live pass A
+                                                                 : QString::fromLatin1(" [TeamSpeak server, channel %1, %2]").arg(e->link.channelId).arg(e->link.remoteFile())));
     }
 }
 
@@ -1122,10 +1137,21 @@ bool SelfTest::run(const QJsonObject& c)
     const bool result6 = runPart6(cmd, c, &handled); // 2.3 live pass A
     if (handled)
         return result6;
+    const bool result7 = runPart7(cmd, c, &handled); // 2.4 live pass A (link previews)
+    if (handled)
+        return result7;
+    const bool result8 = runPart8(cmd, c, &handled); // 2.4 live pass B (click-to-load, network safety)
+    if (handled)
+        return result8;
     // 2.3 poll: {"cmd":"poll.post","question":"...","options":["a","b"],"multiple":false} {"cmd":"poll.vote","option":1}
     // {"cmd":"poll.retract"} {"cmd":"poll.retry"} {"cmd":"poll.log"} {"cmd":"poll.attach"} {"cmd":"poll.creator"}
     if (cmd.startsWith(QLatin1String("poll.")) && m_chat->polls()) {
         say(m_chat->polls()->testCommand(cmd, c));
+        return true;
+    }
+    // 2.4 link previews: {"cmd":"links.log"} {"cmd":"links.click","index":0,"zone":"action|hide|body"} {"cmd":"links.auto"}
+    if (cmd.startsWith(QLatin1String("links.")) && m_chat->linkPreviews()) {
+        say(m_chat->linkPreviews()->testCommand(cmd, c));
         return true;
     }
     if (selfTestMusic(cmd, c, sch, this, [](const QString& text) { say(text); })) // 2.3 live music (selftestmusic.cpp)
@@ -1258,6 +1284,19 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
                 .arg(s.has.join(QLatin1Char(',')), s.without.join(QLatin1Char(',')), s.checking.join(QLatin1Char(',')), peers::presenceText(s)));
         for (const QString& line : hub->diagnosticLines())
             say(QString::fromLatin1("peers diag: ") + line);
+        return true;
+    }
+    if (cmd == QLatin1String("hint.inject")) { // 2.3.4: as if a peer's HELLO named this version {version, inChannel}
+        const QString version   = c.value(QString::fromLatin1("version")).toString();
+        const bool    inChannel = c.value(QString::fromLatin1("inChannel")).toBool(true);
+        upd::Updater* updater   = upd::Updater::instance();
+        say(QString::fromLatin1("peer hint: inject %1 inChannel %2 on sch %3 (updater %4)")
+                .arg(version)
+                .arg(inChannel ? 1 : 0)
+                .arg(sch)
+                .arg(!updater ? QString::fromLatin1("missing") : upd::Updater::builtIn() ? QString::fromLatin1("built in") : QString::fromLatin1("not built in")));
+        if (updater)
+            updater->notePeerVersion(sch, version, inChannel);
         return true;
     }
     if (cmd == QLatin1String("move")) { // our own client into another channel of this (localhost) server
@@ -2083,6 +2122,15 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
                 const QTextBlock tb = b->document()->findBlockByNumber(c.value(QString::fromLatin1("block")).toInt());
                 if (tb.isValid())
                     bar->setValue(qRound(b->document()->documentLayout()->blockBoundingRect(tb).top()) + c.value(QString::fromLatin1("offset")).toInt(0));
+            } else if (c.contains(QString::fromLatin1("find"))) { // live pass C: the newest block with that text at the top
+                const QString part = str("find", "");
+                QTextBlock    tb   = b->document()->lastBlock();
+                while (tb.isValid() && (part.isEmpty() || !tb.text().contains(part)))
+                    tb = tb.previous();
+                if (tb.isValid())
+                    bar->setValue(qRound(b->document()->documentLayout()->blockBoundingRect(tb).top()) + c.value(QString::fromLatin1("offset")).toInt(0));
+                else
+                    say(QString::fromLatin1("scrollchat: no block with \"%1\"").arg(part));
             } else {
                 bar->setValue(to == QLatin1String("top") ? bar->minimum() : to == QLatin1String("bottom") ? bar->maximum() : to.toInt());
             }
@@ -2952,6 +3000,32 @@ bool SelfTest::runPart6(const QString& cmd, const QJsonObject& c, bool* handled)
     const uint64  sch = ts3::currentConnection();
     QTextBrowser* b   = m_chat->visibleChatBrowser();
 
+    if (cmd == QLatin1String("hint.click")) { // 2.3.4: a left click on the newest newer-version hint link of the visible chat
+        int     at = -1;
+        QString href;
+        for (QTextBlock block = b ? b->document()->lastBlock() : QTextBlock(); block.isValid() && at < 0; block = block.previous()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const QTextFragment f = it.fragment();
+                if (f.isValid() && f.charFormat().anchorHref().contains(QLatin1String("#tsmupd-"))) {
+                    at   = f.position() + f.length() / 2;
+                    href = f.charFormat().anchorHref();
+                    break;
+                }
+            }
+        }
+        if (at < 0) {
+            say(QString::fromLatin1("hint.click: no hint link in the visible chat"));
+            return true;
+        }
+        ensureShown(b, b->document()->findBlock(at));
+        const QPoint pos = charRect(b, at).center();
+        QWidget*     vp  = b->viewport();
+        sendMouse(vp, QEvent::MouseMove, pos, Qt::NoButton, Qt::NoButton);
+        sendMouse(vp, QEvent::MouseButtonPress, pos, Qt::LeftButton, Qt::LeftButton);
+        sendMouse(vp, QEvent::MouseButtonRelease, pos, Qt::LeftButton, Qt::NoButton);
+        say(QString::fromLatin1("hint.click: %1 clicked at %2,%3").arg(href.section(QLatin1Char('#'), 1)).arg(pos.x()).arg(pos.y()));
+        return true;
+    }
     if (cmd == QLatin1String("avatar")) {
         const QString action = str("action", "info");
         if (action == QLatin1String("set")) {
@@ -3297,6 +3371,284 @@ bool SelfTest::runPart6(const QString& cmd, const QJsonObject& c, bool* handled)
     }
     *handled = false;
     return true;
+}
+
+// ============================================================================================
+// 2.4 live pass A (link previews):
+//   {"cmd":"settings.check","text":"Show previews for links","value":false}
+//                                   a check box of the open Settings window by its text ('&' ignored): its state,
+//                                   and a click on it when value differs (a greyed-out box is left alone)
+//   {"cmd":"settings.apply"}  {"cmd":"settings.close"}   the window's Apply button / Cancel
+//   {"cmd":"lp.log"}                the link-preview hub's counters, its store and the sender's jobs
+//   {"cmd":"lp.forge","find":"text","template":"text","title":"...","author":"...","pm":"nick"}
+//                                   an LP made by hand and sent as ours: for the link of the newest message of the
+//                                   visible chat containing find (anyone's: a forged one when it is someone else's),
+//                                   with the files of the announcement our store holds for the message containing
+//                                   template (or "templateKind":"y|i|g|v": the newest stored one of that kind);
+//                                   title / author replace the template's (YouTube); pm: to that client as a private
+//                                   chat's LP instead of the channel
+// ============================================================================================
+
+bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
+{
+    *handled          = true;
+    const auto    str = [&c](const char* key, const char* fallback) { return c.value(QString::fromLatin1(key)).toString(QString::fromLatin1(fallback)); };
+    const uint64  sch = ts3::currentConnection();
+    QTextBrowser* b   = m_chat->visibleChatBrowser();
+
+    if (cmd == QLatin1String("settings.check") || cmd == QLatin1String("settings.apply") || cmd == QLatin1String("settings.close")) {
+        QWidget* dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
+        if (!dialog) {
+            say(cmd + QString::fromLatin1(": no settings dialog"));
+            return true;
+        }
+        if (cmd == QLatin1String("settings.close")) {
+            if (auto* d = qobject_cast<QDialog*>(dialog))
+                d->reject();
+            else
+                dialog->close();
+            say(QString::fromLatin1("settings.close: closed"));
+            next(600);
+            return false;
+        }
+        if (cmd == QLatin1String("settings.apply")) {
+            auto*        box   = dialog->findChild<QDialogButtonBox*>();
+            QPushButton* apply = box ? box->button(QDialogButtonBox::Apply) : nullptr;
+            say(QString::fromLatin1("settings.apply: %1").arg(apply ? QString::fromLatin1("enabled %1").arg(apply->isEnabled() ? 1 : 0) : QString::fromLatin1("no Apply button")));
+            if (apply && apply->isEnabled())
+                apply->click();
+            next(1500);
+            return false;
+        }
+        const QString want  = str("text", "");
+        QCheckBox*    found = nullptr;
+        for (QCheckBox* box : dialog->findChildren<QCheckBox*>()) {
+            if (!want.isEmpty() && withoutMnemonic(box->text()).contains(want, Qt::CaseInsensitive)) {
+                found = box;
+                break;
+            }
+        }
+        if (!found) {
+            say(QString::fromLatin1("settings.check: no check box \"%1\"").arg(want));
+            return true;
+        }
+        const auto state = [found] {
+            return QString::fromLatin1("checked %1 enabled %2").arg(found->isChecked() ? 1 : 0).arg(found->isEnabled() ? 1 : 0);
+        };
+        QString out = QString::fromLatin1("settings.check: \"%1\" %2").arg(withoutMnemonic(found->text()), state());
+        if (c.contains(QString::fromLatin1("value")) && c.value(QString::fromLatin1("value")).toBool() != found->isChecked()) {
+            if (found->isEnabled()) {
+                found->click(); // as the user does: toggled, the dialog's own handlers run
+                out += QString::fromLatin1(" -> clicked: ") + state();
+            } else {
+                out += QString::fromLatin1(" -> greyed out, not changed");
+            }
+        }
+        say(out);
+        return true;
+    }
+    if (cmd == QLatin1String("lp.log")) {
+        linkpreview::Hub* hub = linkpreview::Hub::instance();
+        const Settings&   s   = Settings::instance();
+        if (!hub) {
+            say(QString::fromLatin1("lp.log: no hub"));
+            return true;
+        }
+        const linkpreview::Hub::Counters            n = hub->counters();
+        const linkpreview::SenderPipeline::Counters p = hub->pipeline()->counters();
+        say(QString::fromLatin1("lp.log: show %1 make %2 inline %3; LP received %4 accepted %5 rejected %6 rate-limited %7 unmatched %8, waiting %9, stored %10; "
+                                "sender started %11 announced %12 failed %13 skipped %14 reused %15")
+                .arg(s.showLinkPreviews ? 1 : 0)
+                .arg(s.makeLinkPreviews ? 1 : 0)
+                .arg(s.inlinePreviews ? 1 : 0)
+                .arg(n.received)
+                .arg(n.accepted)
+                .arg(n.rejected)
+                .arg(n.rateLimited)
+                .arg(n.unmatched)
+                .arg(hub->waitingCount())
+                .arg(hub->store()->count())
+                .arg(p.started)
+                .arg(p.announced)
+                .arg(p.failed)
+                .arg(p.skipped)
+                .arg(p.reused)
+            // 2.4 auto-load (appended: scripts parse the fields above)
+            + QString::fromLatin1("; auto %1; LPNO received %2 accepted %3 kept %4; sender skip notices %5; own links %6")
+                  .arg(s.autoLoadLinkPreviews ? 1 : 0)
+                  .arg(n.skipsReceived)
+                  .arg(n.skipsAccepted)
+                  .arg(hub->skipCount())
+                  .arg(p.skipNotices)
+                  .arg(hub->pipeline()->ownLinkCount())
+            // live pass C: the plugin never registers a metatype (an unload would leave Qt pointing at freed code)
+            + QString::fromLatin1("; metatypes Result %1 Announcement %2")
+                  .arg(QMetaType::type("linkpreview::Result"))
+                  .arg(QMetaType::type("linkpreview::Announcement")));
+        return true;
+    }
+    if (cmd == QLatin1String("lp.forge")) {
+        linkpreview::Hub*  hub   = linkpreview::Hub::instance();
+        PeerHub*           peers = PeerHub::instance();
+        ChatTextReactions* text  = m_chat->m_textReactions;
+        if (!b || !hub || !peers || !peers->link() || !text) {
+            say(QString::fromLatin1("lp.forge: no chat, hub or transport"));
+            return true;
+        }
+        // The newest message block of the visible chat whose text contains part.
+        const auto blockWith = [b](const QString& part) {
+            for (QTextBlock tb = b->document()->lastBlock(); tb.isValid(); tb = tb.previous()) {
+                if (!part.isEmpty() && textreactdoc::identify(tb).text.contains(part))
+                    return tb;
+            }
+            return QTextBlock();
+        };
+        const QTextBlock target   = blockWith(str("find", ""));
+        const QTextBlock template_ = blockWith(str("template", ""));
+        const QString    key      = target.isValid() ? text->keyOf(b, target.blockNumber()) : QString();
+        const QString    tkey     = template_.isValid() ? text->keyOf(b, template_.blockNumber()) : QString();
+        linkpreview::Target link;
+        for (auto it = target.isValid() ? target.begin() : QTextBlock::iterator(); target.isValid() && !it.atEnd() && link.kind == linkpreview::Kind::None; ++it) {
+            const QTextCharFormat f = it.fragment().charFormat();
+            if (f.isAnchor() && f.anchorHref().startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                link = linkpreview::classify(f.anchorHref());
+        }
+        QVector<linkpreview::Announcement> templates = tkey.isEmpty() ? QVector<linkpreview::Announcement>() : hub->store()->forMessage(tkey);
+        if (templates.isEmpty() && c.contains(QString::fromLatin1("templateKind"))) {
+            // A stored announcement of that kind (link-previews.json's "k": y i g v), the newest, whose message
+            // may not be in this chat (TeamSpeak restarted, another chat).
+            const QJsonArray entries = QJsonDocument::fromJson(hub->store()->toJson(QDateTime::currentSecsSinceEpoch())).object().value(QString::fromLatin1("entries")).toArray();
+            for (int i = entries.size() - 1; i >= 0 && templates.isEmpty(); --i) {
+                const QJsonObject e = entries.at(i).toObject();
+                if (e.value(QString::fromLatin1("k")).toString() != str("templateKind", "i"))
+                    continue;
+                for (const linkpreview::Announcement& a : hub->store()->forMessage(e.value(QString::fromLatin1("m")).toString())) {
+                    if (a.urlKey == e.value(QString::fromLatin1("u")).toString())
+                        templates << a;
+                }
+            }
+        }
+        if (key.isEmpty() || link.kind == linkpreview::Kind::None || templates.isEmpty()) {
+            say(QString::fromLatin1("lp.forge: message key \"%1\", link kind %2, %3 template(s): nothing sent").arg(key).arg(static_cast<int>(link.kind)).arg(templates.size()));
+            return true;
+        }
+        linkpreview::Announcement a = templates.first();
+        a.messageKey               = QString();
+        a.urlKey                   = link.key;
+        a.channelId                = ts3::ownChannel(sch);
+        a.sch                      = sch;
+        a.senderUid                = ts3::ownUid(sch);
+        if (c.contains(QString::fromLatin1("title")))
+            a.title = str("title", "");
+        if (c.contains(QString::fromLatin1("author")))
+            a.author = str("author", "");
+        const QString     pm    = str("pm", "");
+        const anyID       clid  = pm.isEmpty() ? 0 : ts3::clientIdByNickname(sch, pm);
+        const proto::Scope scope = pm.isEmpty() ? proto::Scope::Channel : proto::Scope::Private;
+        a.privateChat           = scope == proto::Scope::Private;
+        const QByteArray      wire    = textreact::wireRefOf(key, QDateTime::currentSecsSinceEpoch());
+        const proto::Message  message = linkpreview::makeMessage(a, scope, wire);
+        if (message.type.isEmpty() || (!pm.isEmpty() && clid == 0)) {
+            say(QString::fromLatin1("lp.forge: the LP breaks a rule (or no client \"%1\"): nothing sent").arg(pm));
+            return true;
+        }
+        const peers::Target to = pm.isEmpty() ? peers::Target::toChannel() : peers::Target::toClients({clid});
+        say(QString::fromLatin1("lp.forge: for block %1 key %2 (%3 %4, url key %5) with the files of %6 (kind %7 \"%8\"), wire %9, %10")
+                .arg(target.blockNumber())
+                .arg(key, QString::fromLatin1(linkpreview::kindName(link.kind)), link.host, link.key, tkey)
+                .arg(static_cast<int>(a.kind))
+                .arg(a.title.left(80), QString::fromLatin1(wire), pm.isEmpty() ? QString::fromLatin1("to the channel") : QString::fromLatin1("to %1 (clid %2)").arg(pm).arg(clid)));
+        peers->link()->sendWith(sch, message, to, PluginLink::Priority::Background, [](peers::SendResult result) {
+            say(QString::fromLatin1("lp.forge: sent, result %1").arg(static_cast<int>(result)));
+        });
+        next(1500);
+        return false;
+    }
+    *handled = false;
+    return true;
+}
+
+// ============================================================================================
+// 2.4 live pass B (click-to-load, network safety):
+//   {"cmd":"browser.capture","on":true}   while on, QDesktopServices' http and https handler is this driver: an
+//                                   Open in browser is logged ("browser call captured: <address>") and no browser
+//                                   opens; "on":false gives the links back to Windows
+//   {"cmd":"stall.start"} ... {"cmd":"stall.stop"}   a 10 ms timer measures the event loop's gaps between them
+//                                   (the longest one, and how many were over 100, 250 and 1000 ms): a freeze shows
+// ============================================================================================
+
+bool SelfTest::runPart8(const QString& cmd, const QJsonObject& c, bool* handled)
+{
+    *handled = true;
+    if (cmd == QLatin1String("browser.capture")) {
+        const bool on = c.value(QString::fromLatin1("on")).toBool(true);
+        for (const char* scheme : {"https", "http"}) {
+            if (on)
+                QDesktopServices::setUrlHandler(QString::fromLatin1(scheme), this, "capturedUrl");
+            else
+                QDesktopServices::unsetUrlHandler(QString::fromLatin1(scheme));
+        }
+        say(QString::fromLatin1("browser.capture: %1").arg(on ? QString::fromLatin1("on (no browser opens)") : QString::fromLatin1("off")));
+        return true;
+    }
+    if (cmd == QLatin1String("stall.start")) {
+        delete m_stall;
+        m_stall = new QTimer(this);
+        m_stall->setTimerType(Qt::PreciseTimer);
+        m_stall->setInterval(10);
+        m_stallStart = QDateTime::currentMSecsSinceEpoch();
+        m_stallLast  = m_stallStart;
+        m_stallMax   = 0;
+        m_stallMaxAt = 0;
+        m_stallTicks = 0;
+        std::fill(std::begin(m_stallOver), std::end(m_stallOver), 0);
+        connect(m_stall, &QTimer::timeout, this, [this] {
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const qint64 gap = now - m_stallLast;
+            m_stallLast      = now;
+            ++m_stallTicks;
+            if (gap > m_stallMax) {
+                m_stallMax   = gap;
+                m_stallMaxAt = now - m_stallStart;
+            }
+            m_stallOver[0] += gap > 100 ? 1 : 0;
+            m_stallOver[1] += gap > 250 ? 1 : 0;
+            m_stallOver[2] += gap > 1000 ? 1 : 0;
+        });
+        m_stall->start();
+        say(QString::fromLatin1("stall.start: measuring"));
+        return true;
+    }
+    if (cmd == QLatin1String("stall.stop")) {
+        if (!m_stall) {
+            say(QString::fromLatin1("stall.stop: not measuring"));
+            return true;
+        }
+        const qint64 now  = QDateTime::currentMSecsSinceEpoch();
+        const qint64 tail = now - m_stallLast; // a gap still open now counts too
+        if (tail > m_stallMax) {
+            m_stallMax   = tail;
+            m_stallMaxAt = now - m_stallStart;
+        }
+        delete m_stall;
+        m_stall = nullptr;
+        say(QString::fromLatin1("stall.stop: %1 ms, %2 ticks, longest gap %3 ms (at +%4 ms), gaps over 100 ms %5, over 250 ms %6, over 1000 ms %7")
+                .arg(now - m_stallStart)
+                .arg(m_stallTicks)
+                .arg(m_stallMax)
+                .arg(m_stallMaxAt)
+                .arg(m_stallOver[0])
+                .arg(m_stallOver[1])
+                .arg(m_stallOver[2]));
+        return true;
+    }
+    *handled = false;
+    return true;
+}
+
+void SelfTest::capturedUrl(const QUrl& url)
+{
+    say(QString::fromLatin1("browser call captured: %1").arg(url.toString(QUrl::FullyEncoded)));
 }
 
 #endif

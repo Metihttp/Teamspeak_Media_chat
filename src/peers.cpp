@@ -162,20 +162,25 @@ bool PeerDirectory::presenceOn() const
 
 QStringList PeerDirectory::caps() const
 {
-    QStringList list{QStringLiteral("p")};
+    // fromLatin1: the list goes into messages PluginLink keeps queued.
+    QStringList list{QString::fromLatin1("p")};
     if (m_local.reactions)
-        list << QStringLiteral("r");
+        list << QString::fromLatin1("r");
+    if (m_local.linkPreviews)
+        list << QString::fromLatin1("l"); // 2.4: "I make previews of the links I send"
     return list;
 }
 
 void PeerDirectory::setLocal(const Local& local)
 {
-    const bool wasOn = presenceOn();
-    m_local          = local;
+    const bool    wasOn  = presenceOn();
+    const QString before = caps().join(QLatin1Char(',')); // joined: Qt 5.15's QList == trips MSVC's deprecation warning
+    m_local              = local;
     if (wasOn && !local.presence) {
         sayGoodbye();
         for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
             it->helloDue = -1;
+            it->capsDue  = -1;
             it->hiDue    = -1;
             it->hiTargets.clear();
             it->syncAt = -1;
@@ -191,6 +196,21 @@ void PeerDirectory::setLocal(const Local& local)
                 continue;
             it->helloAttempts = 0;
             it->helloDue      = now + m_limits.settleMs;
+            it->capsDue       = -1; // the HELLO carries them
+        }
+    } else if (wasOn && local.presence && caps().join(QLatin1Char(',')) != before) {
+        // 2.4: our capabilities changed (a setting): the channel learns it with one HELLO rr=0 (nobody answers),
+        // after the settle time and the HELLO interval, so rapid toggles make one. A HELLO that is due anyway
+        // carries them. Private partners learn it when they ask again (recheckPartner, their side).
+        const qint64 now = m_env.nowMs();
+        for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+            if (it->channel == 0 || it->helloDue >= 0)
+                continue;
+            qint64 due = now + m_limits.settleMs;
+            if (it->lastHelloMs >= 0)
+                due = qMax(due, it->lastHelloMs + m_limits.helloMinIntervalMs);
+            it->capsDue      = due;
+            it->capsAttempts = 0;
         }
     }
     for (quint64 sch : m_conns.keys())
@@ -317,8 +337,15 @@ void PeerDirectory::received(quint64 sch, ClientId from, const QString& uid, con
             c.hiDue         = c.hiDue < 0 ? at : qMin(c.hiDue, at);
         }
     }
+    // 2.3.4: the newer-version hint (untrusted). Not our own identity on another client (c.ownUid is
+    // only known after entering a channel), not a ServerQuery client, only someone visible.
+    const bool versionNews = !hello->version.isEmpty() && where != 0 && !m_env.isQueryClient(sch, from)
+                             && uid != m_env.uid(sch, m_env.ownClientId(sch));
+    const QString version  = hello->version;
     changed(sch);
     reschedule();
+    if (versionNews)
+        emit versionSeen(sch, from, version, inChannel); // last: c may be gone after it
 }
 
 void PeerDirectory::commandsBlocked(quint64 sch)
@@ -326,6 +353,7 @@ void PeerDirectory::commandsBlocked(quint64 sch)
     auto it = m_conns.find(sch);
     if (it != m_conns.end()) {
         it->helloDue = -1;
+        it->capsDue  = -1;
         it->hiDue    = -1;
         it->hiTargets.clear();
         it->syncAt = -1;
@@ -369,6 +397,7 @@ void PeerDirectory::enterChannel(quint64 sch, quint64 channel)
         addMember(c, sch, client, -1);
 
     c.helloAttempts = 0;
+    c.capsDue       = -1; // the channel's HELLO carries our caps
     if (presenceOn() && !m_sender.blocked(sch)) {
         // Hopping through channels: the settle time restarts, so only the last channel gets a HELLO.
         qint64 due = now + m_limits.settleMs;
@@ -394,6 +423,8 @@ void PeerDirectory::sendHello(quint64 sch)
         return;
     it->lastHelloMs   = m_env.nowMs();
     it->helloInFlight = true;
+    it->capsDue       = -1;
+    it->capsSent      = caps().join(QLatin1Char(','));
     ++it->helloAttempts;
     const quint64           generation = it->generation;
     QPointer<PeerDirectory> guard(this);
@@ -401,6 +432,50 @@ void PeerDirectory::sendHello(quint64 sch)
         if (guard)
             guard->helloDone(sch, generation, result);
     });
+}
+
+void PeerDirectory::sendCaps(quint64 sch)
+{
+    auto it = m_conns.find(sch);
+    if (it == m_conns.end())
+        return;
+    it->capsDue = -1;
+    if (!presenceOn() || m_sender.blocked(sch) || it->channel == 0)
+        return;
+    const QStringList now  = caps();
+    const QString     sent = now.join(QLatin1Char(','));
+    if (sent == it->capsSent)
+        return; // toggled back before it went: the channel knows these already
+    it->lastHelloMs = m_env.nowMs();
+    it->capsSent    = sent;
+    ++it->capsAttempts;
+    const quint64           generation = it->generation;
+    QPointer<PeerDirectory> guard(this);
+    // rr=0: nobody answers (they only update what they know of us). A lost one (flood protection, no answer) goes
+    // again like a HELLO (helloRetries, helloRetryMs): until it arrives, the others keep our old caps, and with an old
+    // "no l" they would load our links from the websites while we share previews.
+    m_sender.send(sch, proto::makeHello(m_local.version, now, false), Target::toChannel(), [guard, sch, generation, sent](SendResult result) {
+        if (guard)
+            guard->capsDone(sch, generation, sent, result);
+    });
+}
+
+void PeerDirectory::capsDone(quint64 sch, quint64 generation, const QString& sent, SendResult result)
+{
+    if (result == SendResult::Blocked) {
+        commandsBlocked(sch);
+        return;
+    }
+    if (result != SendResult::Flooded && result != SendResult::Failed)
+        return; // it arrived (Ok, LateOk), or a newer HELLO took its place (Superseded)
+    auto it = m_conns.find(sch);
+    if (it == m_conns.end() || it->generation != generation || it->capsSent != sent)
+        return; // another channel since (its HELLO carries our caps), or newer caps went out meanwhile
+    if (it->helloDue >= 0 || it->capsAttempts > m_limits.helloRetries || !presenceOn())
+        return; // a HELLO that is due carries them; or given up (our next HELLO carries them)
+    it->capsSent = QString(); // the channel may not know them: sendCaps sends them again
+    it->capsDue  = m_env.nowMs() + m_limits.helloRetryMs;
+    reschedule();
 }
 
 void PeerDirectory::helloDone(quint64 sch, quint64 generation, SendResult result)
@@ -467,6 +542,16 @@ void PeerDirectory::sendHi(quint64 sch)
 
 void PeerDirectory::checkPartner(quint64 sch, ClientId client)
 {
+    ping(sch, client, false);
+}
+
+void PeerDirectory::recheckPartner(quint64 sch, ClientId client)
+{
+    ping(sch, client, true);
+}
+
+void PeerDirectory::ping(quint64 sch, ClientId client, bool recheck)
+{
     if (!isAvailable(sch) || client == 0 || client == m_env.ownClientId(sch) || m_env.channelOf(sch, client) == 0)
         return;
     const QString uid = m_env.uid(sch, client);
@@ -474,8 +559,14 @@ void PeerDirectory::checkPartner(quint64 sch, ClientId client)
         return;
     const qint64 now = m_env.nowMs();
     Conn&        c   = m_conns[sch];
-    PeerInfo&    p   = remember(c, uid, client, m_env.nickname(sch, client));
-    if (p.state == PeerState::Has && p.heardMs >= 0 && now - p.heardMs < m_limits.partnerFreshMs)
+    if (recheck) {
+        // Only someone who told us their caps (they have TS Media), and not within the last partnerPingMs.
+        const auto known = c.peers.constFind(uid);
+        if (known == c.peers.constEnd() || known->state != PeerState::Has || (known->heardMs >= 0 && now - known->heardMs < m_limits.partnerPingMs))
+            return;
+    }
+    PeerInfo& p = remember(c, uid, client, m_env.nickname(sch, client));
+    if (!recheck && p.state == PeerState::Has && p.heardMs >= 0 && now - p.heardMs < m_limits.partnerFreshMs)
         return;
     if (p.pingMs >= 0 && now - p.pingMs < m_limits.partnerPingMs)
         return;
@@ -580,6 +671,40 @@ bool PeerDirectory::hasCapability(quint64 sch, const QString& uid, const char* c
     return p != conn->peers.constEnd() && p->state == PeerState::Has && p->caps.contains(QString::fromLatin1(cap));
 }
 
+PeerDirectory::CapState PeerDirectory::capabilityState(quint64 sch, const QString& uid, const char* cap) const
+{
+    const auto conn = m_conns.constFind(sch);
+    if (conn == m_conns.constEnd() || uid.isEmpty())
+        return CapState::Unknown;
+    const auto p = conn->peers.constFind(uid);
+    if (p != conn->peers.constEnd()) {
+        switch (p->state) {
+        case PeerState::Has:
+            if (p->caps.contains(QString::fromLatin1(cap)))
+                return CapState::Yes;
+            // Asked again (recheckPartner): what they said may be old; their answer is due within memberTimeoutMs.
+            return p->pingDeadline >= 0 && isAvailable(sch) ? CapState::Checking : CapState::No;
+        case PeerState::Without:
+            return CapState::No;
+        case PeerState::Checking:
+            return isAvailable(sch) ? CapState::Checking : CapState::Unknown;
+        case PeerState::Unknown:
+            break;
+        }
+    }
+    // A member of our channel that hasn't answered yet has no peers entry. Checking only while our question can go
+    // out (with presence off or commands blocked nobody is asked: such a member would never stop "checking").
+    bool checking = false;
+    for (const Member& m : conn->members) {
+        if (m.uid != uid)
+            continue;
+        if (m.state == PeerState::Without)
+            return CapState::No;
+        checking = checking || m.state == PeerState::Checking;
+    }
+    return checking && isAvailable(sch) ? CapState::Checking : CapState::Unknown;
+}
+
 bool PeerDirectory::channelHasCapability(quint64 sch, const char* cap) const
 {
     const auto conn = m_conns.constFind(sch);
@@ -647,6 +772,8 @@ void PeerDirectory::tick()
             continue;
         if (m_conns[sch].helloDue >= 0 && now >= m_conns[sch].helloDue)
             sendHello(sch);
+        if (m_conns.contains(sch) && m_conns[sch].capsDue >= 0 && now >= m_conns[sch].capsDue)
+            sendCaps(sch); // 2.4
         if (m_conns.contains(sch) && m_conns[sch].hiDue >= 0 && now >= m_conns[sch].hiDue)
             sendHi(sch);
         if (!m_conns.contains(sch))
@@ -700,6 +827,7 @@ qint64 PeerDirectory::nextWakeMs() const
     };
     for (const Conn& c : m_conns) {
         take(c.helloDue);
+        take(c.capsDue);
         take(c.hiDue);
         take(c.syncAt);
         for (const Member& m : c.members) {

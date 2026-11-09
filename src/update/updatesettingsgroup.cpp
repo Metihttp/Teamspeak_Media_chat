@@ -61,8 +61,9 @@ UpdateSettingsGroup::UpdateSettingsGroup(QWidget* parent)
     }
 
     m_automatic = new QCheckBox(i18n::t("Check for &updates automatically"), this);
-    auto* hint  = hintLabel(i18n::t("About once a day, TS Media chat asks GitHub whether there is a new version. Nothing is installed until you "
-                                    "click Update. GitHub sees your IP address, and Windows may check GitHub's certificate with its issuer; "
+    auto* hint  = hintLabel(i18n::t("About once a day, TS Media chat asks GitHub whether there is a new version. Important fixes signed by the "
+                                    "author install by themselves and start with the next TeamSpeak start; anything else waits for your click "
+                                    "on Update. GitHub sees your IP address, and Windows may check GitHub's certificate with its issuer; "
                                     "nothing else is sent."),
                            this);
     m_automatic->setAccessibleDescription(hint->text());

@@ -10,7 +10,9 @@
 #include <QSizeF>
 #include <QTextBlock>
 #include <QTextBrowser>
+#include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QtMath>
 
 #include "layoutdoc.h"
@@ -63,6 +65,60 @@ inline void restore(QTextBrowser* browser, const Place& p)
     const qreal y = layoutdoc::anchorY(browser->document(), p.anchor);
     if (y >= 0)
         bar->setValue(qRound(y));
+}
+
+// 2.4 link previews: the reader's place as a character (its cursor follows the edits), for a picture of ours that
+// changes size under one line (a link's card that becomes its media, a sender's preview that arrives). The line at
+// the view's top stays where it is on screen wherever in its message the picture is: above it, nothing moves;
+// below it, everything moves with it. (Place scales its offset with the block's new height: right for a block that
+// got a new look, a jump for one whose picture grew.) A chat at its bottom stays at its bottom.
+struct TextPlace {
+    QTextCursor cursor; // the character at the view's top; null: none (an empty chat)
+    qreal       offset = 0;
+    bool        bottom = false;
+};
+
+// The top of the laid-out line that holds position, in document coordinates; -1: none.
+inline qreal lineTopOf(QTextDocument* doc, int position)
+{
+    const QTextBlock block = doc->findBlock(position);
+    if (!block.isValid() || !block.isVisible() || !block.layout())
+        return -1;
+    const QTextLine line = block.layout()->lineForTextPosition(position - block.position());
+    if (!line.isValid())
+        return -1;
+    return doc->documentLayout()->blockBoundingRect(block).top() + line.y();
+}
+
+inline TextPlace captureText(QTextBrowser* browser)
+{
+    TextPlace      p;
+    QTextDocument* doc = browser->document();
+    p.bottom           = atBottom(browser);
+    const qreal y      = browser->verticalScrollBar()->value();
+    const int   hit    = doc->documentLayout()->hitTest(QPointF(doc->documentMargin() + 1, y + 1), Qt::FuzzyHit);
+    const qreal top    = hit >= 0 ? lineTopOf(doc, hit) : -1;
+    if (top < 0)
+        return p;
+    p.cursor = QTextCursor(doc);
+    p.cursor.setPosition(hit);
+    p.offset = y - top;
+    return p;
+}
+
+inline void restoreText(QTextBrowser* browser, const TextPlace& p)
+{
+    syncRange(browser);
+    QScrollBar* bar = browser->verticalScrollBar();
+    if (p.bottom) {
+        bar->setValue(bar->maximum());
+        return;
+    }
+    if (p.cursor.isNull() || p.cursor.document() != browser->document())
+        return;
+    const qreal top = lineTopOf(browser->document(), p.cursor.position());
+    if (top >= 0)
+        bar->setValue(qRound(top + p.offset));
 }
 
 // A run of events opened or closed (a click on its chip): the clicked row stays where it is on screen, or the

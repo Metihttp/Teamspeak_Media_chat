@@ -158,6 +158,10 @@ void Settings::load(const QString& file)
     // 2.2 protocol
     showReactions = readBool(s, "showReactions", d.showReactions);
     sharePresence = readBool(s, "sharePresence", d.sharePresence);
+    // 2.4 link previews
+    showLinkPreviews     = readBool(s, "showLinkPreviews", d.showLinkPreviews);
+    autoLoadLinkPreviews = readBool(s, "autoLoadLinkPreviews", d.autoLoadLinkPreviews); // a missing key: on
+    makeLinkPreviews     = readBool(s, "makeLinkPreviews", d.makeLinkPreviews);
     // 2.2.1 voice: voiceMicrophone, voiceMuteTeamSpeakMic, voiceReview and voiceSounds (2.2.0) are ignored
 
     // 2.2 emoji
@@ -229,6 +233,10 @@ void Settings::save(const QString& file) const
     // 2.2 protocol
     s.setValue(key("showReactions"), showReactions);
     s.setValue(key("sharePresence"), sharePresence);
+    // 2.4 link previews
+    s.setValue(key("showLinkPreviews"), showLinkPreviews);
+    s.setValue(key("autoLoadLinkPreviews"), autoLoadLinkPreviews);
+    s.setValue(key("makeLinkPreviews"), makeLinkPreviews);
 
     // 2.2 emoji
     s.setValue(key("hdEmoji"), hdEmoji);

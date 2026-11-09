@@ -35,6 +35,7 @@
 #include "settings.h"
 #include "video/mftranscode.h" // 2.4 compress
 #include "video/mfvideo.h"     // 2.4 compress: mf::available()
+#include "linkpreview/linkstate.h" // 2.4 link previews: the made-up server of a website's file
 
 #include <QStorageInfo> // 2.4 compress: free space for the compressed copy
 
@@ -821,6 +822,11 @@ void Core::ensure(const MediaLink& rawLink)
 {
     if (!rawLink.isValid())
         return;
+    // 2.4 link previews: a website's file loaded here has a made-up link of a reserved server
+    // (linkstate::webLink, only ever adoptLocalFile's). A chat link naming that server is forged: it never
+    // becomes an entry, so it can't hold the key of a viewer's click first, nor be downloaded.
+    if (linkstate::isWebLink(rawLink))
+        return;
 
     const MediaLink link = sanitized(rawLink);
     const QString   key  = link.key();
@@ -880,10 +886,41 @@ void Core::ensure(const MediaLink& rawLink)
     startAutoDownloads(key);
 }
 
+// 2.4 link previews (core.h)
+QString Core::adoptLocalFile(const MediaLink& link, const QString& path, const QString& posterPath)
+{
+    const QFileInfo file(path);
+    if (!link.isValid() || !file.isFile())
+        return {};
+    const QString key = link.key();
+    MediaEntry    e;
+    if (const auto old = m_entries.constFind(key); old != m_entries.constEnd()) {
+        if (!m_localOnly.contains(key))
+            return {}; // a key of a real link: never taken over
+        e = old.value();
+    } else {
+        m_order.append(key);
+    }
+    e.link      = link;
+    e.kind      = kindForFileName(link.fileName);
+    e.state     = MediaState::Ready;
+    e.error     = MediaError::None;
+    e.errorText.clear();
+    e.progress     = 1.0;
+    e.localPath    = path;
+    e.previewPath  = posterPath;
+    e.previewState = !posterPath.isEmpty() && QFileInfo(posterPath).isFile() ? MediaState::Ready : MediaState::Idle;
+    m_localOnly.insert(key);
+    m_entries.insert(key, e);
+    invalidateStills(key);
+    emit entryChanged(key);
+    return key;
+}
+
 void Core::startAutoDownloads(const QString& key)
 {
     auto it = m_entries.find(key);
-    if (it == m_entries.end())
+    if (it == m_entries.end() || m_localOnly.contains(key)) // 2.4 link previews: never on a TeamSpeak server
         return;
     MediaEntry&     e          = it.value();
     // 2.2 per-server settings: the server the download goes to (where the data is spent) decides.
@@ -1025,7 +1062,7 @@ void Core::retry(const QString& key)
 void Core::startDownload(const QString& key)
 {
     auto it = m_entries.find(key);
-    if (it == m_entries.end())
+    if (it == m_entries.end() || m_localOnly.contains(key)) // 2.4 link previews: never on a TeamSpeak server
         return;
     MediaEntry& e = it.value();
     if (e.state == MediaState::Downloading || e.state == MediaState::Queued)
@@ -1100,7 +1137,7 @@ void Core::startDownload(const QString& key)
 void Core::startPreviewDownload(const QString& key)
 {
     auto it = m_entries.find(key);
-    if (it == m_entries.end())
+    if (it == m_entries.end() || m_localOnly.contains(key)) // 2.4 link previews: never on a TeamSpeak server
         return;
     MediaEntry& e = it.value();
     if (e.previewPath.isEmpty() || e.previewState == MediaState::Downloading || e.previewState == MediaState::Queued || e.previewState == MediaState::Ready)
@@ -1122,7 +1159,7 @@ void Core::startPreviewDownload(const QString& key)
 
     const uint64 sch = ts3::connectionForServerUid(e.link.serverUid);
     if (!sch) {
-        failPreviewDownload(key, QStringLiteral("not connected"), true);
+        failPreviewDownload(key, QStringLiteral("not connected"), true, MediaError::NotConnected);
         return;
     }
     // Its own connection: the main file may be transferred over another tab to the same server.
@@ -1146,7 +1183,7 @@ void Core::startPreviewDownload(const QString& key)
     floodGovernor(sch).charge(FloodGovernor::Cost::Transfer, floodClockMs());
     if (err != ERROR_ok) {
         forgetOp(rc);
-        failPreviewDownload(key, ts3::errorText(err), mapError(err) == MediaError::NotConnected);
+        failPreviewDownload(key, ts3::errorText(err), mapError(err) == MediaError::NotConnected, mapError(err));
         return;
     }
     setOpTransfer(rc, tid);
@@ -1335,6 +1372,7 @@ void Core::finishPreviewDownload(const QString& key)
     const QString partial = partialDir(key, true);
     const QString found   = findDownloaded(partial, QFileInfo(e.previewPath).fileName());
     QString       error;
+    MediaError    previewError = MediaError::Other;
     if (found.isEmpty()) {
         error = QStringLiteral("the downloaded preview is missing");
     } else if (static_cast<quint64>(QFileInfo(found).size()) > kMaxPreviewBytes) {
@@ -1344,7 +1382,8 @@ void Core::finishPreviewDownload(const QString& key)
         // 2.2 sha: not the preview that was sent (ph). Never cached; the placeholder stays.
         fileverify::count(fileverify::Counter::PreviewMismatched);
         ts3::log(LogLevel_WARNING, m_previewSch.value(key), "Preview of %1 doesn't match its checksum; showing the placeholder instead", {ts3::file(e.link.remoteFile())});
-        error = QStringLiteral("the preview doesn't match its checksum");
+        error        = QStringLiteral("the preview doesn't match its checksum");
+        previewError = MediaError::Mismatch;
     } else {
         QDir().mkpath(QFileInfo(e.previewPath).absolutePath());
         QFile::remove(e.previewPath);
@@ -1355,7 +1394,7 @@ void Core::finishPreviewDownload(const QString& key)
     QDir(partial).removeRecursively();
     if (!error.isEmpty()) {
         e.previewState = MediaState::Idle;
-        failPreviewDownload(key, error);
+        failPreviewDownload(key, error, false, previewError);
         return;
     }
 
@@ -1415,7 +1454,7 @@ void Core::failDownload(const QString& key, MediaError error, const QString& tex
     pumpDownloadQueue();
 }
 
-void Core::failPreviewDownload(const QString& key, const QString& text, bool interrupted)
+void Core::failPreviewDownload(const QString& key, const QString& text, bool interrupted, MediaError error)
 {
     auto it = m_entries.find(key);
     if (it == m_entries.end())
@@ -1433,6 +1472,7 @@ void Core::failPreviewDownload(const QString& key, const QString& text, bool int
     m_previewQueue.removeAll(key);
 
     e.previewState      = MediaState::Failed;
+    e.previewError      = interrupted && error == MediaError::Other ? MediaError::NotConnected : error;
     e.previewTransferId = 0;
     ts3::log(QStringLiteral("Preview %1 of %2 not loaded: %3").arg(e.link.previewFile, e.link.remoteFile(), text), LogLevel_WARNING, m_previewSch.value(key));
 
@@ -2187,7 +2227,8 @@ int Core::send(const SendRequest& request)
     if (!target.sch)
         target.sch = ts3::currentConnection();
     if (!ts3::isConnected(target.sch)) {
-        ts3::printWarning(ts3::currentConnection(), notConnectedText());
+        if (!request.background) // 2.4 link previews: quiet (the pipeline logs it)
+            ts3::printWarning(ts3::currentConnection(), notConnectedText());
         dropTemps();
         return 0;
     }
@@ -2205,6 +2246,8 @@ int Core::send(const SendRequest& request)
         items.append(item);
     }
     // Names in curly quotes: the plugin log marks those as private (diagnostics leave them out).
+    if (request.background)
+        missing.clear(); // 2.4 link previews: quiet
     if (missing.size() == 1)
         ts3::printWarning(target.sch, i18n::t("Couldn't find “%1”. It may have been moved or deleted.").arg(missing.first()));
     else if (missing.size() > 1)
@@ -2217,7 +2260,7 @@ int Core::send(const SendRequest& request)
     QVector<QVector<int>> units;
     QVector<int>          media;
     for (int i = 0; i < items.size(); ++i) {
-        if (request.album && albums::enabled() && isAlbumKind(items.at(i))) // 2.2 album: the feature switch
+        if (request.album && !request.background && albums::enabled() && isAlbumKind(items.at(i))) // 2.2 album: the feature switch
             media.append(i);
     }
     if (media.size() >= 2) {
@@ -2235,6 +2278,7 @@ int Core::send(const SendRequest& request)
     m_batches[batch].caption       = request.caption;
     m_batches[batch].captionOrigin = batch;
     m_batches[batch].lead          = request.replyLead; // 2.2 reply
+    m_batches[batch].background    = request.background; // 2.4 link previews (createUpload reads it)
     for (const QVector<int>& indexes : qAsConst(units)) {
         PostUnit unit;
         unit.album = indexes.size() >= 2;
@@ -2307,9 +2351,11 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
     ChatTarget     target       = requested;
     if (!target.sch)
         target.sch = ts3::currentConnection();
+    const bool background = m_batches.contains(batch) && m_batches[batch].background; // 2.4 link previews
 
     if (!ts3::isConnected(target.sch)) {
-        ts3::printWarning(ts3::currentConnection(), notConnectedText());
+        if (!background)
+            ts3::printWarning(ts3::currentConnection(), notConnectedText());
         if (deleteSource)
             removeOwnFile(sourcePath);
         return 0;
@@ -2330,6 +2376,7 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
     job.pasted       = item.pasted;
     job.displayName  = item.displayName;
     job.spoiler      = item.spoiler;
+    job.background   = background;
     job.remoteDir    = normalizeRemoteDir(s.uploadDirectory);
     job.remoteName   = remoteName;
     job.size         = static_cast<quint64>(QFileInfo(sourcePath).size());
@@ -2346,7 +2393,7 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
     // 2.4 compress: a video that may be compressed is planned on the worker; its size against the limit
     // is the planner's business (it may be made small enough).
     const videocompress::Options compress  = compressOptions(item.quality, serverUid);
-    const bool                   candidate = !item.voice && !item.pasted && videocompress::isCompressibleVideoName(remoteName)
+    const bool                   candidate = !item.voice && !item.pasted && !background && videocompress::isCompressibleVideoName(remoteName)
                                            && item.quality != SendQuality::Original && compress.mediaFoundation
                                            && (item.quality != SendQuality::Auto || compress.compressLarge || compress.convertUnplayable);
     j.originalSize = j.size;
@@ -2387,13 +2434,15 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
 
     // Then size, duration, BlurHash and the preview come from the staged copy, still on the worker:
     // decoding a large photo or opening a video takes far too long for the GUI thread.
-    const bool     previews = s.generatePreviews;
+    // 2.4 link previews: a background file brings its own preview (or is one): none is made from it.
+    const bool       previews    = s.generatePreviews && !background;
+    const QByteArray givenPreview = background && !item.previewOnly ? item.previewJpeg : QByteArray();
     const auto     cancel   = std::make_shared<std::atomic<bool>>(false);
     QPointer<Core> self(this);
     m_probing.insert(id, j.stagingDir);
     m_stagingCancel.insert(id, cancel);
     const quint64 originalSize = j.size;
-    m_pool.start([self, id, copyFrom, staged, nested, previews, cancel, candidate, compress, originalSize] {
+    m_pool.start([self, id, copyFrom, staged, nested, previews, givenPreview, cancel, candidate, compress, originalSize] {
         // Jobs wait in the pool's queue until a worker is free; tell the toast this one has started.
         if (Core* core = self.data()) {
             QMetaObject::invokeMethod(core, [self, id] {
@@ -2452,6 +2501,8 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
             info = probeLocalMedia(staged, previews);
             jpeg = info.preview.isNull() ? QByteArray() : encodePreviewJpeg(info.preview);
         }
+        if (!givenPreview.isEmpty())
+            jpeg = givenPreview; // 2.4 link previews
         // 2.2 sha: the final staged bytes, hashed once, right before the preview and the file are
         // uploaded (queued before onProbed, so it arrives first).
         if (ok && !cancel->load()) {
@@ -2678,13 +2729,28 @@ void Core::onDirectoryReady(int id, bool previews, bool ok)
     UploadJob&   job   = it.value();
     UploadExtra& extra = m_uploadExtra[id];
 
+    // 2.4 link previews: a file that is itself a preview goes into the previews folder.
+    const bool previewOnly = job.background && m_jobItems.value(id).previewOnly;
     if (!previews) {
         if (!ok)
             job.remoteDir = QStringLiteral("/"); // no permission for folders: fall back to the channel root
-        if (extra.previewJpeg.isEmpty())
+        if (extra.previewJpeg.isEmpty() && !(previewOnly && ok))
             startSend(id);
         else
             createRemoteDirectory(id, true);
+        return;
+    }
+    if (previewOnly) {
+        if (ok) {
+            // Staged where the client may look for it under the new folder too (see createUpload).
+            const QString dir    = previewDirFor(job);
+            const QString staged = job.stagingDir + QLatin1Char('/') + job.remoteName;
+            const QString nested = job.stagingDir + dir + QLatin1Char('/') + job.remoteName;
+            QDir().mkpath(QFileInfo(nested).absolutePath());
+            if (QFileInfo::exists(nested) || linkOrCopy(staged, nested))
+                job.remoteDir = dir;
+        }
+        startSend(id);
         return;
     }
 
@@ -2777,6 +2843,8 @@ void Core::finishPreviewUpload(int id, bool ok, const QString& reason, unsigned 
         it->previewRemotePath = remote;
     else
         ts3::log(QStringLiteral("Preview upload for %1 failed (%2); sending without it").arg(it->remoteName, reason), LogLevel_WARNING, it->target.sch);
+    if (ok && startPreviewCheck(id))
+        return; // 2.4 link previews: the file goes up once the server has all of its preview (finishServerCheck)
     startSend(id);
 }
 
@@ -3061,6 +3129,24 @@ void Core::composeUnit(int batch, int index)
     }
     if (ids.isEmpty())
         return; // nothing of it reached the server: the caption waits for the next unit
+    if (b->background) {
+        // 2.4 link previews: no chat message; whoever sent them is told (the server has all of each file).
+        for (int i = 0; i < ids.size(); ++i) {
+            auto job = m_uploads.find(ids.at(i));
+            if (job == m_uploads.end() || job->state != UploadState::Posting)
+                continue;
+            if (!ts3::isConnected(job->target.sch) || m_unconfirmedUploads.contains(ids.at(i))) {
+                // The connection went before the server confirmed it: nothing is announced.
+                failUpload(ids.at(i), uploadErrorText(MediaError::NotConnected), true);
+                continue;
+            }
+            emit backgroundFinished(batch, ids.at(i), true, links.at(i));
+            job = m_uploads.find(ids.at(i)); // looked up again: a slot may have changed the jobs
+            if (job != m_uploads.end() && job->state == UploadState::Posting)
+                setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
+        }
+        return;
+    }
     // Taken now: touch() below emits signals, and nothing may be assumed about the jobs afterwards.
     const UploadJob first = *upload(ids.first());
 
@@ -3310,7 +3396,8 @@ void Core::warnFailed(uint64 sch, const QVector<int>& ids, const QString& text)
     QVector<int> failing;
     for (int id : ids) {
         const UploadJob* job = upload(id);
-        if (job && job->state != UploadState::Done && job->state != UploadState::Failed && job->state != UploadState::Canceled && !failing.contains(id))
+        if (job && !job->background && job->state != UploadState::Done && job->state != UploadState::Failed && job->state != UploadState::Canceled
+            && !failing.contains(id)) // 2.4 link previews: quiet
             failing.append(id);
     }
     if (failing.isEmpty())
@@ -3465,7 +3552,10 @@ void Core::failUpload(int id, const QString& text, bool quiet)
         m_uploadsByTransfer.remove(job.transferId);
     job.transferActive = false;
     m_sendQueue.removeAll(id);
-    if (!quiet) {
+    if (job.background) {
+        // 2.4 link previews: only the log (the pipeline says which link it was for)
+        ts3::log(LogLevel_INFO, job.target.sch, "A link preview's file couldn't be uploaded: %1", {ts3::pub(text)});
+    } else if (!quiet) {
         const QString warning = job.pasted ? i18n::t("Couldn't send the pasted image: %1").arg(text)
                                            : i18n::t("Couldn't send “%1”: %2").arg(displayNameFor(job), text);
         ts3::printWarning(job.target.sch, warning);
@@ -3536,7 +3626,7 @@ void Core::dismissUpload(int id)
 bool Core::canRetryUpload(int id) const
 {
     const UploadJob* job = upload(id);
-    if (!job || job->state != UploadState::Failed)
+    if (!job || job->state != UploadState::Failed || job->background) // 2.4 link previews: never retried
         return false;
     // Uploaded, only its message failed: the message is posted again (no second upload).
     if (job->uploaded)
@@ -3698,10 +3788,14 @@ void Core::setUploadState(UploadJob& job, UploadState state, const QString& mess
         job.message = message;
     const int id = job.id;
     if (state == UploadState::Done || state == UploadState::Failed || state == UploadState::Canceled) {
+        const bool background = job.background;
+        const int  batch      = job.batch;
         cleanupUpload(job);
         // Keep finished jobs around so the toast can show the final state; failed ones until they
-        // are dismissed or retried.
-        singleShotOwned(state == UploadState::Failed ? kFailedJobLingerMs : kJobLingerMs, this, [this, id] { forgetUpload(id); });
+        // are dismissed or retried (2.4 link previews: never shown, never retried).
+        singleShotOwned(state == UploadState::Failed && !background ? kFailedJobLingerMs : kJobLingerMs, this, [this, id] { forgetUpload(id); });
+        if (background && state != UploadState::Done)
+            emit backgroundFinished(batch, id, false, MediaLink()); // 2.4 link previews
     }
     emit uploadChanged(id);
     scheduleUploadQueue();
@@ -4789,15 +4883,10 @@ bool Core::startServerCheck(int id, const QVector<ServerCheck::File>* files)
         check.files.append(main);
         // Its preview: the message names it too. It was uploaded before the file, so it is asked about
         // only when the file itself wasn't all there at once (onServerCheckAnswer): each question costs
-        // flood points that an album's message would otherwise wait for.
-        if (!job->previewRemotePath.isEmpty() && extra != m_uploadExtra.constEnd() && !extra->previewJpeg.isEmpty()) {
-            ServerCheck::File preview;
-            preview.path   = job->previewRemotePath;
-            preview.size   = static_cast<quint64>(extra->previewJpeg.size());
-            preview.tail   = uploadwait::tailWindow(extra->previewJpeg.right(uploadwait::kMaxTailWindowBytes), preview.size);
-            preview.sha256 = hashing::sha256(extra->previewJpeg);
-            check.files.append(preview);
-        }
+        // flood points that an album's message would otherwise wait for. 2.4 link previews: not again when
+        // its own check ran before the file went up (startPreviewCheck).
+        if (!job->previewRemotePath.isEmpty() && extra != m_uploadExtra.constEnd() && !extra->previewJpeg.isEmpty() && !extra->previewChecked)
+            check.files.append(previewCheckFile(job->previewRemotePath, extra->previewJpeg));
     }
     if (check.files.isEmpty())
         return false;
@@ -4807,6 +4896,50 @@ bool Core::startServerCheck(int id, const QVector<ServerCheck::File>* files)
     m_serverChecks.insert(id, check);
     wake(m_serverCheckTimer, 0, &Core::runServerChecks); // asked right away, outside TeamSpeak's event
     return true;
+}
+
+// 2.4 link previews. A server that can't be asked for a file's size (TeaSpeak) has an upload's bytes a while
+// after TeamSpeak reports it complete (2.3.2), and a preview whose file's upload started right after it was
+// seen not to arrive whole there (2.4.0: a link's 168 KB video poster, then its 2.8 MB video; after the video
+// the poster's check found the same incomplete copy until it gave up after 67 s, so the announced poster
+// wasn't the server's). A background send's preview is therefore checked as soon as its upload is reported
+// complete, and its file goes up only when that check is over (finishServerCheck): nothing else of the send
+// is on the line while the preview arrives. Chat sends and servers that can be asked keep their order.
+bool Core::startPreviewCheck(int id)
+{
+    const UploadJob* job   = upload(id);
+    const auto       extra = m_uploadExtra.constFind(id);
+    if (!job || !job->background || job->state != UploadState::Preparing || job->previewRemotePath.isEmpty() || extra == m_uploadExtra.constEnd()
+        || extra->previewJpeg.isEmpty() || !ts3::funcs.requestFileInfo || ts3::canAskFileInfo(job->target.sch))
+        return false;
+    noteServer(job->target.sch); // 2.3.2: which server this is goes into the log once
+    ServerCheck check;
+    check.sch          = job->target.sch;
+    check.previewFirst = true;
+    check.files.append(previewCheckFile(job->previewRemotePath, extra->previewJpeg));
+    const qint64 now = floodClockMs();
+    check.state      = uploadwait::startConfirm(check.files.first().size, now);
+    check.dueAt      = now;
+    m_serverChecks.insert(id, check);
+    wake(m_serverCheckTimer, 0, &Core::runServerChecks); // outside TeamSpeak's event
+    return true;
+}
+
+// The check of a preview as it was uploaded (UploadExtra::previewJpeg, the very bytes that went up): its tail
+// and its SHA-256.
+Core::ServerCheck::File Core::previewCheckFile(const QString& path, const QByteArray& jpeg)
+{
+    ServerCheck::File preview;
+    preview.path   = path;
+    preview.size   = static_cast<quint64>(jpeg.size());
+    preview.tail   = uploadwait::tailWindow(jpeg.right(uploadwait::kMaxTailWindowBytes), preview.size);
+    preview.sha256 = hashing::sha256(jpeg);
+    return preview;
+}
+
+bool Core::serverCheckWanted(const ServerCheck& check, const UploadJob* job)
+{
+    return job && !check.files.isEmpty() && job->state == (check.previewFirst ? UploadState::Preparing : UploadState::Posting);
 }
 
 // Asks the questions (2.3.2: and starts the content checks) that are due, as the connection's
@@ -4822,7 +4955,7 @@ void Core::runServerChecks()
         if (check == m_serverChecks.end() || !check->query.isEmpty() || check->reading)
             continue; // gone, its question waits for the answer, or its download is being read
         const UploadJob* job = upload(id);
-        if (!job || job->state != UploadState::Posting || check->files.isEmpty()) {
+        if (!serverCheckWanted(check.value(), job)) {
             dropServerCheck(id);
             continue;
         }
@@ -4893,7 +5026,7 @@ void Core::onServerCheckAnswer(int id, const QString& returnCode, uploadwait::An
         return; // canceled, failed or asked again meanwhile
     check->query.clear();
     const UploadJob* job = upload(id);
-    if (!job || job->state != UploadState::Posting || check->files.isEmpty()) {
+    if (!serverCheckWanted(check.value(), job)) {
         dropServerCheck(id);
         return;
     }
@@ -4943,10 +5076,18 @@ void Core::onServerCheckAnswer(int id, const QString& returnCode, uploadwait::An
 }
 
 // The check is over (confirmed, or the message goes anyway): the file counts as uploaded, its message
-// takes its turn (pumpPostUnits).
+// takes its turn (pumpPostUnits). 2.4 link previews: a preview checked first: its file goes up now.
 void Core::finishServerCheck(int id)
 {
+    const auto check        = m_serverChecks.constFind(id);
+    const bool previewFirst = check != m_serverChecks.constEnd() && check->previewFirst;
     dropServerCheck(id);
+    if (previewFirst) {
+        if (const auto extra = m_uploadExtra.find(id); extra != m_uploadExtra.end())
+            extra->previewChecked = true; // the file's own check doesn't come back to it
+        startSend(id);                    // (it checks the job is still preparing)
+        return;
+    }
     auto job = m_uploads.find(id);
     if (job == m_uploads.end() || job->state != UploadState::Posting)
         return;
@@ -5032,7 +5173,7 @@ void Core::nextServerFile(int id)
         wake(m_serverCheckTimer, 0, &Core::runServerChecks);
         return;
     }
-    if (check->waited)
+    if (check->waited && !check->previewFirst) // 2.4 link previews: the file's own check counts it
         fileverify::count(fileverify::Counter::UploadsWaited);
     finishServerCheck(id);
 }
@@ -5183,6 +5324,10 @@ void Core::readContentWhenWritten(int id, quint64 token, int attempt)
         ts3::log(QStringLiteral("[test] fake_tail_zero: the tail check of %1 sees zeros (%2 more to come)").arg(file.path).arg(m_fakeTailZero));
     }
 #endif
+    // 2.4: what came back, when it isn't the uploaded end (a copy still short, or ending in zeros).
+    if (bytes != uploadwait::Bytes::Same)
+        ts3::log(LogLevel_DEBUG, check->sch, "The check of %1 brought %2 of its %3 bytes, the last %4 compared ending in %5 zero bytes",
+                 {ts3::file(file.path), ts3::pub(size), ts3::pub(file.size), ts3::pub(got.size()), ts3::pub(uploadwait::trailingZeros(got))});
     // What changes while the upload arrives: the bytes there, or (a server that sends what it has) how many.
     onContentResult(id, bytes, QByteArray::number(size) + ':' + hashing::sha256(got));
 }
@@ -5209,7 +5354,7 @@ void Core::onContentResult(int id, uploadwait::Bytes result, const QByteArray& f
     const UploadJob* job   = upload(id);
     if (check == m_serverChecks.end())
         return;
-    if (!job || job->state != UploadState::Posting || check->files.isEmpty()) {
+    if (!serverCheckWanted(check.value(), job)) {
         dropServerCheck(id);
         return;
     }
@@ -5711,7 +5856,7 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
             break;
         if (op.preview) {
             if (e->previewState == MediaState::Downloading && e->previewTransferId == op.transferId)
-                failPreviewDownload(op.key, downloadErrorText(mapped, message), isInterruption(error));
+                failPreviewDownload(op.key, downloadErrorText(mapped, message), isInterruption(error), mapped);
         } else if (e->state == MediaState::Downloading && e->transferId == op.transferId) {
             failDownload(op.key, mapped, message, isInterruption(error));
         }
@@ -5852,7 +5997,7 @@ void Core::onTransferStatus(anyID transferId, unsigned int status, const QString
             m_previewsByTransfer.remove(transferId);
             finishWhenWritten(key, true, 0);
         } else {
-            failPreviewDownload(key, downloadErrorText(mapError(status), message), isInterruption(status));
+            failPreviewDownload(key, downloadErrorText(mapError(status), message), isInterruption(status), mapError(status));
         }
         return;
     }
@@ -5899,7 +6044,7 @@ void Core::onConnectionLost(uint64 sch)
     for (const QString& key : qAsConst(mains))
         failDownload(key, MediaError::NotConnected, {});
     for (const QString& key : qAsConst(previews))
-        failPreviewDownload(key, QStringLiteral("disconnected"), true);
+        failPreviewDownload(key, QStringLiteral("disconnected"), true, MediaError::NotConnected);
 
     // 2.3.2: a file whose message waited for the server to have all of it: TeamSpeak reported its upload
     // complete, so it is on the server (or its last bytes are). Its message fails like any other that
@@ -5909,6 +6054,12 @@ void Core::onConnectionLost(uint64 sch)
         auto job = m_uploads.find(check.key());
         if (job == m_uploads.end() || job->target.sch != sch) {
             ++check;
+            continue;
+        }
+        if (check->previewFirst) {
+            // 2.4 link previews: its file never went up; the job fails with the others still preparing (below).
+            endContentTransfer(check.value());
+            check = m_serverChecks.erase(check);
             continue;
         }
         ts3::log(LogLevel_INFO, sch, "Disconnected before the server confirmed all of %1; Retry asks it again before posting",

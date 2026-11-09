@@ -58,8 +58,11 @@
 #include "attachart.h"     // 2.3 attach: the menu's photo and document entries
 #include "attachmenu.h"    // 2.3 attach
 #include "chatpolls.h"     // 2.3 poll
+#include "chatlinkpreviews.h" // 2.4 link previews
+#include "linkpreview/linkdoc.h"
 #include "i18n.h"
 #include "inlinemedia.h"
+#include "layoutdoc.h" // 2.3.4: ownPrintLink
 #include "mediaviewer.h"
 #include "ownedtimer.h"
 #include "settings.h"
@@ -277,6 +280,10 @@ ChatIntegration::~ChatIntegration()
     // and overlays gone), while the replies, the emoji and the albums it sits on are still there.
     delete m_layout;
     m_layout = nullptr;
+    // 2.4 link previews: every fetch canceled and joined, every card and link media out of every chat (after the
+    // layout gave its blocks back: nothing it kept can bring a format of ours back).
+    delete m_links;
+    m_links = nullptr;
     // 2.3 attach / poll: the menu entries go, every poll card becomes its text again, polls.json is written.
     attachmenu::removeEntry(QString::fromLatin1("photo"));
     attachmenu::removeEntry(QString::fromLatin1("document"));
@@ -381,6 +388,7 @@ void ChatIntegration::start()
         scheduleVisibilityUpdate();
     });
     m_textReactions = new ChatTextReactions(this); // 2.3 text reactions (after PeerHub made its hub)
+    m_links         = new ChatLinkPreviews(this, m_core); // 2.4 link previews (message keys from the text reactions)
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -630,7 +638,9 @@ void ChatIntegration::scan(QTextBrowser* browser)
             lastHref = href;
             lastEnd  = end;
             const MediaLink link = MediaLink::parse(href);
-            if (link.isValid())
+            // 2.4 link previews: never a link naming the made-up server of website files (forged: it would show the
+            // file a viewer loaded from a website as this message's upload; Core::ensure refuses it too).
+            if (link.isValid() && !linkstate::isWebLink(link))
                 links.append({start, end, link, link.key()});
         }
         if (links.isEmpty())
@@ -726,6 +736,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
             m_replies->afterScan(browser);
         if (m_textReactions) // 2.3 text reactions: the messages read, their reaction rows
             m_textReactions->afterScan(browser);
+        if (m_links) // 2.4 link previews: the cards and media under web links
+            m_links->afterScan(browser);
         if (m_layout) // chat redesign: the layout goes on last
             m_layout->afterScan(browser);
         return;
@@ -768,6 +780,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
         m_replies->afterScan(browser);
     if (m_textReactions) // 2.3 text reactions: the messages read, their reaction rows
         m_textReactions->afterScan(browser);
+    if (m_links) // 2.4 link previews: the cards and media under web links
+        m_links->afterScan(browser);
     if (m_layout) // chat redesign: the layout goes on last
         m_layout->afterScan(browser);
     scheduleVisibilityUpdate();
@@ -1021,6 +1035,8 @@ void ChatIntegration::refreshAll()
         m_emoji->settingsChanged();
     if (m_layout) // chat redesign: a new layout (everything back first, then the new one in steps)
         m_layout->settingsChanged();
+    if (m_links) // 2.4 link previews: off: fetches canceled, every slot out (the scans below put them back when on)
+        m_links->settingsChanged();
     const bool previewsOn = Settings::instance().inlinePreviews;
     if (m_media) {
         m_media->settingsChanged();
@@ -1039,7 +1055,8 @@ void ChatIntegration::refreshAll()
             for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
                 for (auto fit = block.begin(); !fit.atEnd(); ++fit) {
                     const QTextFragment f = fit.fragment();
-                    if (f.isValid() && !previewKeyOf(f.charFormat()).isEmpty())
+                    // 2.4 link previews: a link's media is ChatLinkPreviews' (it gave them back already).
+                    if (f.isValid() && !previewKeyOf(f.charFormat()).isEmpty() && !linkdoc::isSlotObject(f.charFormat()))
                         for (int i = 0; i < f.length(); ++i)
                             positions.append(f.position() + i);
                 }
@@ -1705,6 +1722,10 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
         if (!primary && unsafe)
             primary = reveal;
     }
+    // 2.4 link previews: a web link's media: Open in browser, Hide preview; "Copy link" copies the web address.
+    QUrl webUrl;
+    if (m_links && !albumTile)
+        m_links->addMediaMenu(menu, browser, key, browser->viewport()->mapFromGlobal(globalPos), &webUrl);
     menu->addSeparator();
 
     // Keeping or passing it on. No Ctrl+C / Ctrl+S hints: in the chat those keys act on the text selection.
@@ -1728,8 +1749,11 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             showFeedback(viewport(), feedback, !ok);
         });
     }
-    menu->addAction(i18n::t("Copy &link"), this, [this, key, viewport] {
-        if (const MediaEntry* entry = m_core->entry(key)) {
+    menu->addAction(i18n::t("Copy &link"), this, [this, key, viewport, webUrl] {
+        if (webUrl.isValid()) { // 2.4 link previews
+            QGuiApplication::clipboard()->setText(webUrl.toString(QUrl::FullyEncoded));
+            showFeedback(viewport(), i18n::t("Link copied"), false);
+        } else if (const MediaEntry* entry = m_core->entry(key)) {
             QGuiApplication::clipboard()->setText(entry->link.toUrl());
             showFeedback(viewport(), i18n::t("Link copied"), false);
         }
@@ -2019,7 +2043,11 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     // a Cozy head's reply row (taken before TeamSpeak's link click).
     if (m_layout && m_layout->filterEvent(watched, event))
         return true;
+    if (filterOwnLink(watched, event)) // 2.3.4: the newer-version hint's "Check for updates"
+        return true;
     if (m_polls && m_polls->filterEvent(watched, event)) // 2.3 poll: the cards' options and buttons
+        return true;
+    if (m_links && m_links->filterEvent(watched, event)) // 2.4 link previews: the cards under web links
         return true;
     if (m_reactions && m_reactions->filterEvent(watched, event)) // 2.2 reactions: pills, add button
         return true;
@@ -2968,6 +2996,10 @@ QString ChatIntegration::typedText(QTextEdit* input) const
 
 void ChatIntegration::onUploadChanged(int id)
 {
+    // 2.4 link previews: a link preview's files go up quietly (no toast). Gone jobs still reach the toast,
+    // which only forgets rows it has.
+    if (const UploadJob* job = m_core->upload(id); job && job->background)
+        return;
     QTextBrowser* host = visibleChatBrowser();
     if (!host)
         return;
@@ -3102,8 +3134,85 @@ void ChatIntegration::replyToLatest()
 }
 
 // ============================================================================================
+// 2.3.4: links in TS Media's own lines that the plugin handles (the newer-version hint)
+// ============================================================================================
+
+void ChatIntegration::setOwnLinkHandler(std::function<bool(const QString& href, bool activate)> handler)
+{
+    m_ownLinkHandler = std::move(handler);
+    m_ownLinkPressed.clear();
+    m_ownLinkBrowser = nullptr;
+    m_ownLinkDouble  = false;
+}
+
+// Decided at the press: only a "#tsmupd-" link in TS Media's own row (a user's message never is one)
+// that the handler takes for its own (this load's nonce). Then the press, a double click and the release
+// are all taken, so TeamSpeak never opens it; the release runs it when it is still over the same link
+// (once: the release that ends a double click doesn't run it again). Anything else (a stale or foreign
+// link, the keyboard) reaches TeamSpeak, which opens the releases page.
+bool ChatIntegration::filterOwnLink(QObject* watched, QEvent* event)
+{
+    const QEvent::Type type = event->type();
+    if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonDblClick && type != QEvent::MouseButtonRelease)
+        return false;
+    auto* me = static_cast<QMouseEvent*>(event);
+    if (me->button() != Qt::LeftButton)
+        return false;
+    if (type == QEvent::MouseButtonRelease) {
+        if (m_ownLinkPressed.isEmpty())
+            return false;
+        QTextBrowser* browser = browserForViewport(watched);
+        if (!browser || browser != m_ownLinkBrowser)
+            return false;
+        const QString pressed = m_ownLinkPressed;
+        const bool    again   = m_ownLinkDouble;
+        m_ownLinkPressed.clear();
+        m_ownLinkBrowser = nullptr;
+        m_ownLinkDouble  = false;
+        if (!again && m_ownLinkHandler && browser->anchorAt(me->pos()) == pressed)
+            m_ownLinkHandler(pressed, true);
+        return true;
+    }
+    m_ownLinkPressed.clear(); // a press elsewhere: an earlier one that never got its release is forgotten
+    m_ownLinkBrowser = nullptr;
+    m_ownLinkDouble  = false;
+    QTextBrowser* browser = m_ownLinkHandler ? browserForViewport(watched) : nullptr;
+    if (!browser)
+        return false;
+    const QString href = browser->anchorAt(me->pos());
+    if (!href.contains(QLatin1String("#tsmupd-")) || !layoutdoc::ownPrintLink(browser->cursorForPosition(me->pos()).block(), href)
+        || !m_ownLinkHandler(href, false))
+        return false;
+    m_ownLinkPressed = href;
+    m_ownLinkBrowser = browser;
+    m_ownLinkDouble  = type == QEvent::MouseButtonDblClick;
+    return true;
+}
+
+// ============================================================================================
 // Chat redesign
 // ============================================================================================
+
+// ============================================================================================
+// 2.4 link previews
+// ============================================================================================
+
+bool ChatIntegration::isLinkPreviewKey(const QString& key) const
+{
+    return m_links && m_links->ownsKey(key);
+}
+
+QSizeF ChatIntegration::linkPreviewObject(QTextBrowser* browser, const QString& key)
+{
+    QSize        size;
+    const QImage img = renderFor(browser, key, &size);
+    if (img.isNull())
+        return {};
+    browser->document()->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img));
+    if (View* view = viewFor(browser))
+        view->resourced.insert(key);
+    return QSizeF(size.width(), size.height() + kGapTop + kGapBottom);
+}
 
 QString ChatIntegration::reactableKeyIn(QTextBrowser* browser, int block)
 {

@@ -68,11 +68,13 @@ struct StartupNotice {
     enum Kind { None, Updated, RolledBack } kind = None;
     Version version;  // the update (to)
     Version restored; // RolledBack: the version that runs again (from)
+    bool    automatic = false; // it was installed without a click ([install] automatic)
 };
 
 // End of a successful start (plugin.cpp, after Core and Chat started): writes started-<current> with
 // pid, settles the install state (applied -> done) and reconciles stale state. Returns the chat line
-// to show once; call markNoticeShown() after printing it.
+// to show once; call markNoticeShown() after printing it. A version that rolled back (or failed to)
+// or was replaced by hand with an older one goes on the never-auto list (StateFile::addNeverAuto).
 StartupNotice onStarted(const Layout& layout, const Version& current, unsigned long pid);
 void          markNoticeShown(const Layout& layout);
 

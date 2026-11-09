@@ -69,6 +69,7 @@ class TestCoreSend : public QObject
     void postsOfOneSendKeepTheirOrder();
     void captionSettles();
     void chatLinesReadableOnDarkChat();
+    void chatInfoLink(); // 2.3.4 newer-version hint
     void replyLeadGoesFirst(); // 2.2 reply
 
   private:
@@ -481,6 +482,33 @@ void TestCoreSend::chatLinesReadableOnDarkChat()
     QVERIFY(dark.endsWith(QLatin1String("[/color]")));
     QVERIFY(light.startsWith(QLatin1String("[chat] [color=#4752c4][b]TS Media chat[/b][/color] ")));
     QVERIFY(!light.contains(QLatin1String("#dcddde")));
+}
+
+// 2.3.4: the newer-version hint's line. The prefix, the escaped text and one raw link in ONE printMessage
+// to the channel tab (also while that connection's tab is the current one); a URL that could leave the
+// [url=...] tag is refused.
+void TestCoreSend::chatInfoLink()
+{
+    const uint64 sch = channel().sch;
+    QCOMPARE(sch, ts3::currentConnection());
+    const QString url    = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest#tsmupd-0123456789abcdef-2.3.5");
+    const int     before = fakets3::channelPrints().size();
+    ts3::setChatDark(false);
+    ts3::printInfoLink(sch, QStringLiteral("Someone [b]here[/b] has 2.3.5."), url, QStringLiteral("Check [for] updates"));
+    QCOMPARE(fakets3::channelPrints().size(), before + 1);
+    QCOMPARE(fakets3::channelPrints().last(), QStringLiteral("[color=#4752c4][b]TS Media chat[/b][/color] Someone \\[b\\]here\\[/b\\] has 2.3.5. [url=") + url
+                                                  + QStringLiteral("]Check \\[for\\] updates[/url]"));
+    ts3::setChatDark(true);
+    ts3::printInfoLink(sch, QStringLiteral("Dark."), url, QStringLiteral("Check for updates"));
+    ts3::setChatDark(false);
+    QCOMPARE(fakets3::channelPrints().size(), before + 2);
+    QVERIFY(fakets3::channelPrints().last().startsWith(QLatin1String("[color=#dcddde][color=#949cf7][b]TS Media chat[/b][/color] Dark. [url=")));
+    QVERIFY(fakets3::channelPrints().last().endsWith(QLatin1String("[/url][/color]")));
+    for (const QString& bad : {url + QLatin1Char(']'), QStringLiteral("[b]") + url, url + QStringLiteral(" x"), url + QLatin1Char('"'), url + QLatin1Char('\''),
+                               url + QLatin1Char('\n'), url + QChar(0x7f), url + QChar(0x3000), QString()})
+        ts3::printInfoLink(sch, QStringLiteral("Refused."), bad, QStringLiteral("Check for updates"));
+    ts3::printInfoLink(0, QStringLiteral("No connection."), url, QStringLiteral("Check for updates"));
+    QCOMPARE(fakets3::channelPrints().size(), before + 2);
 }
 
 #include "tst_coresend.moc"

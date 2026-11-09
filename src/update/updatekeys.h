@@ -1,16 +1,22 @@
 #pragma once
 
-// Public keys that may sign tsmedia-update.json (ECDSA P-256, X||Y). Plain constexpr data that is never
-// handed to Qt. The private keys never come near this repository: see docs/UPDATES.md.
+// Public keys that may sign tsmedia-update.json and important markers (ECDSA P-256, X||Y). Plain
+// constexpr data that is never handed to Qt. The private keys never come near this repository: see
+// docs/UPDATES.md.
 //
-// Since 2.2.1 updates don't need a signature (tsmedia-update-v2.json is unsigned and every file is
-// checked against its SHA-256). The keys stay for the format 1 file that 2.2.0 reads: a signed
-// manifest is still verified, and refused if its signature is wrong.
+// Since 2.2.1 an update the user clicks doesn't need a signature (tsmedia-update-v2.json is unsigned
+// and every file is checked against its SHA-256). The keys stay for the format 1 file that 2.2.0
+// reads (a signed manifest is still verified, and refused if its signature is wrong), and since 2.3.4
+// for TSMedia-<ver>-important.json: a release installs without a click only with a marker signed by a
+// trusted, not revoked daily key (readImportant). A recovery key never marks anything important.
 //
-//   1  daily release key (build PC)
+//   1  daily release key (build PC; signs important markers, so it is backed up)
 //   2  recovery key, kept offline. A manifest signed with it must revoke every daily key
 //      (see updatemanifest.cpp), so using it always retires a lost or leaked key 1.
 //  99  test key, only in builds with TSMEDIA_TESTHOOKS (local test server and the e2e harness).
+//
+// A new key is appended to kReleaseKeys; the bytes of a listed key never change (every release since
+// 2.2.0 trusts exactly the keys it was built with). scripts\build.ps1 reads the initializers below.
 
 namespace upd {
 

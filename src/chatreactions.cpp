@@ -193,6 +193,8 @@ bool ChatReactions::eligible(QTextBrowser* browser, const QString& key, Kind* ki
     const Settings& s = Settings::instance();
     if (!s.showReactions || !s.inlinePreviews || !PeerHub::instance() || !isReactable(m_core->entry(reactionKey(key))))
         return false;
+    if (m_chat->isLinkPreviewKey(key))
+        return false; // 2.4 link previews: a web link's media; its message has text reactions
     *kind = kindOf(browser);
     return *kind != Kind::Server;
 }

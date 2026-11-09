@@ -1041,8 +1041,10 @@ QString ChatTextReactions::blockedText(QTextBrowser* browser) const
 
 // Read only (the action bar asks while ChatLayout handles a mouse move): a message that arrived since the
 // last scan is read now, but nothing is changed.
-QString ChatTextReactions::keyOf(QTextBrowser* browser, int block)
+QString ChatTextReactions::keyOf(QTextBrowser* browser, int block, KeyDays* days, QString* sender)
 {
+    if (sender)
+        sender->clear();
     View* v = viewFor(browser);
     if (!v || block < 0 || !v->document || v->document != browser->document())
         return {};
@@ -1050,11 +1052,16 @@ QString ChatTextReactions::keyOf(QTextBrowser* browser, int block)
     if (!b.isValid())
         return {};
     const quint64 signature = signatureOf(b);
-    if (block < v->entries.size() && v->entries.at(block).read && v->entries.at(block).signature == signature)
-        return v->entries.at(block).eligible ? v->entries.at(block).key : QString();
-    QVector<QDate> dates;
-    bool           datesRead = false;
-    const Entry    e         = readEntry(v->document, b, &dates, &datesRead, v->days, 0); // the days as the last reading numbered them
+    if (block < v->entries.size() && v->entries.at(block).read && v->entries.at(block).signature == signature) {
+        const Entry& known = v->entries.at(block);
+        if (sender && known.eligible)
+            *sender = known.sender;
+        return known.eligible ? known.key : QString();
+    }
+    // 2.4 link previews: the caller's days when it reads several messages at once (ChatLinkPreviews).
+    KeyDays     own;
+    KeyDays&    d = days ? *days : own;
+    const Entry e = readEntry(v->document, b, &d.dates, &d.read, v->days, 0); // the days as the last reading numbered them
     if (block < v->entries.size()) {
         Entry& known = v->entries[block];
         if (known.eligible == e.eligible && known.key == e.key) {
@@ -1068,7 +1075,21 @@ QString ChatTextReactions::keyOf(QTextBrowser* browser, int block)
                 m_indexTimer->start(kIndexStepMs);
         }
     }
+    if (sender && e.eligible)
+        *sender = e.sender;
     return e.eligible ? e.key : QString();
+}
+
+ChatTextReactions::ChatInfo ChatTextReactions::chatInfo(QTextBrowser* browser) const
+{
+    ChatInfo   info;
+    const auto it = m_views.constFind(browser);
+    if (it == m_views.constEnd())
+        return info;
+    info.kind       = it->kind;
+    info.serverUid  = it->serverUid;
+    info.partnerUid = it->partnerUid;
+    return info;
 }
 
 bool ChatTextReactions::canReact(QTextBrowser* browser, int block)

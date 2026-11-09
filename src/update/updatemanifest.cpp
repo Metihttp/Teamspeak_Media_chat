@@ -122,6 +122,14 @@ ManifestError fail(QString* detail, const char* what)
     return ManifestError::BadPayload;
 }
 
+// Exactly yyyy-MM-dd (QDate::fromString alone also takes other separators and a tail); invalid otherwise.
+QDate isoDate(const QJsonValue& value)
+{
+    const QString text = value.toString();
+    const QDate   date = QDate::fromString(text, Qt::ISODate);
+    return date.isValid() && date.toString(Qt::ISODate) == text ? date : QDate();
+}
+
 } // namespace
 
 // ---- Version -----------------------------------------------------------------------------------
@@ -178,6 +186,13 @@ QString assetName(FileKind kind, Arch arch, const Version& version)
     return latin("TSMedia-") + version.toString() + latin(kind == FileKind::Helper ? "-helper-" : "-") + archName(arch) + latin(".update");
 }
 
+QString importantAssetName(const Version& version)
+{
+    if (!version.isValid())
+        return QString();
+    return latin("TSMedia-") + version.toString() + latin("-important.json");
+}
+
 QString targetFileName(FileKind kind, Arch arch)
 {
     if (kind == FileKind::Helper)
@@ -217,6 +232,12 @@ QString errorCode(ManifestError error)
         return latin("badSignature");
     case ManifestError::BadPayload:
         return latin("badPayload");
+    case ManifestError::RecoveryKey:
+        return latin("recoveryKey");
+    case ManifestError::Expired:
+        return latin("expired");
+    case ManifestError::NotImportant:
+        return latin("notImportant");
     }
     return latin("unknown");
 }
@@ -561,6 +582,114 @@ Offer offerFor(const Manifest& manifest, const Version& effectiveInstalled, cons
     if (skipped.isValid() && skipped == manifest.version)
         return Offer::Skipped;
     return Offer::Yes;
+}
+
+// ---- important updates -------------------------------------------------------------------------
+
+ManifestError parseImportantPayload(const QByteArray& payload, ImportantMarker* out, QString* detail)
+{
+    *out = ImportantMarker();
+    if (detail)
+        detail->clear();
+    if (payload.size() > kMaxPayloadBytes)
+        return ManifestError::TooLarge;
+    QJsonParseError     jsonError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &jsonError);
+    if (jsonError.error != QJsonParseError::NoError || !doc.isObject())
+        return fail(detail, "payload is not a JSON object");
+    const QJsonObject p = doc.object();
+    // Format 3 only: a format 1 payload is never a marker. revokeKeys are never read from a marker.
+    Manifest            m;
+    const ManifestError error = parseFields(p, kFormatImportant, false, &m, detail);
+    if (error != ManifestError::None)
+        return error;
+    const QJsonValue important = p.value(latin("important"));
+    if (!important.isBool() || !important.toBool()) {
+        if (detail)
+            *detail = latin("important");
+        return ManifestError::NotImportant;
+    }
+    // Both dates are required here: they bound how long a signed marker counts.
+    const QDate published = isoDate(p.value(latin("published")));
+    if (!published.isValid())
+        return fail(detail, "published");
+    const QDate until = isoDate(p.value(latin("importantUntil")));
+    if (!until.isValid() || until < published || until > published.addDays(kMaxImportantDays))
+        return fail(detail, "importantUntil");
+    out->manifest = m;
+    out->until    = until;
+    return ManifestError::None;
+}
+
+ManifestError readImportant(const QByteArray& bytes, const QVector<TrustedKey>& keys, const QSet<int>& revoked, const QDate& todayUtc,
+                            ImportantMarker* out, QString* detail)
+{
+    *out = ImportantMarker();
+    if (detail)
+        detail->clear();
+    if (bytes.size() > kMaxOuterBytes)
+        return ManifestError::TooLarge;
+    SignedManifest signedMarker;
+    ManifestError  error = parseSigned(bytes, &signedMarker); // the format 1 envelope
+    if (error != ManifestError::None)
+        return error;
+    error = verifySigned(signedMarker, keys, revoked);
+    if (error != ManifestError::None)
+        return error;
+    // The recovery key replaces a lost daily key (through a format 1 manifest); it never installs
+    // anything without a click.
+    const TrustedKey* signer = findKey(keys, signedMarker.keyId);
+    if (signer && signer->recovery)
+        return ManifestError::RecoveryKey;
+    ImportantMarker marker;
+    error = parseImportantPayload(signedMarker.payload, &marker, detail);
+    if (error != ManifestError::None)
+        return error;
+    if (!todayUtc.isValid() || todayUtc > marker.until) {
+        if (detail)
+            *detail = latin("importantUntil ") + marker.until.toString(Qt::ISODate);
+        return ManifestError::Expired; // the release is offered the normal way
+    }
+    marker.signedBy          = signedMarker.keyId;
+    marker.manifest.signedBy = signedMarker.keyId;
+    *out                     = marker;
+    return ManifestError::None;
+}
+
+bool sameRelease(const Manifest& signedOne, const Manifest& v2, QString* why)
+{
+    const auto differs = [why](const QString& what) {
+        if (why)
+            *why = what;
+        return false;
+    };
+    if (!signedOne.version.isValid() || signedOne.version != v2.version)
+        return differs(latin("version"));
+    // Each (kind, arch) appears at most once, so equal counts plus a match for each file is set equality.
+    if (signedOne.files.size() != v2.files.size())
+        return differs(latin("files"));
+    for (const UpdateFile& f : signedOne.files) {
+        const UpdateFile* other = v2.file(f.kind, f.arch);
+        if (!other || other->size != f.size || other->sha256 != f.sha256 || other->machine != f.machine)
+            return differs(latin("files ") + f.key);
+    }
+    const PackageInfo& a = signedOne.package;
+    const PackageInfo& b = v2.package;
+    if (a.present != b.present || (a.present && (a.name != b.name || a.size != b.size || a.sha256 != b.sha256)))
+        return differs(latin("package"));
+    if (signedOne.minFromVersion != v2.minFromVersion)
+        return differs(latin("minFromVersion"));
+    if (signedOne.needsNewerUpdater != v2.needsNewerUpdater)
+        return differs(latin("needsNewerUpdater"));
+    if (why)
+        why->clear();
+    return true;
+}
+
+bool autoInstallAllowed(const Manifest& signedOne, const Version& effectiveInstalled, const QVector<Version>& neverAuto, Arch arch)
+{
+    // Version(): the user's skip doesn't hold back an important update.
+    return offerFor(signedOne, effectiveInstalled, Version(), arch) == Offer::Yes && !neverAuto.contains(signedOne.version);
 }
 
 DownloadCheck checkDownload(const QByteArray& image, const UpdateFile& expected)

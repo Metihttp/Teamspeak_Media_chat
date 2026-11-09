@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.3.3 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.4.0 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
 # Shown in TeamSpeak's Addons list; scripts/build.ps1 reads it from here for the package's installer text.
-set(PLUGIN_DESCRIPTION "Discord-style images, GIFs, videos, albums, voice messages, replies, reactions and HD emoji in the TeamSpeak chat. Drop or paste files into the chat; everyone with the plugin sees and plays them inline.")
+set(PLUGIN_DESCRIPTION "Discord-style images, GIFs, videos, albums, voice messages, replies, reactions, link previews and HD emoji in the TeamSpeak chat. Drop or paste files into the chat; everyone with the plugin sees and plays them inline.")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -213,8 +213,36 @@ add_library(tsmedia SHARED
     # 2.3 chat-visuals: message bubbles, centred system rows, avatars from TeamSpeak
     src/layoutbubbles.cpp     src/layoutbubbles.h
     src/chatavatars.cpp       src/chatavatars.h
+    # 2.4 link previews: the LP announcement and its store, the sender pipeline, the hub (sender-made previews);
+    # the cards under web links, their document layer and states (chat). linkurl.* and fetcher.* come with the
+    # net-core sources below.
+    src/linkpreview/announcement.cpp  src/linkpreview/announcement.h
+    src/linkpreview/previewstore.cpp  src/linkpreview/previewstore.h
+    src/linkpreview/lpmessage.cpp     src/linkpreview/lpmessage.h
+    src/linkpreview/previewmaker.cpp  src/linkpreview/previewmaker.h
+    src/linkpreview/senderpipeline.cpp src/linkpreview/senderpipeline.h
+    src/linkpreview/lphub.cpp         src/linkpreview/lphub.h
+    src/linkpreview/linkdoc.cpp       src/linkpreview/linkdoc.h
+    src/linkpreview/linkcard.cpp      src/linkpreview/linkcard.h
+    src/linkpreview/linkstate.cpp     src/linkpreview/linkstate.h
+    src/linkpreview/autoload.cpp      src/linkpreview/autoload.h
+    src/chatlinkpreviews.cpp          src/chatlinkpreviews.h
+    # end 2.4 link previews
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
+
+# 2.4 link previews (net-core): which links get a preview (linkurl), the network rules (netpolicy), what a
+# website sent (content), the fetcher and its WinHTTP transport (winhttp.dll / ws2_32.dll loaded at run time).
+set(TSMEDIA_LINKPREVIEW_NET_SOURCES
+    src/linkpreview/linkurl.cpp           src/linkpreview/linkurl.h
+    src/linkpreview/netpolicy.cpp         src/linkpreview/netpolicy.h
+    src/linkpreview/content.cpp           src/linkpreview/content.h
+    src/linkpreview/fetcher.cpp           src/linkpreview/fetcher.h
+                                          src/linkpreview/transport.h
+    src/linkpreview/winhttptransport.cpp
+)
+target_sources(tsmedia PRIVATE ${TSMEDIA_LINKPREVIEW_NET_SOURCES})
+# end 2.4 link previews (net-core)
 
 target_include_directories(tsmedia PRIVATE
     src
@@ -239,7 +267,7 @@ endif()
 # 2.2 updater (docs/UPDATES.md). The install/rollback/manifest parts are always built (a DLL installed by
 # an update must be able to settle or roll back its state). The network part and the checks are only
 # built with TSMEDIA_UPDATER=ON, which scripts/build.ps1 sets for release builds (-Release): a copy you
-# build yourself never replaces itself with the author's build, and never loads winhttp.dll.
+# build yourself never replaces itself with the author's build, and never contacts GitHub (link previews still load winhttp.dll).
 option(TSMEDIA_UPDATER "Build the GitHub update check (official releases)" OFF)
 set(TSMEDIA_UPDATE_SOURCES
     src/crypto.cpp                    src/crypto.h
@@ -249,6 +277,7 @@ set(TSMEDIA_UPDATE_SOURCES
     src/update/pecheck.cpp            src/update/pecheck.h
     src/update/updatefiles.cpp        src/update/updatefiles.h
     src/update/updateinstaller.cpp    src/update/updateinstaller.h
+    src/update/updatehint.cpp         src/update/updatehint.h # 2.3.4: the newer-version hint
 )
 target_sources(tsmedia PRIVATE ${TSMEDIA_UPDATE_SOURCES}
     src/update/updatesettings.cpp       src/update/updatesettings.h
@@ -465,7 +494,31 @@ if(TSMEDIA_BUILD_TESTS)
         # system rows; the bars above the input; the send window's presence line)
         tests/tst_wiring23.cpp
         tests/tst_unload23.cpp    # 2.3 cross review (lifetime): every layer given back, menus and music at unload
+        # 2.4 link previews (sender-previews): LP grammar and hostile input, sender matching, the store, the
+        # sender pipeline end to end through the real Core against the fake TeamSpeak (a fake fetcher)
+        tests/tst_linkpreview_snd.cpp
+        src/linkpreview/announcement.cpp
+        src/linkpreview/previewstore.cpp
+        src/linkpreview/lpmessage.cpp
+        src/linkpreview/previewmaker.cpp
+        src/linkpreview/senderpipeline.cpp
+        src/linkpreview/lphub.cpp
+        # 2.4 link previews (chat): links found in TeamSpeak-like chats, the slots given back exactly, the cards'
+        # geometry and hit tests, what a slot shows, the made-up links, the settings
+        tests/tst_linkui.cpp
+        src/linkpreview/linkdoc.cpp
+        src/linkpreview/linkcard.cpp
+        src/linkpreview/linkstate.cpp
+        src/linkpreview/autoload.cpp
+        src/privacysection.cpp
+        # 2.4 review (lifetime): copying, the reader's place and a long chat with the slots under links
+        tests/tst_linklife.cpp
+        # end 2.4 link previews
     )
+    # 2.4 link previews (net-core): the classifier table, address ranges, redirects, hostile oEmbed JSON, caps,
+    # cancel and shutdown, all through a scripted transport (never the internet)
+    target_sources(tsmedia_tests PRIVATE tests/tst_linkpreview_net.cpp ${TSMEDIA_LINKPREVIEW_NET_SOURCES})
+    # end 2.4 link previews (net-core)
     target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
@@ -553,6 +606,10 @@ if(TSMEDIA_BUILD_TOOLS)
         src/emojisegment.cpp
         src/emojitext.cpp
         src/layoutdoc.cpp src/layoutart.cpp # chat redesign: the chat layout pages
+        # 2.4 link previews: every card state, and the cards in chats (Classic, Cozy with bubbles, Compact)
+        src/layoutbubbles.cpp
+        src/linkpreview/linkurl.cpp src/linkpreview/linkdoc.cpp src/linkpreview/linkcard.cpp
+        # end 2.4 link previews
     )
     target_include_directories(render_gallery PRIVATE src tests third_party/ts3client-pluginsdk/include)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
@@ -560,6 +617,27 @@ if(TSMEDIA_BUILD_TOOLS)
         target_compile_options(render_gallery PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
     target_link_libraries(render_gallery PRIVATE Qt5::Core Qt5::Gui)
+
+    # 2.4 link previews (net-core): linkfetch_smoke <url> <outdir> [--max-bytes N] [--cancel-after ms] fetches one
+    # link through the real path (WinHTTP, every network rule) for the live test. Never run by the unit tests.
+    add_executable(linkfetch_smoke
+        tools/linkfetch_smoke.cpp
+        ${TSMEDIA_LINKPREVIEW_NET_SOURCES}
+        src/mediaprobe.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+        src/video/mfvideo.cpp
+        src/video/mfcommon.cpp
+    )
+    target_include_directories(linkfetch_smoke PRIVATE src)
+    target_compile_definitions(linkfetch_smoke PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(linkfetch_smoke PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(linkfetch_smoke PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(linkfetch_smoke)
+    # end 2.4 link previews (net-core)
 
     # 2.2 emoji: emoji_probe <candidates> <probe> asks DirectWrite which emoji Segoe UI Emoji draws in colour
     # (tools/emoji/gen_emoji.py builds src/emojitable.inc from the answer); --sheet draws them all.

@@ -23,17 +23,25 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.3.3 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.4.0 loaded`.
 
 ### How do I update?
 
-From 2.2.0 on, the plugin can update itself. About 45 seconds after its first start it asks *Keep TS Media chat up to date?*; click **Turn on**. It then checks GitHub about once a day and shows *Update to X?* with what's new. **Update** downloads and checks the new version, and **Restart TeamSpeak now** finishes it. You can also check at any time with **Plugins → TS Media chat → Check for updates…** or `/tsmedia update`.
+From 2.2.0 on, the plugin can update itself. About 45 seconds after its first start it asks *Keep TS Media chat up to date?*; click **Turn on**. It then checks GitHub about once a day and shows *Update to X?* with what's new. **Update** downloads and checks the new version, and **Restart TeamSpeak now** finishes it. You can also check at any time with **Plugins → TS Media chat → Check for updates…** or `/tsmedia update`. From 2.4.0 on, important fixes install by themselves (see the next questions).
 
 Coming from 2.1 or older, install the latest version by hand once: download the new `.ts3_plugin`, close TeamSpeak completely (the old DLL is locked while TeamSpeak runs), double-click the file and start TeamSpeak again. Your settings and the cache are kept. The same works for any later version.
 
+### Why did TS Media chat update by itself?
+
+It was an important update. From 2.4.0 on, with automatic checks on, a release the author marked as important and signed with the release key is downloaded and installed without a click; the chat then says *TS Media chat X is an important update and was installed automatically.* It starts the next time you open TeamSpeak: TeamSpeak is never restarted for it. To start it now, use **Plugins → TS Media chat → Check for updates…**, which offers **Restart TeamSpeak now**. A version that rolled back on your PC, or that you replaced by hand with an older one, is never installed by itself again. Don't want this? Turn off **Settings → Privacy & updates → Check for updates automatically**; then nothing is checked or installed by itself. Details: [important updates](UPDATES.md#important-updates).
+
+### The chat says "Someone in this channel has TS Media chat X"
+
+Someone in your channel has a newer TS Media chat than you (2.4.0 and later show this). Only you see that line, and nothing is sent until you click **Check for updates**, which checks GitHub once, like **Check now**. Anyone can claim any version, so if GitHub doesn't have it, the chat says *TS Media chat X isn't released yet. You have the latest release (Y).*: it may be a test version or made up. At most 2 such lines appear per TeamSpeak session. [More](UPDATES.md#someone-in-this-channel-has-a-newer-version).
+
 ### Is the update check safe? What does it send?
 
-It asks the plugin's GitHub releases for one small file, and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. GitHub sees your IP address; no names, servers, chats or files are sent. It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
+It asks the plugin's GitHub releases for one small file (two when automatic checks find a newer version: the second says whether it is an important update), and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. The exception is an important update with automatic checks on: it installs without a click, but only with the author's signature for exactly that release, and its files must match the signed SHA-256. GitHub sees your IP address; no names, servers, chats or files are sent. It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
 
 ### An update went wrong
 
@@ -174,6 +182,26 @@ When a download fails or waits, the preview or card says why:
 | Can't preview this image | The image is too large to decode (above 80 megapixels) or can't be read. | Click it, then choose **Open with default app**. |
 
 Deleted files and files in password-protected channels can't be retried: their previews do nothing when clicked. For everything else, including files that don't match, click the picture or the card's **Retry** button to try again. Point at a card to read the whole message.
+
+### I came from BetterChat: does TS Media show YouTube and GIF links?
+
+Yes, since 2.4. YouTube links get a card with the title, channel and thumbnail (a click opens the video in your browser), and links to pictures, GIFs and videos show and play right in the chat, like files sent with TS Media. The difference to BetterChat: when the sender has TS Media, their plugin makes the preview once and shares it through your TeamSpeak server, so your PC never contacts that website. Links from people without TS Media load from the website by themselves (like BetterChat); turn off **Load link previews automatically** to load them only when you click. GIF sites' pages (for example `klipy.com/gifs/…` or `tenor.com/view/…`) get no preview: copy the GIF's own address instead (ending in `.gif`, `.webp` or `.mp4`). See [link previews](USAGE.md#link-previews).
+
+### How do I turn link previews off?
+
+**Settings → Privacy & updates → Show previews for links to other websites**: no card, no preview and no website request any more. To stop sharing previews of the links you send, turn off **Make previews for links I send**. To keep them but load other people's links only when you click, turn off **Load link previews automatically**. To hide just one, right-click it → **Hide preview**.
+
+### Link previews say "Couldn't load the preview" (VPN, proxy, filtered internet)
+
+The plugin couldn't reach that website; its log (`%APPDATA%\TS3Client\plugins\tsmedia\logs\tsmedia.log`) has the reason. If you reach YouTube only through a VPN or proxy app, set it to use the **system proxy** (most proxy-based VPN apps have this option): link previews go through the proxy Windows is set to use, including a setup script or automatic detection. A VPN that works without a proxy setting needs nothing. Previews made by the sender come from your TeamSpeak server and don't need the website at all.
+
+### A link shows "Load preview" instead of the picture
+
+Either **Load link previews automatically** is off, or the file is larger than your automatic download limit (the card shows its size, or that it is over your limit), or data saver is on, or it is waiting its turn (links load 2 at a time, one per person, and a few per person in a row), or **Clear cache** removed the preview its sender had shared. Click **Load preview** to load it from the website yourself; that connects your PC to that website. If the sender's preview arrives later, the card switches to it by itself.
+
+### A link says "Waiting for the sender's preview…"
+
+The sender has TS Media and shares a preview through your TeamSpeak server, so your PC doesn't contact the website. It usually takes a few seconds. Their plugin makes one preview at a time, so it can take up to two minutes for a video, or up to four minutes when they posted several links in a row. *Checking for the sender's preview…* means your PC is still asking whether they make previews (a few seconds). If their plugin can't make it, or they leave, your PC loads the link itself (with **Load link previews automatically** on).
 
 ## Reactions and presence
 

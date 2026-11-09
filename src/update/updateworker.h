@@ -41,7 +41,17 @@ struct CheckOutcome {
     QString       detail;
     Manifest      manifest; // valid only if ok()
 
+    // The release's important marker (TSMedia-<ver>-important.json, readImportant), fetched only when
+    // asked for (markerAbove) and the format 2 file named a newer version with a build for this
+    // architecture. A 404 means not marked. A marker problem never makes the check fail.
+    bool            markerFetched = false;
+    http::Error     markerHttp    = http::Error::None;
+    ManifestError   markerError   = ManifestError::None;
+    QString         markerDetail;
+    ImportantMarker marker; // valid only if markerOk()
+
     bool ok() const { return httpError == http::Error::None && manifestError == ManifestError::None; }
+    bool markerOk() const { return markerFetched && markerHttp == http::Error::None && markerError == ManifestError::None; }
 };
 
 struct PrepareOutcome {
@@ -75,8 +85,11 @@ class UpdateWorker
   public:
     // Both return the thread handle (the caller waits on it at shutdown and closes it), or nullptr if
     // no thread could be started. done/progress run on the receiver's thread.
+    // markerAbove: after a valid tsmedia-update-v2.json (never after the legacy fallback) naming a
+    // version above it with a plugin for arch, also fetch that release's important marker (one more
+    // small request). Invalid: never.
     static void* startCheck(const std::shared_ptr<WorkerLink>& link, const QVector<TrustedKey>& keys, const QSet<int>& revoked,
-                            std::function<void(const CheckOutcome&)> done);
+                            const Version& markerAbove, Arch arch, std::function<void(const CheckOutcome&)> done);
     static void* startPrepare(const std::shared_ptr<WorkerLink>& link, const Layout& layout, const Manifest& manifest,
                               std::function<void(qint64 done, qint64 total)> progress, std::function<void(const PrepareOutcome&)> done);
 

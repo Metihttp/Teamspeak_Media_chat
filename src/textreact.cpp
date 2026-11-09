@@ -495,6 +495,8 @@ QString Index::resolve(const Query& q) const
         if (chat->kind == ChatKind::Server)
             continue;
         const IndexedMessage& m = chat->messages.at(at.second);
+        if (q.senderOnly && m.sender != q.reactorUid)
+            continue; // 2.4 link previews
         if (q.scope == proto::Scope::Channel) {
             if (chat->kind == ChatKind::Private)
                 continue;
