@@ -44,6 +44,8 @@
 #include "layoutbubbles.h" // 2.4 link previews: the chats with bubbles
 #include "linkpreview/linkcard.h"
 #include "linkpreview/linkdoc.h"
+#include "pollart.h"      // 2.5 zoom: poll cards at every scale
+#include "previewscale.h" // 2.5 zoom
 #include "uiutil.h"
 
 namespace {
@@ -2139,13 +2141,62 @@ QList<CardSample> cardSamples()
     return out;
 }
 
+// 2.5 YouTube player (design2 3.7, 4.2): a YouTube card's player states, at a narrow to a wide card.
+QList<CardSample> youTubePlayerSamples()
+{
+    QList<CardSample> out;
+    const auto add = [&](const QString& label, linkcard::Player player, const std::function<void(linkcard::Card&, linkcard::Pointer&)>& more = {}) {
+        CardSample s;
+        s.label         = label;
+        s.card.look     = Look::YouTube;
+        s.card.kind     = Kind::YouTube;
+        s.card.cls      = linkpreview::LinkClass::YouTube;
+        s.card.host     = QStringLiteral("youtube.com");
+        s.card.title    = QStringLiteral("Lakeside timelapse: a whole day in four minutes, from sunrise to the stars");
+        s.card.author   = QStringLiteral("Quiet Places");
+        s.card.thumbnail = scenery(QSize(640, 360), 0);
+        s.card.playable = true;
+        s.card.player   = player;
+        if (more)
+            more(s.card, s.pointer);
+        out.append(s);
+    };
+    add(QStringLiteral("None, playable (Play here, hovered)"), linkcard::Player::None, [](linkcard::Card&, linkcard::Pointer& p) {
+        p.over  = true;
+        p.hover = linkcard::Zone::Play;
+    });
+    add(QStringLiteral("Consent"), linkcard::Player::Consent);
+    add(QStringLiteral("Consent (Play hovered)"), linkcard::Player::Consent, [](linkcard::Card&, linkcard::Pointer& p) {
+        p.over  = true;
+        p.hover = linkcard::Zone::ConsentPlay;
+    });
+    add(QStringLiteral("Consent on a white picture"), linkcard::Player::Consent, [](linkcard::Card& c, linkcard::Pointer&) {
+        QImage white(640, 360, QImage::Format_RGB32);
+        white.fill(Qt::white);
+        c.thumbnail = white;
+    });
+    add(QStringLiteral("Starting (busy ring, Stop)"), linkcard::Player::Starting);
+    add(QStringLiteral("Popup (Playing in a window)"), linkcard::Player::Popup);
+    add(QStringLiteral("Hidden (paused at 1:05)"), linkcard::Player::Hidden, [](linkcard::Card& c, linkcard::Pointer&) { c.resumeMs = 65000; });
+    add(QStringLiteral("None (stopped at 12:34)"), linkcard::Player::None, [](linkcard::Card& c, linkcard::Pointer&) { c.resumeMs = 754000; });
+    add(QStringLiteral("Note: embedding disabled"), linkcard::Player::Note,
+        [](linkcard::Card& c, linkcard::Pointer&) { c.note = QStringLiteral("This video can only be watched on YouTube"); });
+    add(QStringLiteral("Note: removed"), linkcard::Player::Note, [](linkcard::Card& c, linkcard::Pointer&) { c.note = QStringLiteral("Video unavailable"); });
+    add(QStringLiteral("Note: other failure (hovered)"), linkcard::Player::Note, [](linkcard::Card& c, linkcard::Pointer& p) {
+        c.note  = QStringLiteral("Can't play this video here");
+        p.over  = true;
+        p.hover = linkcard::Zone::Open;
+    });
+    return out;
+}
+
 // A sheet: each card on the chat's background and on a bubble, labelled.
-QImage cardSheet(bool dark, qreal dpr, int maxWidth = 400)
+QImage cardSheet(bool dark, qreal dpr, int maxWidth = 400, const QList<CardSample>& list = QList<CardSample>())
 {
     const QColor            base    = dark ? QColor(0x2f, 0x31, 0x36) : QColor(Qt::white);
     const layoutart::Colors colors  = layoutart::colorsFor(dark, base, dark ? QColor(0xdc, 0xdd, 0xde) : QColor(Qt::black), dark ? QColor(0x1c, 0xb0, 0xf4) : QColor(0x1c, 0x82, 0xcc));
     const QVector<QColor>   bubbles = layoutart::bubbleSurfaces(colors);
-    const QList<CardSample> samples = cardSamples();
+    const QList<CardSample> samples = list.isEmpty() ? cardSamples() : list;
     const int               colW    = maxWidth + 30;
     int                     y       = 12;
     QList<QPair<int, CardSample>> rows;
@@ -2170,6 +2221,329 @@ QImage cardSheet(bool dark, qreal dpr, int maxWidth = 400)
         const QImage plain = linkcard::render(s.card, styleFor(dark, dpr, maxWidth), s.pointer);
         p.drawImage(QPointF(12, row.first + 20), plain);
         // On a bubble: the bubble's surface under it, with its padding.
+        const PreviewStyle onBubble = styleFor(dark, dpr, maxWidth, bubbles);
+        const QImage       bubbled  = linkcard::render(s.card, onBubble, s.pointer);
+        const QSizeF       size     = QSizeF(bubbled.size()) / dpr;
+        QPainterPath       shape;
+        shape.addRoundedRect(QRectF(colW + 24 - 10, row.first + 20 - 6, size.width() + 20, size.height() + 12), 14, 14);
+        p.fillPath(shape, bubbles.value(1, bubbles.value(0)));
+        p.drawImage(QPointF(colW + 24, row.first + 20), bubbled);
+    }
+    p.end();
+    return img;
+}
+
+// 2.5: Embed cards (site and web cards) and the strips of the new kinds (9.8): each light and dark, 1x and 2x, on the
+// chat panel and on a bubble, at the widths of a narrow to a wide chat.
+QImage square(int side, int variant)
+{
+    return scenery(QSize(side, side), variant);
+}
+
+QList<CardSample> embedSamples()
+{
+    using linkpreview::CardLayout;
+    using linkpreview::LinkClass;
+    QList<CardSample> out;
+    const auto add = [&](const QString& label, const std::function<void(linkcard::Card&, linkcard::Pointer&)>& more) {
+        CardSample s;
+        s.label     = label;
+        s.card.look = Look::Embed;
+        s.card.kind = Kind::Card;
+        more(s.card, s.pointer);
+        out.append(s);
+    };
+    const QString story = QStringLiteral("Lakeside timelapse: a whole day in four minutes, from sunrise to the stars over the water");
+    const QString text  = QStringLiteral("Filmed over one long summer day at a mountain lake: the light, the clouds and the boats, then the night sky "
+                                        "turning slowly above the water until the morning comes back.");
+    // 1. Site cards.
+    add(QStringLiteral("site: large, play and length (Vimeo-like)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Site;
+        c.provider           = QStringLiteral("vimeo");
+        c.host               = QStringLiteral("vimeo.com");
+        c.data.author        = QStringLiteral("Quiet Places");
+        c.data.title         = story;
+        c.data.description   = text;
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1280;
+        c.data.pictureHeight = 720;
+        c.data.play          = true;
+        c.data.durationMs    = 245000;
+        c.picture            = scenery(QSize(640, 360), 0);
+    });
+    add(QStringLiteral("site: thumbnail (Spotify-like)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Site;
+        c.provider           = QStringLiteral("spotify");
+        c.host               = QStringLiteral("open.spotify.com");
+        c.data.title         = QStringLiteral("Morning Light");
+        c.data.description   = QStringLiteral("Quiet Places · Lakeside · Song · 2026");
+        c.data.layout        = CardLayout::Thumb;
+        c.data.pictureWidth  = 640;
+        c.data.pictureHeight = 640;
+        c.picture            = square(320, 1);
+    });
+    add(QStringLiteral("site: author line (Reddit-like)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Site;
+        c.provider           = QStringLiteral("reddit");
+        c.host               = QStringLiteral("www.reddit.com");
+        c.data.author        = QStringLiteral("r/pics · u/quiet_places");
+        c.data.title         = QStringLiteral("The lake at dawn, no filter");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1600;
+        c.data.pictureHeight = 1000;
+        c.picture            = scenery(QSize(640, 400), 3);
+    });
+    add(QStringLiteral("site: a message's second card (large drawn as thumbnail)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Site;
+        c.provider           = QStringLiteral("vimeo");
+        c.host               = QStringLiteral("vimeo.com");
+        c.data.author        = QStringLiteral("Quiet Places");
+        c.data.title         = story;
+        c.data.description   = text;
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1280;
+        c.data.pictureHeight = 720;
+        c.data.play          = true;
+        c.data.durationMs    = 245000;
+        c.slotIndex          = 1;
+        c.picture            = scenery(QSize(640, 360), 0);
+    });
+    // 2. Web cards.
+    add(QStringLiteral("web: large, theme colour, site name"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("www.example.com");
+        c.data.site          = QStringLiteral("Example News");
+        c.data.title         = QStringLiteral("A calm day at the lake draws thousands of visitors");
+        c.data.description   = text;
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+        c.data.hasColor      = true;
+        c.data.color         = qRgb(0x2e, 0x7d, 0x32);
+        c.picture            = scenery(QSize(600, 315), 2);
+    });
+    add(QStringLiteral("web: thumbnail"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("docs.example.org");
+        c.data.site          = QStringLiteral("Example Docs");
+        c.data.title         = QStringLiteral("json: encoding and decoding");
+        c.data.description   = QStringLiteral("Source code: lib/json. A lightweight data interchange format inspired by object literals.");
+        c.data.layout        = CardLayout::Thumb;
+        c.data.pictureWidth  = 200;
+        c.data.pictureHeight = 200;
+        c.picture            = square(200, 1);
+    });
+    add(QStringLiteral("web: text only"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls              = LinkClass::Web;
+        c.host             = QStringLiteral("www.example.net");
+        c.data.title       = QStringLiteral("The server list");
+        c.data.description = QStringLiteral("Find a server by its name, its language or how many people are on it right now.");
+    });
+    add(QStringLiteral("web: a site name that doesn't match the host (not shown)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("discord-nitro.example.net");
+        c.data.title         = QStringLiteral("Claim your free gift");
+        c.data.description   = QStringLiteral("A page that names itself after a well-known site: the card shows its real host.");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+        c.picture            = scenery(QSize(600, 315), 1);
+    });
+    add(QStringLiteral("web: a long host loses its start"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls              = LinkClass::Web;
+        c.host             = QStringLiteral("a.very.long.subdomain.name.of.some.example-website.co.uk");
+        c.data.title       = QStringLiteral("A page with a long address");
+        c.data.description = QStringLiteral("Its footer keeps the end of the host, which says whose site it is.");
+    });
+    // 3. Right-to-left text.
+    add(QStringLiteral("web: Persian title with ZWNJ and a stray embedding"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("fa.example.com");
+        c.data.site          = QString::fromUtf8("\xd9\x86\xd9\x85\xd9\x88\xd9\x86\xd9\x87");
+        c.data.title         = QString::fromUtf8("\xd9\x85\xdb\x8c\xe2\x80\x8c\xd8\xae\xd9\x88\xd8\xa7\xd9\x87\xd9\x85 \xdb\x8c\xda\xa9 \xd8\xb9\xd9\x86\xd9\x88\xd8\xa7\xd9\x86 "
+                                                "\xd8\xa8\xd9\x84\xd9\x86\xd8\xaf \xe2\x80\xab\xd8\xa8\xd8\xb1\xd8\xa7\xdb\x8c \xd8\xa2\xd8\xb2\xd9\x85\xd8\xa7\xdb\x8c\xd8\xb4");
+        c.data.description   = QString::fromUtf8("\xd8\xa7\xdb\x8c\xd9\x86 \xd9\x85\xd8\xaa\xd9\x86 \xda\xa9\xd9\x88\xd8\xaa\xd8\xa7\xd9\x87 \xd8\xa7\xd8\xb3\xd8\xaa.");
+        c.data.layout        = CardLayout::Thumb;
+        c.data.pictureWidth  = 300;
+        c.data.pictureHeight = 300;
+        c.picture            = square(300, 2);
+    });
+    // 4. The picture on its way, sensitive, failed; hover.
+    add(QStringLiteral("web: the sender's picture still coming (its announced size)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("www.example.com");
+        c.data.site          = QStringLiteral("Example News");
+        c.data.title         = QStringLiteral("A calm day at the lake draws thousands of visitors");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+        c.pictureLoading     = true;
+        c.fromSender         = true;
+    });
+    add(QStringLiteral("web: sensitive, covered"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("www.example.com");
+        c.data.title         = QStringLiteral("A page marked for adults");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+        c.data.sensitive     = true;
+        c.picture            = scenery(QSize(600, 315), 0);
+    });
+    add(QStringLiteral("web: sensitive, revealed"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("www.example.com");
+        c.data.title         = QStringLiteral("A page marked for adults");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+        c.data.sensitive     = true;
+        c.revealed           = true;
+        c.picture            = scenery(QSize(600, 315), 0);
+    });
+    add(QStringLiteral("web: picture failed (placeholder, no ring)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("www.example.com");
+        c.data.title         = QStringLiteral("A page whose picture is gone");
+        c.data.description   = QStringLiteral("The card keeps its size.");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+    });
+    add(QStringLiteral("web: hovered"), [&](linkcard::Card& c, linkcard::Pointer& p) {
+        c.cls                = LinkClass::Web;
+        c.host               = QStringLiteral("www.example.com");
+        c.data.site          = QStringLiteral("Example News");
+        c.data.title         = QStringLiteral("A calm day at the lake draws thousands of visitors");
+        c.data.description   = text;
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1200;
+        c.data.pictureHeight = 630;
+        c.picture            = scenery(QSize(600, 315), 2);
+        p.over               = true;
+        p.hover              = linkcard::Zone::Open;
+    });
+    // 5. Nextcloud and ownCloud share cards (design2 2.7): the name, "Type · size", the page's theme colour, no site line.
+    const QString dot = QString::fromUtf8(" \xC2\xB7 ");
+    add(QStringLiteral("share: a PDF with its preview (Thumb)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::MediaPage;
+        c.provider           = QStringLiteral("nextcloud");
+        c.host               = QStringLiteral("cloud.example.org");
+        c.data.title         = QStringLiteral("02_mcmc_220126.pdf");
+        c.data.description   = QStringLiteral("PDF document") + dot + QStringLiteral("2.1 MB");
+        c.data.layout        = CardLayout::Thumb;
+        c.data.pictureWidth  = 256;
+        c.data.pictureHeight = 362;
+        c.data.hasColor      = true;
+        c.data.color         = qRgb(0x1e, 0x83, 0x89);
+        c.picture            = scenery(QSize(181, 256), 1);
+    });
+    add(QStringLiteral("share: a folder (no picture)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls              = LinkClass::MediaPage;
+        c.provider         = QStringLiteral("nextcloud");
+        c.host             = QStringLiteral("cloud.example.org");
+        c.data.title       = QStringLiteral("Team pictures and Screenshots");
+        c.data.description = QStringLiteral("Folder") + dot + QStringLiteral("597 MB");
+        c.data.hasColor    = true;
+        c.data.color       = qRgb(0x00, 0x67, 0x9e);
+    });
+    add(QStringLiteral("share: view only, its preview (Large)"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls                = LinkClass::MediaPage;
+        c.provider           = QStringLiteral("nextcloud");
+        c.host               = QStringLiteral("cloud.example.org");
+        c.data.title         = QStringLiteral("top_shunt.jpg");
+        c.data.description   = QStringLiteral("Picture") + dot + QStringLiteral("View only");
+        c.data.layout        = CardLayout::Large;
+        c.data.pictureWidth  = 1024;
+        c.data.pictureHeight = 683;
+        c.picture            = scenery(QSize(600, 400), 2);
+    });
+    add(QStringLiteral("share: a file without colour or size"), [&](linkcard::Card& c, linkcard::Pointer&) {
+        c.cls              = LinkClass::MediaPage;
+        c.provider         = QStringLiteral("nextcloud");
+        c.host             = QStringLiteral("owncloud.example.net");
+        c.data.title       = QStringLiteral("deep-tempest_model.pth");
+        c.data.description = QStringLiteral("File");
+    });
+    // 6. Strips of the new kinds.
+    const auto strip = [&](const QString& label, Look look, Kind kind, LinkClass cls, const QString& host, const std::function<void(linkcard::Card&)>& more) {
+        CardSample s;
+        s.label     = label;
+        s.card.look = look;
+        s.card.kind = kind;
+        s.card.cls  = cls;
+        s.card.host = host;
+        if (more)
+            more(s.card);
+        out.append(s);
+    };
+    strip(QStringLiteral("strip: web page loading (after Load link previews)"), Look::Loading, Kind::Card, LinkClass::Web, QStringLiteral("www.example.com"), {});
+    strip(QStringLiteral("strip: web page failed (after a click)"), Look::Error, Kind::Card, LinkClass::Web, QStringLiteral("www.example.com"), {});
+    strip(QStringLiteral("strip: a click found nothing"), Look::Error, Kind::Card, LinkClass::Web, QStringLiteral("www.example.com"),
+          [](linkcard::Card& c) { c.nothing = true; });
+    strip(QStringLiteral("strip: site loading (brand tint)"), Look::Loading, Kind::Card, LinkClass::Site, QStringLiteral("vimeo.com"),
+          [](linkcard::Card& c) { c.provider = QStringLiteral("vimeo"); });
+    strip(QStringLiteral("strip: site click"), Look::Click, Kind::Card, LinkClass::Site, QStringLiteral("open.spotify.com"),
+          [](linkcard::Card& c) { c.provider = QStringLiteral("spotify"); });
+    strip(QStringLiteral("strip: site busy, 43 s (ring)"), Look::Loading, Kind::Card, LinkClass::Site, QStringLiteral("www.reddit.com"), [](linkcard::Card& c) {
+        c.provider  = QStringLiteral("reddit");
+        c.waiting   = linkcard::Waiting::Host;
+        c.retryInMs = 43000;
+    });
+    strip(QStringLiteral("strip: site busy, 10 min (still)"), Look::Loading, Kind::Gif, LinkClass::MediaPage, QStringLiteral("i.imgur.com"), [](linkcard::Card& c) {
+        c.waiting   = linkcard::Waiting::Host;
+        c.retryInMs = 600000;
+    });
+    strip(QStringLiteral("strip: media page click (GIF)"), Look::Click, Kind::Loop, LinkClass::MediaPage, QStringLiteral("giphy.com"), {});
+    strip(QStringLiteral("strip: media page over the limit"), Look::Click, Kind::Video, LinkClass::MediaPage, QStringLiteral("streamable.com"),
+          [](linkcard::Card& c) { c.size = 38LL * 1024 * 1024; });
+    strip(QStringLiteral("strip: shared file click"), Look::Click, Kind::Image, LinkClass::MediaPage, QStringLiteral("cloud.example.org"),
+          [](linkcard::Card& c) { c.provider = QStringLiteral("nextcloud"); });
+    strip(QStringLiteral("strip: shared file loading"), Look::Loading, Kind::Image, LinkClass::MediaPage, QStringLiteral("cloud.example.org"),
+          [](linkcard::Card& c) { c.provider = QStringLiteral("nextcloud"); });
+    strip(QStringLiteral("strip: shared video too large"), Look::TooLarge, Kind::Video, LinkClass::MediaPage,
+          QStringLiteral("der-lab.example.edu"), [](linkcard::Card& c) {
+              c.provider = QStringLiteral("nextcloud");
+              c.size     = 603869811;
+          });
+    strip(QStringLiteral("strip: shared file over the limit"), Look::Click, Kind::Image, LinkClass::MediaPage, QStringLiteral("cloud.example.org"),
+          [](linkcard::Card& c) {
+              c.provider = QStringLiteral("nextcloud");
+              c.size     = 38LL * 1024 * 1024;
+          });
+    return out;
+}
+
+QImage embedSheet(bool dark, qreal dpr, int maxWidth)
+{
+    const QColor            base    = dark ? QColor(0x2f, 0x31, 0x36) : QColor(Qt::white);
+    const layoutart::Colors colors  = layoutart::colorsFor(dark, base, dark ? QColor(0xdc, 0xdd, 0xde) : QColor(Qt::black), dark ? QColor(0x1c, 0xb0, 0xf4) : QColor(0x1c, 0x82, 0xcc));
+    const QVector<QColor>   bubbles = layoutart::bubbleSurfaces(colors);
+    const QList<CardSample> samples = embedSamples();
+    const int               colW    = qMax(maxWidth, 340) + 30;
+    int                     y       = 12;
+    QList<QPair<int, CardSample>> rows;
+    for (const CardSample& s : samples) {
+        const QSize a = linkcard::layout(s.card, styleFor(dark, dpr, maxWidth)).size;
+        const QSize b = linkcard::layout(s.card, styleFor(dark, dpr, maxWidth, bubbles)).size;
+        rows.append({y, s});
+        y += 20 + qMax(a.height(), b.height()) + 22;
+    }
+    QImage img(QSize(colW * 2 + 24, y) * dpr, QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(dpr);
+    img.fill(base);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    QFont label = chatpages::chatFont();
+    label.setPixelSize(11);
+    for (const auto& row : rows) {
+        const CardSample& s = row.second;
+        p.setFont(label);
+        p.setPen(dark ? QColor(0x94, 0x9b, 0xa4) : QColor(0x5c, 0x5e, 0x66));
+        p.drawText(QPointF(12, row.first + 12), s.label);
+        p.drawText(QPointF(colW + 24, row.first + 12), QStringLiteral("(on a bubble)"));
+        const QImage plain = linkcard::render(s.card, styleFor(dark, dpr, maxWidth), s.pointer);
+        p.drawImage(QPointF(12, row.first + 20), plain);
         const PreviewStyle onBubble = styleFor(dark, dpr, maxWidth, bubbles);
         const QImage       bubbled  = linkcard::render(s.card, onBubble, s.pointer);
         const QSizeF       size     = QSizeF(bubbled.size()) / dpr;
@@ -2213,7 +2587,7 @@ void fill(QTextDocument& doc, const tschat::Skin& s, int width)
     msg("20:05:00", 17, kAlice, QStringLiteral("Alice"), a("https://img.example.org/raw/wall.jpg") + QStringLiteral(" ") + a("https://img.example.org/raw/door.webp"));
     msg("20:05:30", 18, kBob, QStringLiteral("Bob"), a("https://slow.example.net/huge.gif"));
     msg("20:06:00", 7, kMe, QStringLiteral("Robin"), a("https://cdn.example.org/pics/old.png"), true);
-    msg("20:06:30", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("not a preview: ") + a("https://example.com/article"));
+    msg("20:06:30", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("the article: ") + a("https://example.com/article"));
     msg("20:07:00", 18, kBob, QStringLiteral("Bob"), a("https://cdn.example.org/pics/beach.jpg") + QStringLiteral(" (its preview still coming from the server)"));
 }
 
@@ -2255,6 +2629,17 @@ QVector<Planned> plan()
     // 2.4 auto-load: above the automatic limit, a click card with its size (nothing big loads by itself).
     card(Look::Click, Kind::Gif, QStringLiteral("slow.example.net"), [](linkcard::Card& c) { c.size = 41LL * 1024 * 1024; });
     card(Look::Error, Kind::Image, QStringLiteral("cdn.example.org"), [](linkcard::Card& c) { c.error = QStringLiteral("The file isn't on the website any more"); }); // linkstate::errorText(notFound)
+    // 2.5: a web page's card (Embed), loaded here: a thumbnail beside its text.
+    card(Look::Embed, Kind::Card, QStringLiteral("example.com"), [](linkcard::Card& c) {
+        c.cls                = linkpreview::LinkClass::Web;
+        c.data.site          = QStringLiteral("Example");
+        c.data.title         = QStringLiteral("The lake in all four seasons");
+        c.data.description   = QStringLiteral("A year at the water, one picture a week, and what changed in between.");
+        c.data.layout        = linkpreview::CardLayout::Thumb;
+        c.data.pictureWidth  = 400;
+        c.data.pictureHeight = 400;
+        c.picture            = scenery(QSize(200, 200), 1);
+    });
     media(Show::PictureDownloading); // a sender's preview on its way from the TeamSpeak server
     return out;
 }
@@ -2451,6 +2836,14 @@ int render(const QString& outDir)
             cardSheet(dark, dpr).save(QStringLiteral("%1/cards_%2.png").arg(dir, suffix));
             cardSheet(dark, dpr, 200).save(QStringLiteral("%1/cards_narrow_%2.png").arg(dir, suffix)); // a 300 px chat
             written += 2;
+            for (const int w : {160, 280, 400}) { // 2.5 YouTube player: the card's states (Consent at 160, 280 and 400 du)
+                cardSheet(dark, dpr, w, youTubePlayerSamples()).save(QStringLiteral("%1/youtube_player_w%2_%3.png").arg(dir).arg(w).arg(suffix));
+                ++written;
+            }
+            for (const int w : {160, 240, 300, 400}) { // 2.5: Embed cards and the new strips, a narrow to a wide chat
+                embedSheet(dark, dpr, w).save(QStringLiteral("%1/embeds_w%2_%3.png").arg(dir).arg(w).arg(suffix));
+                ++written;
+            }
             const struct {
                 const char* name;
                 Mode        mode;
@@ -2471,6 +2864,222 @@ int render(const QString& outDir)
 
 } // namespace linkpages
 
+// ---- 2.5 zoom: every preview type at several preview scales and device pixel ratios (design2 1.5, 4.2) --------------
+// What ChatIntegration does, here on sheets: each preview laid out in du (its column in du at the scale), drawn on a
+// canvas of ratio R = dpr x s, shown at du x s logical px on a sheet of the display's ratio. Next to each preview, a
+// line of chat text at the chat's size (11 px x s) to compare the text in the card with. A narrow chat column shows
+// the fit (s cut so the 160 du floor and the margins fit). Sheets: zoom/<kind>_s<s>_dpr<dpr>_<theme>.png.
+namespace zoompages {
+
+struct Combo {
+    int   s20;
+    qreal dpr;
+};
+
+const Combo kCombos[] = {{20, 1.0}, {30, 1.0}, {40, 1.0}, {20, 2.0}, {25, 1.0}, {60, 1.0}};
+
+QString comboName(const Combo& c)
+{
+    return QStringLiteral("s%1_dpr%2").arg(QString::number(c.s20 / 20.0, 'f', 2), QString::number(c.dpr));
+}
+
+struct Item {
+    QString label;
+    QImage  image;  // at R
+    QSizeF  du;     // its size in du
+    qreal   column; // the chat column it was laid out for (logical px; 0: none drawn)
+};
+
+// The sheet: items in rows of two columns, each with the chat text sample above it, drawn at du x s.
+QImage sheet(const QList<Item>& items, const PreviewScale& scale, bool dark, const QString& title)
+{
+    const qreal  s       = scale.s();
+    const qreal  margin  = 16;
+    QFont        label   = chatpages::chatFont();
+    label.setPixelSize(11);
+    QFont chat = chatpages::chatFont();
+    chat.setPixelSize(qMax(1, qRound(11 * s))); // the chat's text at this scale
+    const QFontMetricsF lm(label), cm(chat);
+    qreal               colW = 0;
+    for (const Item& it : items)
+        colW = qMax(colW, qMax(scale.toLogical(it.du.width()), it.column) + 24);
+    colW = qMax(colW, 260.0);
+    QVector<qreal> rowH;
+    for (int i = 0; i < items.size(); i += 2) {
+        qreal h = 0;
+        for (int j = i; j < qMin(i + 2, items.size()); ++j)
+            h = qMax(h, scale.toLogical(items.at(j).du.height()));
+        rowH.append(lm.height() + cm.height() + 10 + h + 18);
+    }
+    qreal total = margin * 2 + lm.height() + 10;
+    for (const qreal h : rowH)
+        total += h;
+    const QSizeF logical(margin * 2 + colW * 2, total);
+    QImage       out((logical * scale.dpr).toSize(), QImage::Format_ARGB32_Premultiplied);
+    out.setDevicePixelRatio(scale.dpr);
+    out.fill(dark ? QColor(0x31, 0x33, 0x38) : QColor(Qt::white));
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    const QColor muted = dark ? QColor(0x94, 0x9b, 0xa4) : QColor(0x5c, 0x5e, 0x66);
+    const QColor text  = dark ? QColor(0xdc, 0xdd, 0xde) : QColor(Qt::black);
+    p.setFont(label);
+    p.setPen(muted);
+    p.drawText(QPointF(margin, margin + lm.ascent()),
+               QStringLiteral("%1 | s %2, dpr %3, R %4").arg(title).arg(s, 0, 'f', 2).arg(scale.dpr).arg(scale.ratio(), 0, 'f', 2));
+    qreal y = margin + lm.height() + 10;
+    for (int row = 0; row < rowH.size(); ++row) {
+        for (int col = 0; col < 2; ++col) {
+            const int i = row * 2 + col;
+            if (i >= items.size())
+                break;
+            const Item& it = items.at(i);
+            const qreal x  = margin + col * colW;
+            p.setFont(label);
+            p.setPen(muted);
+            p.drawText(QPointF(x, y + lm.ascent()), QStringLiteral("%1 (%2x%3 du)").arg(it.label).arg(it.du.width()).arg(it.du.height()));
+            p.setFont(chat);
+            p.setPen(text);
+            p.drawText(QPointF(x, y + lm.height() + cm.ascent()), QStringLiteral("Chat text at this size"));
+            const qreal top = y + lm.height() + cm.height() + 10;
+            if (it.column > 0) { // the chat column's right edge
+                p.setPen(QPen(QColor(0xf2, 0x3f, 0x43), 1, Qt::DashLine));
+                p.drawLine(QPointF(x + it.column, top - 4), QPointF(x + it.column, top + scale.toLogical(it.du.height()) + 4));
+            }
+            p.drawImage(QRectF(QPointF(x, top), scale.toLogical(it.du)), it.image);
+        }
+        y += rowH.at(row);
+    }
+    p.end();
+    return out;
+}
+
+int render(const QString& outDir, const QList<Sample>& samples)
+{
+    const QString dir = outDir + QStringLiteral("/zoom");
+    QDir().mkpath(dir);
+    int           written  = 0;
+    int           failures = 0;
+    const QStringList media = {QStringLiteral("image_ready"), QStringLiteral("image_tall"), QStringLiteral("image_tiny"), QStringLiteral("gif_frame"),
+                               QStringLiteral("video_poster_ready"), QStringLiteral("video_playing_seek_hover"), QStringLiteral("spoiler_image_hidden"),
+                               QStringLiteral("card_ready"), QStringLiteral("card_failed_quota"), QStringLiteral("audio_playing"), QStringLiteral("voice_playing_35"),
+                               QStringLiteral("album_4_mixed"), QStringLiteral("album_7_plus2"), QStringLiteral("reactions_mixed_hover_pill"),
+                               QStringLiteral("reactions_voice_row"), QStringLiteral("reply_line_found"), QStringLiteral("reply_line_persian")};
+    for (const bool dark : {false, true}) {
+        const QString theme = dark ? QStringLiteral("dark") : QStringLiteral("light");
+        for (const Combo& combo : kCombos) {
+            PreviewScale scale;
+            scale.s20 = combo.s20;
+            scale.c20 = combo.s20;
+            scale.dpr = combo.dpr;
+            const QString name = comboName(combo);
+            // Uploaded media, cards, albums, reaction rows, reply lines: a wide chat (900 px column).
+            QList<Item> items;
+            for (const Sample& s : samples) {
+                if (!media.contains(s.name))
+                    continue;
+                PreviewStyle style;
+                style.dark      = dark;
+                style.font      = chatpages::chatFont();
+                style.dpr       = scale.ratio();
+                style.maxWidth  = qMin(s.maxWidth, previewscale::mediaMaxWidthDu(400, 900, 0, scale));
+                style.maxHeight = 300;
+                QSize        du;
+                const QImage img = s.render(style, &du);
+                if (img.isNull())
+                    continue;
+                if (!qFuzzyCompare(img.devicePixelRatio(), scale.ratio())) {
+                    QTextStream(stderr) << "error: zoom: " << s.name << " drawn at ratio " << img.devicePixelRatio() << ", not " << scale.ratio() << "\n";
+                    ++failures;
+                }
+                items.append({s.label, img, QSizeF(du), 0});
+            }
+            sheet(items, scale, dark, QStringLiteral("Media, cards, albums, reactions, replies")).save(QStringLiteral("%1/media_%2_%3.png").arg(dir, name, theme));
+            ++written;
+
+            // Link cards and strips (2.4 / 2.5 looks), Embed cards, polls (open and voted): a wide chat.
+            QList<Item> cards;
+            const int   linkMax = previewscale::cardMaxWidthDu(400, 900, 0, 4, 0, scale);
+            const QList<linkpages::CardSample> cardList = linkpages::cardSamples() + linkpages::embedSamples();
+            int n = 0;
+            for (const linkpages::CardSample& c : cardList) {
+                if (n++ % 3 != 0 && !c.label.contains(QLatin1String("YouTube")))
+                    continue; // a third of them (every look is there), all YouTube states
+                const PreviewStyle st = linkpages::styleFor(dark, scale.ratio(), linkMax);
+                const QImage       img = linkcard::render(c.card, st, c.pointer);
+                cards.append({c.label, img, QSizeF(linkcard::layout(c.card, st).size), 0});
+            }
+            pollart::Style ps;
+            ps.dark     = dark;
+            ps.font     = chatpages::chatFont();
+            ps.dpr      = scale.ratio();
+            ps.maxWidth = previewscale::cardMaxWidthDu(1 << 20, 900, 0, 4, 0, scale);
+            pollart::Card poll;
+            poll.question = QStringLiteral("Where do we eat tonight?");
+            poll.options  = QStringList{QStringLiteral("Pizza"), QStringLiteral("Sushi"), QStringLiteral("Tacos")};
+            pollart::Layout pl;
+            QImage          pimg = pollart::render(poll, ps, pollart::Pointer(), &pl);
+            cards.append({QStringLiteral("poll: open"), pimg, QSizeF(pl.size), 0});
+            poll.results  = true;
+            poll.counts   = QVector<int>{72, 25, 28};
+            poll.percents = QVector<int>{58, 20, 22};
+            poll.voters   = 125;
+            poll.own      = 1;
+            pimg          = pollart::render(poll, ps, pollart::Pointer(), &pl);
+            cards.append({QStringLiteral("poll: voted"), pimg, QSizeF(pl.size), 0});
+            sheet(cards, scale, dark, QStringLiteral("Link cards, strips, Embed cards, polls")).save(QStringLiteral("%1/cards_%2_%3.png").arg(dir, name, theme));
+            ++written;
+        }
+
+        // A narrow chat (200 px column) whose text asks for s 2 (22 px), off and on bubbles: the fit cuts s so every
+        // look's 160 du floor and margins fit; nothing may pass the column's right edge (the red line).
+        for (const bool bubbles : {false, true}) {
+            const int          chatPx  = 22;
+            const int          bubbleL = bubbles ? qRound(18 * chatPx / 12.0) : 0;
+            const qreal        column  = 200;
+            const PreviewScale scale   = previewscale::computeScale(chatPx, 100, column, 4, bubbleL, 1.0);
+            const int          linkMax = previewscale::cardMaxWidthDu(400, column, 0, 4, bubbleL, scale);
+            const int          mediaMax = previewscale::mediaMaxWidthDu(400, column, 0, scale);
+            QList<Item>        items;
+            const QList<linkpages::CardSample> cardList = linkpages::cardSamples();
+            for (int i = 0; i < cardList.size(); i += 4) {
+                const PreviewStyle st  = linkpages::styleFor(dark, scale.ratio(), linkMax);
+                const QSizeF       du  = QSizeF(linkcard::layout(cardList.at(i).card, st).size);
+                const qreal        right = bubbles ? bubbleL + 2 * scale.s() : 12 * scale.s();
+                if (scale.toLogical(du.width()) + 8 + right > column + 0.5) {
+                    QTextStream(stderr) << "error: zoom: " << cardList.at(i).label << " is wider than its " << column << " px column\n";
+                    ++failures;
+                }
+                items.append({cardList.at(i).label, linkcard::render(cardList.at(i).card, st, cardList.at(i).pointer), du, column - 4});
+            }
+            for (const Sample& s : samples) {
+                if (s.name != QLatin1String("image_ready") && s.name != QLatin1String("card_ready") && s.name != QLatin1String("video_poster_ready"))
+                    continue;
+                PreviewStyle style;
+                style.dark      = dark;
+                style.font      = chatpages::chatFont();
+                style.dpr       = scale.ratio();
+                style.maxWidth  = qMin(s.maxWidth, mediaMax);
+                style.maxHeight = 300;
+                QSize        du;
+                const QImage img = s.render(style, &du);
+                if (scale.toLogical(du.width()) > column - 8 + 0.5) {
+                    QTextStream(stderr) << "error: zoom: " << s.name << " is wider than its " << column << " px column\n";
+                    ++failures;
+                }
+                items.append({s.label, img, QSizeF(du), column - 4});
+            }
+            sheet(items, scale, dark, QStringLiteral("A 200 px chat, text 22 px%1").arg(bubbles ? QStringLiteral(", on bubbles") : QString()))
+                .save(QStringLiteral("%1/narrow%2_%3.png").arg(dir, bubbles ? QStringLiteral("_bubbles") : QString(), theme));
+            ++written;
+        }
+    }
+    QTextStream(stdout) << "rendered " << written << " zoom sheets into " << QDir::toNativeSeparators(dir) << "\n";
+    return failures;
+}
+
+} // namespace zoompages
+
 int main(int argc, char* argv[])
 {
     QGuiApplication app(argc, argv);
@@ -2482,6 +3091,13 @@ int main(int argc, char* argv[])
     // Pictures used in the samples (e.g. created with ffmpeg, see README): defaults to ./testmedia.
     g_mediaDir           = argc > 2 ? QDir::fromNativeSeparators(QString::fromLocal8Bit(argv[2])) : QStringLiteral("testmedia");
     QDir().mkpath(outDir);
+    // 2.5 zoom: "--zoom" renders the zoom sheets only (every preview type at several scales and ratios).
+    if (argc > 2 && QString::fromLatin1(argv[2]) == QLatin1String("--zoom")) {
+        g_mediaDir         = argc > 3 ? QDir::fromNativeSeparators(QString::fromLocal8Bit(argv[3])) : QStringLiteral("testmedia");
+        const int failures = zoompages::render(outDir, buildSamples());
+        emoji::shutdown();
+        return failures == 0 ? 0 : 1;
+    }
     // 2.4 link previews: "--links" renders their pages only.
     if (argc > 2 && QString::fromLatin1(argv[2]) == QLatin1String("--links")) {
         const int failures = linkpages::render(outDir);
@@ -2528,11 +3144,12 @@ int main(int argc, char* argv[])
     QTextStream(stdout) << "rendered " << written << " previews into " << QDir::toNativeSeparators(outDir) << "\n";
     const int chatLayout       = chatpages::render(outDir); // chat redesign
     const int linkPages        = linkpages::render(outDir); // 2.4 link previews
+    const int zoomPages        = zoompages::render(outDir, samples); // 2.5 zoom
     const int contrastFailures = contrastReport(outDir);
     const int dragCard         = checkDragCardContrast(); // 2.2 drag-out
     if (g_layoutFailures)
         QTextStream(stderr) << "error: " << g_layoutFailures << " sample(s) would make the chat jump\n";
     // 2.2 album: and every grid's size (g_layoutErrors)
     emoji::shutdown(); // 2.2 emoji: the renderer's worker and engines
-    return contrastFailures == 0 && dragCard == 0 && chatLayout == 0 && linkPages == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
+    return contrastFailures == 0 && dragCard == 0 && chatLayout == 0 && linkPages == 0 && zoomPages == 0 && g_layoutFailures == 0 && g_layoutErrors == 0 ? 0 : 1;
 }

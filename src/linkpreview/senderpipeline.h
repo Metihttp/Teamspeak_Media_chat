@@ -13,7 +13,8 @@
 //    channel chat or a private chat (the server chat has no LP), without a TeamSpeak file link (TS Media's
 //    media messages), and only while both settings are on (showLinkPreviews, makeLinkPreviews).
 //  * At most message::kMaxLinks previewable links per message, Limits::maxJobsPerMinute jobs per connection,
-//    one job at a time (the others wait, Limits::maxQueued, at most Limits::queuedTtlMs).
+//    one job at a time (the others wait, Limits::maxQueued, at most Limits::queuedTtlMs); 2.5: the allowance and the
+//    queue each for the 2.4 classes and for the new ones on their own.
 //  * Exactly one fetch per link and send; the same link sent again in the same channel within
 //    Limits::reuseMs is announced with the files already on the server (no fetch, no upload).
 //  * The LP goes only where the message went: the channel, if you are still in it (its files go up only
@@ -29,6 +30,18 @@
 //    once: the pipeline keeps a record of each link of our recent messages (OwnLink) and signals each change.
 //  * shutdown() (plugin unload, a setting switched off) cancels the fetch, joins the worker, cancels Core's
 //    upload, removes the work files; nothing starts afterwards (applySettings() allows it again).
+// 2.5 (page links):
+//  * The links of a message are read exactly as every receiver reads them (linkurl.h): message::linkHrefs ->
+//    trimLinkEnd -> classify(QString) -> selectLinks (at most 3, the 2.4 classes first). A link to another web page
+//    gets no job while Settings::showWebCards is off (no notice either: our cap "lw" is off, nobody waits).
+//  * Media pages, site cards and web cards go out as LPX (announcement.h), never LP; a job that ends without one
+//    sends LPXNO, with r=n when the site had nothing to show (kNothing, kWalled, kExpired) and r=x when a web page
+//    went to another website (its card is never shared: receivers load nothing by themselves). A card is uploaded
+//    as a preview-only picture (or nothing, a text card), its text travels in the LPX, shortened to fit the
+//    connection's cap (lpxSendCap: 900 bytes until live check L1). A card whose picture can't go up goes without it
+//    when it has its text.
+//  * The intake notice: links of one message refused at intake (the rate or the queue) are named in ONE LPXNO
+//    without r, at most one every kIntakeNoticeMinMs per connection, so 2.5 receivers stop waiting for them.
 
 #include <QHash>
 #include <QList>
@@ -69,7 +82,8 @@ class FetchPort
 {
   public:
     virtual ~FetchPort() = default;
-    virtual void load(const Target& target, qint64 maxBytes, const QString& cacheDir) = 0;
+    // 2.5: what the load may download (Caps: media, a card's picture, a page's read); 2.4's maxBytes is caps.media.
+    virtual void load(const Target& target, const Caps& caps, const QString& cacheDir) = 0;
     virtual void cancel(const QString& key) = 0;
 };
 
@@ -79,7 +93,11 @@ class SenderPipeline : public QObject
 
   public:
     struct Limits {
-        int    maxJobsPerMinute = 6;      // per connection (each link of a message is one job)
+        // Per connection, each link of a message is one job. 2.5: the 2.4 classes (YouTube, files) and the new ones
+        // (pages, sites, media sites) each have their own allowance and queue, so page links never use up what 2.4.0
+        // receivers (who don't read the intake notice) depend on: a 2.4 link is refused exactly when a 2.4.0
+        // sender's would be.
+        int    maxJobsPerMinute = 6;
         int    maxQueued        = 8;
         qint64 queuedTtlMs      = 120000; // a job that couldn't start by then is dropped
         int    fetchTimeoutMs   = 90000;  // the Fetcher's own limits are shorter; this is the backstop
@@ -89,6 +107,8 @@ class SenderPipeline : public QObject
         qint64 thumbnailBytes   = 2LL * 1024 * 1024;  // what the Fetcher may bring for a YouTube thumbnail
         qint64 pictureBytes     = 20LL * 1024 * 1024; // ... for an image or a GIF (a preview is made from it)
         qint64 videoBytes       = 25LL * 1024 * 1024; // ... for a video (a poster is made from it; it goes up whole)
+        qint64 intakeNoticeMinMs = 10000; // 2.5: at most one intake notice (LPXNO) per connection this often
+        qint64 refusedUploadMs   = 10LL * 60 * 1000; // 2.5: a channel that refused our upload gets none for this long
     };
 
     struct Counters {
@@ -98,6 +118,14 @@ class SenderPipeline : public QObject
         int skipped   = 0; // rate, queue, settings, no LP possible there
         int reused    = 0;
         int skipNotices = 0; // 2.4: LPNO sent
+        // 2.5
+        int lpxSent           = 0;
+        int lpxSkips          = 0; // LPXNO sent for a job (with or without r)
+        int lpxSkipsNothing   = 0; // ... r=n
+        int lpxSkipsCrossSite = 0; // ... r=x
+        int intakeNotices     = 0; // LPXNO for links refused at intake
+        int lpxCapUsed        = 0; // the cap of the last LPX (900 / 1400)
+        int uploadsSkipped    = 0; // previews not uploaded: the channel refused our last upload (Limits::refusedUploadMs)
     };
 
     // 2.4 auto-load: what became of each link of our own recent messages, for our own chat (ChatLinkPreviews):
@@ -126,7 +154,9 @@ class SenderPipeline : public QObject
     void fetched(const QString& key, const linkpreview::Result& result);
 
     void shutdown();      // see above; idempotent
-    void applySettings(); // a setting off: shutdown(); both on again: new messages start jobs
+    // A setting off: shutdown(); both on again: new messages start jobs. Show cards for other web pages changed: Web
+    // links' jobs stop (off), a share link's running fetch starts again under it.
+    void applySettings();
 
     // The folder the jobs work in (default <data dir>/linkpreview/send): cleared at the first job.
     void setWorkRoot(const QString& dir);
@@ -139,6 +169,12 @@ class SenderPipeline : public QObject
     int      jobCount() const { return m_jobs.size(); }
     bool     busy() const { return !m_jobs.isEmpty(); }
     Counters counters() const { return m_counters; }
+    // 2.5: what a sender's load of target may download (the sender makes the preview for everyone: data saver
+    // doesn't apply): YouTube its thumbnail, files and media pages 20 MB (videos 25 MB), cards a 2 MB picture
+    // (and media up to 20 MB, a web page 25 MB, when the page turns out to be media), pages read up to 512 KB.
+    Caps     fetchCapsFor(const Target& target) const;
+    // 2.5: the links of our own message that get a slot, as every receiver picks them (linkurl.h).
+    static QVector<Target> selectedLinks(const QString& bbcode);
 
     // 2.4 auto-load: the record of urlKey in our message with this identity: the same hash, the nearest
     // receivedSec within textreact::kToleranceSec of timeSec. nullptr: none. Good until the pipeline changes.
@@ -175,6 +211,8 @@ class SenderPipeline : public QObject
         int          batch = 0;      // Core's background send
         std::shared_ptr<std::atomic<bool>> cancel;
         maker::Made  made;
+        quint64      uploadChannel = 0; // 2.5: the channel its files go up into (ours when the upload starts)
+        bool         webCards = true;   // Fetching: the Caps::webCards its fetch holds (followWebCards)
     };
     struct Reuse {
         Announcement files; // what is on the server (messageKey, sch and senderUid are filled per use)
@@ -184,10 +222,15 @@ class SenderPipeline : public QObject
     void   startNext();
     void   startFetch(Job& job);
     void   onMade(int id, const maker::Made& made);
-    void   onUploaded(int batch, bool ok, const MediaLink& link);
+    void   onUploaded(int batch, bool ok, const MediaLink& link, MediaError failure = MediaError::None);
+    void   announceTextCard(Job& job); // 2.5: a card's text without its picture
+    bool   uploadsRefused(const QString& serverUid, quint64 channelId); // 2.5: Limits::refusedUploadMs
     void   announce(Job& job, Announcement a);
-    void   finish(int id, bool announced, const QString& why = {});
+    // 2.5: reason: what LPXNO says for a new-class job that ends without its LPX (r=n / r=x; Unknown: no r).
+    void   finish(int id, bool announced, const QString& why = {}, SkipReason reason = SkipReason::Unknown);
+    void   sendIntakeNotice(const Job& base, const QStringList& refusedKeys); // 2.5
     void   cancelJob(Job& job);
+    void   followWebCards(); // review fix: Show cards for other web pages as it is now (applySettings)
     void   schedule();
     void   onTimer();
     Job*   find(int id);
@@ -200,11 +243,11 @@ class SenderPipeline : public QObject
     bool   canNotify(const Job& job) const; // an LPNO for it can go now
     void   addOwn(const OwnLink& record);
     void   setOwn(int jobId, OwnLink::State state, const Result* result = nullptr);
-    bool   takeRateToken(quint64 sch, qint64 nowMs);
+    bool   takeRateToken(quint64 sch, qint64 nowMs, bool legacy);
+    int    queuedOf(bool legacy) const; // jobs of the 2.4 classes, or of the new ones
     QString ownLocalKey(const Job& job) const;
     QString reuseKey(const QString& serverUid, quint64 channelId, const QString& urlKey) const;
-    maker::Caps capsFor(const QString& serverUid) const;
-    qint64 fetchBytesFor(Kind kind) const;
+    maker::Caps makerCapsFor(const QString& serverUid) const;
     qint64 nowMs() const;
 
     QPointer<Core>          m_core;
@@ -215,7 +258,10 @@ class SenderPipeline : public QObject
     Limits                  m_limits;
     Counters                m_counters;
     QList<Job>              m_jobs;   // the first one runs (unless Queued)
-    QHash<quint64, QVector<qint64>> m_starts; // connection -> job starts in the last minute
+    QHash<quint64, QVector<qint64>> m_starts;  // connection -> job starts of 2.4 links in the last minute
+    QHash<quint64, QVector<qint64>> m_startsX; // 2.5: ... of page, site and media-site links (their own allowance)
+    QHash<quint64, qint64>  m_lastIntakeNotice; // 2.5: connection -> when its last intake notice went
+    QHash<QString, qint64>  m_refusedUploads;   // 2.5: "<server uid>|<channel id>" -> when it refused our upload
     QHash<QString, Reuse>   m_reuse;
     QThreadPool             m_pool;   // the preview maker (one thread); joined in shutdown()
     QTimer*                 m_timer = nullptr;

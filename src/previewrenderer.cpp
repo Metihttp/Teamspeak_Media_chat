@@ -14,6 +14,7 @@
 #include "albums.h" // 2.2 album
 #include "i18n.h"
 #include "previewpaint.h" // 2.2 audio
+#include "previewscale.h" // 2.5 zoom: the render ratio cap
 #include "spoiler.h" // 2.2 spoiler
 #include "voicecard.h" // 2.2 voice
 #include "uiutil.h"
@@ -113,16 +114,14 @@ qreal cardPadding(const PreviewStyle& style)
 
 // ---- fonts / canvas ---------------------------------------------------------------------------
 
-// Everything is laid out in logical pixels, so fonts are sized in pixels too (independent of the
-// paint device's DPI) and derived from the chat font.
+// Everything is laid out in design units (du, the logical pixels of 2.4), so fonts are sized in pixels too
+// (independent of the paint device's DPI). 2.5 zoom: the base is 11 du whatever the chat font says (only its
+// family, weight and style are taken): the canvas ratio R carries the chat's text size, so an 11 du font is drawn
+// as large as TeamSpeak's own text (design2 1.6). No 96-DPI assumption, no 15 px cap.
 qreal basePixelSize(const QFont& font)
 {
-    qreal px = 12.0;
-    if (font.pixelSize() > 0)
-        px = font.pixelSize();
-    else if (font.pointSizeF() > 0)
-        px = font.pointSizeF() * 4.0 / 3.0;
-    return qBound(11.0, px, 15.0);
+    Q_UNUSED(font);
+    return 11.0;
 }
 
 QFont fontFor(const PreviewStyle& style, qreal delta, bool bold = false)
@@ -138,7 +137,7 @@ QFont fontFor(const PreviewStyle& style, qreal delta, bool bold = false)
 
 qreal ratioOf(const PreviewStyle& style)
 {
-    return style.dpr > 0.0 ? qBound(0.5, style.dpr, 8.0) : 1.0;
+    return style.dpr > 0.0 ? qBound(0.5, style.dpr, previewscale::kMaxRenderRatio) : 1.0; // 2.5 zoom: R, capped
 }
 
 QImage makeCanvas(const QSize& logical, qreal dpr)
@@ -1287,6 +1286,22 @@ void drawInBackground(QPainter& p, const QColor& background, const std::function
 QColor  accent() { return kAccent; }
 qreal   cornerRadius() { return kRadius; }
 QFont   font(const PreviewStyle& style, qreal delta, bool bold) { return fontFor(style, delta, bold); }
+qreal   basePixelSize(const QFont& font) { return ::basePixelSize(font); }
+QFont fontForRatio(QFont font, qreal ratio)
+{
+    font.setHintingPreference(qFuzzyCompare(ratio, 1.0) ? QFont::PreferDefaultHinting : QFont::PreferNoHinting);
+    return font;
+}
+QFont   emFont(const PreviewStyle& style, qreal factor, bool bold)
+{
+    QFont f = style.font;
+    f.setPixelSize(qMax(1, qRound(::basePixelSize(style.font) * factor)));
+    f.setBold(bold);
+    f.setItalic(false);
+    f.setUnderline(false);
+    f.setStrikeOut(false);
+    return f;
+}
 qreal   ratio(const PreviewStyle& style) { return ratioOf(style); }
 QImage  canvas(const QSize& logical, qreal dpr) { return makeCanvas(logical, dpr); }
 void    prepare(QPainter& p) { preparePainter(p); }
@@ -1324,6 +1339,10 @@ QImage renderPreview(const MediaEntry& entry, const MediaStill& still, const Pre
         return renderVideo(entry, QImage(), still, staticOverlay(entry), style, logicalSize);
 
     if (isPreviewableImage(entry.kind)) {
+        // 2.5 live test fix: a downloaded "picture" that is no picture by its bytes (an SVG named .jpg) never shows:
+        // the plain file card ("Can't preview · Click to open"), not its blurhash in a picture box.
+        if (entry.state == MediaState::Ready && still.notAPicture)
+            return renderCard(entry, style, true, logicalSize);
         const QSizeF natural  = linkSize(entry);
         const bool   hasStill = still.source != MediaStill::None && !still.image.isNull();
         if (!natural.isEmpty())
@@ -1608,6 +1627,13 @@ bool isPreviewActionable(const MediaEntry& entry)
 QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool revealOnly)
 {
     return statusTexts(entry, cannotPreview, revealOnly).value(0);
+}
+
+QString loopToolTipDetail(const MediaEntry& entry)
+{
+    if (entry.state == MediaState::Ready)
+        return {};
+    return previewStatusText(entry, false);
 }
 
 // ==== 2.2 album grid =============================================================================

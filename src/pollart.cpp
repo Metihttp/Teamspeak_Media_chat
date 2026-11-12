@@ -123,14 +123,16 @@ QColor buttonFill(const Colors& col, bool hovered, bool pressed)
     return col.fill;
 }
 
+// 2.5 zoom: em fonts in pixels from the 11 du base (previewpaint::emFont): points would scale twice under the
+// canvas ratio (and with the screen the picture is drawn for).
 QFont scaled(const QFont& base, qreal factor, bool bold)
 {
     QFont f(base);
-    if (base.pixelSize() > 0)
-        f.setPixelSize(qMax(1, qRound(base.pixelSize() * factor)));
-    else
-        f.setPointSizeF(qMax(1.0, (base.pointSizeF() > 0 ? base.pointSizeF() : 9.0) * factor));
+    f.setPixelSize(qMax(1, qRound(11.0 * factor)));
     f.setBold(bold);
+    f.setItalic(false);
+    f.setUnderline(false);
+    f.setStrikeOut(false);
     return f;
 }
 
@@ -140,9 +142,7 @@ struct Fonts {
 
 Fonts fontsFor(const Style& s)
 {
-    QFont base = s.font;
-    if (base.pointSizeF() <= 0 && base.pixelSize() <= 0)
-        base.setPointSizeF(9);
+    const QFont base = s.font;
     Fonts f;
     f.question = scaled(base, 1.06, true);
     f.body     = scaled(base, 1.0, false);

@@ -31,8 +31,11 @@
 #include <algorithm>
 #include <functional>
 
+#include "chatlinkpreviews.h" // 2.5: Load link previews
 #include "chatemoji.h" // 2.2 emoji: its items in the chat menu
 #include "chatintegration.h"
+#include "chatscale.h"
+#include "previewpaint.h" // fontForRatio
 #include "chatlayout.h"   // chat redesign: a block is given back before its quote line is taken out
 #include "chattextreactions.h" // 2.3 text reactions: "Add reaction…" in the chat menu
 #include "layoutformat.h" // chat redesign: a Cozy head draws the reply line as its reply row
@@ -297,7 +300,7 @@ ChatReplies::~ChatReplies()
         if (it->document != browser->document())
             continue; // the pictures were in a document TeamSpeak replaced
         for (auto name = it->lines.constBegin(); name != it->lines.constEnd(); ++name)
-            browser->document()->addResource(QTextDocument::ImageResource, QUrl(name.key()), QPixmap()); // the pictures go too
+            m_chat->putChromePicture(browser->document(), name.key(), QPixmap(), ChatScale::Replies); // the pictures go too
     }
     // Documents TeamSpeak swapped out of a chat and may show again later: their quote lines come back
     // too, and their reply line pictures go (as ChatEmoji does for its HD emoji).
@@ -446,7 +449,7 @@ void ChatReplies::afterScan(QTextBrowser* browser)
         for (int k = raw.size() - 1; k >= 0; --k) {
             const Collapse& c = raw.at(k);
             // Drawn once it is on screen (renderVisible); until then a blank picture, never none.
-            doc->addResource(QTextDocument::ImageResource, QUrl(c.name), m_blank);
+            m_chat->putChromePicture(doc, c.name, m_blank, ChatScale::Replies);
             replydoc::Message m = view.messages.at(c.message);
             // Chat redesign: the layout gives the block back first, and styles it again right after.
             if (m_chat->m_layout && layoutformat::leadOf(doc->findBlockByNumber(m.block)).styled) {
@@ -456,7 +459,7 @@ void ChatReplies::afterScan(QTextBrowser* browser)
                 if (!m.hasQuote || m.restyled || m.quoteStart < 0)
                     continue;
             }
-            if (replydoc::collapse(doc, m, c.name, c.size)) {
+            if (replydoc::collapse(doc, m, c.name, c.size, m_chat->scaleOf(browser).chrome())) {
                 first = c.message;
                 if (!collapsed.contains(m.block))
                     collapsed.append(m.block);
@@ -552,21 +555,25 @@ void ChatReplies::documentEdited(QTextBrowser* browser)
 ChatReplies::Style ChatReplies::styleOf(QTextBrowser* browser) const
 {
     const PreviewStyle preview = m_chat->styleFor(browser);
+    // 2.5 zoom: chrome: the reply line follows the chat's text size (c), never Preview size; laid out in du.
+    const PreviewScale chrome = m_chat->scaleOf(browser).chrome();
     Style              style;
     style.dark  = preview.dark;
-    style.font  = preview.font;
-    style.dpr   = preview.dpr;
+    style.dpr   = chrome.ratio();
+    style.font  = previewpaint::fontForRatio(preview.font, style.dpr); // unhinted above R 1 (live test)
+    style.scale = chrome.s20;
     style.base  = browser->viewport()->palette().color(QPalette::Base);
     if (style.dark != (style.base.lightness() < 128))
         style.base = QColor(); // a style sheet colours the chat: the theme's default
     const qreal margin = browser->document()->documentMargin();
-    style.maxWidth     = qMax(80, m_chat->previewAreaWidth(browser) - static_cast<int>(2 * margin) - 6);
+    style.maxWidth     = qMax(80, chrome.duFromLogical(m_chat->previewAreaWidth(browser) - 2 * margin) - 6);
     return style;
 }
 
 QString ChatReplies::keyOf(const Style& style)
 {
     return QStringList{QString::number(style.dark), style.base.name(), style.font.toString(), QString::number(style.dpr), QString::number(style.maxWidth),
+                       QString::number(style.scale), // 2.5 zoom
                        QString::number(emoji::textPicturesEnabled())} // 2.2 emoji: HD emoji turned on or off
         .join(QLatin1Char('|'));
 }
@@ -626,7 +633,8 @@ replyart::HeaderStyle ChatReplies::headerStyle(QTextBrowser* browser, const Styl
     const qreal plain = QFontMetricsF(font).height();
     if (line <= 0 || line > plain * 1.6)
         line = plain;
-    hs.lineHeight = qMax(8.0, line - QFontMetricsF(font).descent());
+    // 2.5 zoom: the line's logical height in du at the chrome scale (du x c gives the line's height back).
+    hs.lineHeight = qMax(8.0, line - QFontMetricsF(font).descent()) / (style.scale > 0 ? style.scale / 20.0 : 1.0);
     hs.hovered    = m_hoverIn == browser && !m.object.isEmpty() && m_hoverObject == m.object;
     hs.pressed    = hs.hovered && m_pressIn == browser && m_pressObject == m.object;
     return hs;
@@ -647,7 +655,23 @@ QString ChatReplies::signatureOf(const Line& line)
         .join(QLatin1Char('|'));
 }
 
-void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
+void ChatReplies::pictureSwapped(QTextBrowser* browser, const QString& name)
+{
+    const auto it = m_views.find(browser);
+    if (it != m_views.end())
+        it->rendered.remove(name); // renderVisible draws it again once it is on screen
+}
+
+void ChatReplies::applyChromeScale(QTextBrowser* browser)
+{
+    View* view = viewOf(browser);
+    if (!view || view->document != browser->document() || view->lines.isEmpty())
+        return;
+    view->rendered.clear(); // drawn again at the new ratio when on screen
+    refreshLines(browser, nullptr, true);
+}
+
+void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only, bool forceSizes)
 {
     View* view = viewOf(browser);
     if (!view)
@@ -675,10 +699,10 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
         if (layoutformat::leadOf(doc->findBlockByNumber(m.block)).kind == layoutformat::Head)
             line.size = QSize(0, 0);
         line.signature = signatureOf(line);
-        if (QSizeF(line.size) != m.objectSize)
+        if (QSizeF(line.size) != m.objectSize || forceSizes) // 2.5 zoom: du against du (a scale pass: every one at the new scale)
             resizes.append({i, QSizeF(line.size)});
         if (!view->lines.contains(m.object) && !view->rendered.contains(m.object))
-            doc->addResource(QTextDocument::ImageResource, QUrl(m.object), m_blank); // one we see for the first time (another document)
+            m_chat->putChromePicture(doc, m.object, m_blank, ChatScale::Replies); // one we see for the first time (another document)
         view->lines.insert(m.object, line);
     }
     if (!only) {
@@ -688,7 +712,7 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
                 ++it;
                 continue;
             }
-            doc->addResource(QTextDocument::ImageResource, QUrl(it.key()), QPixmap());
+            m_chat->putChromePicture(doc, it.key(), QPixmap(), ChatScale::Replies);
             view->rendered.remove(it.key());
             it = view->lines.erase(it);
         }
@@ -707,12 +731,13 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only)
             if (!block.isValid())
                 continue;
             m.position = block.position();
-            replydoc::resizeObject(doc, m.position, r.size);
+            replydoc::resizeObject(doc, m.position, r.size, m_chat->scaleOf(browser).chrome());
             m.objectSize = r.size; // a format change: no position moved
         }
         batch.endEditBlock();
         m_chat->m_mutating = wasMutating;
-        restoreAnchor(browser, anchor);
+        if (!m_chat->m_scaling) // 2.5 zoom: inside a scale pass the place comes back once, at its end
+            restoreAnchor(browser, anchor);
     }
     renderVisible(browser, *view);
     if (!only)
@@ -756,7 +781,8 @@ void ChatReplies::renderVisible(QTextBrowser* browser, View& view)
         if (line->size.isEmpty())
             continue; // a Cozy head's (never drawn)
         emoji::takeTextFallbacks();
-        doc->addResource(QTextDocument::ImageResource, QUrl(it->object), QPixmap::fromImage(replyart::renderHeader(line->header, line->style, line->size)));
+        // 2.5 zoom (1.12): booked for the chat's picture budget like every preview picture.
+        m_chat->putChromePicture(doc, it->object, QPixmap::fromImage(previewscale::forDocument(replyart::renderHeader(line->header, line->style, line->size), m_chat->scaleOf(browser).chrome().displayRatio())), ChatScale::Replies);
         // Some emoji still on their way (emojitext.h): drawn again once they are there.
         const bool complete = emoji::takeTextFallbacks() == 0;
         view.rendered.insert(it->object, complete ? line->signature : QString());
@@ -783,7 +809,7 @@ void ChatReplies::evict(QTextBrowser* browser, View& view)
             ++it;
             continue;
         }
-        doc->addResource(QTextDocument::ImageResource, QUrl(it.key()), m_blank);
+        m_chat->putChromePicture(doc, it.key(), m_blank, ChatScale::Replies);
         it = view.rendered.erase(it);
     }
 }
@@ -1183,6 +1209,11 @@ QList<QAction*> ChatReplies::actionsFor(QMenu* menu, bool chatMenu)
     if (chatMenu && m_chat->m_textReactions) {
         if (QAction* react = m_chat->m_textReactions->menuAction(menu, browser, block))
             actions << react;
+    }
+    // 2.5 link previews: "Load link previews" for a message whose links show nothing or an error.
+    if (chatMenu && m_chat->linkPreviews()) {
+        if (QAction* load = m_chat->linkPreviews()->menuAction(menu, browser, block))
+            actions << load;
     }
 
     // 2.2 emoji: "Copy text": what the person wrote (no header, no quote line), with emoji and smileys as

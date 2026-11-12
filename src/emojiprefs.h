@@ -21,6 +21,11 @@ void         clearRecent();
 int  tone();       // 0 (none) .. kToneCount
 void setTone(int tone);
 
+// 2.5 GIFs: the picker's page used last ("emoji" or "gifs"; key "tab"): a mouse opening opens on it, Ctrl+E always on
+// the emoji.
+bool lastTabGifs();
+void setLastTabGifs(bool gifs);
+
 // The quick reactions (8): the six every TS Media 2.2 knows, then your two most recent others (or 🎉 💯).
 QVector<int> quickReactions();
 

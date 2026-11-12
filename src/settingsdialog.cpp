@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QFormLayout>
@@ -31,6 +32,7 @@
 #include "diagnosticsdialog.h" // 2.2 diagnostics
 #include "i18n.h"
 #include "medialink.h"
+#include "previewscale.h" // 2.5 zoom: the Preview size presets
 #include "peerhub.h" // 2.2 protocol: Clear cache removes the saved reactions too
 #include "settingssection.h"
 #include "serverssection.h" // 2.2 per-server settings
@@ -268,6 +270,18 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     m_videoAutoDownload->setPrefix(i18n::t("up to "));
     m_videoAutoDownload->setSpecialValueText(i18n::t("Off (download when played)")); // replaces prefix and suffix at 0
     m_videoAutoDownload->setMinimumWidth(m_videoAutoDownload->fontMetrics().horizontalAdvance(m_videoAutoDownload->specialValueText()) + 48);
+    // 2.5 zoom: "Preview size" (Small 85% / Normal 100% / Large 125% / Larger 150%), the row above the maximum size.
+    auto* previewScaleLabel = new QLabel(i18n::t("Previe&w size"), m_receiveDetails);
+    m_previewScale          = new QComboBox(m_receiveDetails);
+    m_previewScale->addItem(i18n::t("Small"), 85);
+    m_previewScale->addItem(i18n::t("Normal"), 100);
+    m_previewScale->addItem(i18n::t("Large"), 125);
+    m_previewScale->addItem(i18n::t("Larger"), 150);
+    m_previewScale->setToolTip(
+        i18n::t("Previews also grow with Windows display scaling and with the chat's text size (Ctrl + mouse wheel, or TeamSpeak's chat font)."));
+    m_previewScale->setAccessibleName(i18n::t("Preview size"));
+    previewScaleLabel->setBuddy(m_previewScale);
+    previewScaleLabel->setToolTip(m_previewScale->toolTip());
     auto* previewSizeLabel = new QLabel(i18n::t("Maximum preview si&ze"), m_receiveDetails);
     m_previewWidth         = spin(Settings::previewMaxWidthRange, 20, pixels(), m_receiveDetails);
     m_previewWidth->setAccessibleName(i18n::t("Maximum preview width"));
@@ -298,7 +312,14 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     gifRows->addWidget(m_gifHint);
     receiveDetailsForm->addRow(gifRows);
     receiveDetailsForm->addRow(i18n::t("Download &videos and audio automatically"), m_videoAutoDownload); // 2.2 audio: the same limit
+    auto* previewScaleRow = new QHBoxLayout; // 2.5 zoom
+    previewScaleRow->addWidget(m_previewScale);
+    previewScaleRow->addStretch(1);
+    receiveDetailsForm->addRow(previewScaleLabel, previewScaleRow);
     receiveDetailsForm->addRow(previewSizeLabel, previewSizeRow);
+    auto* previewSizeHint = hint(i18n::t("The largest picture or video at Normal size and 100% display scaling."), m_receiveDetails);
+    m_previewWidth->setAccessibleDescription(previewSizeHint->text());
+    receiveDetailsForm->addRow(QString(), previewSizeHint);
     auto* receiveForm = form(receive);
     receiveForm->addRow(m_inlinePreviews);
     receiveForm->addRow(m_receiveDetails);
@@ -567,6 +588,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
         connect(box, QOverload<int>::of(&QSpinBox::valueChanged), this, changed);
     connect(m_volume, &QSlider::valueChanged, this, changed);
     connect(m_downloadUrl, &QLineEdit::textChanged, this, changed);
+    // 2.5 zoom live test: the Preview size combo box makes the form changed too (OK applies only a changed form, so a
+    // new size alone was lost).
+    connect(m_previewScale, QOverload<int>::of(&QComboBox::currentIndexChanged), this, changed);
     connect(m_uploadDir, &QLineEdit::textChanged, this, changed);
 
     // 2.2 per-server settings: "Same as all servers (…)" follows the form, saved or not.
@@ -773,6 +797,7 @@ void SettingsDialog::load(const Settings& s, bool sections)
     m_videoAutoDownload->setValue(s.videoAutoDownloadMB);
     m_previewWidth->setValue(s.previewMaxWidth);
     m_previewHeight->setValue(s.previewMaxHeight);
+    m_previewScale->setCurrentIndex(qMax(0, m_previewScale->findData(previewscale::nearestPreset(s.previewScale)))); // 2.5 zoom
     m_dataSaver->setChecked(s.dataSaver); // 2.2 data saver
 
     m_volume->setValue(s.videoVolume);
@@ -879,6 +904,7 @@ bool SettingsDialog::apply()
     form.videoAutoDownloadMB = m_videoAutoDownload->value();
     form.previewMaxWidth     = m_previewWidth->value();
     form.previewMaxHeight    = m_previewHeight->value();
+    form.previewScale        = previewscale::nearestPreset(m_previewScale->currentData().toInt()); // 2.5 zoom
     form.dataSaver           = m_dataSaver->isChecked(); // 2.2 data saver
 
     form.videoVolume      = m_volume->value();
@@ -911,6 +937,7 @@ bool SettingsDialog::apply()
     take(s.videoAutoDownloadMB, m_loaded.videoAutoDownloadMB, form.videoAutoDownloadMB);
     take(s.previewMaxWidth, m_loaded.previewMaxWidth, form.previewMaxWidth);
     take(s.previewMaxHeight, m_loaded.previewMaxHeight, form.previewMaxHeight);
+    take(s.previewScale, m_loaded.previewScale, form.previewScale); // 2.5 zoom
     take(s.videoVolume, m_loaded.videoVolume, form.videoVolume);
     take(s.videosStartMuted, m_loaded.videosStartMuted, form.videosStartMuted);
     take(s.loopVideos, m_loaded.loopVideos, form.loopVideos);
@@ -1012,6 +1039,8 @@ void SettingsDialog::clearCache()
     if (PeerHub::instance())
         details += QLatin1Char(' ') + i18n::t("The reactions saved on this computer are removed too; people with TS Media share theirs again "
                                               "when you are in a channel with them.");
+    // 2.5 GIFs: the GIFs tab's list is outside the cache (nobody clearing traces should be surprised that it stays).
+    details += QLatin1Char(' ') + i18n::t("Your saved GIFs are kept; remove them in the emoji picker's GIFs tab or in Settings → Emoji.");
     box->setInformativeText(details);
     QPushButton* clear  = box->addButton(i18n::t("Clear cache"), QMessageBox::DestructiveRole);
     QPushButton* cancel = box->addButton(i18n::t("Cancel"), QMessageBox::RejectRole);

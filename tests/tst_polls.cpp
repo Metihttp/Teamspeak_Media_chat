@@ -908,7 +908,9 @@ class TestPolls : public QObject
         voted.voters        = 125;
         voted.own           = 1;
         const pollart::Layout rl = pollart::layout(voted, style);
-        QVERIFY(rl.size.height() > open.size.height());
+        // 2.5 zoom: the text is 11 du whatever the chat font (the canvas ratio carries its size): a result row is then
+        // as tall as an option's 36 du floor or taller (2.4 drew 9 pt as 12 px here).
+        QVERIFY(rl.size.height() >= open.size.height());
         QCOMPARE(rl.actionZone, pollart::Zone::Retract);
         QCOMPARE(pollart::hitTest(voted, rl, rl.action.center()).zone, pollart::Zone::Retract);
         QCOMPARE(pollart::hitTest(voted, rl, rl.rows.at(0).center()).zone, pollart::Zone::None);

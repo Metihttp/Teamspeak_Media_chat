@@ -171,7 +171,7 @@ QRectF rowRect(const QTextBlock& block)
     return QRectF(br.left() + line.cursorToX(at), br.top() + line.y() + line.height() - row.format.height(), row.format.width(), row.format.height());
 }
 
-bool insertRow(QTextDocument* doc, int n, const QString& name, const QString& key, const QSizeF& size)
+bool insertRow(QTextDocument* doc, int n, const QString& name, const QString& key, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc)
         return false;
@@ -189,8 +189,7 @@ bool insertRow(QTextDocument* doc, int n, const QString& name, const QString& ke
     c.insertText(QString(QChar::LineSeparator), separator);
     QTextImageFormat image;
     image.setName(name);
-    image.setWidth(size.width());
-    image.setHeight(size.height());
+    previewscale::setObjectSize(image, size, scale); // 2.5 zoom
     image.setProperty(kRowObject, true);
     image.setProperty(kRowKey, key);
     image.setVerticalAlignment(QTextCharFormat::AlignBottom); // on the baseline: the line is as tall as the row
@@ -198,18 +197,18 @@ bool insertRow(QTextDocument* doc, int n, const QString& name, const QString& ke
     return true;
 }
 
-bool resizeRow(QTextDocument* doc, int n, const QSizeF& size)
+bool resizeRow(QTextDocument* doc, int n, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc)
         return false;
     const Row row = rowOf(doc->findBlockByNumber(n));
     if (!row.exists())
         return false;
-    QTextImageFormat image = row.format;
-    if (qFuzzyCompare(image.width(), size.width()) && qFuzzyCompare(image.height(), size.height()))
+    QTextImageFormat image   = row.format;
+    const QSizeF     logical = scale.toLogical(size); // 2.5 zoom: du x scale; the du size compared too
+    if (previewscale::duSizeOf(image) == size && qFuzzyCompare(image.width(), logical.width()) && qFuzzyCompare(image.height(), logical.height()))
         return false;
-    image.setWidth(size.width());
-    image.setHeight(size.height());
+    previewscale::setObjectSize(image, size, scale);
     QTextCursor c(doc);
     c.setPosition(row.object);
     c.setPosition(row.object + 1, QTextCursor::KeepAnchor);

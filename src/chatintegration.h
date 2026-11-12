@@ -12,6 +12,7 @@
 
 #include "core.h"
 #include "previewrenderer.h"
+#include "previewscale.h" // 2.5 zoom
 
 class ComposeDialog; // 2.2 compose
 class ChatReactions; // 2.2 reactions
@@ -20,7 +21,13 @@ class ChatReplies;   // 2.2 reply
 class ChatEmoji;     // 2.2 emoji
 class ChatLayout;    // chat redesign
 class ChatPolls;     // 2.3 poll
+class ChatScale;     // 2.5 zoom: one per chat (chatscale.h)
 class ChatLinkPreviews; // 2.4 link previews
+class GifLibrary;       // 2.5 GIFs
+class QUrl;
+namespace linkpreview {
+struct Target;
+}
 class InlineMediaController;
 class MediaViewer;
 class QDropEvent;
@@ -89,6 +96,27 @@ class ChatIntegration : public QObject
     // handler(href, true) at the release on the same link: run it. Empty: none (TeamSpeak opens them).
     void setOwnLinkHandler(std::function<bool(const QString& href, bool activate)> handler);
 
+    // 2.5 GIFs (plugin.cpp, after start()): the library behind the emoji picker's GIFs tab: the chat input's picker gets
+    // the tab (its host resolves the input's chat at opening and at each click), and the media menu gets Save to GIFs.
+    // nullptr: neither.
+    void setGifs(GifLibrary* gifs);
+    // 2.5 GIFs: the current server tab changed (plugin.cpp): a picker with the GIFs tab closes.
+    void closeGifPicker();
+
+    // 2.5 zoom: the scale the chat's previews are laid out for now (previewscale.h; the applied one, set by its
+    // ChatScale pass), and the one its text size, column, display and the Preview size setting ask for.
+    PreviewScale scaleOf(QTextBrowser* browser) const;
+    PreviewScale computeScaleFor(QTextBrowser* browser) const;
+    // 2.5 zoom: the chat's coordinator (re-layout without jumps, the picture budget); nullptr: not attached.
+    ChatScale* chatScale(QTextBrowser* browser) const;
+    // 2.5 zoom (1.12): a reply line's or a text reaction row's picture (or its blank stand-in) into doc through the
+    // chat's picture budget when doc is an attached chat's document (else straight into doc); drop: it goes (memory and
+    // books). module: ChatScale::Replies / TextReactions.
+    void putChromePicture(QTextDocument* doc, const QString& name, const QPixmap& pixmap, int module);
+    void dropChromePicture(QTextDocument* doc, const QString& name);
+    // The visible chat's applied scale and text size in px (the diagnostic info); false: no chat is shown.
+    bool       visibleChatScale(PreviewScale* scale, int* chatPx) const;
+
     // 2.2 diagnostics: how many of TeamSpeak's chat views and input lines are hooked (counts only).
     int hookedChatViews() const { return m_views.size(); }
     int hookedInputs() const
@@ -146,14 +174,30 @@ class ChatIntegration : public QObject
         qreal                   layoutDpr      = 0.0;   // ... the device pixel ratio they were rendered at
         bool                    layoutDark     = false; // ... and the theme
         QString                 layoutBubbles;          // 2.3: ... and the bubbles they sit on (surfacesKey)
+        // 2.5 zoom: the scale every preview object of this chat is laid out for (formats, slots, cards), and the
+        // coordinator that changes it in one pass (a child of ChatIntegration, deleted with the view).
+        PreviewScale            scale;
+        ChatScale*              scaler = nullptr;
+        int                     number = 0; // the log's chat number
+        // The cheap inputs of the scale as last seen (Paint compares these; QFontInfo runs only when one changed).
+        qreal                   keyPoint  = -2;
+        int                     keyPixel  = -2;
+        QString                 keyFamily;
+        int                     keyDpi    = 0;
+        qreal                   keyDpr    = 0;
+        int                     keyWidth  = -1;
+        int                     keyPreset = 0;
+        int                     keyIndent = -1;
+        int                     keyBubble = -1;
 
         // Our preview objects in document order; rebuilt lazily after the document changed.
         bool                         positionsValid = false;
         QVector<PreviewPos>          previews;
         QHash<QString, QVector<int>> positionsByKey;
-        QHash<QString, QSize>        formatSizes; // logical size each preview occupies in the layout
+        QHash<QString, QSize>        formatSizes; // 2.5 zoom: du content size each preview was laid out for (gaps not included)
         QSet<QString>                resourced;   // keys with an image resource in this document
         QSet<QString>                stale;       // frames that changed while this chat was hidden
+        QSet<QString>                overColumn;  // 2.5 zoom: wider than the column after a scale pass (laid out again)
         QHash<QString, QStringList>  albumsByKey; // 2.2 album: key -> album grids (object ids) that show it
 
         // Test builds: throttled chat snapshots.
@@ -172,6 +216,11 @@ class ChatIntegration : public QObject
         QString object;
         int     tile     = -1;
         int     overflow = 0;
+        // 2.5 zoom: the content's size in du (rect is logical px: du x s) and the chat's scale. Hit tests of the art
+        // modules get du: duSize and duAt().
+        QSize        duSize;
+        PreviewScale scale;
+        QPointF      duAt(const QPointF& viewportPos) const { return scale.toDu(viewportPos - rect.topLeft()); }
     };
 
     void discover();
@@ -200,6 +249,7 @@ class ChatIntegration : public QObject
 
     View*        viewFor(QTextBrowser* browser);
     void         ensurePositions(View& view);
+    // 2.5 zoom: size is the content's du size (View::formatSizes, contentSizeOf); the rect is logical px.
     QRectF       previewRect(QTextBrowser* browser, int position, const QSizeF& size) const;
     bool         onScreen(QTextBrowser* browser, View& view, const QString& key);
     PreviewStyle styleFor(QTextBrowser* browser) const;
@@ -214,6 +264,20 @@ class ChatIntegration : public QObject
     QString      toolTipText(QTextBrowser* browser, const Hit& hit, const QPointF& viewportPos, QRect* area) const;
     void         scheduleVisibilityUpdate();
     void         scheduleRelayout(QTextBrowser* browser);
+    // ---- 2.5 zoom ------------------------------------------------------------------------------------------
+    // A chat's scale inputs changed maybe (Paint, the 300 ms pass, FontChange): compared cheaply, and a new scale
+    // goes to the chat's ChatScale. force: compute it (a FontChange, the setting).
+    void         checkScale(QTextBrowser* browser, bool force);
+    // ChatScale's pass, in its one edit block: every preview object of ours gets its size for the new scale (no
+    // drawing; the pictures are drawn again on screen). Then: render what is near the view.
+    void         applyScale(QTextBrowser* browser, const PreviewScale& scale);
+    void         afterScale(QTextBrowser* browser);
+    void         logScale(QTextBrowser* browser, const PreviewScale& scale) const;
+    void         attachScale(QTextBrowser* browser);
+    // The budget swapped a picture of module for its stand-in: drawn again when it comes near the view.
+    void         pictureSwapped(QTextBrowser* browser, const QString& name, int module);
+    // The scale's sizes for an object of ours: the content's du size plus the gaps, as logical px.
+    QSizeF       objectLogicalSize(const PreviewScale& scale, const QSize& duContent) const;
     bool         testShowsRawChat(const MediaLink& link) const;
     void         requestSnapshot(QTextBrowser* browser, const QString& reason);
 
@@ -249,6 +313,9 @@ class ChatIntegration : public QObject
     void          showDropOverlay(QWidget* widget, const QMimeData* mime);
     void          hideDropOverlay();
     void          showFeedback(QWidget* widget, const QString& text, bool error) const; // brief tooltip at the pointer
+    // 2.5 GIFs: Save to GIFs / Remove from GIFs in a media menu (design_gifs 7).
+    void          addGifMenu(QMenu* menu, const QString& key, const QUrl& webUrl, const linkpreview::Target& webTarget,
+                             const std::function<QWidget*()>& viewport);
     QTabBar*      chatTabBarFor(QWidget* widget) const;
     QTextBrowser* visibleChatBrowser() const;
     QTextBrowser* browserForViewport(QObject* viewport) const;
@@ -286,6 +353,7 @@ class ChatIntegration : public QObject
     };
     AlbumPlan   planAlbums(QTextBrowser* browser) const;
     void        applyAlbums(QTextBrowser* browser, const AlbumPlan& plan);
+    void        refreshUnresourcedAlbums(QTextBrowser* browser); // grids without a picture yet drawn (keys taken first)
     void        restoreAlbums(QTextBrowser* browser); // shows hidden messages and gives collapsed links back
     void        indexAlbums(View& view) const;        // View::albumsByKey from positionsByKey
     void        refreshAlbumsOf(QTextBrowser* browser, const QString& key, bool pixelsOnly);
@@ -322,6 +390,8 @@ class ChatIntegration : public QObject
     QTimer*                    m_discoverTimer = nullptr;
     QTimer*                    m_visibilityTimer = nullptr;
     QHash<QTextBrowser*, View> m_views;
+    bool                       m_scaling = false; // 2.5 zoom: inside a ChatScale pass (no own place restores, no drawing)
+    int                        m_chatNumbers = 0;
     QList<QPointer<QWidget>>   m_inputs;
     QPointer<UploadToast>      m_toast;
     QString                    m_pressedKey;
@@ -334,6 +404,8 @@ class ChatIntegration : public QObject
     QPointer<QTextBrowser> m_lastBrowser;  // chat the user last interacted with (viewer gallery source)
     QPointer<QTextBrowser> m_pressBrowser;
     QRectF                 m_pressRect;
+    QSize                  m_pressDuSize; // 2.5 zoom: the pressed picture's du size and the chat's scale then
+    PreviewScale           m_pressScale;
     QPoint                 m_pressPos; // 2.2 drag-out: where the left button went down (viewport coordinates)
     bool                   m_pressControlsVisible = false; // video controls were shown when the button went down
     bool                   m_seeking          = false; // dragging on a video's seek bar
@@ -374,6 +446,7 @@ class ChatIntegration : public QObject
     ChatLinkPreviews*                       m_links     = nullptr; // 2.4 link previews
     // 2.3.4: the own-link handler and the press it took (TeamSpeak saw neither press nor release).
     std::function<bool(const QString&, bool)> m_ownLinkHandler;
+    QPointer<GifLibrary>                      m_gifs; // 2.5 GIFs
     QString                                   m_ownLinkPressed;
     QPointer<QTextBrowser>                    m_ownLinkBrowser;
     bool                                      m_ownLinkDouble = false; // the press was a double click's

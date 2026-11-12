@@ -31,6 +31,7 @@
 #include "attachmenu.h"
 #include "chatintegration.h"
 #include "chatlayout.h"
+#include "chatscale.h" // 2.5 zoom
 #include "chatreplies.h"
 #include "chatscroll.h"
 #include "emojitext.h"
@@ -48,7 +49,7 @@
 
 namespace {
 
-constexpr int kGapTop    = 4; // transparent room above and below the card in its picture
+constexpr int kGapTop    = 4; // transparent room above and below the card in its picture (du; 2.5 zoom: x s)
 constexpr int kGapBottom = 4;
 constexpr int kSyncEveryMs = 4000; // the polls on screen are offered to PollHub (it limits itself)
 
@@ -343,7 +344,7 @@ void ChatPolls::afterScan(QTextBrowser* browser)
             const QSize size = objectSize(browser, card);
             // An empty picture until it is drawn on screen (right before the chat paints).
             doc->addResource(QTextDocument::ImageResource, QUrl(card.object), blankPicture());
-            if (polldoc::collapse(doc, f, card.object, size)) {
+            if (polldoc::collapse(doc, f, card.object, size, m_chat->scaleOf(browser))) {
                 cards.insert(card.object, card);
                 edited = true;
             }
@@ -422,7 +423,7 @@ pollart::Style ChatPolls::computeStyle(QTextBrowser* browser) const
     pollart::Style     style;
     style.dark = preview.dark;
     style.font = preview.font;
-    style.dpr  = preview.dpr;
+    style.dpr  = preview.dpr; // 2.5 zoom: R
     style.base = browser->viewport()->palette().color(QPalette::Base);
     if (style.dark != (style.base.lightness() < 128))
         style.base = QColor(); // a style sheet colours the chat: the theme's default
@@ -433,10 +434,10 @@ pollart::Style ChatPolls::computeStyle(QTextBrowser* browser) const
         style.text = QColor();
     // The layout's content column (Cozy / Compact indent), within the chat's margins; pollart keeps it at 400.
     const int indent = m_chat->m_layout ? m_chat->m_layout->indentFor(browser) : 0;
-    const int margin = static_cast<int>(2 * browser->document()->documentMargin());
-    // 2.3: in a bubble, its right margin too (the card stays inside the bubble).
-    const int right  = qMax(12, m_chat->m_layout ? m_chat->m_layout->bubbleRightFor(browser) + 2 : 0);
-    style.maxWidth   = qMax(160, m_chat->previewAreaWidth(browser) - indent - margin - right);
+    // 2.3: in a bubble, its right margin too (the card stays inside the bubble). 2.5 zoom: in du at the chat's scale.
+    const int bubble = m_chat->m_layout ? m_chat->m_layout->bubbleRightFor(browser) : 0;
+    style.maxWidth   = previewscale::cardMaxWidthDu(1 << 20, m_chat->previewAreaWidth(browser), indent, browser->document()->documentMargin(), bubble,
+                                                    m_chat->scaleOf(browser));
     style.bubbles    = preview.bubbles; // 2.3: in a message bubble the card has no panel of its own
     return style;
 }
@@ -508,7 +509,8 @@ QString ChatPolls::signatureOf(QTextBrowser* browser, const Card& card) const
           << QString::number(emoji::textPicturesEnabled()) << QString::number(c.results) << QString::number(c.voters) << QString::number(c.own)
           << QString::number(c.selected) << QString::number(c.canVote) << c.note << QString::number(c.sending) << QString::number(c.failed)
           << QString::number(c.locked) << QString::number(static_cast<int>(p.hover)) << QString::number(p.hoverIndex)
-          << QString::number(static_cast<int>(p.pressed)) << QString::number(p.pressedIndex);
+          << QString::number(static_cast<int>(p.pressed)) << QString::number(p.pressedIndex)
+          << m_chat->scaleOf(browser).key(); // 2.5 zoom: s20 and R
     for (const int n : c.counts)
         parts << QString::number(n);
     return parts.join(QLatin1Char('|'));
@@ -520,7 +522,7 @@ void ChatPolls::render(QTextBrowser* browser, View& view, Card& card)
     const pollart::Style style = styleOf(browser);
     pollart::Layout      l;
     const QImage         panel = pollart::render(c, style, pointerFor(browser, card.object), &l);
-    const qreal          dpr   = qMax<qreal>(1.0, style.dpr);
+    const qreal          dpr   = panel.devicePixelRatio() > 0 ? panel.devicePixelRatio() : 1.0; // 2.5 zoom: R (may be below 1)
     QImage               padded(QSize(qCeil(panel.width()), qCeil(panel.height() + (kGapTop + kGapBottom) * dpr)), QImage::Format_ARGB32_Premultiplied);
     padded.setDevicePixelRatio(dpr);
     padded.fill(Qt::transparent);
@@ -528,7 +530,10 @@ void ChatPolls::render(QTextBrowser* browser, View& view, Card& card)
         QPainter p(&padded);
         p.drawImage(QPointF(0, kGapTop), panel);
     }
-    view.document->addResource(QTextDocument::ImageResource, QUrl(card.object), QPixmap::fromImage(padded));
+    if (ChatScale* scaler = m_chat->chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
+        scaler->putPicture(card.object, QPixmap::fromImage(previewscale::forDocument(padded, m_chat->scaleOf(browser).displayRatio())), ChatScale::Polls);
+    else
+        view.document->addResource(QTextDocument::ImageResource, QUrl(card.object), QPixmap::fromImage(previewscale::forDocument(padded, m_chat->scaleOf(browser).displayRatio())));
     card.rendered = signatureOf(browser, card);
     if (emoji::takeTextFallbacks() > 0) {
         card.rendered.clear(); // some emoji are still on their way: drawn again soon
@@ -536,8 +541,11 @@ void ChatPolls::render(QTextBrowser* browser, View& view, Card& card)
     }
 }
 
-QRectF ChatPolls::cardRect(QTextBrowser* browser, int position, const QSizeF& size) const
+// duSize: the object's du size (gaps included); the rect: the card in viewport px (2.5 zoom: du x s).
+QRectF ChatPolls::cardRect(QTextBrowser* browser, int position, const QSizeF& duSize) const
 {
+    const PreviewScale scale = m_chat->scaleOf(browser);
+    const QSizeF       size  = scale.toLogical(duSize);
     QTextDocument*   doc   = browser->document();
     const QTextBlock block = doc->findBlock(position);
     if (!block.isValid() || !block.layout())
@@ -548,9 +556,9 @@ QRectF ChatPolls::cardRect(QTextBrowser* browser, int position, const QSizeF& si
         return {};
     const QRectF blockRect = doc->documentLayout()->blockBoundingRect(block);
     const qreal  x         = line.cursorToX(rel);
-    const qreal  top       = qMax(line.y(), line.y() + line.ascent() - size.height()) + kGapTop;
+    const qreal  top       = qMax(line.y(), line.y() + line.ascent() - size.height()) + kGapTop * scale.s();
     return QRectF(blockRect.left() + x - browser->horizontalScrollBar()->value(), blockRect.top() + top - browser->verticalScrollBar()->value(), size.width(),
-                  size.height() - kGapTop - kGapBottom);
+                  (duSize.height() - kGapTop - kGapBottom) * scale.s());
 }
 
 void ChatPolls::renderVisible(QTextBrowser* browser)
@@ -571,8 +579,8 @@ void ChatPolls::renderVisible(QTextBrowser* browser)
         c.setPosition(position);
         c.setPosition(position + 1, QTextCursor::KeepAnchor);
         const QTextImageFormat format = c.charFormat().toImageFormat();
-        const QSizeF           size(format.width(), format.height());
-        const QRectF           rect = cardRect(browser, position, size);
+        const QSizeF           size   = previewscale::duSizeOf(format); // 2.5 zoom: du, compared in du
+        const QRectF           rect   = cardRect(browser, position, size);
         if (rect.intersects(shown)) {
             if (objectSize(browser, card) != size.toSize()) {
                 resize = true; // laid out again first (not while the chat paints)
@@ -583,6 +591,8 @@ void ChatPolls::renderVisible(QTextBrowser* browser)
         } else if (!card.rendered.isEmpty() && !rect.intersects(far)) {
             // Far off screen: its memory goes (drawn again when it comes back).
             view->document->addResource(QTextDocument::ImageResource, QUrl(card.object), blankPicture());
+            if (ChatScale* scaler = m_chat->chatScale(browser))
+                scaler->forget(card.object);
             card.rendered.clear();
         }
     }
@@ -595,6 +605,34 @@ void ChatPolls::scheduleRefresh(QTextBrowser* browser)
     m_refreshWanted.insert(browser, true);
     if (!m_refreshTimer->isActive())
         m_refreshTimer->start();
+}
+
+// 2.5 zoom: ChatScale's pass (inside its edit block): every card at its du size for the new scale, as du x s; drawn
+// again at the new ratio right before the chat paints.
+void ChatPolls::applyScale(QTextBrowser* browser, const PreviewScale& scale)
+{
+    View* view = viewOf(browser);
+    if (!view || view->cards.isEmpty() || view->document != browser->document())
+        return;
+    beginPass(); // the style memo: computed again for the new scale
+    ensurePositions(*view);
+    layoutformat::MutatingScope mutating;
+    for (auto it = view->cards.begin(); it != view->cards.end(); ++it) {
+        const int position = view->positions.value(it.key(), -1);
+        if (position >= 0)
+            polldoc::resizeObject(view->document, position, QSizeF(objectSize(browser, it.value())), scale);
+        it->rendered.clear();
+    }
+}
+
+void ChatPolls::pictureSwapped(QTextBrowser* browser, const QString& name)
+{
+    View* view = viewOf(browser);
+    if (!view)
+        return;
+    auto it = view->cards.find(name);
+    if (it != view->cards.end())
+        it->rendered.clear(); // drawn again when it is within 400 px of the view
 }
 
 void ChatPolls::refreshSizes(QTextBrowser* browser)
@@ -617,7 +655,7 @@ void ChatPolls::refreshSizes(QTextBrowser* browser)
         c.setPosition(position + 1, QTextCursor::KeepAnchor);
         const QTextImageFormat format = c.charFormat().toImageFormat();
         const QSize            want   = objectSize(browser, card);
-        if (QSizeF(format.width(), format.height()).toSize() != want)
+        if (previewscale::duSizeOf(format).toSize() != want) // 2.5 zoom: du against du
             changes.append({position, QSizeF(want)});
     }
     if (!changes.isEmpty()) {
@@ -626,9 +664,9 @@ void ChatPolls::refreshSizes(QTextBrowser* browser)
         QTextCursor                 batch(view->document);
         batch.beginEditBlock();
         for (const Change& change : qAsConst(changes))
-            polldoc::resizeObject(view->document, change.position, change.size);
+            polldoc::resizeObject(view->document, change.position, change.size, m_chat->scaleOf(browser));
         batch.endEditBlock();
-        if (bottom)
+        if (bottom && !m_chat->m_scaling)
             browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
     }
     browser->viewport()->update();
@@ -651,7 +689,7 @@ void ChatPolls::repaintCard(QTextBrowser* browser, const QString& object)
     c.setPosition(position);
     c.setPosition(position + 1, QTextCursor::KeepAnchor);
     const QTextImageFormat format = c.charFormat().toImageFormat();
-    browser->viewport()->update(cardRect(browser, position, QSizeF(format.width(), format.height())).toAlignedRect().adjusted(-2, -6, 2, 6));
+    browser->viewport()->update(cardRect(browser, position, previewscale::duSizeOf(format)).toAlignedRect().adjusted(-2, -6, 2, 6));
 }
 
 void ChatPolls::keyChanged(const QString& key)
@@ -687,12 +725,12 @@ ChatPolls::Spot ChatPolls::spotAt(QTextBrowser* browser, const QPoint& pos, QRec
         c.setPosition(position);
         c.setPosition(position + 1, QTextCursor::KeepAnchor);
         const QTextImageFormat format = c.charFormat().toImageFormat();
-        const QRectF           rect   = cardRect(browser, position, QSizeF(format.width(), format.height()));
+        const QRectF           rect   = cardRect(browser, position, previewscale::duSizeOf(format));
         if (!rect.contains(pos))
             continue;
         const pollart::Card   state  = stateOf(browser, it.value());
         const pollart::Layout layout = pollart::layout(state, styleOf(browser));
-        const pollart::Hit    hit    = pollart::hitTest(state, layout, QPointF(pos) - rect.topLeft());
+        const pollart::Hit    hit    = pollart::hitTest(state, layout, m_chat->scaleOf(browser).toDu(QPointF(pos) - rect.topLeft())); // 2.5 zoom: du
         spot.browser                 = browser;
         spot.object                  = it.key();
         spot.zone                    = hit.zone;
@@ -1094,7 +1132,7 @@ QString ChatPolls::testCommand(const QString& cmd, const QJsonObject& c)
         cursor.setPosition(position);
         cursor.setPosition(position + 1, QTextCursor::KeepAnchor);
         const QTextImageFormat format = cursor.charFormat().toImageFormat();
-        const QRectF           rect   = cardRect(browser, position, QSizeF(format.width(), format.height()));
+        const QRectF           rect   = cardRect(browser, position, previewscale::duSizeOf(format)); // 2.5 zoom: du
         const pollart::Card    st     = stateOf(browser, *card);
         const pollart::Layout  l      = pollart::layout(st, styleOf(browser));
         const QString          zone   = c.value(QString::fromLatin1("zone")).toString(QString::fromLatin1("action"));
@@ -1111,7 +1149,7 @@ QString ChatPolls::testCommand(const QString& cmd, const QJsonObject& c)
         if (target.isEmpty())
             return cmd + QString::fromLatin1(": nothing to point at (%1)").arg(option ? QString::fromLatin1("option") : zone);
         QWidget*     vp    = browser->viewport();
-        const QPoint at    = (rect.topLeft() + target.center()).toPoint();
+        const QPoint at    = (rect.topLeft() + target.center() * m_chat->scaleOf(browser).s()).toPoint(); // 2.5 zoom: the layout is du
         const auto   mouse = [vp](QEvent::Type type, const QPoint& pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
             QMouseEvent e(type, QPointF(pos), QPointF(vp->mapTo(vp->window(), pos)), QPointF(vp->mapToGlobal(pos)), button, buttons, Qt::NoModifier);
             QApplication::sendEvent(vp, &e);

@@ -13,6 +13,7 @@ struct Store {
     QString      file;
     QVector<int> recent;
     int          tone   = 0;
+    bool         gifsTab = false; // 2.5 GIFs
     bool         loaded = false;
 };
 
@@ -34,7 +35,8 @@ void load()
     Store& s = store();
     s.loaded = true;
     s.recent.clear();
-    s.tone = 0;
+    s.tone    = 0;
+    s.gifsTab = false;
     if (s.file.isEmpty())
         return;
     const QSettings ini(s.file, QSettings::IniFormat);
@@ -47,6 +49,7 @@ void load()
     bool      ok   = false;
     const int tone = ini.value(key("tone")).toInt(&ok);
     s.tone         = ok ? qBound(0, tone, kToneCount) : 0;
+    s.gifsTab      = ini.value(key("tab")).toString() == QLatin1String("gifs");
 }
 
 void save()
@@ -60,6 +63,7 @@ void save()
     QSettings ini(s.file, QSettings::IniFormat);
     ini.setValue(key("recent"), codes.join(QLatin1Char(',')));
     ini.setValue(key("tone"), s.tone);
+    ini.setValue(key("tab"), s.gifsTab ? key("gifs") : key("emoji"));
     ini.sync();
 }
 
@@ -126,6 +130,20 @@ void setTone(int t)
 {
     Store& s = loadedStore();
     s.tone   = qBound(0, t, kToneCount);
+    save();
+}
+
+bool lastTabGifs()
+{
+    return loadedStore().gifsTab;
+}
+
+void setLastTabGifs(bool gifs)
+{
+    Store& s = loadedStore();
+    if (s.gifsTab == gifs)
+        return;
+    s.gifsTab = gifs;
     save();
 }
 

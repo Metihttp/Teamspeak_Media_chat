@@ -126,6 +126,9 @@ struct SendItem {
     // made from the file); previewOnly: the file is itself a preview and goes into the previews folder.
     QByteArray  previewJpeg;
     bool        previewOnly = false;
+    // 2.5 GIFs: the name the file goes up as (makeRemoteName applies; a pasted picture or a voice message keeps its own
+    // naming); empty: the source file's name. A retry keeps it.
+    QString     remoteName;
 };
 
 struct SendRequest {
@@ -170,6 +173,9 @@ struct UploadJob {
     bool        spoiler = false;  // SendItem::spoiler
     bool        inAlbum = false;  // posted together with the other pictures/videos of its album
     bool        background = false; // 2.4 link previews: SendRequest::background (no toast, no retry)
+    // 2.5: why it failed, when the server said (Permission, Password, Quota, NotConnected, NotFound; Other: anything
+    // else or unknown). The link previews' sender remembers a channel that refuses its uploads.
+    MediaError  failure = MediaError::None;
 
     // Filled by the probe step (worker thread) before uploading.
     LocalMediaInfo info;
@@ -196,12 +202,18 @@ QString notConnectedText();
 // A private chat whose partner can't be found (they left the server, were renamed, ...): nothing is
 // sent. Said before a send and by a retry.
 QString noRecipientText();
+// 2.5 GIFs: "This file is larger than your 50 MB upload limit. ..." for a server (its own limit, or the global one), as
+// Core's toast says it.
+QString uploadLimitTextFor(const QString& serverUid);
 
 // Best still picture currently available for an entry.
 struct MediaStill {
     enum Source { None, BlurHash, Preview, Full };
     QImage image; // scaled to fit the requested size (keeps aspect ratio), null if Source::None
     Source source = None;
+    // 2.5 live test fix: the entry's downloaded file is no picture by its bytes (safeimage::formatOf: an SVG named
+    // .jpg, a lossless WebP), so it never decodes: the chat shows the plain file card, not its blurhash.
+    bool notAPicture = false;
 };
 
 class Core : public QObject
@@ -309,6 +321,15 @@ class Core : public QObject
     // UploadJob::waiting). Posts go out one at a time through the connection's FloodGovernor.
     // Returns the batch id, 0 if nothing was started (not connected, no file found).
     int              send(const SendRequest& request);
+    // 2.5 GIFs: a chat message of its own through the post queue, like the message of an upload: the flood governor
+    // paces it, a flooded one is sent again, and a refusal is printed in the chat ("Couldn't send the GIF: ..."). A
+    // private partner is found again by identity. Returns > 0 when queued; 0 when it can't go at all (*error: not
+    // connected, no recipient, too long).
+    int              postText(const ChatTarget& target, const QString& bbcode, QString* error = nullptr);
+    int              queuedTextPosts(uint64 sch) const; // such posts queued or in flight, not yet answered
+    // 2.5 GIFs: the link the job's chat message announced, while the job still has it (mediaPosted's slot); nullptr
+    // when there is none (the job is Done or gone, or a background job).
+    const MediaLink* postedLink(int id) const;
     // The 2.1 entry points: send() with default options (no caption, no spoiler, no album).
     void             uploadFiles(const QStringList& paths, const ChatTarget& target);
     void             uploadImage(const QImage& image, const ChatTarget& target);
@@ -401,6 +422,10 @@ class Core : public QObject
     // server's version and platform ("Server: TeaSpeak 1.4.22 on Linux") and remembers whether it
     // looks like TeaSpeak, for the log and the diagnostic info only (nothing depends on it).
     void noteServer(uint64 sch);
+    // 2.5 link previews: the server of sch is TeamSpeak's own (uploadwait::canAskFileInfo of its version and
+    // platform, noted with noteServer first). False for TeaSpeak, any other server and one not known yet: an LPX
+    // stays at 900 bytes there (linkpreview::lpxSendCap).
+    bool serverIsTeamSpeakOwn(uint64 sch);
     // The "File checks" lines of the diagnostic info about it: the connected servers' versions.
     QStringList serverCheckDiagnostics() const;
 #ifdef TSMEDIA_TESTHOOKS
@@ -427,6 +452,10 @@ class Core : public QObject
     // canceled (ok false). Once per file, emitted from inside Core's upload steps: connect queued, or
     // don't call back into Core's sending from the slot.
     void backgroundFinished(int batch, int id, bool ok, const MediaLink& link);
+    // 2.5 GIFs: a file of a normal (not background) send whose chat message the server just confirmed. Emitted once per
+    // job in the ok branch of the post's answer, right before the job turns Done, while postedLink(id) still answers.
+    // Never for a flooded attempt (the post is sent again) or a background job. Connect Direct; don't send from the slot.
+    void mediaPosted(int id);
 
     // ---- implementation (owned by core.cpp; may be reorganised freely) -----------------------
   private:
@@ -493,6 +522,7 @@ class Core : public QObject
         int          batch    = 0;  // the send it belongs to: its posts go one after another
         quint64      seq      = 0;  // queue order (a flooded post goes back to its place)
         int          captionOf = 0; // it carries the caption of that batch (BatchInfo::captionOrigin)
+        bool         gifText   = false; // 2.5 GIFs: postText(): a refusal says "Couldn't send the GIF"
     };
     struct InFlightPost {
         PostItem item;
@@ -574,6 +604,7 @@ class Core : public QObject
     void    seedCache(const UploadJob& job, const MediaLink& link);
     // quiet: no chat warning (the caller prints one line for several files).
     void    failUpload(int id, const QString& text, bool quiet = false);
+    void    failUploadFor(int id, MediaError error, const QString& text); // 2.5: with the server's reason (UploadJob::failure)
     void    warnFailed(uint64 sch, const QVector<int>& ids, const QString& text); // one chat line for them
     void    setUploadState(UploadJob& job, UploadState state, const QString& message = {}, bool waiting = false);
     void    scheduleUploadQueue();

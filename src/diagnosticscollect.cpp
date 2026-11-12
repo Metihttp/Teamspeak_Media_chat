@@ -374,6 +374,16 @@ Facts collectOnGui(const Environment& env, WorkerInput* input)
         f.devicePixelRatio = screen->devicePixelRatio();
         f.scalePercent     = qRound(screen->logicalDotsPerInch() / 96.0 * screen->devicePixelRatio() * 100.0);
     }
+    // 2.5 zoom: the visible chat's preview scale.
+    if (env.chat) {
+        PreviewScale scale;
+        int          chatPx = 0;
+        if (env.chat->visibleChatScale(&scale, &chatPx)) {
+            f.previewScalePercent = scale.s20 * 5;
+            f.chatTextPx          = chatPx;
+        }
+        f.previewPreset = Settings::instance().previewScale;
+    }
     f.screens    = QGuiApplication::screens().size();
     f.animations = ui::animationsEnabled();
     f.theme      = isDark(window ? window->palette() : QApplication::palette()) ? 2 : 1;

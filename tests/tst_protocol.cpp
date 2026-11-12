@@ -267,6 +267,10 @@ class TestProtocol : public QObject
     void presenceNames();
     // 2.4 auto-load: the link-preview capability
     void capsIncludeLinkPreviews();
+    void capsIncludeLxLw();           // 2.5
+    void capsReannouncedOnWebCards(); // 2.5
+    void capabilityStatePerClass();   // 2.5
+    void lpxnoGrammar();              // 2.5
     void capsChangeIsReannounced();
     void lostCapsChangeIsSentAgain();
     void capabilityState();
@@ -1995,6 +1999,99 @@ void TestProtocol::rowColours()
             }
         }
     }
+}
+
+// ---- 2.5: "lx" (media pages and site cards) and "lw" (other web pages) ------------------------------------------
+
+void TestProtocol::capsIncludeLxLw()
+{
+    const auto capsOf = [](bool links, bool web) {
+        FakeEnv    env;
+        FakeSender sender;
+        env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+        peers::PeerDirectory dir(env, sender);
+        dir.setAutoTimer(false);
+        // As PeerHub::applySettings fills it: l and lx from "Make previews", lw also from "Show cards for other web pages".
+        dir.setLocal({QStringLiteral("2.5.0"), true, true, links, links, links && web});
+        dir.connected(1);
+        advance(env, dir, 1000);
+        dir.received(1, 2, kUidSara, QStringLiteral("Sara"), hello());
+        advance(env, dir, 1000);
+        QStringList out;
+        for (const char* type : {"HELLO", "HI"}) {
+            for (const FakeSender::Sent& s : sender.sent) {
+                if (s.message.type == type)
+                    out << QString::fromLatin1(type) + QLatin1Char(' ') + QString::fromLatin1(s.message.value("caps"));
+            }
+        }
+        return out;
+    };
+    QCOMPARE(capsOf(true, true), QStringList({QStringLiteral("HELLO p,r,l,lx,lw"), QStringLiteral("HI p,r,l,lx,lw")}));
+    QCOMPARE(capsOf(true, false), QStringList({QStringLiteral("HELLO p,r,l,lx"), QStringLiteral("HI p,r,l,lx")}));
+    QCOMPARE(capsOf(false, true), QStringList({QStringLiteral("HELLO p,r"), QStringLiteral("HI p,r")}));
+    // Every receiver since 2.2 keeps them (letters, at most 4 characters, 5 of its 8).
+    const std::optional<proto::Hello> h = proto::readHello(*proto::parse("tsm1 HELLO pv=1 v=2.5.0 caps=p,r,l,lx,lw rr=1"));
+    QVERIFY(h && h->hasCap("l") && h->hasCap("lx") && h->hasCap("lw"));
+}
+
+void TestProtocol::capsReannouncedOnWebCards()
+{
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    dir.setLocal({QStringLiteral("2.5.0"), true, true, true, true, true});
+    dir.connected(1);
+    advance(env, dir, 1000);
+    QCOMPARE(sender.count("HELLO"), 1);
+    advance(env, dir, 10000);
+    // "Show cards for other web pages" off: one HELLO rr=0 without lw.
+    dir.setLocal({QStringLiteral("2.5.0"), true, true, true, true, false});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 2);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,r,l,lx"));
+    QVERIFY(sender.last("HELLO")->message.value("rr") != "1");
+    // And on again.
+    dir.setLocal({QStringLiteral("2.5.0"), true, true, true, true, true});
+    advance(env, dir, 10000);
+    QCOMPARE(sender.count("HELLO"), 3);
+    QCOMPARE(sender.last("HELLO")->message.value("caps"), QByteArray("p,r,l,lx,lw"));
+}
+
+void TestProtocol::capabilityStatePerClass()
+{
+    using Cap = peers::PeerDirectory::CapState;
+    FakeEnv    env;
+    FakeSender sender;
+    env.add(2, kUidSara, QStringLiteral("Sara"), 10);
+    env.add(3, kUidReza, QStringLiteral("Reza"), 10);
+    peers::PeerDirectory dir(env, sender);
+    dir.setAutoTimer(false);
+    dir.connected(1);
+    advance(env, dir, 1000);
+    // Sara runs 2.5 with cards for other web pages off; Reza runs 2.4.0 (no lx, no lw).
+    dir.received(1, 2, kUidSara, QStringLiteral("Sara"), *proto::parse("tsm1 HI pv=1 v=2.5.0 caps=p,r,l,lx"));
+    dir.received(1, 3, kUidReza, QStringLiteral("Reza"), *proto::parse("tsm1 HI pv=1 v=2.4.0 caps=p,r,l"));
+    QCOMPARE(dir.capabilityState(1, kUidSara, "l"), Cap::Yes);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "lx"), Cap::Yes);
+    QCOMPARE(dir.capabilityState(1, kUidSara, "lw"), Cap::No);
+    QCOMPARE(dir.capabilityState(1, kUidReza, "l"), Cap::Yes);
+    QCOMPARE(dir.capabilityState(1, kUidReza, "lx"), Cap::No); // a 2.5 receiver never waits on 2.4.0 for a page link
+    QCOMPARE(dir.capabilityState(1, kUidReza, "lw"), Cap::No);
+}
+
+void TestProtocol::lpxnoGrammar()
+{
+    // LPXNO's values stay in the tsm1 value alphabet (',' joins the keys) and the command stays short.
+    const QByteArray ref("0123456789abcdef-3");
+    const QByteArray wire("tsm1 LPXNO s=c m=" + ref + " u=" + QByteArray(64, 'a') + ',' + QByteArray(64, 'b') + ',' + QByteArray(64, 'c') + " r=n");
+    const std::optional<proto::Message> m = proto::parse(wire);
+    QVERIFY(m);
+    QVERIFY(proto::serialize(*m).size() <= proto::kMaxSendBytes);
+    QCOMPARE(proto::maxSendBytes("LPXNO"), proto::kMaxSendBytes);
+    QVERIFY(!proto::parse("tsm1 LPXNO s=c m=0123456789abcdef-3 u=aaaaaaaa r=n|x"));  // '|' isn't a value character
+    QVERIFY(!proto::parse("tsm1 LPXNO s=c m=0123456789abcdef-3 u=aaaaaaaa r=n r=x")); // a key twice
 }
 
 TSMEDIA_REGISTER_TEST(TestProtocol)

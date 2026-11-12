@@ -28,6 +28,15 @@
 //   LPNO  s=c|p m=<hash>-<age> u=<url key>
 //                                      2.4 auto-load: the sender's plugin will not announce a preview of that
 //                                      link of that message (receivers waiting for it load it themselves).
+//   LPX   s=c|p m=<hash>-<age> u=<url key> k=i|g|v|a|c [c= p= h= ps=] [f= fh= fs=] [w= ht=] [d=]
+//         [t= a= n= x=] [cl=] [ly=l|t] [pg=1] [sn=1]
+//                                      2.5 link previews: a preview of a media page, a site card or a web card the
+//                                      sender made (linkpreview/announcement.h); at most 1400 bytes (maxSendBytes).
+//                                      2.4.0 and older drop it unread (an unknown type).
+//   LPXNO s=c|p m=<hash>-<age> u=<key>[,<key>[,<key>]] [r=n|x]
+//                                      2.5: no LPX for those links of that message (r=n: nothing to show, r=x: the
+//                                      page went to another website: receivers don't load it by themselves).
+//   HELLO / HI caps 2.5: lx = "I make previews of media pages and site cards", lw = "... and of other web pages".
 // The sender's identity is never in the payload: receivers take the invoker that the server fills in.
 //
 // 2.2 emoji: any emoji can be a reaction. i= keeps the six v1 codes (what every 2.2 client reads; an
@@ -48,6 +57,7 @@
 namespace proto {
 
 constexpr int kMaxSendBytes    = 900;  // per command we send (TeamSpeak allows 8192, ~9.1 KB escaped)
+constexpr int kMaxLpxSendBytes = 1400; // 2.5: the ceiling of an LPX (every receiver since 2.2 takes kMaxRecvBytes)
 constexpr int kMaxRecvBytes    = 2048; // longer commands are dropped before they are even copied
 constexpr int kMaxTokens       = 32;
 constexpr int kMaxValueChars   = 512;
@@ -132,7 +142,10 @@ enum class ParseResult {
 bool looksLikeOurs(const char* raw);
 
 std::optional<Message> parse(const QByteArray& raw, ParseResult* result = nullptr);
-// The wire form; empty if the message breaks the grammar or would be over kMaxSendBytes.
+// 2.5: the most a command of this type may be when we send it: kMaxLpxSendBytes for LPX, kMaxSendBytes for every
+// other type.
+int maxSendBytes(const QByteArray& type);
+// The wire form; empty if the message breaks the grammar or would be over maxSendBytes(message.type).
 QByteArray serialize(const Message& message);
 
 // ---- typed messages -------------------------------------------------------------------------------

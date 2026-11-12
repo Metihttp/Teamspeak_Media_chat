@@ -23,6 +23,19 @@
 //  * Hide preview per card (until TeamSpeak restarts), "Open in browser", "Copy link";
 //  * gives every document back exactly when the setting goes off, the inline previews go off, or it goes
 //    (every fetch canceled and its worker joined first).
+// 2.5 (page links):
+//  * every link class (linkurl.h): media pages show their media (a silent loop like a GIF), well-known sites and
+//    other web pages an Embed card (linkcard.h), from our own load or the sender's LPX (its picture asked of Core only
+//    while its card is on screen, at most one a second per connection and only while the flood model keeps its
+//    reserve: m_lpxPictures);
+//  * the quiet web class: nothing is put into the document while a web page waits, loads or fails by itself; such a
+//    slot is tracked by its link's anchor (View::quiet) so it still loads lazily when on screen and still counts in
+//    its sender's queue; "Load link previews" in a message's menu (menuAction, from ChatReplies) loads or retries
+//    that message's links by hand;
+//  * busy sites (HostGate, shared with the sender's Fetcher: linkpreview::sharedGate()): an automatic load that met
+//    a cooling site waits ("Site busy") and loads again by itself (linkstate::afterBusy); a click gets the busy
+//    line; the waits ask the sender's cap per class (l, lx, lw); the sender's intake is modelled (SenderQueue);
+//  * OverAutoLimit cards become normal candidates again when the limit goes up (reviewOverLimit).
 // Everything read from a chat or a website is untrusted: only checked https addresses are ever fetched, on a click
 // or automatically for links on screen without a sender-made preview (or, for the sender, by sender-previews).
 
@@ -46,6 +59,7 @@
 #include "linkpreview/linkstate.h"
 
 class ChatIntegration;
+class YouTubePlayer; // 2.5 YouTube player (src/ytplayer)
 class QEvent;
 class QJsonObject;
 class QMenu;
@@ -82,6 +96,8 @@ class ChatLinkPreviews : public QObject
     // joined; nothing loads afterwards (the cards stay until the destructor).
     void                     prepareShutdown();
     linkpreview::PreviewStore* store() const { return m_store; }
+    // 2.5 YouTube player: YouTube's own player for YouTube cards (one at a time; nullptr after shutdown never).
+    YouTubePlayer*             youTube() const { return m_yt; }
     linkpreview::Fetcher*      fetcher() const { return m_fetcher; }
     // Inline previews and "Show previews for links to other websites" are both on.
     static bool enabled();
@@ -93,18 +109,31 @@ class ChatLinkPreviews : public QObject
     // plugin.cpp): a running automatic load that may not go on stops.
     void limitsChanged();
 
+    // 2.5 zoom: ChatScale's pass (ChatIntegration::applyScale): card slots at the new scale, no drawing. And a card
+    // picture the chat's budget swapped for its stand-in (drawn again near the view).
+    void applyScale(QTextBrowser* browser, const PreviewScale& scale);
+    void pictureSwapped(QTextBrowser* browser, const QString& name);
+
     // ChatIntegration's hooks for a link's media (a "tsmedia:<key>" preview in a slot of ours).
     bool ownsKey(const QString& key) const; // no media reactions on it (the message has text reactions)
     // The slot's own items for the context menu of key at viewportPos: Open in browser, Hide preview; webUrl:
     // the link (ChatIntegration's "Copy link" copies it, not the file's address). False when key isn't one of
     // ours there.
-    bool addMediaMenu(QMenu* menu, QTextBrowser* browser, const QString& key, const QPoint& viewportPos, QUrl* webUrl);
+    // 2.5 GIFs: target gets the slot's link (Save to GIFs keeps the link).
+    bool addMediaMenu(QMenu* menu, QTextBrowser* browser, const QString& key, const QPoint& viewportPos, QUrl* webUrl,
+                      linkpreview::Target* target = nullptr);
 
     // ---- tests, tools and the live-test driver --------------------------------------------------------
     int     slotCount(QTextBrowser* browser) const;
     QString describe(QTextBrowser* browser, const QString& find = QString()) const; // one line per slot (find: of the messages with that text)
     // Replaces Fetcher::load (tests: no network, results come through onFetched / onProgress).
-    void setLoader(std::function<void(const linkpreview::Target&, qint64 maxBytes, const QString& cacheDir)> loader);
+    void setLoader(std::function<void(const linkpreview::Target&, const linkpreview::Caps& caps, const QString& cacheDir)> loader);
+    // 2.5: the message menu's "Load link previews" (ChatReplies adds it after Reply): nullptr when no link of the message
+    // at block shows nothing or an error. Its action loads (or retries) those links with a click's caps.
+    QAction* menuAction(QMenu* menu, QTextBrowser* browser, int block);
+    void     loadMessageLinks(QTextBrowser* browser, int block);
+    // 2.5: the diagnostic info's link-preview lines (counts only, no addresses).
+    QStringList diagnosticLines() const;
     void onFetched(const QString& key, const linkpreview::Result& result);
     void onProgress(const QString& key, qint64 received, qint64 total);
     // 2.4 auto-load: how many automatic loads run now, and of which links (tests, the live-test driver).
@@ -117,6 +146,11 @@ class ChatLinkPreviews : public QObject
     // links.auto (2.4: the automatic loads, the queue, the waits).
     QString testCommand(const QString& cmd, const QJsonObject& c);
 #endif
+
+  signals:
+    // 2.5 GIFs: a load of the link ended with a result in cache/links (media, a card, or a "nothing to show" record):
+    // the GIF library reads it from there (Fetcher::cached). QString only.
+    void linkLoaded(const QString& urlKey);
 
   private:
     // One slot as the pointer and the drawing need it (read from the document again after every change).
@@ -131,6 +165,10 @@ class ChatLinkPreviews : public QObject
         QString             senderUid;           // the message header's uid (textreactdoc::identify; empty: unknown)
         qint64              timeSec   = -1;      // from messageKey; -1: the message has no key
         int                 budgetSec = 0;       // its wait from timeSec (autoload::SenderQueue over the chat's links so far)
+        // 2.5
+        int                 linkStart = -1, linkEnd = -1; // the anchor (document positions)
+        int                 index     = 0;               // its place among the message's selected links
+        bool                quiet() const { return slot.object < 0; } // no object in the document (Absent)
     };
     // 2.4 auto-load: the chat a slot is in, as far as the waits need it.
     struct ChatContext {
@@ -143,12 +181,16 @@ class ChatLinkPreviews : public QObject
         QString sender;        // senderKey(): one running load per sender (autoload::kMaxPerSender)
         QString serverUid;     // the chat's server (its own data saver)
         qint64  maxBytes = 0;  // the automatic limit it started with
+        qint64  mediaBytes = 0; // 2.5: its media cap (a page link that answers with media is judged against it)
+        qint64  videoBytes = -1; // 2.5: its video cap (a Nextcloud share, Caps::video; -1: mediaBytes)
+        bool    clicked  = false; // 2.5 R26: the user asked for it meanwhile (a click, Load link previews)
         qint64  received = 0;  // so far (onProgress)
         qint64  total    = -1; // what the website announced (-1: not yet, or it doesn't say)
     };
     struct AutoWant {
         QPointer<QTextBrowser> browser;
         QString                object; // the slot's picture name (read again: the document may have changed)
+        QString                slotId; // 2.5: a quiet slot's (object empty)
     };
     enum class Origin { Click, Auto };
     struct View {
@@ -156,6 +198,7 @@ class ChatLinkPreviews : public QObject
         QPointer<QTextDocument> document;
         QHash<QString, QString> rendered;  // card picture name -> what it shows (drawn ones only)
         QVector<SlotRef>        refs;      // the slots as the document has them (refsValid)
+        QVector<SlotRef>        quiet;     // 2.5: the selected links with no object (Absent), by their anchors (refsValid)
         bool                    refsValid = false;
         QVector<QRect>          spinRects; // cards with a turning ring on screen (viewport coordinates)
         bool                    tracked = false;
@@ -182,8 +225,9 @@ class ChatLinkPreviews : public QObject
     QString slotIdOf(QTextBrowser* browser, int block, const QString& urlKey, ChatTextReactions::KeyDays* days = nullptr,
                      QString* senderUid = nullptr) const;
     // 2.4 auto-load: a slot's message fields (time, its wait) from its key and the sender's links before it (queue: one
-    // per pass over a chat, fed in the chat's order).
-    static void fillMessage(SlotRef* ref, linkpreview::autoload::SenderQueue* queue);
+    // per pass over a chat, fed in the chat's order). 2.5: per link class, with the sender's intake modelled.
+    void fillMessage(SlotRef* ref, linkpreview::autoload::SenderQueue* queue, const ChatContext& ctx) const;
+    bool senderMakes(const SlotRef& ref, const ChatContext& ctx) const; // 2.5: the sender's cap covers the link's class
     QStringList excludedHrefs() const;
     QString     linksDir() const;      // <cache>/links: the files of links loaded here
     static qint64 linkCacheBytes();    // its cap
@@ -223,8 +267,20 @@ class ChatLinkPreviews : public QObject
     void                            onOwnLinkChanged(const QString& urlKey);
     void                            onSkipped(const QString& urlKey);
     void                            onPresenceChanged(quint64 sch);
-    void                            tryCache(const linkpreview::Target& target);
+    void                            tryCache(const linkpreview::Target& target, bool own);
+    void                            showHeldCard(const linkpreview::Target& target); // our own message's held cross-site card
     void                            updateVisibleViewports();
+    // ---- 2.5 ----
+    linkstate::Context              contextFor(const SlotRef& ref) const;
+    bool                            refOfSlot(QTextBrowser* browser, const QString& slotId, SlotRef* ref) const;
+    QRectF                          quietRect(QTextBrowser* browser, const SlotRef& ref) const; // viewport coordinates; empty: off screen
+    // The site's state for the target's first request (HostGate, shared with the sender's Fetcher); *ms the time left.
+    linkpreview::HostGate::Verdict  gateOf(const linkpreview::Target& target, qint64* ms = nullptr) const;
+    void                            reviewOverLimit();     // 8.3: OverAutoLimit entries under a raised limit go
+    void                            queueLpxPicture(const SlotRef& ref, const QString& mainKey); // 6.10
+    void                            drainLpxPictures();    // one per connection per wait tick, within the flood reserve
+    void                            expiredCheck(const linkpreview::Target& target); // R22: an expired Discord link: Nothing
+    QString                         shownHost(const SlotRef& ref, const linkstate::LocalState& local) const;
 
     PreviewStyle styleOf(QTextBrowser* browser) const;
     QSize        cardSize(const linkcard::Card& card, const PreviewStyle& style) const; // with the gaps
@@ -249,10 +305,13 @@ class ChatLinkPreviews : public QObject
     void startFetch(const linkpreview::Target& target, Origin origin = Origin::Click, const QString& serverUid = QString(),
                     const QString& sender = QString());
     void cancelFetch(const QString& urlKey);
-    void applyFetched(const QString& key, const linkpreview::Result& result, bool fromCache);
+    // Share links' running loads whose Caps::webCards isn't the switch any more start again (linkstate::restartForWebCards).
+    void restartWebCardsLoads();
+    // own: our own message's link (our pipeline's download), shown like a click's.
+    void applyFetched(const QString& key, const linkpreview::Result& result, bool fromCache, bool own = false);
     void setHidden(const QString& slotId, const QString& urlKey, bool hidden);
     void openInBrowser(const QUrl& url) const;
-    void adoptVideo(const linkpreview::Target& target, const linkpreview::Result& result);
+    void adoptVideo(const linkpreview::Target& target, const linkpreview::Result& result, bool loop = false);
     void onEntryChanged(const QString& key);
     void onAnnounced(const linkpreview::Announcement& a);
     void stopUnneededFetches(); // a load no slot shows any more (the sender's preview came first)
@@ -261,7 +320,7 @@ class ChatLinkPreviews : public QObject
     Core*                                m_core;
     QPointer<linkpreview::PreviewStore>  m_store;
     linkpreview::Fetcher*                m_fetcher = nullptr;
-    std::function<void(const linkpreview::Target&, qint64, const QString&)> m_loader;
+    std::function<void(const linkpreview::Target&, const linkpreview::Caps&, const QString&)> m_loader;
     QHash<QTextBrowser*, View>           m_views;
     QHash<QString, linkstate::LocalState> m_local;    // urlKey -> this viewer's fetch
     QHash<QString, linkpreview::Target>  m_targets;   // urlKey -> the link (for fetches and menus)
@@ -296,9 +355,28 @@ class ChatLinkPreviews : public QObject
     QSet<QString>                          m_autoHeld;            // slot ids runAutoLoads held back (drawn as click cards)
     QSet<QString>                          m_pipelineWaits;       // urlKeys waiting on our pipeline's fetch (no request of ours)
     QSet<QString>                          m_cacheMiss;           // urlKeys not in cache/links (looked once)
+    QSet<QString>                          m_webOff;              // urlKeys that ended with kWebOff (cards for other web pages off)
     QHash<QString, qint64>                 m_sizeHints;           // urlKey -> bytes (our pipeline found it too large)
     linkpreview::autoload::PresenceMemo    m_present;             // the senders, for a second
     QHash<int, int>                        m_ownApplied;          // pipeline job id -> the record state applied
     bool                                   m_waitSeen = false;    // a visible slot waited since the last wait tick
     linkpreview::autoload::SenderBudget    m_budget;
+
+    // 2.5
+    struct LpxPicture {
+        QString mainKey;    // Core's key of the LPX's file (its card picture, or its media)
+        QString messageKey; // ... the announcement it comes from
+        QString urlKey;
+        quint64 sch = 0;
+    };
+    QVector<LpxPicture>                    m_lpxPictures;  // newest first, at most kMaxLpxPictures (6.10)
+    QSet<QString>                          m_revealed;     // slot ids of sensitive cards the user revealed (this session)
+    QHash<QString, int>                    m_holdCounts;   // hold reason name -> slots (last on-screen pass; diagnostics)
+
+    // 2.5 YouTube player
+    YouTubePlayer* m_yt = nullptr; // child
+    void           setUpYouTube();
+    bool           locateYouTube(const QString& slotId, void* spot) const; // YouTubePlayer::Spot
+    void           repaintSlot(const QString& slotId);
+    void           scrollSlotIntoView(const QString& slotId);
 };

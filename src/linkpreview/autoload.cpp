@@ -14,6 +14,11 @@ qint64 megabytes(int mb)
     return static_cast<qint64>(qMax(0, mb)) * 1024 * 1024;
 }
 
+constexpr qint64 kKiB = 1024;
+constexpr qint64 kMiB = 1024 * 1024;
+
+} // namespace
+
 bool dataSaverOn(const Settings& s, const QString& serverUid)
 {
     if (const ServerOverrides* own = s.overridesFor(serverUid)) {
@@ -22,8 +27,6 @@ bool dataSaverOn(const Settings& s, const QString& serverUid)
     }
     return s.dataSaver;
 }
-
-} // namespace
 
 Wait waitFor(const Input& in)
 {
@@ -49,6 +52,13 @@ Wait waitFor(const Input& in)
     if (in.cap == SenderCap::Checking)
         return Wait::Checking; // we are still asking whether they make one (the card doesn't claim they do)
     return in.cap == SenderCap::Yes ? Wait::Sender : Wait::None;
+}
+
+bool worthAsking(Input in, const Target& target)
+{
+    in.cap       = SenderCap::Yes;
+    in.budgetSec = qMax(in.budgetSec, waitSec(target));
+    return waitFor(in) == Wait::Sender;
 }
 
 bool senderHere(Chat chat, const Presence& presence)
@@ -102,9 +112,75 @@ int maxWaitSec(Kind kind)
     return own > 0 ? kSenderQueueSec + own : 0;
 }
 
+int waitSec(const Target& target)
+{
+    switch (target.cls) {
+    case LinkClass::YouTube:
+    case LinkClass::Direct:
+        return waitSec(target.kind);
+    case LinkClass::MediaPage:
+        // A Nextcloud share may turn out to be a video (its sender downloads, probes and uploads it, like any link
+        // video: design2 2.10/2.11), whatever its expected kind.
+        return target.kind == Kind::Video || target.provider == QLatin1String("nextcloud") ? 120 : 60;
+    case LinkClass::Site:
+    case LinkClass::Web:
+        return 40;
+    case LinkClass::None:
+        break;
+    }
+    return 0;
+}
+
+int maxWaitSec(const Target& target)
+{
+    const int own = waitSec(target);
+    return own > 0 ? kSenderQueueSec + own : 0;
+}
+
+const char* capFor(LinkClass cls)
+{
+    switch (cls) {
+    case LinkClass::YouTube:
+    case LinkClass::Direct:
+        return "l";
+    case LinkClass::MediaPage:
+    case LinkClass::Site:
+        return "lx";
+    case LinkClass::Web:
+        return "lw";
+    case LinkClass::None:
+        break;
+    }
+    return nullptr;
+}
+
 int SenderQueue::add(const QString& sender, qint64 timeSec, Kind kind)
 {
-    const int own = waitSec(kind);
+    return addWait(sender, timeSec, waitSec(kind));
+}
+
+int SenderQueue::add(const QString& sender, qint64 timeSec, const Target& target, bool senderMakesIt)
+{
+    const int own = waitSec(target);
+    if (timeSec < 0 || own <= 0 || !senderMakesIt)
+        return 0; // a link the sender doesn't make: nothing to wait for, and it isn't in their queue
+    // The intake model (2.4.0 open item 2): the sender's plugin takes kSenderIntakePerMinute links a minute; one more
+    // within that minute was refused there and never comes. 2.5 senders count the 2.4 classes and the new ones apart
+    // (SenderPipeline::Limits), so this does too.
+    QVector<qint64>& times = m_intake[target.isLegacy() ? sender : sender + QLatin1String("\x01x")];
+    int              recent = 0;
+    for (const qint64 t : qAsConst(times))
+        recent += t > timeSec - kIntakeWindowSec && t <= timeSec ? 1 : 0;
+    if (recent >= kSenderIntakePerMinute)
+        return 0;
+    times.append(timeSec);
+    if (times.size() > 64)
+        times.remove(0, times.size() - 64);
+    return addWait(sender, timeSec, own);
+}
+
+int SenderQueue::addWait(const QString& sender, qint64 timeSec, int own)
+{
     if (timeSec < 0 || own <= 0)
         return 0;
     const auto   it    = m_busyUntil.constFind(sender);
@@ -150,10 +226,110 @@ qint64 autoCap(Kind kind, const Settings& s, const QString& serverUid)
         if (!s.autoDownloadImages)
             return 0;
         return qMin(megabytes(s.autoDownloadMaxMB), clickCap(kind));
+    default:
+        break;
+    }
+    return 0;
+}
+
+// ---- 2.5: caps per target ---------------------------------------------------------------------------------------
+
+namespace {
+
+// The automatic media cap of a kind (2.4.0's rules; a loop is a GIF, a card target's media is a picture).
+qint64 autoMedia(Kind kind, const Settings& s, const QString& serverUid)
+{
+    switch (kind) {
+    case Kind::YouTube:
+        return clickCap(Kind::YouTube);
+    case Kind::Video:
+        return autoCap(Kind::Video, s, serverUid);
+    case Kind::Image:
+    case Kind::Gif:
+    case Kind::Loop:
+    case Kind::Card:
+        return autoCap(Kind::Image, s, serverUid);
     case Kind::None:
         break;
     }
     return 0;
+}
+
+qint64 clickMedia(Kind kind)
+{
+    switch (kind) {
+    case Kind::YouTube:
+        return clickCap(Kind::YouTube);
+    case Kind::Video:
+        return clickCap(Kind::Video);
+    default:
+        return clickCap(Kind::Image);
+    }
+}
+
+} // namespace
+
+// design2 2.11: a Nextcloud share may turn out to be a video whatever its expected kind: its video has a video's caps.
+static bool mayBeVideo(const Target& t)
+{
+    return t.cls == LinkClass::MediaPage && t.provider == QLatin1String("nextcloud");
+}
+
+Caps clickCaps(const Target& t)
+{
+    Caps caps;
+    caps.media     = t.cls == LinkClass::None ? 0 : clickMedia(t.kind);
+    caps.picture   = 2 * kMiB;
+    caps.page      = 512 * kKiB;
+    caps.userAsked = true;
+    if (mayBeVideo(t))
+        caps.video = clickMedia(Kind::Video);
+    return caps;
+}
+
+Caps autoCaps(const Target& t, const Settings& s, const QString& serverUid)
+{
+    Caps caps;
+    caps.userAsked = false;
+    caps.webCards  = s.showWebCards; // a share link that turns out to be another web page: not loaded with it off
+    if (t.cls == LinkClass::None || (t.cls == LinkClass::Web && !s.showWebCards)) {
+        caps.media   = 0;
+        caps.picture = 0;
+        caps.page    = 0;
+        return caps;
+    }
+    const bool saver = dataSaverOn(s, serverUid);
+    caps.media       = autoMedia(t.kind, s, serverUid);
+    if (mayBeVideo(t))
+        caps.video = autoMedia(Kind::Video, s, serverUid); // videoAutoDownloadMB as for other link videos
+    // A card's picture and its page read: always (a preview, like YouTube's), smaller with data saver.
+    caps.picture = saver ? 512 * kKiB : 2 * kMiB;
+    caps.page    = saver ? 128 * kKiB : 512 * kKiB;
+    return caps;
+}
+
+qint64 autoCap(const Target& t, const Settings& s, const QString& serverUid)
+{
+    const Caps caps = autoCaps(t, s, serverUid);
+    return t.kind == Kind::Card ? caps.picture : caps.media;
+}
+
+bool isMediaKind(Kind kind)
+{
+    return kind == Kind::Image || kind == Kind::Gif || kind == Kind::Video || kind == Kind::Loop;
+}
+
+qint64 overLimitCap(const Target& t, Kind found, const Settings& s, const QString& serverUid)
+{
+    if (isMediaKind(found))
+        return mediaCapOf(autoCaps(t, s, serverUid), found);
+    return autoCap(t, s, serverUid);
+}
+
+qint64 mediaCapOf(const Caps& caps, Kind found)
+{
+    const bool video = found == Kind::Video || found == Kind::Loop;
+    return video && caps.video >= 0 ? caps.video : caps.media;
 }
 
 // ---- SenderBudget -------------------------------------------------------------------------------------
@@ -176,13 +352,14 @@ double SenderBudget::tokensAt(const Bucket& b, qint64 nowMs) const
     return qMin(static_cast<double>(m_limits.burst), b.tokens + refill);
 }
 
-bool SenderBudget::has(const QString& sender, qint64 nowMs) const
+bool SenderBudget::has(const QString& sender, qint64 nowMs, int n) const
 {
-    if (m_limits.burst <= 0)
+    n = qMax(1, n);
+    if (m_limits.burst <= 0 || n > m_limits.burst)
         return false;
     const auto it = m_buckets.constFind(sender);
     if (it != m_buckets.constEnd())
-        return tokensAt(it.value(), nowMs) >= 1.0;
+        return tokensAt(it.value(), nowMs) >= n;
     if (m_buckets.size() < m_limits.maxSenders)
         return true; // a new sender starts full
     for (const Bucket& b : m_buckets) {
@@ -192,9 +369,10 @@ bool SenderBudget::has(const QString& sender, qint64 nowMs) const
     return false;
 }
 
-bool SenderBudget::take(const QString& sender, qint64 nowMs)
+bool SenderBudget::take(const QString& sender, qint64 nowMs, int n)
 {
-    if (m_limits.burst <= 0)
+    n = qMax(1, n);
+    if (m_limits.burst <= 0 || n > m_limits.burst)
         return false;
     if (!m_buckets.contains(sender) && m_buckets.size() >= m_limits.maxSenders) {
         // Bounded: buckets that are full again are forgotten first (they would start full anyway).
@@ -209,9 +387,9 @@ bool SenderBudget::take(const QString& sender, qint64 nowMs)
     }
     Bucket&      b      = m_buckets[sender];
     const double tokens = tokensAt(b, nowMs);
-    if (tokens < 1.0)
+    if (tokens < n)
         return false;
-    b.tokens = tokens - 1.0;
+    b.tokens = tokens - n;
     b.atMs   = nowMs;
     return true;
 }

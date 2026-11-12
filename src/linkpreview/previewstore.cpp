@@ -34,12 +34,33 @@ QJsonObject toObject(const Announcement& a, qint64 seenSec, qint64 usedSec)
     QJsonObject o;
     o.insert(QStringLiteral("m"), a.messageKey);
     o.insert(QStringLiteral("u"), a.urlKey);
-    o.insert(QStringLiteral("k"), QString(QLatin1Char(kindCode(a.kind))));
+    // 2.5: an LPX's kind is "x" + its code ("xi", "xg", "xv", "xa", "xc"): 2.4.0 reads a 2-character kind as none
+    // and skips the entry (a downgrade loses only these).
+    o.insert(QStringLiteral("k"), a.extended ? QString::fromLatin1("x") + QLatin1Char(kindCodeX(a.kind)) : QString(QLatin1Char(kindCode(a.kind))));
     o.insert(QStringLiteral("s"), a.serverUid);
     o.insert(QStringLiteral("c"), QString::number(a.channelId)); // a string: 64-bit ids don't fit a double
     o.insert(QStringLiteral("p"), a.previewPath);
     o.insert(QStringLiteral("h"), a.previewSha);
     o.insert(QStringLiteral("ps"), static_cast<double>(a.previewSize));
+    if (a.extended) {
+        const CardData& c = a.card;
+        if (!c.site.isEmpty())
+            o.insert(QStringLiteral("site"), c.site);
+        if (!c.author.isEmpty())
+            o.insert(QStringLiteral("author2"), c.author);
+        if (!c.title.isEmpty())
+            o.insert(QStringLiteral("title2"), c.title);
+        if (!c.description.isEmpty())
+            o.insert(QStringLiteral("desc"), c.description);
+        if (c.layout != CardLayout::None)
+            o.insert(QStringLiteral("ly"), c.layout == CardLayout::Large ? QStringLiteral("l") : QStringLiteral("t"));
+        if (c.hasColor)
+            o.insert(QStringLiteral("cl"), QString::number(c.color & 0xffffff, 16).rightJustified(6, QLatin1Char('0')));
+        if (c.play)
+            o.insert(QStringLiteral("pg"), true);
+        if (a.sensitive)
+            o.insert(QStringLiteral("sn"), true);
+    }
     if (!a.mediaPath.isEmpty()) {
         o.insert(QStringLiteral("f"), a.mediaPath);
         o.insert(QStringLiteral("fh"), a.mediaSha);
@@ -69,9 +90,34 @@ bool fromObject(const QJsonObject& o, Announcement* a)
     bool          ok = false;
     a->messageKey  = str(o, "m");
     a->urlKey      = str(o, "u");
-    a->kind        = k.size() == 1 ? kindOf(k.at(0).toLatin1()) : Kind::None;
+    a->extended    = k.size() == 2 && k.at(0) == QLatin1Char('x');
+    a->kind        = k.size() == 1 ? kindOf(k.at(0).toLatin1()) : a->extended ? kindOfX(k.at(1).toLatin1()) : Kind::None;
     a->serverUid   = str(o, "s");
     a->channelId   = str(o, "c").toULongLong(&ok);
+    if (a->extended) {
+        // A card without a picture has no channel (c, p, h and ps come together or not at all).
+        if (str(o, "c").isEmpty() || str(o, "c") == QLatin1String("0")) {
+            a->channelId = 0;
+            ok           = a->kind == Kind::Card;
+        }
+        CardData& c   = a->card;
+        c.site        = str(o, "site");
+        c.author      = str(o, "author2");
+        c.title       = str(o, "title2");
+        c.description = str(o, "desc");
+        const QString ly = str(o, "ly");
+        c.layout         = ly == QLatin1String("l") ? CardLayout::Large : ly == QLatin1String("t") ? CardLayout::Thumb : CardLayout::None;
+        const QString cl = str(o, "cl");
+        bool          hex = false;
+        const uint    rgb = cl.size() == 6 ? cl.toUInt(&hex, 16) : 0;
+        if (hex) {
+            c.color    = 0xff000000u | rgb;
+            c.hasColor = true;
+        }
+        c.play       = o.value(QLatin1String("pg")).toBool();
+        a->sensitive = o.value(QLatin1String("sn")).toBool();
+        c.sensitive  = a->sensitive;
+    }
     a->previewPath = str(o, "p");
     a->previewSha  = str(o, "h");
     a->previewSize = num(o, "ps");
@@ -85,14 +131,31 @@ bool fromObject(const QJsonObject& o, Announcement* a)
     a->author      = str(o, "a");
     a->privateChat = o.value(QLatin1String("pc")).toBool();
     a->senderUid   = str(o, "from");
+    if (a->extended) {
+        a->card.pictureWidth  = a->width;
+        a->card.pictureHeight = a->height;
+        a->card.durationMs    = a->durationMs;
+        return ok && isValidX(*a);
+    }
+    // An LP stored by 2.4.0 holds a YouTube title and channel cleaned by 2.4.0's rules (it kept tag characters, some
+    // invisible fillers and private-use characters): cleaned now as on receipt (readMessage), never dropped for it.
+    a->title  = cleanText(a->title, kMaxTitleBytes);
+    a->author = cleanText(a->author, kMaxAuthorBytes);
     return ok && isValid(*a);
+}
+
+bool sameCard(const CardData& x, const CardData& y)
+{
+    return x.site == y.site && x.author == y.author && x.title == y.title && x.description == y.description && x.layout == y.layout
+           && x.hasColor == y.hasColor && (!x.hasColor || x.color == y.color) && x.play == y.play;
 }
 
 bool sameFiles(const Announcement& x, const Announcement& y)
 {
-    return x.kind == y.kind && x.serverUid == y.serverUid && x.channelId == y.channelId && x.previewPath == y.previewPath && x.previewSha == y.previewSha
-           && x.previewSize == y.previewSize && x.mediaPath == y.mediaPath && x.mediaSha == y.mediaSha && x.mediaSize == y.mediaSize && x.width == y.width
-           && x.height == y.height && x.durationMs == y.durationMs && x.title == y.title && x.author == y.author;
+    return x.extended == y.extended && x.kind == y.kind && x.serverUid == y.serverUid && x.channelId == y.channelId && x.previewPath == y.previewPath
+           && x.previewSha == y.previewSha && x.previewSize == y.previewSize && x.mediaPath == y.mediaPath && x.mediaSha == y.mediaSha
+           && x.mediaSize == y.mediaSize && x.width == y.width && x.height == y.height && x.durationMs == y.durationMs && x.title == y.title
+           && x.author == y.author && x.sensitive == y.sensitive && sameCard(x.card, y.card);
 }
 
 } // namespace
@@ -147,7 +210,7 @@ PreviewStore::Add PreviewStore::check(const Announcement& a) const
 {
     QString hash;
     qint64  timeSec = 0;
-    if (!isValid(a) || !textreact::parseLocalKey(a.messageKey, &hash, &timeSec))
+    if (!isValidAny(a) || !textreact::parseLocalKey(a.messageKey, &hash, &timeSec))
         return Add::Rejected;
     if (const Entry* e = locate(hash, timeSec, a.urlKey, 0)) {
         if (e->a.senderUid != a.senderUid)
@@ -161,7 +224,7 @@ PreviewStore::Add PreviewStore::add(const Announcement& a, qint64 nowSec)
 {
     QString hash;
     qint64  timeSec = 0;
-    if (!isValid(a) || !textreact::parseLocalKey(a.messageKey, &hash, &timeSec))
+    if (!isValidAny(a) || !textreact::parseLocalKey(a.messageKey, &hash, &timeSec))
         return Add::Rejected;
     // The same message (exactly: an announcement names one message) and link.
     if (Entry* e = locate(hash, timeSec, a.urlKey, 0)) {
@@ -431,6 +494,12 @@ MediaLink linkFor(const Announcement& a)
         link.previewSha  = shaBytes(a.previewSha).left(16); // MediaLink's "ph": the first 16 bytes
     }
     link.dropInvalidMetadata();
+    // 2.5: an LPX's silent looping video plays like a GIF; a page that says it is for adults gets the spoiler cover.
+    // Neither changes the link's key (one Core entry per file, whoever asks). A loop is believed only when it says
+    // what an honest sender's is (loopTrusted: at most 60 s, its file within the GIF cap); else it is a video (k=v:
+    // the video rule, click to play), never an automatic download and autoplay of any file a client calls a loop.
+    link.loop    = loopTrusted(a);
+    link.spoiler = link.spoiler || (a.extended && a.sensitive && a.kind != Kind::Card);
     return link;
 }
 
@@ -440,7 +509,7 @@ void requestFiles(Core* core, const Announcement& a)
     // Core downloads no media by itself and the chat shows no card (ChatLinkPreviews::enabled); the announcement
     // stays stored and the chat asks for the files itself once it is on again.
     const Settings& s = Settings::instance();
-    if (!core || !s.showLinkPreviews || !s.inlinePreviews || !isValid(a))
+    if (!core || !s.showLinkPreviews || !s.inlinePreviews || !isValidAny(a) || a.previewPath.isEmpty())
         return;
     const MediaLink link = linkFor(a);
     if (!link.isValid())

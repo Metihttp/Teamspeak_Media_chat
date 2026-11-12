@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "safeimage.h" // 2.5
 #include "ts3api.h"
 
 namespace chatavatars {
@@ -40,8 +41,10 @@ QImage decode(const QString& path)
     const QFileInfo info(path);
     if (path.isEmpty() || path.size() > 1024 || !info.isFile() || info.size() <= 0 || info.size() > kMaxBytes)
         return {};
-    QImageReader reader(path);
-    reader.setDecideFormatFromContent(true); // TeamSpeak's files have no extension
+    // TeamSpeak's files have no extension: the format comes from the bytes, forced (2.5 safeimage.h: another
+    // client's avatar is never decoded as SVG, XPM or a lossless WebP).
+    const std::unique_ptr<QImageReader> safe   = safeimage::reader(path, safeimage::Source::Peer);
+    QImageReader&                       reader = *safe;
     const QSize source = reader.size();
     if (source.isValid() && (source.width() > kMaxSide || source.height() > kMaxSide))
         return {};

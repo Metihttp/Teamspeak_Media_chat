@@ -33,10 +33,11 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 - **Anonymous polls.** Ask the channel, vote on the card, see the results; nobody sees who voted for what.
 - **Live music.** Play a song to your channel through your own voice and keep talking over it.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
-- **Link previews.** YouTube links show their title, channel and thumbnail; links to pictures, GIFs and videos show and play inline. Previews of links people with the plugin send come from your TeamSpeak server, so your PC never contacts that website. Other links load from their website by themselves; you can switch that to click-to-load.
+- **Link previews.** YouTube links show their title, channel and thumbnail and play in a small player window over TeamSpeak; links to pictures, GIFs and videos, and to GIF and media sites like Tenor, Giphy, Imgur or Klipy (clips, stickers, memes), show and play inline; well-known sites (Vimeo, Spotify, X, GitHub, Wikipedia, …) and other web pages get a card like Discord's. Previews of links people with the plugin send come from your TeamSpeak server, so your PC never contacts that website. Other links load from their website by themselves; you can switch that to click-to-load.
 - **A modern chat.** Names, avatars and times above grouped messages, Telegram-like bubbles with yours on the right, and centred system lines, only in your own view.
 - **Reply and react.** Reply to any message, Discord-style, and react to any message or media with any emoji.
 - **HD emoji.** Sharp Windows 11 emoji in the chat, TeamSpeak's own emoji button opening an HD picker, and big emoji for messages of only emoji.
+- **Your GIFs, one click away.** The picker's GIFs tab keeps the GIFs you send (Giphy, Tenor, Klipy, Imgur and other GIF sites, GIF links and GIF files you upload), like Telegram; *Save to GIFs* keeps any other. Stored only on your PC.
 - **Browse every item.** A gallery viewer with zoom, a full video player and keyboard shortcuts.
 - **Works for everyone.** People without the plugin get a normal TeamSpeak download link.
 - **Stays on your server.** Files go to the channel's file browser, never to a cloud service.
@@ -99,7 +100,8 @@ The file is stored in the channel you are in; the message goes to the chat tab y
 - **Videos and audio files** play inline. Other files appear as cards that open in their default app.
 - **Reactions with any emoji:** click the round button on a picture, or right-click → **Add reaction**; **+** opens the emoji picker. Text messages, links, replies and polls get them too (point at the message → **Add reaction**, or right-click → **Add reaction…**).
 - **Checked downloads:** a file that differs from the one that was sent is blocked (*File doesn't match what was sent*).
-- **Link previews:** YouTube cards, and pictures, GIFs and videos under their web links ([below](#link-previews)).
+- **Link previews:** YouTube cards, pictures, GIFs and videos under their web links (also from GIF and media sites), and cards for well-known sites and other web pages ([below](#link-previews)).
+- **Sharp at any size:** previews follow the chat's text, so they grow with Windows display scaling (200% on a 4K screen), with Ctrl + mouse wheel over the chat and with TeamSpeak's chat font. **Preview size** (Small, Normal, Large, Larger) makes them smaller or larger than the text.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/album-dark.png">
@@ -112,14 +114,17 @@ Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/link-previews-dark.png">
-  <img src="docs/images/link-previews-light.png" width="100%" alt="Link previews in the TeamSpeak chat in the Cozy layout with bubbles. Left: Alice's YouTube link with a card showing the channel Quiet Places, the title Lakeside timelapse: a whole day in four minutes, the thumbnail with a play button and youtube.com, and reactions under it; below it your own link to a picture on the right, with a small card reading img.example.org, Making the preview…, while your plugin loads and shares it. Right: Dave's link to a GIF, from someone without the plugin, the GIF loaded by itself and playing under it; and Carol's link to a video with its poster, a play button and 0:15">
+  <img src="docs/images/link-previews-light.png" width="100%" alt="Link previews in the TeamSpeak chat in the Cozy layout with bubbles. Left: Alice's link to a Tenor page with the GIF itself playing under it, a sun setting over a neon grid, with reactions; Bob's link to a news page on www.example.com with a web card: the site name Example News, the title A calm day at the lake draws thousands of visitors, a short text, a thumbnail and the page's green bar. Right: Carol's Vimeo link with a site card: Vimeo, the author Quiet Places, the title Northern lights over the lake, in real time, a short text and the video's picture with a play button and 4:05; below it your own GitHub link on the right with a GitHub card for example/lake-timelapse with its description and a thumbnail">
 </picture>
 
-- **YouTube** links get a card with the title, channel and thumbnail; a click opens the video in your browser.
+- **YouTube** links get a card with the title, channel and thumbnail. Play shows the video with YouTube's own player in a small window of its own over TeamSpeak (privacy-enhanced mode, nothing loaded before you press Play; 64-bit TeamSpeak only, the 32-bit one opens your browser; turn it off to always open your browser); the title and the channel name open the video in your browser.
 - **Links to pictures, GIFs and videos** show the file right in the chat, like one sent with TS Media: the gallery viewer, animated GIFs, inline video.
+- **GIF and media sites** (Tenor, Giphy, Imgur, Klipy, Reddit, Streamable, Imgflip, Pinterest, 9GAG and more): the GIF or video itself, GIF-like videos playing silently in a loop. Klipy's clips, stickers and memes work. Klipy's GIF pages (`klipy.com/gifs/…`) are behind Klipy's own bot check for apps that don't run a browser; TS Media then asks Klipy's public oEmbed for the GIF, whose answer doesn't name it yet, so they get no preview for now and start working by themselves once Klipy fixes that answer.
+- **Cards** for well-known sites (Vimeo, SoundCloud, Spotify, Apple Music, Dailymotion, X, Bluesky, Twitch, Kick, Steam, GitHub, Wikipedia, Telegram, Discord invites, Reddit) and for other web pages: site, title, a short text and a picture; a click opens the link in your browser. Turn the other web pages off on their own with **Show cards for other web pages**.
+- **Nextcloud and ownCloud** share links show the picture, GIF or video itself; other files and folders get a small card with the name, type and size. Only servers on the public internet: links to a server on a LAN, a VPN or a private address are never loaded.
 - **Made by the sender:** when someone with TS Media sends such a link in a channel or private chat, their plugin loads it once and puts the preview in the channel's files. You see it from your TeamSpeak server and never contact that website.
 - **Your own links** show their preview at once from your own download (*Making the preview…* until then).
-- **Other links** (from people without the plugin) load their preview from the website by themselves when they show on your screen, which shows that website your IP address: YouTube always, pictures, GIFs and videos within your automatic download limit (15 MB by default; videos use your video limit if you set one). Larger files get a **Load preview** card with their size. Turn off **Load link previews automatically** to load them only when you click.
+- **Other links** (from people without the plugin) load their preview from the website by themselves when they show on your screen, which shows that website your IP address: cards always, pictures, GIFs and videos within your automatic download limit (15 MB by default; videos use your video limit if you set one). Larger files get a **Load preview** card with their size. Cards for other web pages show nothing while they load or when they fail: right-click the message → **Load link previews** loads (or retries) them by hand. Turn off **Load link previews automatically** to load them only when you click (**Load preview**, or **Load link previews** in a message's menu).
 - On by default: turn them off in **Settings → Privacy & updates**, or right-click one → **Hide preview**. Previews use your Windows proxy if you have one ([more about link previews](docs/USAGE.md#link-previews)).
 
 ## Voice messages
@@ -156,10 +161,16 @@ TeamSpeak's chat gets a modern look in your own view: names, avatars and times a
 - With the plugin, a reply shows a small reply line above it; click it to jump to the original. Right-click the original → **View 2 replies** lists the answers.
 - Without the plugin (or on 2.1), people see an italic quote line, *↪ Alice · 21∶14: “the start of her message…”*, followed by the reply.
 - **HD emoji:** emoji and TeamSpeak's smileys in messages show as sharp, colorful pictures, and emoji in reply lines too; a message of only emoji shows them large. Open the picker with TeamSpeak's own emoticon button or <kbd>Ctrl</kbd>+<kbd>E</kbd>.
+- **GIFs tab:** the picker's **GIFs** page shows the GIFs you sent, newest first; a click sends one again (a GIF file is uploaded again). Right-click a GIF in the chat → **Save to GIFs** to keep it; nothing is sent anywhere and opening the tab contacts no website ([GIFs](docs/USAGE.md#gifs)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/replies-emoji-dark.png">
   <img src="docs/images/replies-emoji-light.png" width="100%" alt="A TeamSpeak chat in the Cozy layout with HD emoji in the messages, two replies with a reply row above each, a message of three large laughing emoji, the Replying to Alice bar above the chat input with the microphone at the input's right end, and the emoji picker open above TeamSpeak's own emoji button next to the input, with a search for heart">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/gifs-dark.png">
+  <img src="docs/images/gifs-light.png" width="100%" alt="The emoji picker opened from TeamSpeak's emoji button on its GIFs tab: a grid of twelve GIF thumbnails, newest first, with the pointer on party.gif and the footer reading party.gif, Uploads the file again, 1.8 MB. On the left the chat: Carol, Bob and Alice talk about last night's sky, and your own message on the right, a Tenor link sent again from the tab, shows its GIF of northern lights playing, with a reaction under it">
 </picture>
 
 More in the user guide: [replies](docs/USAGE.md#replies) and [emoji](docs/USAGE.md#emoji).
@@ -202,7 +213,8 @@ Password-protected channels are not supported, and clients must reach the file t
 ## Privacy & security
 
 - **Your files stay on your TeamSpeak server.** No cloud, no telemetry.
-- **Web requests: the update check and link previews.** The update check goes to GitHub, automatically only after you turn it on. **Link previews** (on by default, three switches in **Settings → Privacy & updates**): when you send a YouTube link or a link to a picture, GIF or video in a channel or private chat, your PC loads it once from that website and puts the preview in the channel's files; people with TS Media then see it from your TeamSpeak server and never contact the website. With **Load link previews automatically** on (the default), a link from someone without the plugin is loaded from its website by your PC, which sees your IP address; turn it off to load such links only when you click **Load preview**. Previews go through your Windows proxy if one is set. [Details](docs/PRIVACY-SECURITY.md#link-previews).
+- **Web requests: the update check, link previews and the YouTube player.** The update check goes to GitHub, automatically only after you turn it on. **Link previews** (on by default, switches in **Settings → Privacy & updates → Link previews**): when you send a YouTube link or a link to a picture, GIF or video (and since 2.5 any web page) in a channel or private chat, your PC loads it once from that website and puts the preview in the channel's files; people with TS Media then see it from your TeamSpeak server and never contact the website. With **Load link previews automatically** on (the default), a link from someone without the plugin is loaded from its website by your PC, which sees your IP address; turn it off to load such links only when you click **Load preview**. Previews go through your Windows proxy if one is set. Web pages are read only up to the end of their head (a Kick clip's page: its first 512 KB; a Nextcloud or ownCloud share page: until the part that says what the share is, at most 512 KB) and never shown or run. [Details](docs/PRIVACY-SECURITY.md#link-previews).
+- **The YouTube player connects only after you press Play.** Then your PC connects to YouTube and Google (and WebView2 to Microsoft), as in a browser; it plays in a private profile, and *Play YouTube videos in the chat* off opens videos in your browser instead. [Details](docs/PRIVACY-SECURITY.md#playing-youtube-videos).
 - **Your channel sees that you have TS Media** (and its version), and your reactions. Both go through TeamSpeak only and can be turned off in **Settings → Privacy & updates**.
 - **A reply quotes the original:** its author's name and the start of the message, readable by everyone in that chat.
 - **The microphone is only on** while you hold the microphone button, or while the *Voice message* window shows *Recording*.
@@ -257,4 +269,5 @@ This project is **not open source** and comes with no open-source license. The s
 - [BlurHash](https://github.com/woltapp/blurhash) by Wolt (MIT License), ported in `src/blurhash.cpp`.
 - [TeamSpeak 3 Client Plugin SDK](https://github.com/teamspeak/ts3client-pluginsdk), copyright TeamSpeak Systems GmbH, included as a git submodule and not covered by this project's copyright.
 - Qt 5.15 (The Qt Company), loaded from the TeamSpeak installation at runtime; Windows Media Foundation (Microsoft) for video, audio and voice messages.
+- Microsoft Edge WebView2 SDK loader (Microsoft, BSD-style license, reproduced in [THIRD-PARTY-NOTICES](docs/THIRD-PARTY-NOTICES.md)), linked into the YouTube player helper; the WebView2 Runtime is part of Windows.
 - TeamSpeak is a trademark of TeamSpeak Systems GmbH; Discord is a trademark of Discord Inc. This project is not affiliated with or endorsed by either of them.

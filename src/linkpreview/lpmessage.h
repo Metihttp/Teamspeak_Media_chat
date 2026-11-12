@@ -14,6 +14,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 namespace linkpreview::message {
@@ -25,8 +26,12 @@ QString visibleText(const QString& bbcode);
 // textreact::contentHash(senderUid, visibleText(bbcode)).
 QString identityHash(const QString& senderUid, const QString& bbcode);
 // Every http(s) link TeamSpeak shows in bbcode (outside a reply's quote line), in order, at most max. A
-// [URL] of "www...." without a scheme counts as http:// (as the chat links it).
+// [URL] of "www...." without a scheme counts as http:// (as the chat links it). (2.4.0's callers.)
 QList<QUrl> webLinks(const QString& bbcode, int max = 32);
+// 2.5: the same links as their text, in message order, at most max (the scan limit, linkurl.h kMaxScannedLinks):
+// each [URL] value exactly as written (www. -> http://www.) and bare http(s) addresses of the text. Untrimmed: the
+// sender and every receiver apply trimLinkEnd() and classify(QString) to the same text (linkurl.h).
+QStringList linkHrefs(const QString& bbcode, int max = 32);
 // A TS Media media message (it has a ts3file link).
 bool isMediaMessage(const QString& bbcode);
 

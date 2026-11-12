@@ -4,6 +4,7 @@
 
 #include "i18n.h"
 #include "linkpreview/fetcher.h"
+#include "linkpreview/providers.h"
 
 namespace linkstate {
 
@@ -38,6 +39,7 @@ QString extensionFor(const QString& mime, const linkpreview::Target& target)
     case linkpreview::Kind::Gif:
         return QString::fromLatin1("gif");
     case linkpreview::Kind::Video:
+    case linkpreview::Kind::Loop:
         return QString::fromLatin1("mp4");
     default:
         return QString::fromLatin1("jpg");
@@ -68,6 +70,72 @@ bool kindFits(linkpreview::Kind announced, linkpreview::Kind link)
     if (announced == Kind::None || link == Kind::None)
         return false;
     return announced == link || (picture(announced) && picture(link));
+}
+
+bool lpFits(linkpreview::Kind announced, const linkpreview::Target& link)
+{
+    // An LP of a known kind under a page link would be a 2.4.0 trap (research: it downloads and never shows it):
+    // LP belongs to the 2.4 classes only.
+    return link.isLegacy() && kindFits(announced, link.kind);
+}
+
+bool lpxFits(linkpreview::Kind announced, const linkpreview::Target& link, bool webCards)
+{
+    using linkpreview::Kind;
+    if (!link.isNewClass() || (link.cls == linkpreview::LinkClass::Web && !webCards))
+        return false;
+    // A share's card (design2 2.7) is a text card: only while cards for other web pages are on; its media always.
+    if (announced == Kind::Card && !webCards && linkpreview::providers::cardsFollowWebRules(link.cls, link.provider))
+        return false;
+    return announced == Kind::Image || announced == Kind::Gif || announced == Kind::Video || announced == Kind::Loop || announced == Kind::Card;
+}
+
+linkcard::Waiting waitingShown(const Decision& d)
+{
+    switch (d.wait) {
+    case Wait::Own:
+        return linkcard::Waiting::Own;
+    case Wait::Sender:
+        return d.fromServer ? linkcard::Waiting::None : linkcard::Waiting::Sender;
+    case Wait::Checking:
+        return linkcard::Waiting::Checking;
+    case Wait::Host:
+        return linkcard::Waiting::Host;
+    case Wait::Auto:
+    case Wait::None:
+        break;
+    }
+    return linkcard::Waiting::None;
+}
+
+bool serverUsable(const ServerState& server)
+{
+    if (!server.announced)
+        return false;
+    if (server.extended && server.kind == linkpreview::Kind::Card) {
+        // Its text is a card (its picture comes from the server, or never). A card that is only a picture (no text)
+        // whose picture can never come (gone, not ours to download there) is nothing: the receiver's own rules.
+        return !(serverCardPictureGone(server) && server.card.description.isEmpty());
+    }
+    return !serverFailed(server) && !server.mainKey.isEmpty();
+}
+
+bool serverCardPictureGone(const ServerState& server)
+{
+    return server.extended && server.kind == linkpreview::Kind::Card && !server.mainKey.isEmpty() && server.state == MediaState::Failed
+           && (server.error == MediaError::NotFound || server.error == MediaError::Permission || server.error == MediaError::Password);
+}
+
+linkpreview::CardData serverCardData(const ServerState& server)
+{
+    linkpreview::CardData data = server.card;
+    data.sensitive             = data.sensitive || server.sensitive;
+    if (server.mainKey.isEmpty() || serverCardPictureGone(server)) {
+        // No picture, or one that can never come: a text card (never an empty box, never a play symbol on nothing).
+        data.layout = linkpreview::CardLayout::None;
+        data.play   = false;
+    }
+    return data;
 }
 
 bool serverFailed(const ServerState& server)
@@ -141,6 +209,298 @@ Decision decide(linkpreview::Kind kind, bool hidden, const LocalState& local, co
     return d;
 }
 
+Decision decide(const linkpreview::Target& target, bool hidden, const LocalState& local, const ServerState& server, Wait wait, const Context& context)
+{
+    using linkcard::Look;
+    using linkpreview::Kind;
+    Decision d;
+    if (hidden) {
+        d.look = d.underlying = Look::Hidden;
+        return d;
+    }
+    const bool web = target.cls == linkpreview::LinkClass::Web;
+    if (web && !context.webCards) {
+        d.look = d.underlying = Look::Absent; // "Show cards for other web pages" off: never anything
+        return d;
+    }
+    // 2. Loaded here.
+    if (local.state == Local::Loaded) {
+        if (target.cls == linkpreview::LinkClass::YouTube) {
+            d.look = Look::YouTube;
+        } else if (local.kind == Kind::Card && !local.card.isEmpty()) {
+            // A share's card (2.7) shows only while cards for other web pages are on: nothing else to show then.
+            if (!context.webCards && linkpreview::providers::cardsFollowWebRules(target.cls, target.provider)) {
+                d.look = d.underlying = Look::Absent;
+                return d;
+            }
+            d.look = Look::Embed;
+        } else if (!local.mediaKey.isEmpty()) {
+            d.media    = true;
+            d.mediaKey = local.mediaKey;
+            d.look     = Look::Loading; // only drawn while Core can't draw the media yet
+        }
+        if (d.media || d.look == Look::YouTube || d.look == Look::Embed) {
+            d.underlying = d.look;
+            return d;
+        }
+    }
+    // 3. The sender's preview (LP for the 2.4 classes, LPX for the new ones: the chat checked which fits).
+    if (serverUsable(server)) {
+        d.fromServer = true;
+        const Kind kind = server.extended ? server.kind : target.kind;
+        if (server.extended && kind == Kind::Card) {
+            d.look = Look::Embed;
+        } else if (kind == Kind::YouTube) {
+            d.look = Look::YouTube;
+        } else if (kind == Kind::Video && !server.hasMedia) {
+            d.look = Look::Poster;
+        } else {
+            d.media    = true;
+            d.mediaKey = server.mainKey;
+            // Drawn only while Core can't draw the media yet (an LPX's file is asked for once its slot is on screen).
+            d.look = Look::Loading;
+            d.wait = Wait::Sender;
+        }
+        d.underlying = d.look;
+        return d;
+    }
+    // 4. Nothing to show here: no slot, except as the answer to a click (a click never seems to do nothing).
+    if (local.state == Local::Nothing) {
+        d.look    = local.clicked ? Look::Error : Look::Absent;
+        d.nothing = local.clicked;
+        d.underlying = d.look;
+        return d;
+    }
+    const bool senderNothing = context.senderNothing && !local.clicked
+                               && (local.state == Local::Idle || local.state == Local::OverAutoLimit || local.state == Local::Cooling);
+    if (senderNothing) {
+        d.look = d.underlying = Look::Absent; // the sender found nothing (or another website): nothing by itself
+        return d;
+    }
+    // 5-7: strips (2.4.0's rules, and Cooling).
+    switch (local.state) {
+    case Local::Loading:
+        d.look = Look::Loading;
+        break;
+    case Local::Failed:
+        d.look = Look::Error;
+        break;
+    case Local::TooLarge:
+        d.look = Look::TooLarge;
+        break;
+    case Local::Cooling:
+        d.look = Look::Loading;
+        d.wait = Wait::Host;
+        break;
+    case Local::Idle:
+    case Local::Loaded:
+    case Local::OverAutoLimit:
+    case Local::Nothing:
+        if (wait == Wait::Own || wait == Wait::Sender || wait == Wait::Checking || (wait == Wait::Auto && local.state == Local::Idle)) {
+            d.look = Look::Loading;
+            d.wait = wait;
+        } else {
+            d.look = Look::Click;
+        }
+        break;
+    }
+    d.underlying = d.look;
+    // The quiet class: a web page shows nothing while it waits, loads or fails by itself (Discord-like), and has no
+    // click strip; a load the user started shows its strips. A web link that turned out to be media is a media slot.
+    const bool mediaKnown = local.kind == Kind::Image || local.kind == Kind::Gif || local.kind == Kind::Video || local.kind == Kind::Loop;
+    if (web && !mediaKnown && !(local.clicked && (local.state == Local::Loading || local.state == Local::Failed)))
+        d.look = Look::Absent;
+    return d;
+}
+
+// ---- 2.5: busy sites ------------------------------------------------------------------------------------------
+
+LocalState afterBusy(const LocalState& before, qint64 retryAfterMs, bool soft, bool gateBusy, bool automatic, qint64 nowMs)
+{
+    LocalState l = before;
+    l.progress   = -1.0;
+    l.error.clear();
+    if (!automatic) {
+        // A click: the neutral busy line with Retry (a click never passes a cooldown).
+        l.state = Local::Failed;
+        l.error = errorText(QString::fromLatin1(linkpreview::errors::kRateLimited));
+        return l;
+    }
+    const qint64 wait = retryAfterMs > 0 ? retryAfterMs : gateBusy ? kGateBusyRetryMs : 60000;
+    const bool   hard = !soft && !gateBusy;
+    if ((hard && before.coolRetries >= kMaxCoolRetries) || before.coolingMs + wait > kMaxCoolingMs) {
+        l.state = Local::Failed; // asked often enough, or long enough: the busy line with Retry
+        l.error = errorText(QString::fromLatin1(linkpreview::errors::kRateLimited));
+        return l;
+    }
+    l.state       = Local::Cooling;
+    l.retryAtMs   = nowMs + wait;
+    l.coolRetries = before.coolRetries + (hard ? 1 : 0);
+    l.coolingMs   = before.coolingMs + wait;
+    l.softCooling = !hard;
+    return l;
+}
+
+bool coolingDue(const LocalState& local, qint64 nowMs)
+{
+    return local.state == Local::Cooling && nowMs >= local.retryAtMs;
+}
+
+LocalState underGate(LocalState local, linkpreview::HostGate::Verdict gate, qint64 ms, qint64 nowMs)
+{
+    if (local.state != Local::Idle)
+        return local;
+    if (gate == linkpreview::HostGate::Verdict::Cooling && ms > 0) {
+        local.state     = Local::Cooling;
+        local.retryAtMs = nowMs + ms;
+    } else if (gate == linkpreview::HostGate::Verdict::Walled) {
+        // Like a load that met the wall (kWalled): nothing to show, the same for every link of that site; a click
+        // (Load link previews) says "No preview for this page".
+        local.state = Local::Nothing;
+        local.error.clear();
+    }
+    return local;
+}
+
+LocalState clickedUnderGate(linkpreview::HostGate::Verdict gate)
+{
+    LocalState local;
+    local.clicked = true;
+    if (gate == linkpreview::HostGate::Verdict::Walled) {
+        local.state = Local::Nothing; // decide(): "No preview for this page", Open in browser, no Retry
+    } else {
+        local.state = Local::Failed;
+        local.error = errorText(QString::fromLatin1(linkpreview::errors::kRateLimited));
+    }
+    return local;
+}
+
+bool localFilesGone(const LocalState& local)
+{
+    if (local.state != Local::Loaded)
+        return false;
+    if (!local.thumbnailFile.isEmpty() && !QFileInfo::exists(local.thumbnailFile))
+        return true;
+    return !local.card.pictureFile.isEmpty() && !QFileInfo::exists(local.card.pictureFile);
+}
+
+bool crossSiteCardShown(const QString& finalHost, bool clicked, bool own)
+{
+    return finalHost.isEmpty() || clicked || own;
+}
+
+LocalState afterCard(LocalState local, const linkpreview::CardData& card, const QString& finalHost, bool own)
+{
+    local.state         = Local::Loaded;
+    local.kind          = linkpreview::Kind::Card;
+    local.card          = card;
+    local.finalHost     = finalHost;
+    local.heldCrossSite = false;
+    if (card.isEmpty() || !crossSiteCardShown(finalHost, local.clicked, own)) {
+        local.heldCrossSite = !card.isEmpty(); // in the cache: our own message's slot shows it (ownShowsHeldCard)
+        local.state         = Local::Nothing;
+        local.kind          = linkpreview::Kind::None;
+        local.card          = linkpreview::CardData();
+    }
+    return local;
+}
+
+bool ownShowsHeldCard(const LocalState& local, bool own)
+{
+    return own && local.state == Local::Nothing && local.heldCrossSite;
+}
+
+linkpreview::CardData shownCardData(linkpreview::CardData data, linkpreview::LinkClass cls, const QString& host, bool crossSite,
+                                    const QString& provider)
+{
+    data.title       = linkcard::cleanText(data.title, linkpreview::kCardTitleChars);
+    data.author      = linkcard::cleanText(data.author, linkpreview::kCardAuthorChars);
+    data.description = linkcard::cleanText(data.description, linkpreview::kCardDescriptionChars);
+    const QString site = linkcard::cleanText(data.site, linkpreview::kCardSiteChars);
+    const bool    web  = linkpreview::providers::cardsFollowWebRules(cls, provider); // 2.5: a share's card too
+    data.site          = web && !crossSite && linkpreview::providers::siteNameMatches(site, host) ? site : QString();
+    if (!web || crossSite)
+        data.hasColor = false;
+    return data;
+}
+
+bool stillOverLimit(const LocalState& local, qint64 cap)
+{
+    if (local.state != Local::OverAutoLimit)
+        return false;
+    const bool fits = cap > 0 && ((local.size > 0 && local.size <= cap) || (local.size < 0 && cap > local.capHit));
+    return !fits;
+}
+
+const char* holdReasonName(HoldReason reason)
+{
+    switch (reason) {
+    case HoldReason::None:
+        return "none";
+    case HoldReason::Hidden:
+        return "hidden";
+    case HoldReason::Setting:
+        return "setting";
+    case HoldReason::Waiting:
+        return "waiting";
+    case HoldReason::Offscreen:
+        return "offscreen";
+    case HoldReason::Turn:
+        return "turn";
+    case HoldReason::Budget:
+        return "budget";
+    case HoldReason::Gate:
+        return "gate";
+    case HoldReason::Cap:
+        return "cap";
+    case HoldReason::SenderNothing:
+        return "sender-nothing";
+    case HoldReason::Nothing:
+        return "nothing";
+    case HoldReason::Failed:
+        return "failed";
+    }
+    return "none";
+}
+
+HoldReason holdReason(const Decision& d, const LocalState& local, const Context& context, bool onScreen, bool turnFree, bool budgetFree,
+                      linkpreview::HostGate::Verdict gate, bool capOk)
+{
+    using linkcard::Look;
+    using Verdict = linkpreview::HostGate::Verdict;
+    if (d.look == Look::Hidden)
+        return HoldReason::Hidden;
+    if (!context.webCards && local.state == Local::Loaded && d.look == Look::Absent && d.underlying == Look::Absent)
+        return HoldReason::Setting; // 2.5: a share's card loaded here while cards for other web pages are off
+    if (d.media || d.fromServer || d.look == Look::YouTube || d.look == Look::Embed || d.look == Look::Poster || local.state == Local::Loaded)
+        return HoldReason::None; // shown
+    if (d.nothing || local.state == Local::Nothing)
+        return HoldReason::Nothing;
+    if (local.state == Local::Failed || local.state == Local::TooLarge)
+        return HoldReason::Failed;
+    if (local.state == Local::Loading)
+        return HoldReason::None; // loading now
+    if (context.senderNothing && d.look == Look::Absent)
+        return HoldReason::SenderNothing;
+    if (!context.webCards && d.look == Look::Absent && d.underlying == Look::Absent)
+        return HoldReason::Setting;
+    if (d.wait == Wait::Own || d.wait == Wait::Sender || d.wait == Wait::Checking)
+        return HoldReason::Waiting;
+    if (local.state == Local::Cooling || gate == Verdict::Cooling || gate == Verdict::Walled || gate == Verdict::Broken)
+        return HoldReason::Gate;
+    if (!context.autoOn)
+        return HoldReason::Setting;
+    if (!capOk || local.state == Local::OverAutoLimit)
+        return HoldReason::Cap;
+    if (!onScreen)
+        return HoldReason::Offscreen;
+    if (!turnFree)
+        return HoldReason::Turn;
+    if (!budgetFree)
+        return HoldReason::Budget;
+    return HoldReason::None;
+}
+
 // ---- Core links ---------------------------------------------------------------------------------------
 
 linkpreview::Announcement withFileBrowser(linkpreview::Announcement a, const QString& serverUid, quint64 channelId)
@@ -154,7 +514,7 @@ linkpreview::Announcement withFileBrowser(linkpreview::Announcement a, const QSt
 
 bool serverLink(const linkpreview::Announcement& a, MediaLink* main)
 {
-    if (!main || a.serverUid.isEmpty() || a.channelId == 0 || !linkpreview::isValid(a))
+    if (!main || a.serverUid.isEmpty() || a.channelId == 0 || !linkpreview::isValidAny(a) || a.previewPath.isEmpty())
         return false; // nothing that can be checked: nothing is downloaded
     const MediaLink link = linkpreview::linkFor(a);
     if (!link.isValid() || link.sha256.size() != 32)
@@ -166,15 +526,17 @@ bool serverLink(const linkpreview::Announcement& a, MediaLink* main)
 QUrl webAddress(const QString& href, const linkpreview::Target& target)
 {
     // Only an href that classify() takes as this very link (its rules: no user info, standard ports, a public host).
-    if (!href.isEmpty() && target.isValid() && linkpreview::classify(href).key == target.key) {
-        QUrl url(href, QUrl::TolerantMode);
-        if (url.scheme() == QLatin1String("http")) // YouTube only (classify takes no other http link)
+    // 2.5: read the same way the chat found it (trimLinkEnd); http links of every class open as https.
+    const QString link = linkpreview::trimLinkEnd(href);
+    if (!link.isEmpty() && target.isValid() && linkpreview::classify(link).key == target.key) {
+        QUrl url(link, QUrl::TolerantMode);
+        if (url.scheme() == QLatin1String("http"))
             url.setScheme(QString::fromLatin1("https"));
         url.setPort(-1); // the standard one (classify takes no other)
         if (url.isValid() && url.scheme() == QLatin1String("https"))
             return url;
     }
-    return target.url;
+    return target.isNewClass() && target.page.isValid() ? target.page : target.url;
 }
 
 QString errorText(const QString& code)
@@ -189,7 +551,30 @@ QString errorText(const QString& code)
         return i18n::t("This link isn't a picture or video");
     if (code == QLatin1String(linkpreview::errors::kTooManyPixels))
         return i18n::t("The picture is too large to show");
+    // 2.5
+    if (code == QLatin1String(linkpreview::errors::kRateLimited) || code == QLatin1String(linkpreview::errors::kGateBusy))
+        return i18n::t("The site is busy right now. Try again later.");
+    if (code == QLatin1String(linkpreview::errors::kUnsupported))
+        return i18n::t("This picture can't be shown here");
     return {};
+}
+
+bool isNothingError(const QString& code)
+{
+    return code == QLatin1String(linkpreview::errors::kNothing) || code == QLatin1String(linkpreview::errors::kWalled)
+           || code == QLatin1String(linkpreview::errors::kExpired) || code == QLatin1String(linkpreview::errors::kWebOff);
+}
+
+bool loadFollowsWebCards(const linkpreview::Target& target)
+{
+    // Every switch-dependent step of a load is the share plan's (Fetcher sharePage: a redirect to another host, an
+    // unconfirmed page); a Web link's load never starts with the switch off and stops when it goes off (R21).
+    return linkpreview::providers::cardsFollowWebRules(target.cls, target.provider) && target.cls != linkpreview::LinkClass::Web;
+}
+
+bool restartForWebCards(const LocalState& local, const linkpreview::Target& target, bool webCards)
+{
+    return local.state == Local::Loading && local.webCards != webCards && loadFollowsWebCards(target);
 }
 
 QString webServerUid()
@@ -197,7 +582,7 @@ QString webServerUid()
     return QString::fromLatin1("tsmedia-web");
 }
 
-MediaLink webLink(const linkpreview::Target& target, const QString& mime, qint64 size, int width, int height, qint64 durationMs)
+MediaLink webLink(const linkpreview::Target& target, const QString& mime, qint64 size, int width, int height, qint64 durationMs, bool loop, bool sensitive)
 {
     MediaLink link;
     link.serverUid = webServerUid();
@@ -219,8 +604,10 @@ MediaLink webLink(const linkpreview::Target& target, const QString& mime, qint64
     while (clean.startsWith(QLatin1Char('.')))
         clean.remove(0, 1);
     if (clean.isEmpty())
-        clean = target.kind == linkpreview::Kind::Video ? QString::fromLatin1("video") : QString::fromLatin1("image");
+        clean = target.kind == linkpreview::Kind::Video || target.kind == linkpreview::Kind::Loop ? QString::fromLatin1("video") : QString::fromLatin1("image");
     link.fileName = clean + QLatin1Char('.') + extensionFor(mime, target);
+    link.loop     = loop;      // 2.5: played like a GIF (never written into a link)
+    link.spoiler  = sensitive; // 2.5: the page says it is for adults: the spoiler cover
     return link;
 }
 

@@ -8,6 +8,9 @@
 #include <QTimer>
 
 #include "core.h"
+#include "loopplayers.h" // 2.5: the loop pool
+#include "previewscale.h" // 2.5 zoom: the GIF frame rule
+#include "safeimage.h" // 2.5: received pictures decoded by their bytes only
 #include "settings.h"
 #include "ts3api.h"
 #include "uiutil.h"
@@ -104,6 +107,7 @@ struct InlineMediaController::Video {
     quint64          lastUsed         = 0;
     int              appliedLoop      = -1;
     qint64           absentSinceMs    = 0; // its preview is in no chat document since then (0 = present)
+    bool             loop             = false; // 2.5: a looping video of a link preview (the loop pool, muted)
 };
 
 struct InlineMediaController::Animation {
@@ -167,7 +171,7 @@ InlineMediaController::~InlineMediaController()
 InlineMediaController::Mode InlineMediaController::mode(const QString& key) const
 {
     if (isVideo(key))
-        return Mode::Video;
+        return isLoop(key) ? Mode::Loop : Mode::Video;
     if (isInlineAudio(key)) // 2.2 audio
         return Mode::Audio;
     if (m_animations.contains(key))
@@ -257,6 +261,12 @@ bool InlineMediaController::isVideo(const QString& key) const
     return e && e->kind == MediaKind::Video;
 }
 
+bool InlineMediaController::isLoop(const QString& key) const
+{
+    const MediaEntry* e = m_core->entry(key);
+    return e && e->kind == MediaKind::Video && e->link.loop;
+}
+
 // 2.2 audio: without Media Foundation (Windows N without the Media Feature Pack) audio files stay
 // plain file cards that open in the default app.
 bool InlineMediaController::isInlineAudio(const QString& key) const
@@ -306,16 +316,29 @@ void InlineMediaController::setPresentKeys(const QSet<QString>& keys)
         updateTimer();
 }
 
-void InlineMediaController::setFrameSize(const QString& key, const QSize& devicePixels)
+void InlineMediaController::setFrameSize(const QString& key, const QSize& devicePixels, qreal ratio)
 {
-    if (devicePixels.isEmpty() || m_frameSizes.value(key) == devicePixels)
+    const qreal r = ratio > 0 ? ratio : 1.0;
+    if (devicePixels.isEmpty() || (m_frameSizes.value(key) == devicePixels && qFuzzyCompare(m_frameRatios.value(key, 1.0), r)))
         return;
     m_frameSizes.insert(key, devicePixels);
+    m_frameRatios.insert(key, r);
 
     if (Video* v = m_videos.value(key); v && v->player && v->loaded && !v->audio) // 2.2 audio: no frames
         v->player->setFrameSize(videoFrameSize(v));
     if (Animation* a = m_animations.value(key); a && !a->natural.isEmpty())
-        a->movie->setScaledSize(fitWithin(a->natural, devicePixels, 4.0));
+        a->movie->setScaledSize(animationFrameSize(key, a->natural));
+}
+
+// 2.5 zoom (design2 1.7): GIF frames (QMovie decodes them on TeamSpeak's GUI thread) at the box's du size times the
+// ratio, at most ratio 2, and never above the GIF's own size; drawing scales the frame to its box.
+QSize InlineMediaController::animationFrameSize(const QString& key, const QSize& natural) const
+{
+    const QSize box   = m_frameSizes.value(key);
+    const qreal ratio = m_frameRatios.value(key, 1.0);
+    if (natural.isEmpty() || box.isEmpty())
+        return natural;
+    return previewscale::animationFrameSize(natural, QSizeF(box) / ratio, ratio);
 }
 
 QSize InlineMediaController::videoFrameSize(const Video* video) const
@@ -401,7 +424,7 @@ void InlineMediaController::click(const QString& key, VideoZone zone, double see
     case VideoZone::Mute:
         m_muted = !v->player->isMuted();
         for (Video* other : qAsConst(m_videos)) {
-            if (other->player && !other->audio) // 2.2 audio: cards are never muted
+            if (other->player && !other->audio && !other->loop) // 2.2 audio: cards are never muted; 2.5: loops always are
                 other->player->setMuted(m_muted);
         }
         break;
@@ -435,6 +458,8 @@ void InlineMediaController::hover(const QString& key, VideoZone zone)
         }
         if (!gifsAutoplay())
             updateAnimations();
+        else if (isLoop(key) || isLoop(oldKey))
+            updateLoops(); // 2.5: a hovered loop may take a player
     }
 
     if (!key.isEmpty() && isPlayable(key)) {
@@ -494,7 +519,7 @@ void InlineMediaController::setMuted(bool muted)
         return;
     m_muted = muted;
     for (Video* v : qAsConst(m_videos)) {
-        if (v->audio) // 2.2 audio: cards don't follow the session mute
+        if (v->audio || v->loop) // 2.2 audio: cards don't follow the session mute; 2.5: loops are always muted
             continue;
         if (v->player && v->player->isMuted() != m_muted)
             v->player->setMuted(m_muted);
@@ -554,7 +579,9 @@ void InlineMediaController::startVideo(const QString& key)
         return;
     }
 
-    makeRoomForPlayer(v);
+    v->loop = isLoop(key); // 2.5: the loop pool made its own room (updateLoops)
+    if (!v->loop)
+        makeRoomForPlayer(v);
     testLog(QStringLiteral("creating player for ") + key);
     auto* player   = new mf::VideoPlayer;
     testLog(QStringLiteral("player created"));
@@ -579,7 +606,10 @@ void InlineMediaController::startVideo(const QString& key)
         video->pendingSeek = -1.0;
         if (video->wantPlay) {
             video->wantPlay = false;
-            play(video);
+            if (video->loop)
+                video->player->play(); // 2.5: a loop never pauses the others, nor says it started
+            else
+                play(video);
         }
         emit frameChanged(key);
         updateTimer();
@@ -636,7 +666,7 @@ void InlineMediaController::startVideo(const QString& key)
     // 2.2 audio: audio files use the audio-only engine (no graphics device), never muted. The volume
     // is set before opening, so nothing can ever start at the engine's default full volume.
     player->setVolume(qBound(0, Settings::instance().videoVolume, 100) / 100.0);
-    player->setMuted(v->audio ? false : m_muted);
+    player->setMuted(v->audio ? false : v->loop ? true : m_muted);
     player->open(e->localPath, v->audio ? mf::OpenMode::AudioOnly : mf::OpenMode::Auto);
     testLog(QStringLiteral("open() returned"));
     emit frameChanged(key);
@@ -645,9 +675,9 @@ void InlineMediaController::startVideo(const QString& key)
 
 void InlineMediaController::play(Video* video)
 {
-    // Only one inline video plays at a time.
+    // Only one inline video plays at a time (2.5: loops play on, like GIFs).
     for (Video* other : qAsConst(m_videos)) {
-        if (other != video && other->player && other->player->isPlaying()) {
+        if (other != video && other->player && other->player->isPlaying() && !other->loop) {
             other->player->pause();
             emit frameChanged(other->key);
         }
@@ -679,7 +709,7 @@ void InlineMediaController::makeRoomForPlayer(const Video* keep)
         int    players = 0;
         Video* victim  = nullptr;
         for (Video* v : qAsConst(m_videos)) {
-            if (!v->player)
+            if (!v->player || v->loop) // 2.5: loops have a pool of their own
                 continue;
             ++players;
             if (v == keep || v->player->isPlaying())
@@ -705,13 +735,13 @@ void InlineMediaController::applySettings(Video* video)
     const double    volume = qBound(0, s.videoVolume, 100) / 100.0;
     if (qAbs(video->player->volume() - volume) > 0.001)
         video->player->setVolume(volume);
-    // 2.2 audio: audio cards never loop and never follow the video session mute.
-    const int loop = s.loopVideos && !video->audio ? 1 : 0;
+    // 2.2 audio: audio cards never loop and never follow the video session mute. 2.5: a loop always loops, muted.
+    const int loop = video->loop || (s.loopVideos && !video->audio) ? 1 : 0;
     if (video->appliedLoop != loop) {
         video->player->setLoop(loop == 1);
         video->appliedLoop = loop;
     }
-    const bool muted = video->audio ? false : m_muted;
+    const bool muted = video->audio ? false : video->loop ? true : m_muted;
     if (video->player->isMuted() != muted)
         video->player->setMuted(muted);
 }
@@ -791,6 +821,11 @@ void InlineMediaController::tick()
                 applySettings(v);
             continue;
         }
+        if (v->loop) { // 2.5: no controls on a loop
+            if (syncSettings)
+                applySettings(v);
+            continue;
+        }
         const bool shown = controlsShown(v);
         if (shown != v->controlsShown) {
             v->controlsShown = shown;
@@ -853,9 +888,9 @@ bool InlineMediaController::isAnimatable(const QString& key)
     if (!e || e->state != MediaState::Ready || !mayBeAnimated(*e))
         return false;
 
-    bool         ok = false;
-    QImageReader reader(e->localPath);
-    reader.setDecideFormatFromContent(true);
+    bool                                ok     = false;
+    const std::unique_ptr<QImageReader> safe   = safeimage::reader(e->localPath, safeimage::Source::Peer);
+    QImageReader&                       reader = *safe;
     if (reader.supportsAnimation()) {
         const QSize  size   = reader.size();
         const int    count  = reader.imageCount(); // 0 = unknown
@@ -876,8 +911,9 @@ void InlineMediaController::ensureAnimation(const QString& key)
     if (!e || e->state != MediaState::Ready)
         return;
 
-    auto* movie = new QMovie(e->localPath);
-    if (!movie->isValid()) {
+    // 2.5: the format from the file's bytes, forced (safeimage.h).
+    QMovie* movie = safeimage::movie(e->localPath, safeimage::Source::Peer, nullptr);
+    if (!movie || !movie->isValid()) {
         delete movie;
         m_animatable.insert(key, false);
         return;
@@ -886,10 +922,10 @@ void InlineMediaController::ensureAnimation(const QString& key)
 
     auto* a    = new Animation;
     a->movie   = movie;
-    a->natural = QImageReader(e->localPath).size();
+    a->natural = safeimage::reader(e->localPath, safeimage::Source::Peer)->size();
     const QSize box = m_frameSizes.value(key);
     if (!a->natural.isEmpty() && !box.isEmpty())
-        movie->setScaledSize(fitWithin(a->natural, box, 4.0));
+        movie->setScaledSize(animationFrameSize(key, a->natural)); // 2.5 zoom: at most ratio 2, never above its size
 
     connect(movie, &QMovie::frameChanged, this, [this, key](int) {
         Animation* an = m_animations.value(key);
@@ -960,4 +996,75 @@ void InlineMediaController::updateAnimations()
             a->movie->setPaused(true);
         }
     }
+    updateLoops(); // 2.5
+}
+
+// ============================================================================================
+// 2.5: looping videos of link previews (played like GIFs, a pool of their own)
+// ============================================================================================
+
+void InlineMediaController::updateLoops()
+{
+    // Every loop the controller knows (with a record) and every loop in view.
+    QVector<loopplayers::Slot> loops;
+    QSet<QString>              seen;
+    const auto add = [&](const QString& key) {
+        if (seen.contains(key) || !isLoop(key))
+            return;
+        const MediaEntry* e = m_core->entry(key);
+        if (!e || e->state != MediaState::Ready || m_core->isSpoilerHidden(key))
+            return;
+        seen.insert(key);
+        const Video*      v = m_videos.value(key);
+        loopplayers::Slot s;
+        s.key       = key;
+        s.hasPlayer = v && v->player && !v->failed;
+        s.visible   = m_visible.contains(key);
+        s.hovered   = key == m_hoverKey;
+        s.lastUsed  = v ? v->lastUsed : 0;
+        loops.append(s);
+    };
+    for (const Video* v : qAsConst(m_videos)) {
+        if (v->loop)
+            add(v->key);
+    }
+    for (const QString& key : qAsConst(m_visible))
+        add(key);
+    if (loops.isEmpty())
+        return;
+    const loopplayers::Plan plan = loopplayers::plan(loops, gifsAutoplay(), kMaxLoopPlayers);
+    for (const QString& key : plan.evict) {
+        if (Video* v = m_videos.value(key)) {
+            v->wantPlay = false;
+            destroyPlayer(v);
+            emit frameChanged(key); // back to its poster
+        }
+    }
+    for (const QString& key : plan.pause) {
+        Video* v = m_videos.value(key);
+        if (v && v->player && v->player->isPlaying()) {
+            v->player->pause();
+            emit frameChanged(key);
+        }
+    }
+    for (const QString& key : plan.play) {
+        Video* v = m_videos.value(key);
+        if (!v || !v->player)
+            continue;
+        v->lastUsed = ++m_useClock;
+        if (!v->loaded)
+            v->wantPlay = true;
+        else if (!v->player->isPlaying())
+            v->player->play();
+    }
+    for (const QString& key : plan.start) {
+        Video* v = videoRecord(key);
+        if (v->failed)
+            continue; // its poster (a file that doesn't play inline)
+        v->loop     = true;
+        v->wantPlay = true;
+        v->lastUsed = ++m_useClock;
+        startVideo(key);
+    }
+    updateTimer();
 }

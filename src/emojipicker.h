@@ -14,6 +14,11 @@
 #include <QWidget>
 
 class EmojiPickerPrivate;
+class GifPanel;
+
+namespace gifs {
+struct Host;
+}
 
 class EmojiPicker : public QWidget
 {
@@ -39,6 +44,18 @@ class EmojiPicker : public QWidget
     void setOpener(const QRect& opener);
 
     static QSize preferredSize();
+    // 2.5 GIFs: with a GIF host (the chat input's picker only) a switch row on top, Emoji | GIFs (design_gifs 5.1).
+    static QSize preferredSize(bool gifs); // 384 x 477 with the switch row, 384 x 435 without
+
+    // 2.5 GIFs: call before openAt. Without a host the picker is exactly as before (React mode, the send window).
+    enum class Page { Emoji, Gifs };
+    void      setGifHost(const gifs::Host& host);
+    bool      hasGifHost() const;
+    void      showPage(Page page); // remembered for the next mouse opening (emoji::prefs::setLastTabGifs)
+    Page      page() const;
+    GifPanel* gifPanel() const;   // nullptr until the GIFs page first shows
+    QWidget*  pageSwitch() const; // the switch row (tests)
+    QWidget*  moreButton() const; // the ⋯ button (tests)
 
     // Tools and tests: the state to draw (search text, the item with the keyboard focus).
     void setSearchText(const QString& text);

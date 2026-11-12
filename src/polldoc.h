@@ -17,6 +17,7 @@
 #include <QVector>
 
 #include "polls.h"
+#include "previewscale.h" // 2.5 zoom: the card object carries its du size
 
 class QTextBlock;
 class QTextCharFormat;
@@ -52,7 +53,8 @@ Found          parseBlock(const QTextBlock& block); // block < 0: no poll there
 // ---- edits (one edit block each) --------------------------------------------------------------------------
 // Takes found's text out and puts our line break and picture (name, logical size) there. False if found
 // doesn't describe the document any more.
-bool         collapse(QTextDocument* doc, const Found& found, const QString& name, const QSizeF& size);
+// 2.5 zoom: size in du; the object is du x scale (whole device px) with the du size kept in its format.
+bool         collapse(QTextDocument* doc, const Found& found, const QString& name, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 bool         restore(QTextDocument* doc, int position); // our picture at position
 // Our line break in front of the card only where the block's look needs it (TeamSpeak's header and a
 // Compact head: yes; a Cozy head's body and a continuation: no). After TS Media's layout styled a block, or
@@ -61,7 +63,7 @@ bool         normalize(QTextDocument* doc, int position);
 int          normalizeAll(QTextDocument* doc);
 int          restoreAll(QTextDocument* doc);
 int          giveBack(QTextDocument* doc); // restoreAll, and the pictures' memory goes too
-void         resizeObject(QTextDocument* doc, int position, const QSizeF& size);
+void         resizeObject(QTextDocument* doc, int position, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 QVector<int> objectPositions(QTextDocument* doc);
 bool         isObject(const QTextCharFormat& format);
 

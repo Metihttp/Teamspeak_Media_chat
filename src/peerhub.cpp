@@ -305,8 +305,11 @@ void PeerHub::prepareShutdown()
 
 void PeerHub::applySettings()
 {
-    const Settings& s = Settings::instance();
-    m_directory->setLocal({QString::fromLatin1(TSMEDIA_VERSION), s.sharePresence, s.showReactions, s.showLinkPreviews && s.makeLinkPreviews});
+    const Settings& s    = Settings::instance();
+    const bool      make = s.showLinkPreviews && s.makeLinkPreviews;
+    // 2.4 "l", 2.5 "lx" (media pages and site cards) and "lw" (other web pages): a change goes to the channel as one
+    // HELLO rr=0 (peers.cpp).
+    m_directory->setLocal({QString::fromLatin1(TSMEDIA_VERSION), s.sharePresence, s.showReactions, make, make, make && s.showWebCards});
     m_previews->applySettings(); // 2.4 link previews
 }
 

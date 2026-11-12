@@ -49,6 +49,10 @@ class ChatTextReactions : public QObject
 
     // After ChatIntegration scanned browser's document (and on settings changes, which rescan).
     void afterScan(QTextBrowser* browser);
+    // 2.5 zoom: ChatScale's pass (inside its edit block): every row at the chat's new chrome scale.
+    void applyChromeScale(QTextBrowser* browser);
+    // 2.5 zoom (1.12): the chat's picture budget swapped name for its blank stand-in: drawn again before it is seen.
+    void pictureSwapped(QTextBrowser* browser, const QString& name);
     // Chat viewports: hover, clicks and tool tips on the rows, painting their pictures. True when the
     // event was for a row (ChatIntegration then stops).
     bool filterEvent(QObject* watched, QEvent* event);

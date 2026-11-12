@@ -23,6 +23,7 @@
 #include "core.h"
 #include "pollart.h"
 #include "polls.h"
+#include "previewscale.h" // 2.5 zoom
 
 class ChatIntegration;
 class PollDialog;
@@ -45,6 +46,10 @@ class ChatPolls : public QObject
     bool filterEvent(QObject* watched, QEvent* event); // true: the event was for a card
     void openCreator(QWidget* source);                 // the attach menu's "Poll"
     PollHub* hub() const { return m_hub; }
+    // 2.5 zoom: ChatScale's pass (ChatIntegration::applyScale): the cards at the new scale, no drawing. And a card
+    // the chat's budget swapped for its stand-in (drawn again near the view).
+    void applyScale(QTextBrowser* browser, const PreviewScale& scale);
+    void pictureSwapped(QTextBrowser* browser, const QString& name);
 
     // The chat message for poll (as it is sent), or empty when it doesn't fit into one message.
     static QString messageFor(const polls::Poll& poll, quint64 sch);

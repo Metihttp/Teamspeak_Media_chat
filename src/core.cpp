@@ -36,6 +36,7 @@
 #include "video/mftranscode.h" // 2.4 compress
 #include "video/mfvideo.h"     // 2.4 compress: mf::available()
 #include "linkpreview/linkstate.h" // 2.4 link previews: the made-up server of a website's file
+#include "safeimage.h"                // 2.5: one decode path for received and website pictures
 
 #include <QStorageInfo> // 2.4 compress: free space for the compressed copy
 
@@ -388,8 +389,10 @@ QImage decodeScaled(const QString& path, const QSize& maxPixels, bool onlyIfChea
 {
     if (expensive)
         *expensive = false;
-    QImageReader reader(path);
-    reader.setDecideFormatFromContent(true);
+    // 2.5: decoded by its bytes only, the format forced (safeimage.h): a received "picture" holding SVG or XPM, or
+    // a lossless WebP, is never decoded (no preview: the file card shows).
+    const std::unique_ptr<QImageReader> safe = safeimage::reader(path, safeimage::Source::Peer);
+    QImageReader&                       reader = *safe;
     reader.setAutoTransform(true);
     const QSize  raw    = reader.size();
     const qint64 pixels = static_cast<qint64>(raw.width()) * raw.height();
@@ -925,8 +928,10 @@ void Core::startAutoDownloads(const QString& key)
     MediaEntry&     e          = it.value();
     // 2.2 per-server settings: the server the download goes to (where the data is spent) decides.
     const Settings  s          = Settings::instance().forServer(e.link.serverUid);
-    const bool      isImage    = isPreviewableImage(e.kind);
-    const bool      isVideo    = e.kind == MediaKind::Video;
+    // 2.5: a silent looping video (a GIF-like link preview) downloads by the picture rule, like a GIF.
+    const bool      isLoop     = e.kind == MediaKind::Video && e.link.loop;
+    const bool      isImage    = isPreviewableImage(e.kind) || isLoop;
+    const bool      isVideo    = e.kind == MediaKind::Video && !isLoop;
     const quint64   imageLimit = megabytes(s.autoDownloadMaxMB);
     const quint64   videoLimit = megabytes(s.videoAutoDownloadMB);
     // 2.2 audio: audio files have their own rule (audioplayback.h); voice messages (vm) download like images.
@@ -1609,7 +1614,8 @@ quint64 Core::autoDownloadLimit(const MediaEntry& e) const
     const Settings& s = Settings::instance();
     if (e.kind == MediaKind::Audio) // 2.2 audio; 2.2 voice: voice messages have their own limit
         return audioplayback::autoDownloadLimit(s, e.link.voice);
-    return e.kind == MediaKind::Video ? megabytes(s.videoAutoDownloadMB) : megabytes(s.autoDownloadMaxMB);
+    // 2.5: a looping video is limited like a GIF.
+    return e.kind == MediaKind::Video && !e.link.loop ? megabytes(s.videoAutoDownloadMB) : megabytes(s.autoDownloadMaxMB);
 }
 
 // A link's size is untrusted: an automatic download whose real size exceeds the auto-download limit
@@ -1657,6 +1663,13 @@ MediaStill Core::still(const QString& key, const QSize& maxPixels)
 
     const QString base = key + QLatin1Char('@') + QString::number(maxPixels.width()) + QLatin1Char('x') + QString::number(maxPixels.height()) + QLatin1Char('#');
     const MediaStill::Source order[] = {MediaStill::Full, MediaStill::Preview, MediaStill::BlurHash};
+    // 2.5 live test fix: the full file is no picture by its bytes (found by the Full step, which comes first): every
+    // still returned says so, so the chat shows the file card instead of the blurhash.
+    bool       notAPicture = false;
+    const auto tagged      = [&notAPicture](MediaStill s) {
+        s.notAPicture = notAPicture;
+        return s;
+    };
     for (const MediaStill::Source source : order) {
         QString path;
         switch (source) {
@@ -1681,18 +1694,20 @@ MediaStill Core::still(const QString& key, const QSize& maxPixels)
 
         const QString cacheKey = base + QString::number(static_cast<int>(source));
         if (const MediaStill* cached = m_stills.object(cacheKey)) {
-            if (cached->image.isNull())
+            if (cached->image.isNull()) {
+                notAPicture = notAPicture || cached->notAPicture;
                 continue; // this source could not be decoded; remembered until the entry changes
+            }
             if (!path.isEmpty())
                 markUsed(path);
-            return *cached;
+            return tagged(*cached);
         }
 
         if (!path.isEmpty() && m_stillJobs.contains(cacheKey)) {
             // Being decoded on a worker: show this source at another size meanwhile, if there is one.
             const MediaStill other = otherSizeStill(key, source, maxPixels);
             if (!other.image.isNull())
-                return other;
+                return tagged(other);
             continue;
         }
 
@@ -1706,20 +1721,24 @@ MediaStill Core::still(const QString& key, const QSize& maxPixels)
             startStillDecode(key, cacheKey, source, path, maxPixels);
             const MediaStill other = otherSizeStill(key, source, maxPixels);
             if (!other.image.isNull())
-                return other;
+                return tagged(other);
             continue;
         }
         if (!result.image.isNull()) {
             result.source = source;
             if (!path.isEmpty())
                 markUsed(path);
+        } else if (source == MediaStill::Full) {
+            // Why it failed, remembered with the failure: refused by its bytes, or a real picture (too large, damaged).
+            result.notAPicture = safeimage::formatOf(path, safeimage::Source::Peer).isEmpty();
+            notAPicture        = notAPicture || result.notAPicture;
         }
         const int cost = qMax(1, static_cast<int>(result.image.sizeInBytes() / 1024));
         m_stills.insert(cacheKey, new MediaStill(result), cost);
         if (!result.image.isNull())
-            return result;
+            return tagged(result);
     }
-    return {};
+    return tagged(MediaStill());
 }
 
 void Core::startStillDecode(const QString& key, const QString& cacheKey, MediaStill::Source source, const QString& path, const QSize& maxPixels)
@@ -2284,7 +2303,9 @@ int Core::send(const SendRequest& request)
         unit.album = indexes.size() >= 2;
         for (int index : indexes) {
             const SendItem& item = items.at(index);
-            const int       id   = createUpload(item, remoteNameFor(item, makeRemoteName(QFileInfo(item.path).fileName())), target, batch);
+            // 2.5 GIFs: SendItem::remoteName inside remoteNameFor, so a paste's and a voice message's naming keep precedence.
+            const int       id   = createUpload(item, remoteNameFor(item, makeRemoteName(item.remoteName.isEmpty() ? QFileInfo(item.path).fileName() : item.remoteName)),
+                                                target, batch);
             if (id == 0)
                 continue;
             unit.jobs.append(id);
@@ -2406,7 +2427,7 @@ int Core::createUpload(const SendItem& item, const QString& remoteName, const Ch
         return id;
     }
     if (ts3::channelHasPassword(target.sch, j.channelId)) {
-        failUpload(id, uploadErrorText(MediaError::Password));
+        failUploadFor(id, MediaError::Password, uploadErrorText(MediaError::Password));
         return id;
     }
 
@@ -2897,7 +2918,8 @@ void Core::startSend(int id)
             startSend(id); // bounded by kMaxUploadRenames
             return;
         }
-        failUpload(id, err == ERROR_file_already_exists ? nameTakenText() : uploadErrorText(mapError(err), ts3::errorText(err)));
+        failUploadFor(id, err == ERROR_file_already_exists ? MediaError::Other : mapError(err),
+                      err == ERROR_file_already_exists ? nameTakenText() : uploadErrorText(mapError(err), ts3::errorText(err)));
         return;
     }
     setOpTransfer(rc, tid);
@@ -3273,7 +3295,8 @@ bool Core::sendPost(PostItem& post)
         if (!post.target.clientUid.isEmpty() && ts3::clientUid(post.sch, client) != post.target.clientUid)
             client = ts3::clientIdByUid(post.sch, post.target.clientUid);
         if (!client) {
-            failPost(post, i18n::t("Uploaded, but the person it was meant for has left the server, so nothing was sent to them. The file is in the channel's file browser."));
+            failPost(post, post.gifText ? noRecipientText() // 2.5 GIFs: no file was uploaded for it
+                                        : i18n::t("Uploaded, but the person it was meant for has left the server, so nothing was sent to them. The file is in the channel's file browser."));
             return false;
         }
         post.target.clientId = client;
@@ -3359,8 +3382,16 @@ void Core::finishPost(const QString& returnCode, unsigned int error, const QStri
             settleCaption(flight.item.captionOf, true);
         for (int id : qAsConst(flight.item.jobs)) {
             auto job = m_uploads.find(id);
-            if (job != m_uploads.end() && job->state == UploadState::Posting)
-                setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
+            if (job == m_uploads.end() || job->state != UploadState::Posting)
+                continue;
+            if (!job->background) {
+                // 2.5 GIFs: before Done, while the job's link (m_uploadExtra) is still there (cleanupUpload drops it).
+                emit mediaPosted(id);
+                job = m_uploads.find(id); // looked up again: nothing may be assumed after a signal
+                if (job == m_uploads.end() || job->state != UploadState::Posting)
+                    continue;
+            }
+            setUploadState(job.value(), UploadState::Done, i18n::t("Sent"));
         }
     } else {
         failPost(flight.item, postErrorText(permissionError ? MediaError::Permission : mapError(error), message));
@@ -3372,6 +3403,11 @@ void Core::finishPost(const QString& returnCode, unsigned int error, const QStri
 // (retryUpload), with every file it announces. captionText: the reason for a caption of its own.
 void Core::failPost(const PostItem& post, const QString& text, const QString& captionText)
 {
+    if (post.gifText) {
+        // 2.5 GIFs: a GIF link of its own (postText): one chat line, nothing to retry.
+        ts3::printWarning(post.sch, i18n::t("Couldn't send the GIF: %1").arg(captionText.isEmpty() ? text : captionText));
+        return;
+    }
     if (post.jobs.isEmpty()) {
         // A caption of its own: the files are posted anyway (nothing posts it again).
         ts3::printWarning(post.sch, i18n::t("Couldn't send the caption: %1").arg(captionText.isEmpty() ? text : captionText));
@@ -3409,6 +3445,68 @@ void Core::warnFailed(uint64 sch, const QVector<int>& ids, const QString& text)
         return;
     }
     ts3::printWarning(sch, i18n::t("Couldn't send %1 files: %2").arg(failing.size()).arg(text));
+}
+
+// 2.5 GIFs: a message of its own through the post queue (its own batch number: it never waits behind a running upload).
+int Core::postText(const ChatTarget& requested, const QString& bbcode, QString* error)
+{
+    ChatTarget target = requested;
+    if (!target.sch)
+        target.sch = ts3::currentConnection();
+    if (!ts3::isConnected(target.sch)) {
+        if (error)
+            *error = notConnectedText();
+        return 0;
+    }
+    if (target.serverUid.isEmpty())
+        target.serverUid = ts3::serverUid(target.sch);
+    if (target.mode == TextMessageTarget_CLIENT) {
+        anyID client = target.clientId;
+        if (!target.clientUid.isEmpty() && ts3::clientUid(target.sch, client) != target.clientUid)
+            client = ts3::clientIdByUid(target.sch, target.clientUid);
+        if (!client) {
+            if (error)
+                *error = noRecipientText();
+            return 0;
+        }
+        target.clientId = client;
+    }
+    if (bbcode.isEmpty() || escapedMessageSize(bbcode) > kMaxMessageBytes) {
+        if (error)
+            *error = i18n::t("The message is too long for TeamSpeak.");
+        return 0;
+    }
+    PostItem post;
+    post.sch       = target.sch;
+    post.target    = target;
+    post.channelId = ts3::ownChannel(target.sch);
+    post.text      = bbcode.toUtf8();
+    post.batch     = ++m_nextBatch;
+    post.gifText   = true;
+    enqueuePost(post, false);
+    pumpPosts();
+    return post.batch;
+}
+
+int Core::queuedTextPosts(uint64 sch) const
+{
+    int count = 0;
+    for (const PostItem& post : m_postQueue.value(sch))
+        count += post.gifText ? 1 : 0;
+    for (const InFlightPost& flight : m_postsInFlight)
+        count += flight.item.gifText && flight.item.sch == sch ? 1 : 0;
+    return count;
+}
+
+const MediaLink* Core::postedLink(int id) const
+{
+    const auto job = m_uploads.constFind(id);
+    if (job == m_uploads.constEnd() || job->background || job->state == UploadState::Done)
+        return nullptr;
+    const auto extra = m_uploadExtra.constFind(id);
+    if (extra == m_uploadExtra.constEnd() || !extra->link.isValid())
+        return nullptr;
+    return &extra->link;
 }
 
 // Queues a chat post: new ones at the end; a flooded one (keepSeq) back at its place by its number.
@@ -3561,6 +3659,14 @@ void Core::failUpload(int id, const QString& text, bool quiet)
         ts3::printWarning(job.target.sch, warning);
     }
     setUploadState(job, UploadState::Failed, text);
+}
+
+void Core::failUploadFor(int id, MediaError error, const QString& text)
+{
+    auto it = m_uploads.find(id);
+    if (it != m_uploads.end() && it->state != UploadState::Done && it->state != UploadState::Failed && it->state != UploadState::Canceled)
+        it->failure = error == MediaError::None ? MediaError::Other : error;
+    failUpload(id, text);
 }
 
 bool Core::canCancelUpload(int id) const
@@ -5497,6 +5603,14 @@ void Core::noteServer(uint64 sch)
         ts3::log(LogLevel_INFO, sch, "Server: %1", {ts3::pub(info.description)});
 }
 
+bool Core::serverIsTeamSpeakOwn(uint64 sch)
+{
+    noteServer(sch);
+    if (!sch || !m_serverInfo.contains(sch))
+        return false; // not known yet: the short cap
+    return uploadwait::canAskFileInfo(serverVariable(sch, VIRTUALSERVER_VERSION), serverVariable(sch, VIRTUALSERVER_PLATFORM));
+}
+
 QStringList Core::serverCheckDiagnostics() const
 {
     QStringList servers;
@@ -5871,7 +5985,7 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
             else if (op.preview)
                 onDirectoryReady(op.uploadId, true, false); // the preview goes next to the file
             else
-                failUpload(op.uploadId, uploadErrorText(mapped, message));
+                failUploadFor(op.uploadId, mapped, uploadErrorText(mapped, message));
             break;
         }
         const bool created = ok || error == ERROR_file_already_exists;
@@ -5907,7 +6021,7 @@ void Core::onServerError(uint64 sch, unsigned int error, const QString& returnCo
         } else {
             // The folder may be gone (deleted on the server): the next file asks for it again.
             m_remoteDirs.remove(remoteDirKey(sch, job->channelId, job->remoteDir));
-            failUpload(op.uploadId, uploadErrorText(mapped, message));
+            failUploadFor(op.uploadId, mapped, uploadErrorText(mapped, message));
         }
         break;
     }
@@ -6017,7 +6131,7 @@ void Core::onTransferStatus(anyID transferId, unsigned int status, const QString
         else if (status == ERROR_file_transfer_canceled) // stopped elsewhere (TeamSpeak's transfer list, another plugin): frees its slot
             failUpload(id, i18n::t("The upload was stopped. Try again."));
         else
-            failUpload(id, uploadErrorText(mapError(status), message));
+            failUploadFor(id, mapError(status), uploadErrorText(mapError(status), message));
         return;
     }
     if (auto it = m_previewUploadsByTransfer.constFind(transferId); it != m_previewUploadsByTransfer.constEnd()) {
@@ -6371,6 +6485,11 @@ QString displayNameFor(const UploadJob& job)
 QString notConnectedText()
 {
     return i18n::t("You're not connected to a server. Connect to one to send files.");
+}
+
+QString uploadLimitTextFor(const QString& serverUid)
+{
+    return uploadLimitText(Settings::instance().forServer(serverUid).uploadMaxMB, hasOwnUploadLimit(serverUid));
 }
 
 QString noRecipientText()

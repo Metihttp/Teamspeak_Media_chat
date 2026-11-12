@@ -1,10 +1,25 @@
 #include "netpolicy.h"
 
+#ifdef Q_OS_WIN
+#include <winsock2.h>
+#include <iphlpapi.h>
+#include <windows.h>
+#endif
+
+#include <QDateTime>
+#include <QElapsedTimer>
+#include <QLocale>
+#include <QMutex>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
 #include <QVector>
 
+#include <cmath>
+#include <vector>
+
 #include "linkurl.h"
+#include "version.h"
 
 namespace linkpreview::net {
 
@@ -462,11 +477,337 @@ bool isThumbnailHop(const QUrl& url)
     return isAllowedUrl(url) && publicHostName(url) == QLatin1String("i.ytimg.com");
 }
 
+QUrl maxresThumbnail(const QString& videoId)
+{
+    if (!isYouTubeId(videoId))
+        return {};
+    return QUrl(latin("https://i.ytimg.com/vi/") + videoId + latin("/maxresdefault.jpg"), QUrl::StrictMode);
+}
+
 QUrl defaultThumbnail(const QString& videoId)
 {
     if (!isYouTubeId(videoId))
         return {};
     return QUrl(latin("https://i.ytimg.com/vi/") + videoId + latin("/hqdefault.jpg"), QUrl::StrictMode);
+}
+
+// ---- 2.5 --------------------------------------------------------------------------------------------------------
+
+QByteArray userAgent()
+{
+    // major.minor only: the exact release isn't the site's business.
+    const QString     version = QString::fromLatin1(TSMEDIA_VERSION);
+    const QStringList parts   = version.split(QLatin1Char('.'));
+    const QString     short_  = parts.size() >= 2 ? parts.at(0) + QLatin1Char('.') + parts.at(1) : version;
+    return QByteArray("Mozilla/5.0 (compatible; TSMediaChat/") + short_.toLatin1() + QByteArray("; +https://github.com/Metihttp/Teamspeak_Media_chat)");
+}
+
+namespace {
+
+// Public suffixes under which every name is someone else's site (a built-in list, no PSL snapshot).
+const QSet<QString>& publicSuffixes()
+{
+    static const QSet<QString>* set = [] {
+        static const char* const kList[] = {
+            "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk", "nhs.uk",
+            "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "gr.jp", "ed.jp", "lg.jp",
+            "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au", "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz", "geek.nz",
+            "com.br", "net.br", "org.br", "gov.br", "edu.br", "com.ar", "com.co", "com.pe", "com.ve", "com.uy", "com.ec", "com.bo", "com.py",
+            "gob.mx", "com.mx", "org.mx",
+            "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn", "com.tw", "org.tw", "net.tw", "idv.tw", "edu.tw", "gov.tw",
+            "com.hk", "org.hk", "net.hk", "edu.hk", "gov.hk",
+            "com.sg", "edu.sg", "gov.sg", "com.my", "edu.my", "gov.my", "com.ph", "edu.ph", "gov.ph", "com.vn", "edu.vn", "gov.vn",
+            "co.th", "in.th", "ac.th", "go.th",
+            "co.id", "or.id", "ac.id", "go.id", "web.id", "co.in", "net.in", "org.in", "gov.in", "ac.in", "edu.in", "res.in",
+            "co.kr", "or.kr", "ne.kr", "ac.kr", "go.kr",
+            "com.tr", "net.tr", "org.tr", "gov.tr", "edu.tr", "com.ua", "org.ua", "net.ua", "co.ua", "gov.ua",
+            "co.za", "org.za", "gov.za", "ac.za", "co.il", "org.il", "ac.il", "gov.il",
+            "co.ir", "ac.ir", "org.ir", "gov.ir", "net.ir", "id.ir", "sch.ir", "com.eg", "edu.eg", "gov.eg", "com.sa", "edu.sa", "gov.sa",
+            "com.pk", "edu.pk", "gov.pk", "com.ng", "gov.ng", "co.ke", "or.ke", "com.pl", "net.pl", "org.pl", "co.at", "or.at",
+            "com.es", "com.pt", "com.gr", "com.cy", "com.mt", "com.ru", "org.ru",
+            "github.io", "gitlab.io", "netlify.app", "vercel.app", "pages.dev", "workers.dev", "herokuapp.com", "web.app", "firebaseapp.com",
+            "appspot.com", "azurewebsites.net", "cloudfront.net", "blogspot.com", "wordpress.com", "wixsite.com", "substack.com",
+            "neocities.org", "glitch.me", "onrender.com", "fly.dev", "ngrok.io", "ngrok-free.app", "duckdns.org", "ddns.net", "no-ip.org",
+            "myshopify.com", "carrd.co", "notion.site", "s3.amazonaws.com"};
+        auto* out = new QSet<QString>; // never deleted (plain data)
+        for (const char* suffix : kList)
+            out->insert(QString::fromLatin1(suffix));
+        return out;
+    }();
+    return *set;
+}
+
+bool isAsciiDigits(const QByteArray& text, int minDigits, int maxDigits)
+{
+    if (text.size() < minDigits || text.size() > maxDigits)
+        return false;
+    for (const char c : text) {
+        if (c < '0' || c > '9')
+            return false;
+    }
+    return true;
+}
+
+// "123", "123.45" (no sign, no exponent); false otherwise.
+bool parseDecimal(const QByteArray& text, double* out)
+{
+    const QByteArray t     = text.trimmed();
+    const int        dot   = t.indexOf('.');
+    const QByteArray whole = dot < 0 ? t : t.left(dot);
+    const QByteArray frac  = dot < 0 ? QByteArray() : t.mid(dot + 1);
+    if (!isAsciiDigits(whole, 1, 12) || (dot >= 0 && !isAsciiDigits(frac, 1, 9)))
+        return false;
+    bool         ok    = false;
+    const double value = t.toDouble(&ok);
+    if (!ok || !std::isfinite(value))
+        return false;
+    *out = value;
+    return true;
+}
+
+} // namespace
+
+QString registrableDomain(const QString& host)
+{
+    QString h = host.toLower();
+    if (h.endsWith(QLatin1Char('.')))
+        h.chop(1);
+    const QStringList labels = h.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    if (labels.size() <= 2)
+        return labels.join(QLatin1Char('.'));
+    // The longest listed suffix the host ends with (the list has two- and three-label entries).
+    int suffixLabels = 1;
+    for (int n = qMin(3, labels.size()); n >= 2; --n) {
+        if (publicSuffixes().contains(labels.mid(labels.size() - n).join(QLatin1Char('.')))) {
+            suffixLabels = n;
+            break;
+        }
+    }
+    const int keep = qMin(labels.size(), suffixLabels + 1);
+    return labels.mid(labels.size() - keep).join(QLatin1Char('.'));
+}
+
+QUrl resolveExtracted(const QUrl& base, const QString& raw)
+{
+    // 1. ASCII white space trimmed, TAB / CR / LF removed (as browsers do), anything else odd refused.
+    const auto isAsciiWhite = [](QChar ch) {
+        return ch == QLatin1Char(' ') || ch == QLatin1Char('\t') || ch == QLatin1Char('\n') || ch == QLatin1Char('\r') || ch == QLatin1Char('\f');
+    };
+    QString text = raw;
+    while (!text.isEmpty() && isAsciiWhite(text.at(0)))
+        text.remove(0, 1);
+    while (!text.isEmpty() && isAsciiWhite(text.at(text.size() - 1)))
+        text.chop(1);
+    text.remove(QLatin1Char('\t'));
+    text.remove(QLatin1Char('\r'));
+    text.remove(QLatin1Char('\n'));
+    if (text.isEmpty() || text.size() > kMaxUrlChars)
+        return {};
+    for (const QChar ch : text) {
+        if (isBadUrlChar(ch))
+            return {};
+    }
+    // The authority as written ("//host/..." or "scheme://host/..."): no user info, no backslash.
+    int       authorityStart = -1;
+    const int schemeEnd      = text.indexOf(QLatin1String("://"));
+    if (text.startsWith(QLatin1String("//")))
+        authorityStart = 2;
+    else if (schemeEnd > 0 && schemeEnd < 16)
+        authorityStart = schemeEnd + 3;
+    if (authorityStart >= 0) {
+        int end = text.size();
+        for (const char stop : {'/', '?', '#'}) {
+            const int at = text.indexOf(QLatin1Char(stop), authorityStart);
+            if (at >= 0 && at < end)
+                end = at;
+        }
+        const QString authority = text.mid(authorityStart, end - authorityStart);
+        if (authority.contains(QLatin1Char('@')) || authority.contains(QLatin1Char('\\')))
+            return {};
+    }
+    // 2. Resolved against the response's own address.
+    const QUrl relative(text, QUrl::TolerantMode);
+    if (!relative.isValid())
+        return {};
+    QUrl url = base.resolved(relative);
+    if (!url.isValid() || url.isRelative())
+        return {};
+    // 3. https; http upgraded once; anything else refused.
+    const QString scheme = url.scheme().toLower();
+    if (scheme == QLatin1String("http")) {
+        const int port = url.port(-1);
+        if (port != -1 && port != 80)
+            return {};
+        url.setScheme(latin("https"));
+        url.setPort(-1);
+    } else if (scheme != QLatin1String("https")) {
+        return {};
+    }
+    // 4. A public host, the standard port, no user info; no fragment.
+    url.setFragment(QString());
+    if (!url.userInfo().isEmpty() || !isAllowedUrl(url))
+        return {};
+    // 5. Never an SVG.
+    const QString path = url.path(QUrl::FullyDecoded).toLower();
+    if (path.endsWith(QLatin1String(".svg")) || path.endsWith(QLatin1String(".svgz")))
+        return {};
+    return url;
+}
+
+qint64 parseRetryAfter(const QByteArray& value, qint64 nowWallMs)
+{
+    const QByteArray text = value.trimmed();
+    if (text.isEmpty())
+        return -1;
+    if (isAsciiDigits(text, 1, 9))
+        return text.toLongLong() * 1000;
+    // IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT"
+    QDateTime when = QLocale::c().toDateTime(QString::fromLatin1(text), latin("ddd, dd MMM yyyy HH:mm:ss 'GMT'"));
+    if (!when.isValid())
+        return -1;
+    when.setTimeSpec(Qt::UTC);
+    return qMax<qint64>(0, when.toMSecsSinceEpoch() - nowWallMs);
+}
+
+qint64 parseRateReset(const QByteArray& resetAfter, const QByteArray& reset, qint64 nowWallMs)
+{
+    double value = 0;
+    if (!resetAfter.trimmed().isEmpty() && parseDecimal(resetAfter, &value))
+        return static_cast<qint64>(std::ceil(value * 1000.0));
+    if (reset.trimmed().isEmpty() || !parseDecimal(reset, &value))
+        return -1;
+    if (value <= 86400.0)
+        return static_cast<qint64>(std::ceil(value * 1000.0));
+    if (value >= 1000000000.0) {
+        const qint64 ms = static_cast<qint64>(std::ceil(value * 1000.0)) - nowWallMs;
+        return ms > 0 ? ms : -1;
+    }
+    return -1;
+}
+
+bool expiredSignedLink(const QUrl& url, qint64 nowSec)
+{
+    const QString host = publicHostName(url);
+    if (host != QLatin1String("cdn.discordapp.com") && host != QLatin1String("media.discordapp.net"))
+        return false;
+    const QStringList items = url.query(QUrl::FullyEncoded).split(QLatin1Char('&'), Qt::SkipEmptyParts);
+    for (const QString& item : items) {
+        if (!item.startsWith(QLatin1String("ex=")))
+            continue;
+        const QString hex = item.mid(3);
+        if (hex.isEmpty() || hex.size() > 16)
+            return false;
+        bool          ok   = false;
+        const quint64 time = hex.toULongLong(&ok, 16);
+        if (!ok)
+            return false;
+        return static_cast<qint64>(qMin<quint64>(time, quint64(1) << 62)) < nowSec - 60;
+    }
+    return false;
+}
+
+bool underLocalSuffix(const QString& host, const QStringList& suffixes)
+{
+    const QString h = host.toLower();
+    for (const QString& suffix : suffixes) {
+        if (suffix.isEmpty())
+            continue;
+        if (h == suffix || h.endsWith(QLatin1Char('.') + suffix))
+            return true;
+    }
+    return false;
+}
+
+namespace {
+
+void addSuffix(QStringList* out, QString suffix)
+{
+    suffix = suffix.trimmed().toLower();
+    while (suffix.endsWith(QLatin1Char('.')))
+        suffix.chop(1);
+    while (suffix.startsWith(QLatin1Char('.')))
+        suffix.remove(0, 1);
+    if (suffix.count(QLatin1Char('.')) < 1 || suffix.size() > 253 || out->contains(suffix))
+        return; // at least two labels: never a whole top-level domain
+    for (const QChar ch : suffix) {
+        const ushort u = ch.unicode();
+        if (!((u >= 'a' && u <= 'z') || (u >= '0' && u <= '9') || u == '-' || u == '.' || u == '_'))
+            return;
+    }
+    out->append(suffix);
+}
+
+QStringList readLocalDnsSuffixes()
+{
+    QStringList out;
+#ifdef Q_OS_WIN
+    HMODULE dll = LoadLibraryExW(L"iphlpapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (dll) {
+        using GetAdaptersAddressesFn = ULONG(WINAPI*)(ULONG, ULONG, PVOID, PIP_ADAPTER_ADDRESSES, PULONG);
+        using GetNetworkParamsFn     = DWORD(WINAPI*)(PFIXED_INFO, PULONG);
+        const auto adapters = reinterpret_cast<GetAdaptersAddressesFn>(reinterpret_cast<void*>(GetProcAddress(dll, "GetAdaptersAddresses")));
+        const auto params   = reinterpret_cast<GetNetworkParamsFn>(reinterpret_cast<void*>(GetProcAddress(dll, "GetNetworkParams")));
+        if (adapters) {
+            ULONG             size = 16 * 1024;
+            std::vector<char> buffer;
+            ULONG             rc = ERROR_BUFFER_OVERFLOW;
+            for (int tries = 0; tries < 3 && rc == ERROR_BUFFER_OVERFLOW; ++tries) {
+                buffer.resize(size);
+                rc = adapters(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, nullptr,
+                              reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()), &size);
+            }
+            if (rc == NO_ERROR) {
+                for (auto* a = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()); a; a = a->Next) {
+                    if (a->DnsSuffix && *a->DnsSuffix)
+                        addSuffix(&out, QString::fromWCharArray(a->DnsSuffix));
+                    if (a->Length >= sizeof(IP_ADAPTER_ADDRESSES)) {
+                        for (auto* s = a->FirstDnsSuffix; s; s = s->Next)
+                            addSuffix(&out, QString::fromWCharArray(s->String));
+                    }
+                }
+            }
+        }
+        if (params) {
+            ULONG             size = sizeof(FIXED_INFO);
+            std::vector<char> buffer(size);
+            DWORD             rc = params(reinterpret_cast<PFIXED_INFO>(buffer.data()), &size);
+            if (rc == ERROR_BUFFER_OVERFLOW) {
+                buffer.resize(size);
+                rc = params(reinterpret_cast<PFIXED_INFO>(buffer.data()), &size);
+            }
+            if (rc == NO_ERROR)
+                addSuffix(&out, QString::fromLocal8Bit(reinterpret_cast<PFIXED_INFO>(buffer.data())->DomainName));
+        }
+        FreeLibrary(dll);
+    }
+    wchar_t buffer[2048] = {};
+    DWORD   bytes        = sizeof(buffer) - sizeof(wchar_t);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters", L"SearchList", RRF_RT_REG_SZ, nullptr, buffer,
+                     &bytes)
+        == ERROR_SUCCESS) {
+        for (const QString& entry : QString::fromWCharArray(buffer).split(QLatin1Char(','), Qt::SkipEmptyParts))
+            addSuffix(&out, entry);
+    }
+#endif
+    return out;
+}
+
+} // namespace
+
+QStringList localDnsSuffixes()
+{
+    static QMutex        mutex;
+    static QStringList   cached;
+    static qint64        readAt = -1;
+    static QElapsedTimer clock;
+    QMutexLocker         lock(&mutex);
+    if (!clock.isValid())
+        clock.start();
+    if (readAt < 0 || clock.elapsed() - readAt > 10 * 60 * 1000) {
+        cached = readLocalDnsSuffixes();
+        readAt = clock.elapsed();
+    }
+    return cached;
 }
 
 } // namespace linkpreview::net

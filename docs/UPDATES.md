@@ -94,7 +94,7 @@ have Y).* with a **Check for updates** link.
 
 - One request per check: `GET https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest/download/tsmedia-update-v2.json`
   (about 2 KB; a second one for `tsmedia-update.json` only if the latest release has no such file),
-  and the plugin files (about 1 to 2 MB) after you click Update or, for an important update with
+  and the plugin files (a few MB) after you click Update or, for an important update with
   automatic checks on, by themselves. GitHub redirects
   downloads to `*.githubusercontent.com`; the plugin follows redirects only to GitHub hosts over HTTPS.
 - From 2.4.0 on, one more small request, only when automatic checks are on, the check is the
@@ -105,8 +105,10 @@ have Y).* with a **Check for updates** link.
 - **GitHub sees your IP address.** Windows may also check GitHub's certificate with its issuer, and a
   proxy configured in Windows sees the connection. No names, servers, chats, files or identifiers are
   sent; the User-Agent is `TSMedia-Updater/1` without a version; there are no cookies.
-- Apart from [link previews](PRIVACY-SECURITY.md#link-previews) (2.4), nothing else in the plugin uses
-  the internet. The update check loads `winhttp.dll` only while a check or download runs.
+- Apart from [link previews](PRIVACY-SECURITY.md#link-previews) (2.4) and the
+  [YouTube player](PRIVACY-SECURITY.md#playing-youtube-videos) (2.5, only after you press Play), nothing
+  else in the plugin uses the internet. The update check loads `winhttp.dll` only while a check or
+  download runs.
 
 ### If something goes wrong
 
@@ -177,7 +179,9 @@ needs both: the release on GitHub and a marker signed with the release key.
 Both manifests have fixed names, so `/releases/latest/download/` finds them. The marker has the
 version in its name and is only fetched from its own release (`/releases/download/vX/`), so a marker
 of another release can never count. The `.update` extension is opaque on purpose. No zip is parsed by
-the updater, and the DLL contains no embedded executable.
+the updater. The only file the DLL carries inside it is the YouTube player helper (2.5, 64-bit, the
+resource `TSMP`): it comes with every update of the DLL, and the plugin writes it to its `player` folder
+and loads it only at the first Play ([architecture](ARCHITECTURE.md)).
 
 ### The bridge for 2.2.0
 

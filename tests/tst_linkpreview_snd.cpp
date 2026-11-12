@@ -43,7 +43,9 @@
 #include "linkpreview/linkurl.h"
 #include "linkpreview/lphub.h"
 #include "linkpreview/lpmessage.h"
+#include "linkpreview/pagemeta.h"
 #include "linkpreview/previewmaker.h"
+#include "linkpreview/textclean.h"
 #include "linkpreview/previewstore.h"
 #include "linkpreview/senderpipeline.h"
 #include "linkpreview/transport.h"
@@ -198,6 +200,75 @@ QByteArray b64(const QString& text)
     return toBase64Url(text.toUtf8()).toLatin1();
 }
 
+// 2.5: a complete, valid LPX (stored form): a card (with or without its picture) or a media page's media.
+Announcement sampleX(Kind kind = Kind::Card, bool picture = true)
+{
+    Announcement a;
+    a.extended   = true;
+    a.messageKey = textreact::localKey(QStringLiteral("0123456789abcdef"), 1760000000);
+    a.urlKey     = QStringLiteral("8eb4311921f7b1964785a11a4cc1f418");
+    a.kind       = kind;
+    if (picture || kind != Kind::Card) {
+        a.channelId   = fakets3::kChannel;
+        a.previewPath = kind == Kind::Card ? QStringLiteral("/tsmedia/previews/linkpreview_3f9a1c2e.jpg") : QStringLiteral("/tsmedia/previews/3f9a1c2e.jpg");
+        a.previewSha  = shaOf("preview");
+        a.previewSize = 4321;
+        a.width       = 1200;
+        a.height      = 630;
+    }
+    if (kind != Kind::Card) {
+        a.mediaPath = kind == Kind::Gif ? QStringLiteral("/tsmedia/link_3f9a1c2e.gif") : kind == Kind::Image ? QStringLiteral("/tsmedia/link_3f9a1c2e.png")
+                                                                                                             : QStringLiteral("/tsmedia/link_3f9a1c2e.mp4");
+        a.mediaSha  = shaOf("media");
+        a.mediaSize = 654321;
+    }
+    if (kind == Kind::Video || kind == Kind::Loop)
+        a.durationMs = 4200;
+    if (kind == Kind::Card) {
+        a.card.site        = QStringLiteral("Example News");
+        a.card.author      = QStringLiteral("Someone");
+        a.card.title       = QStringLiteral("A page \u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645");
+        a.card.description = QStringLiteral("What the page is about, in a sentence or two.");
+        a.card.layout      = picture ? CardLayout::Large : CardLayout::None;
+        a.card.hasColor    = true;
+        a.card.color       = qRgb(0x2e, 0x7d, 0x32);
+        a.card.play        = picture;
+        if (picture)
+            a.durationMs = 95000;
+    }
+    a.senderUid = kAliceUid;
+    a.serverUid = QString::fromLatin1(fakets3::kServerUid);
+    return a;
+}
+
+std::optional<Incoming> roundTripX(const proto::Message& m)
+{
+    const QByteArray wire = proto::serialize(m);
+    if (wire.isEmpty())
+        return std::nullopt;
+    const std::optional<proto::Message> parsed = proto::parse(wire);
+    return parsed ? readLpx(*parsed) : std::nullopt;
+}
+
+std::optional<SkipX> roundTripSkipX(const proto::Message& m)
+{
+    const QByteArray wire = proto::serialize(m);
+    if (wire.isEmpty())
+        return std::nullopt;
+    const std::optional<proto::Message> parsed = proto::parse(wire);
+    return parsed ? readLpxSkip(*parsed) : std::nullopt;
+}
+
+// An incoming LPX as the hub stores it (the receiver resolved m and filled in who and where).
+Announcement storedFrom(const Incoming& in)
+{
+    Announcement a = in.announcement;
+    a.messageKey   = textreact::localKey(in.hash, 1760000000);
+    a.senderUid    = kAliceUid;
+    a.serverUid    = QString::fromLatin1(fakets3::kServerUid);
+    return a;
+}
+
 // ---- fakes --------------------------------------------------------------------------------------------
 
 class FakeFetch : public FetchPort
@@ -205,16 +276,17 @@ class FakeFetch : public FetchPort
   public:
     struct Load {
         Target  target;
-        qint64  maxBytes = 0;
+        qint64  maxBytes = 0; // 2.4: caps.media
         QString cacheDir;
+        Caps    caps;         // 2.5
     };
     QVector<Load>  loads;
     QStringList    canceled;
     std::function<void(const Load&)> onLoad; // answers at once when set
 
-    void load(const Target& target, qint64 maxBytes, const QString& cacheDir) override
+    void load(const Target& target, const Caps& caps, const QString& cacheDir) override
     {
-        loads.append({target, maxBytes, cacheDir});
+        loads.append({target, caps.media, cacheDir, caps});
         if (onLoad)
             onLoad(loads.last());
     }
@@ -301,7 +373,7 @@ class FetcherPort : public FetchPort
         : m_fetcher(fetcher)
     {
     }
-    void load(const Target& target, qint64 maxBytes, const QString& cacheDir) override { m_fetcher->load(target, maxBytes, cacheDir); }
+    void load(const Target& target, const Caps& caps, const QString& cacheDir) override { m_fetcher->load(target, caps, cacheDir); }
     void cancel(const QString& key) override { m_fetcher->cancel(key); }
 
   private:
@@ -421,7 +493,42 @@ class TestLinkPreviewSnd : public QObject
     // Live pass C: a reload of the plugin in TeamSpeak's process
     void pluginRegistersNoMetaTypes();
 
+    // 2.5: LPX and LPXNO
+    void lpxRoundTrip();
+    void lpxHostileInput_data();
+    void lpxHostileInput();
+    void lpxUnknownFieldsIgnored();
+    void lpxShortenToFit();
+    void lpxStoreFormat();
+    void lpxnoReasons();
+    void lpxnoHostileInput_data();
+    void lpxnoHostileInput();
+    void maxSendBytesPerType();
+    void lpxCapPerConnection();
+    void lpxSentThroughPluginLink();
+    void lpxSeededFuzz();
+    // 2.5: receiving LPX / LPXNO
+    void lpxOnlyFromTheSender();
+    void lpxOwnBucket();
+    void lpxnoReceivedWithReasons();
+    // 2.5: the sender's page links
+    void senderCardWithPicture();
+    void senderTextOnlyCard();
+    void senderLoopGifCap();
+    void senderCrossSiteNoCard();
+    void senderWalledNoCard();
+    void senderWebCardsOff();
+    void senderFollowsWebCardsSwitch();
+    void intakeNoticeOnePerMessage();
+    void ownLinkRecordsForCards();
+    void cardMakerSafeAndSmall();
+    // Review fixes (2.5.0)
+    void pageMediaSensitiveMade();
+    void refusedUploadRemembered();
+
   private:
+    void answerCard(const CardData& card, const QImage& image = QImage(), const QString& finalHost = QString());
+    std::optional<Incoming> lastSentX() const;
     void    newHub(const Hub::Limits& limits = Hub::Limits());
     void    serve();
     bool    serveUntil(const std::function<bool()>& done, int timeoutMs = kTimeoutMs);
@@ -628,6 +735,37 @@ std::optional<Incoming> TestLinkPreviewSnd::lastSent() const
         return std::nullopt;
     const std::optional<proto::Message> m = proto::parse(m_backend->sent.last().payload);
     return m ? readMessage(*m) : std::nullopt;
+}
+
+void TestLinkPreviewSnd::answerCard(const CardData& card, const QImage& image, const QString& finalHost)
+{
+    QVERIFY(!m_fetch->loads.isEmpty());
+    const FakeFetch::Load load = m_fetch->loads.last();
+    Result                r;
+    r.ok        = true;
+    r.kind      = Kind::Card;
+    r.card      = card;
+    r.finalHost = finalHost;
+    r.requests  = image.isNull() ? 1 : 2;
+    if (!image.isNull()) {
+        const QString path = load.cacheDir + QLatin1Char('/') + load.target.key + QStringLiteral("-thumb.jpg");
+        QVERIFY(savePicture(path, image, "JPG"));
+        r.card.pictureFile   = path;
+        r.card.pictureWidth  = image.width();
+        r.card.pictureHeight = image.height();
+        r.mime               = QStringLiteral("image/jpeg");
+    }
+    m_hub->pipeline()->fetched(load.target.key, r);
+}
+
+std::optional<Incoming> TestLinkPreviewSnd::lastSentX() const
+{
+    for (int i = m_backend->sent.size() - 1; i >= 0; --i) {
+        const std::optional<proto::Message> m = proto::parse(m_backend->sent.at(i).payload);
+        if (m && m->type == "LPX")
+            return readLpx(*m);
+    }
+    return std::nullopt;
 }
 
 QList<proto::Message> TestLinkPreviewSnd::sentMessages() const
@@ -926,7 +1064,7 @@ void TestLinkPreviewSnd::linksInMessages()
     QCOMPARE(message::webLinks(QStringLiteral("https://a.example/1.png https://a.example/2.png https://a.example/3.png"), 2).size(), 2);
     QVERIFY(message::isMediaMessage(QStringLiteral("[URL=ts3file://127.0.0.1?x]a.png[/URL] https://y.example/a.png")));
     // What gets a preview: a YouTube video (http too) or an https media file.
-    QCOMPARE(classify(QUrl(QStringLiteral("http://d.example.com/4.jpg"))).kind, Kind::None);
+    QVERIFY(!classify(QUrl(QStringLiteral("http://d.example.com/4.jpg"))).isLegacy()); // 2.5: a media-file page link (LPX), never LP
     QCOMPARE(classify(QUrl(QStringLiteral("https://youtu.be/dQw4w9WgXcQ"))).kind, Kind::YouTube);
     QCOMPARE(classify(QUrl(QStringLiteral("http://youtu.be/dQw4w9WgXcQ"))).kind, Kind::YouTube);
     // An address typed without a scheme: TeamSpeak's [URL] holds it as written, the chat links it as http://.
@@ -935,7 +1073,7 @@ void TestLinkPreviewSnd::linksInMessages()
     QCOMPARE(typed.first().scheme(), QStringLiteral("http"));
     QCOMPARE(classify(typed.first()).kind, Kind::YouTube);
     QCOMPARE(classify(typed.first()).key, classify(QUrl(QStringLiteral("https://youtu.be/dQw4w9WgXcQ"))).key);
-    QCOMPARE(classify(QUrl(QStringLiteral("https://example.com/page"))).kind, Kind::None);
+    QVERIFY(!classify(QUrl(QStringLiteral("https://example.com/page"))).isLegacy()); // 2.5: a Web link (LPX), never LP
     QCOMPARE(classify(QUrl(QStringLiteral("https://example.com/a.GIF?x=1"))).kind, Kind::Gif);
 }
 
@@ -1402,8 +1540,9 @@ void TestLinkPreviewSnd::noSkipNoticeWhenItCannotGo()
     QVERIFY(m_backend->sent.isEmpty());
     QCOMPARE(m_hub->pipeline()->counters().skipNotices, 0);
 
-    // Links refused at intake (more than maxJobsPerMinute): no notice for them (it would exceed the budget). The
-    // accepted ones still go; at unload nothing goes.
+    // Links refused at intake (more than maxJobsPerMinute): no LPNO for each (it would exceed the budget); 2.5: ONE
+    // intake notice (LPXNO) for a message's refused links, at most one per 10 s. The accepted ones still go; at unload
+    // nothing goes.
     for (int i = 0; i < 4; ++i)
         sendOwn(QStringLiteral("https://a.example.com/%1a.png https://a.example.com/%1b.png").arg(i));
     const int refusedAtIntake = m_hub->pipeline()->counters().skipped;
@@ -1412,8 +1551,10 @@ void TestLinkPreviewSnd::noSkipNoticeWhenItCannotGo()
     m_hub->prepareShutdown(); // every job ends ("stopped"): nothing goes
     QTest::qWait(50);
     serve();
-    QVERIFY(m_backend->sent.isEmpty());
+    QCOMPARE(sentTypes(), QByteArrayList({"LPXNO"}));
+    QCOMPARE(m_hub->pipeline()->counters().intakeNotices, 1);
     QCOMPARE(m_hub->pipeline()->counters().skipNotices, 0);
+    m_backend->sent.clear();
 
     // A server that doesn't pass on plugin commands: nothing (blocked at intake, or while the job ran).
     newHub();
@@ -1925,12 +2066,17 @@ void TestLinkPreviewSnd::onlyOwnChannelAndPrivateMessages()
     sendOwn(yt, TextMessageTarget_SERVER);
     // TS Media's own media message.
     sendOwn(QStringLiteral("[URL=ts3file://127.0.0.1?port=9987&path=/&filename=a.png]a.png[/URL] ") + yt);
-    // Web pages, http, too many links in one message: at most three, each once.
-    sendOwn(QStringLiteral("https://example.com/page http://example.com/a.png"));
     QTest::qWait(50);
     QVERIFY(m_fetch->loads.isEmpty());
-    sendOwn(QStringLiteral("https://a.example.com/1.png https://a.example.com/1.png https://a.example.com/2.png https://a.example.com/3.png https://a.example.com/4.png"));
+    // 2.5: a web page and an http link to a file get their previews too (LPX: a card, the file over https).
+    sendOwn(QStringLiteral("https://example.com/page http://example.com/a.png"));
     QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    QCOMPARE(m_hub->pipeline()->jobCount(), 2);
+    QCOMPARE(m_fetch->loads.first().target.cls, LinkClass::Web);
+    newHub();
+    // Too many links in one message: at most three, each once (the files first).
+    sendOwn(QStringLiteral("https://a.example.com/1.png https://a.example.com/1.png https://a.example.com/2.png https://a.example.com/3.png https://a.example.com/4.png"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 2, 3000);
     QCOMPARE(m_hub->pipeline()->jobCount(), 3); // one at a time, the others wait
     m_hub->pipeline()->shutdown();
     QCOMPARE(m_hub->pipeline()->jobCount(), 0);
@@ -2706,6 +2852,1020 @@ void TestLinkPreviewSnd::pluginRegistersNoMetaTypes()
     const QString text = QString::fromUtf8(chat.readAll());
     QVERIFY(text.contains(QLatin1String("&linkpreview::Fetcher::finished")));
     QVERIFY(text.contains(QLatin1String("onFetched(key, result); }, Qt::QueuedConnection)")));
+}
+
+// ---- 2.5: LPX and LPXNO -------------------------------------------------------------------------------------
+
+void TestLinkPreviewSnd::lpxRoundTrip()
+{
+    for (const Kind kind : {Kind::Image, Kind::Gif, Kind::Video, Kind::Loop, Kind::Card}) {
+        for (const bool picture : {true, false}) {
+            if (!picture && kind != Kind::Card)
+                continue;
+            const Announcement   a = sampleX(kind, picture);
+            QVERIFY(isValidX(a));
+            QVERIFY(!isValid(a)); // never an LP
+            const proto::Message m = makeLpx(a, proto::Scope::Channel, sampleRef(), kLpxShortCap);
+            QCOMPARE(m.type, QByteArray("LPX"));
+            QVERIFY(proto::serialize(m).size() <= kLpxShortCap);
+            const std::optional<Incoming> in = roundTripX(m);
+            QVERIFY2(in, QByteArray(1, kindCodeX(kind)).constData());
+            const Announcement& b = in->announcement;
+            QVERIFY(b.extended);
+            QVERIFY(b.messageKey.isEmpty() && b.senderUid.isEmpty()); // never from the payload
+            QCOMPARE(b.kind, a.kind);
+            QCOMPARE(b.urlKey, a.urlKey);
+            QCOMPARE(b.channelId, a.channelId);
+            QCOMPARE(b.previewPath, a.previewPath);
+            QCOMPARE(b.previewSha, a.previewSha);
+            QCOMPARE(b.previewSize, a.previewSize);
+            QCOMPARE(b.mediaPath, a.mediaPath);
+            QCOMPARE(b.mediaSha, a.mediaSha);
+            QCOMPARE(b.mediaSize, a.mediaSize);
+            QCOMPARE(b.width, a.width);
+            QCOMPARE(b.height, a.height);
+            QCOMPARE(b.durationMs, a.durationMs);
+            QCOMPARE(b.sensitive, a.sensitive);
+            QCOMPARE(b.card.title, a.card.title); // the Persian joiner stays between its letters
+            QCOMPARE(b.card.author, a.card.author);
+            QCOMPARE(b.card.site, a.card.site);
+            QCOMPARE(b.card.description, a.card.description);
+            QCOMPARE(b.card.layout, a.card.layout);
+            QCOMPARE(b.card.hasColor, a.card.hasColor);
+            if (b.card.hasColor)
+                QCOMPARE(b.card.color & 0xffffffu, a.card.color & 0xffffffu);
+            QCOMPARE(b.card.play, a.card.play);
+            if (kind == Kind::Card)
+                QCOMPARE(b.card.pictureWidth, a.width);
+            QVERIFY(isValidX(storedFrom(*in)));
+        }
+    }
+    // Sensitive on media: sn=1, a spoiler cover on the server's link.
+    Announcement gif = sampleX(Kind::Gif);
+    gif.sensitive    = true;
+    const std::optional<Incoming> in = roundTripX(makeLpx(gif, proto::Scope::Private, sampleRef(), kLpxShortCap));
+    QVERIFY(in && in->announcement.sensitive && in->scope == proto::Scope::Private);
+    QVERIFY(linkFor(storedFrom(*in)).spoiler);
+    // A loop's media is a looping link for Core; its key is the file's like any other.
+    const Announcement loop = storedFrom(*roundTripX(makeLpx(sampleX(Kind::Loop), proto::Scope::Channel, sampleRef(), kLpxShortCap)));
+    QVERIFY(linkFor(loop).loop);
+    Announcement asVideo = loop;
+    asVideo.kind         = Kind::Video;
+    QCOMPARE(linkFor(asVideo).key(), linkFor(loop).key());
+}
+
+void TestLinkPreviewSnd::lpxHostileInput_data()
+{
+    QTest::addColumn<QByteArray>("kind");
+    QTest::addColumn<QByteArrayList>("drop");
+    QTest::addColumn<QByteArrayList>("set"); // "key=value"
+    QTest::addColumn<bool>("accepted");
+    const auto row = [](const char* name, const char* kind, QByteArrayList drop, QByteArrayList set, bool ok) {
+        QTest::newRow(name) << QByteArray(kind) << drop << set << ok;
+    };
+    const QByteArray title = b64(QStringLiteral("Title"));
+    row("card as made", "c", {}, {}, true);
+    row("media as made", "i", {}, {}, true);
+    row("unknown k", "c", {}, {"k=z"}, false);
+    row("k twice letters", "c", {}, {"k=cc"}, false);
+    row("k=y (an LP kind)", "i", {}, {"k=y"}, false);
+    row("no s", "c", {"s"}, {}, false);
+    row("server chat s", "c", {}, {"s=s"}, false);
+    row("bad m", "c", {}, {"m=xyz"}, false);
+    row("bad u", "c", {}, {"u=XYZ"}, false);
+    row("comma list in u", "c", {}, {"u=00112233445566778899aabbccddeeff,8eb4311921f7b1964785a11a4cc1f418"}, false);
+    row("t on media", "i", {}, {"t=" + title}, false);
+    row("a on media", "g", {}, {"a=" + title}, false);
+    row("n on media", "v", {}, {"n=" + title}, false);
+    row("x on media", "a", {}, {"x=" + title}, false);
+    row("cl on media", "i", {}, {"cl=2e7d32"}, false);
+    row("ly on media", "i", {}, {"ly=l"}, false);
+    row("pg on media", "i", {}, {"pg=1"}, false);
+    row("p without h", "c", {"h"}, {}, false);
+    row("p without ps", "c", {"ps"}, {}, false);
+    row("p without c", "c", {"c"}, {}, false);
+    row("media without preview", "i", {"c", "p", "h", "ps"}, {}, false);
+    row("f on a card", "c", {}, {"f=" + b64(QStringLiteral("/tsmedia/x.mp4")), "fh=" + shaOf("m").toLatin1(), "fs=10"}, false);
+    row("f without fh", "i", {"fh"}, {}, false);
+    row("f without fs", "i", {"fs"}, {}, false);
+    row("gif as png path", "g", {}, {"f=" + b64(QStringLiteral("/tsmedia/link.png"))}, false);
+    row("gif as webp path", "g", {}, {"f=" + b64(QStringLiteral("/tsmedia/link.webp"))}, true);
+    row("loop as mov", "a", {}, {"f=" + b64(QStringLiteral("/tsmedia/link.mov"))}, false);
+    row("video as mov", "v", {}, {"f=" + b64(QStringLiteral("/tsmedia/link.mov"))}, true);
+    row("image as gif", "i", {}, {"f=" + b64(QStringLiteral("/tsmedia/link.gif"))}, false);
+    row("preview svg", "c", {}, {"p=" + b64(QStringLiteral("/tsmedia/previews/x.svg"))}, false);
+    row("preview dotdot", "c", {}, {"p=" + b64(QStringLiteral("/tsmedia/../x.jpg"))}, false);
+    row("preview relative", "c", {}, {"p=" + b64(QStringLiteral("tsmedia/x.jpg"))}, false);
+    row("preview backslash", "c", {}, {"p=" + b64(QStringLiteral("/tsmedia\\x.jpg"))}, false);
+    row("ps 0", "c", {}, {"ps=0"}, false);
+    row("ps over 2 MiB", "c", {}, {"ps=2097153"}, false);
+    row("fs over 100 MiB", "v", {}, {"fs=104857601"}, false);
+    row("sha short", "c", {}, {"h=abc"}, false);
+    row("cl red", "c", {}, {"cl=red"}, false);
+    row("cl 5 digits", "c", {}, {"cl=12345"}, false);
+    row("cl not hex", "c", {}, {"cl=12345g"}, false);
+    row("cl white ignored", "c", {}, {"cl=ffffff"}, true);
+    row("cl brand ignored", "c", {}, {"cl=5865f2"}, true);
+    row("t over 256 bytes", "c", {}, {"t=" + toBase64Url(QByteArray(257, 'a')).toLatin1()}, false);
+    row("x over 384 bytes", "c", {}, {"x=" + toBase64Url(QByteArray(385, 'a')).toLatin1()}, false);
+    row("n over 64 bytes", "c", {}, {"n=" + toBase64Url(QByteArray(65, 'a')).toLatin1()}, false);
+    row("a over 96 bytes", "c", {}, {"a=" + toBase64Url(QByteArray(97, 'a')).toLatin1()}, false);
+    row("invalid utf8", "c", {}, {"t=" + toBase64Url(QByteArray("\xff\xfe" "abc", 5)).toLatin1()}, false);
+    row("t only invisible", "c", {}, {"t=" + b64(QString(QChar(0x200b)) + QChar(0x202e) + QChar(0x2066))}, false);
+    row("no t", "c", {"t"}, {}, false);
+    row("t not base64", "c", {}, {"t=a.b"}, false);
+    row("d on image", "i", {}, {"d=1000"}, false);
+    row("d on card", "c", {}, {"d=1000"}, true);
+    row("d over a day", "v", {}, {"d=86400001"}, false);
+    row("w without ht", "c", {"ht"}, {}, false);
+    row("w 0", "c", {}, {"w=0"}, false);
+    row("w over 16384", "c", {}, {"w=16385"}, false);
+    row("w on text-only card", "c", {"c", "p", "h", "ps", "ly"}, {}, false);
+    row("ly without p", "c", {"c", "p", "h", "ps", "w", "ht"}, {"ly=t"}, false);
+    row("ly other", "c", {}, {"ly=x"}, false);
+    row("pg 2", "c", {}, {"pg=2"}, false);
+    row("sn 0", "c", {}, {"sn=0"}, false);
+    row("sn on media", "g", {}, {"sn=1"}, true);
+    row("card without x and p", "c", {"c", "p", "h", "ps", "w", "ht", "ly", "x"}, {}, false);
+    row("card without p", "c", {"c", "p", "h", "ps", "w", "ht", "ly"}, {}, true);
+    row("card without x", "c", {"x"}, {}, true);
+    row("x only invisible, no p", "c", {"c", "p", "h", "ps", "w", "ht", "ly"}, {"x=" + b64(QStringLiteral("​ ⁠"))}, false);
+    row("leading zero channel", "c", {}, {"c=07"}, false);
+}
+
+void TestLinkPreviewSnd::lpxHostileInput()
+{
+    QFETCH(QByteArray, kind);
+    QFETCH(QByteArrayList, drop);
+    QFETCH(QByteArrayList, set);
+    QFETCH(bool, accepted);
+    const Kind     k = kindOfX(kind.at(0));
+    proto::Message m = makeLpx(sampleX(k), proto::Scope::Channel, sampleRef(), proto::kMaxLpxSendBytes);
+    QVERIFY(!m.type.isEmpty());
+    for (const QByteArray& key : drop)
+        m = without(m, key.constData());
+    for (const QByteArray& kv : set) {
+        const int eq = kv.indexOf('=');
+        m            = with(m, kv.left(eq).constData(), kv.mid(eq + 1));
+    }
+    const std::optional<Incoming> in = roundTripX(m);
+    QCOMPARE(bool(in), accepted);
+    if (in) {
+        QVERIFY(isValidX(storedFrom(*in)));
+        QVERIFY(!in->announcement.card.hasColor || pagemeta::isAcceptableThemeColour(in->announcement.card.color));
+    }
+}
+
+void TestLinkPreviewSnd::lpxUnknownFieldsIgnored()
+{
+    proto::Message m = makeLpx(sampleX(Kind::Card), proto::Scope::Channel, sampleRef(), kLpxShortCap);
+    m.set("zz", "whatever");
+    m.set("vv", "2");
+    const std::optional<Incoming> in = roundTripX(m);
+    QVERIFY(in);
+    QCOMPARE(in->announcement.card.title, sampleX(Kind::Card).card.title);
+    // An LP reader never takes it, an LPX reader never takes an LP.
+    QVERIFY(!readMessage(*proto::parse(proto::serialize(m))));
+    QVERIFY(!readLpx(*proto::parse(proto::serialize(makeMessage(sample(Kind::Image), proto::Scope::Channel, sampleRef())))));
+}
+
+void TestLinkPreviewSnd::lpxShortenToFit()
+{
+    // A web card at the most: a 48-byte site name, a 256-byte title, a 384-byte description, a 96-byte author.
+    Announcement a      = sampleX(Kind::Card);
+    a.card.site         = QString(48, QLatin1Char('s'));
+    a.card.title        = QString(256, QLatin1Char('t'));
+    a.card.description  = QString::fromUtf8("\xd9\x85\xdb\x8c").repeated(96); // 384 bytes of Persian
+    a.card.author       = QString(96, QLatin1Char('a'));
+    const proto::Message wide = makeLpx(a, proto::Scope::Channel, sampleRef(), proto::kMaxLpxSendBytes);
+    QVERIFY(!wide.type.isEmpty());
+    QVERIFY(proto::serialize(wide).size() <= proto::kMaxLpxSendBytes);
+    const std::optional<Incoming> all = roundTripX(wide);
+    QVERIFY(all);
+    QCOMPARE(all->announcement.card.description.toUtf8().size(), 384); // nothing had to go at 1400
+    QCOMPARE(all->announcement.card.author, a.card.author);
+
+    // At 900: the description goes first (whole characters), the author and site stay while they can.
+    const proto::Message narrow = makeLpx(a, proto::Scope::Channel, sampleRef(), kLpxShortCap);
+    QVERIFY(!narrow.type.isEmpty());
+    QVERIFY(proto::serialize(narrow).size() <= kLpxShortCap);
+    const std::optional<Incoming> cut = roundTripX(narrow);
+    QVERIFY(cut);
+    const CardData& c = cut->announcement.card;
+    QVERIFY(c.description.toUtf8().size() < 384);
+    QVERIFY(a.card.description.startsWith(c.description));
+    QCOMPARE(c.title, a.card.title);
+    QVERIFY(!cut->announcement.previewPath.isEmpty()); // the picture always stays
+
+    // A long upload folder: the title is shortened too, then the author and the site name go.
+    Announcement deep = a;
+    deep.previewPath  = QStringLiteral("/") + QString(200, QLatin1Char('f')) + QStringLiteral("/linkpreview_3f9a1c2e.jpg");
+    const std::optional<Incoming> deeper = roundTripX(makeLpx(deep, proto::Scope::Channel, sampleRef(), kLpxShortCap));
+    QVERIFY(deeper);
+    QVERIFY(deeper->announcement.card.description.toUtf8().size() <= 64 || deeper->announcement.card.description.isEmpty());
+    QVERIFY(!deeper->announcement.card.title.isEmpty());
+
+    // A text-only card that can't fit even without the rest: no LPX (the job then sends LPXNO).
+    Announcement text = sampleX(Kind::Card, false);
+    text.card.title   = QString(256, QLatin1Char('t'));
+    QVERIFY(makeLpx(text, proto::Scope::Channel, sampleRef(), 200).type.isEmpty());
+    QVERIFY(!makeLpx(text, proto::Scope::Channel, sampleRef(), kLpxShortCap).type.isEmpty());
+}
+
+void TestLinkPreviewSnd::lpxStoreFormat()
+{
+    PreviewStore store;
+    const qint64 now = 1760000100;
+    Announcement card = sampleX(Kind::Card);
+    Announcement text = sampleX(Kind::Card, false);
+    text.messageKey   = textreact::localKey(QStringLiteral("0123456789abcdef"), 1760000001);
+    Announcement loop = sampleX(Kind::Loop);
+    loop.messageKey   = textreact::localKey(QStringLiteral("0123456789abcdef"), 1760000002);
+    loop.sensitive    = true;
+    Announcement lp   = sample(Kind::Image);
+    lp.messageKey     = textreact::localKey(QStringLiteral("0123456789abcdef"), 1760000003);
+    for (const Announcement& a : {card, text, loop, lp})
+        QCOMPARE(store.add(a, now), PreviewStore::Add::Added);
+    QCOMPARE(store.add(card, now), PreviewStore::Add::Unchanged);
+    Announcement changed = card;
+    changed.card.title   = QStringLiteral("Another title");
+    QCOMPARE(store.check(changed), PreviewStore::Add::Replaced); // the card's text counts as its files
+    const QByteArray json = store.toJson(now);
+    QVERIFY(json.contains("\"k\":\"xc\""));
+    QVERIFY(json.contains("\"k\":\"xa\""));
+    QVERIFY(json.contains("\"title2\""));
+    PreviewStore again;
+    QVERIFY(again.fromJson(json, now));
+    QCOMPARE(again.count(), 4);
+    const Announcement* back = again.find(card.messageKey, card.urlKey);
+    QVERIFY(back && back->extended && back->kind == Kind::Card);
+    QCOMPARE(back->card.title, card.card.title);
+    QCOMPARE(back->card.description, card.card.description);
+    QCOMPARE(back->card.layout, card.card.layout);
+    QCOMPARE(back->card.hasColor, true);
+    QCOMPARE(back->card.play, true);
+    QCOMPARE(back->card.pictureWidth, card.width);
+    const Announcement* noPicture = again.find(text.messageKey, text.urlKey);
+    QVERIFY(noPicture && noPicture->previewPath.isEmpty() && noPicture->channelId == 0);
+    const Announcement* looped = again.find(loop.messageKey, loop.urlKey);
+    QVERIFY(looped && looped->kind == Kind::Loop && looped->sensitive);
+    const Announcement* old = again.find(lp.messageKey, lp.urlKey);
+    QVERIFY(old && !old->extended && old->kind == Kind::Image);
+    // A hostile entry: a stored text that isn't clean, a colour that a card may not wear.
+    QByteArray bad = json;
+    bad.replace("Example News", "Example \xe2\x80\xae News");
+    PreviewStore hostile;
+    QVERIFY(hostile.fromJson(bad, now));
+    QCOMPARE(hostile.count(), 2); // both cards had that site name: skipped one by one
+}
+
+void TestLinkPreviewSnd::lpxnoReasons()
+{
+    const QString k1 = QStringLiteral("00112233445566778899aabbccddeeff"), k2 = QStringLiteral("8eb4311921f7b1964785a11a4cc1f418"),
+                  k3 = QStringLiteral("2019fab9d770c5f007bced59a5abfa1e");
+    const std::optional<SkipX> plain = roundTripSkipX(makeLpxSkip(proto::Scope::Channel, sampleRef(), {k1}));
+    QVERIFY(plain && plain->urlKeys == QStringList{k1} && plain->reason == SkipReason::Unknown);
+    const std::optional<SkipX> nothing = roundTripSkipX(makeLpxSkip(proto::Scope::Channel, sampleRef(), {k1}, SkipReason::Nothing));
+    QVERIFY(nothing && nothing->reason == SkipReason::Nothing);
+    const std::optional<SkipX> cross = roundTripSkipX(makeLpxSkip(proto::Scope::Private, sampleRef(), {k2}, SkipReason::CrossSite));
+    QVERIFY(cross && cross->reason == SkipReason::CrossSite && cross->scope == proto::Scope::Private);
+    const std::optional<SkipX> intake = roundTripSkipX(makeLpxSkip(proto::Scope::Channel, sampleRef(), {k1, k2, k3}));
+    QVERIFY(intake && intake->urlKeys.size() == 3 && intake->reason == SkipReason::Unknown);
+    // A reason only with one key; an unknown reason reads as none (a newer sender's: receivers may load it).
+    QVERIFY(makeLpxSkip(proto::Scope::Channel, sampleRef(), {k1, k2}, SkipReason::Nothing).type.isEmpty());
+    proto::Message newer = makeLpxSkip(proto::Scope::Channel, sampleRef(), {k1});
+    newer.set("r", "q");
+    QVERIFY(roundTripSkipX(newer) && roundTripSkipX(newer)->reason == SkipReason::Unknown);
+    proto::Message many = makeLpxSkip(proto::Scope::Channel, sampleRef(), {k1, k2});
+    many.set("r", "n");
+    QVERIFY(roundTripSkipX(many) && roundTripSkipX(many)->reason == SkipReason::Unknown);
+    // Always short.
+    QVERIFY(proto::serialize(makeLpxSkip(proto::Scope::Channel, sampleRef(), {QString(64, QLatin1Char('a')), QString(64, QLatin1Char('b')), QString(64, QLatin1Char('c'))}))
+                .size()
+            <= proto::kMaxSendBytes);
+}
+
+void TestLinkPreviewSnd::lpxnoHostileInput_data()
+{
+    QTest::addColumn<QByteArray>("u");
+    QTest::addColumn<bool>("accepted");
+    QTest::newRow("one") << QByteArray("00112233445566778899aabbccddeeff") << true;
+    QTest::newRow("three") << QByteArray("0011223344556677,8899aabbccddeeff,0123456789abcdef") << true;
+    QTest::newRow("four") << QByteArray("0011223344556677,8899aabbccddeeff,0123456789abcdef,fedcba9876543210") << false;
+    QTest::newRow("five") << QByteArray("00112233,44556677,8899aabb,ccddeeff,01234567") << false;
+    QTest::newRow("duplicate") << QByteArray("0011223344556677,0011223344556677") << false;
+    QTest::newRow("empty part") << QByteArray("0011223344556677,") << false;
+    QTest::newRow("upper case") << QByteArray("00112233445566AA") << false;
+    QTest::newRow("short") << QByteArray("0011223") << false;
+    QTest::newRow("empty") << QByteArray() << false;
+}
+
+void TestLinkPreviewSnd::lpxnoHostileInput()
+{
+    QFETCH(QByteArray, u);
+    QFETCH(bool, accepted);
+    proto::Message m = makeLpxSkip(proto::Scope::Channel, sampleRef(), {QStringLiteral("00112233445566778899aabbccddeeff")});
+    m.set("u", u);
+    QCOMPARE(bool(roundTripSkipX(m)), accepted);
+}
+
+void TestLinkPreviewSnd::maxSendBytesPerType()
+{
+    QCOMPARE(proto::maxSendBytes("LPX"), 1400);
+    for (const char* type : {"LP", "LPNO", "LPXNO", "HELLO", "HI", "R", "SYNC", "TR", "POLL"})
+        QCOMPARE(proto::maxSendBytes(type), proto::kMaxSendBytes);
+    proto::Message m;
+    m.type = "LPX";
+    m.set("x", QByteArray(512, 'a'));
+    m.set("y", QByteArray(512, 'b'));
+    QVERIFY(!proto::serialize(m).isEmpty()); // over 900, within 1400
+    m.type = "LP";
+    QVERIFY(proto::serialize(m).isEmpty());
+    m.type = "LPX";
+    m.set("z", QByteArray(400, 'c'));
+    QVERIFY(proto::serialize(m).isEmpty()); // over 1400
+}
+
+void TestLinkPreviewSnd::lpxCapPerConnection()
+{
+    QCOMPARE(lpxSendCap(true, true), 1400);
+    QCOMPARE(lpxSendCap(true, false), 900);
+    QCOMPARE(lpxSendCap(false, true), 900);
+    QCOMPARE(lpxSendCap(true), kLpxLongCommandsChecked ? 1400 : 900); // 2.5.0: 900 until live check L1
+    // The fake server is TeamSpeak's own (3.13): still 900 while the constant says unchecked.
+    QVERIFY(m_core->serverIsTeamSpeakOwn(fakets3::kConnection));
+    QCOMPARE(lpxSendCap(m_core->serverIsTeamSpeakOwn(fakets3::kConnection)), 900);
+    // TeaSpeak, and a connection nobody knows: 900.
+    fakets3::setServerVersion(QStringLiteral("TeaSpeak 1.4.22"), QStringLiteral("Linux"));
+    QVERIFY(!m_core->serverIsTeamSpeakOwn(fakets3::kConnection));
+    QVERIFY(!m_core->serverIsTeamSpeakOwn(fakets3::kConnection + 77));
+    QCOMPARE(lpxSendCap(m_core->serverIsTeamSpeakOwn(fakets3::kConnection), true), 900);
+    // A shortened LPX still parses and keeps its picture.
+    Announcement a     = sampleX(Kind::Card);
+    a.card.description = QString(384, QLatin1Char('d'));
+    const std::optional<Incoming> in = roundTripX(makeLpx(a, proto::Scope::Channel, sampleRef(), lpxSendCap(false)));
+    QVERIFY(in && !in->announcement.previewPath.isEmpty());
+}
+
+void TestLinkPreviewSnd::lpxSentThroughPluginLink()
+{
+    // A 1300-byte LPX through the real transport: sent byte for byte, one command's flood cost.
+    Announcement a     = sampleX(Kind::Card);
+    a.card.title       = QString(256, QLatin1Char('t'));
+    a.card.description = QString(384, QLatin1Char('d'));
+    a.card.author      = QString(96, QLatin1Char('a'));
+    a.card.site        = QString(60, QLatin1Char('s'));
+    a.previewPath      = QStringLiteral("/") + QString(60, QLatin1Char('f')) + QStringLiteral("/linkpreview_3f9a1c2e.jpg");
+    const proto::Message m    = makeLpx(a, proto::Scope::Channel, sampleRef(), proto::kMaxLpxSendBytes);
+    const QByteArray     wire = proto::serialize(m);
+    QVERIFY2(wire.size() > 1200 && wire.size() <= 1400, QByteArray::number(wire.size()).constData());
+    FloodGovernor&       governor = m_core->floodGovernor(fakets3::kConnection);
+    const int            before   = m_backend->sent.size();
+    const double         p0       = governor.pluginPoints(m_core->floodClockMs());
+    m_link->sendWith(fakets3::kConnection, m, peers::Target::toChannel(), PluginLink::Priority::Background, nullptr);
+    QCOMPARE(m_backend->sent.size(), before + 1);
+    QCOMPARE(m_backend->sent.last().payload, wire);
+    const double longCost = governor.pluginPoints(m_core->floodClockMs()) - p0;
+    // A short one costs the same.
+    const double p1 = governor.pluginPoints(m_core->floodClockMs());
+    m_link->sendWith(fakets3::kConnection, makeLpxSkip(proto::Scope::Channel, sampleRef(), {a.urlKey}), peers::Target::toChannel(),
+                     PluginLink::Priority::Background, nullptr);
+    const double shortCost = governor.pluginPoints(m_core->floodClockMs()) - p1;
+    QVERIFY2(qAbs(longCost - shortCost) < 0.05, qPrintable(QStringLiteral("%1 vs %2").arg(longCost).arg(shortCost)));
+    // Over 1400 bytes: refused before the queue.
+    proto::Message tooLong = m;
+    tooLong.set("zz", QByteArray(qMin(proto::kMaxValueChars, 1401 - wire.size() + 5), 'z'));
+    QVERIFY(proto::serialize(tooLong).isEmpty());
+    bool failed = false;
+    m_link->sendWith(fakets3::kConnection, tooLong, peers::Target::toChannel(), PluginLink::Priority::Background,
+                     [&](peers::SendResult r) { failed = r == peers::SendResult::Failed; });
+    QVERIFY(failed);
+    QCOMPARE(m_backend->sent.size(), before + 2);
+}
+
+void TestLinkPreviewSnd::lpxSeededFuzz()
+{
+    QRandomGenerator rng(25);
+    const QVector<QByteArray> seeds{
+        proto::serialize(makeLpx(sampleX(Kind::Card), proto::Scope::Channel, sampleRef(), proto::kMaxLpxSendBytes)),
+        proto::serialize(makeLpx(sampleX(Kind::Card, false), proto::Scope::Private, sampleRef(), kLpxShortCap)),
+        proto::serialize(makeLpx(sampleX(Kind::Loop), proto::Scope::Channel, sampleRef(), kLpxShortCap)),
+        proto::serialize(makeLpx(sampleX(Kind::Gif), proto::Scope::Channel, sampleRef(), kLpxShortCap)),
+        proto::serialize(makeLpxSkip(proto::Scope::Channel, sampleRef(), {QStringLiteral("0011223344556677"), QStringLiteral("8899aabbccddeeff")})),
+        proto::serialize(makeLpxSkip(proto::Scope::Channel, sampleRef(), {QStringLiteral("0011223344556677")}, SkipReason::CrossSite)),
+    };
+    for (const QByteArray& s : seeds)
+        QVERIFY(!s.isEmpty());
+    const QByteArray alphabet("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._,:-= ");
+    int              accepted = 0;
+    for (int i = 0; i < 20000; ++i) {
+        QByteArray wire = seeds.at(i % seeds.size());
+        const int  ops  = 1 + rng.bounded(4);
+        for (int op = 0; op < ops && !wire.isEmpty(); ++op) {
+            const int at = rng.bounded(wire.size());
+            switch (rng.bounded(5)) {
+            case 0: // a byte changed
+                wire[at] = alphabet.at(rng.bounded(alphabet.size()));
+                break;
+            case 1: // a byte gone
+                wire.remove(at, 1);
+                break;
+            case 2: // a piece repeated
+                wire.insert(at, wire.mid(rng.bounded(wire.size()), 1 + rng.bounded(24)));
+                break;
+            case 3: // cut
+                wire.truncate(at + 1);
+                break;
+            default: // spliced with another seed
+                wire = wire.left(at) + seeds.at(rng.bounded(seeds.size())).mid(at);
+                break;
+            }
+        }
+        const std::optional<proto::Message> parsed = proto::parse(wire);
+        if (!parsed)
+            continue;
+        if (const std::optional<Incoming> in = readLpx(*parsed)) {
+            ++accepted;
+            const Announcement stored = storedFrom(*in);
+            QVERIFY2(isValidX(stored), wire.constData());
+            const CardData& c = stored.card;
+            QVERIFY(c.title.toUtf8().size() <= kCardTitleBytes && c.description.toUtf8().size() <= kCardDescriptionBytes);
+            QVERIFY(c.author.toUtf8().size() <= kCardAuthorBytes && c.site.toUtf8().size() <= kCardSiteBytes);
+            QCOMPARE(textclean::cleanToBytes(c.title, kCardTitleBytes), c.title);
+            QCOMPARE(textclean::cleanToBytes(c.description, kCardDescriptionBytes), c.description);
+        }
+        if (const std::optional<SkipX> skip = readLpxSkip(*parsed)) {
+            QVERIFY(!skip->urlKeys.isEmpty() && skip->urlKeys.size() <= kMaxSkipKeys);
+            QVERIFY(skip->reason == SkipReason::Unknown || skip->urlKeys.size() == 1);
+        }
+    }
+    QVERIFY(accepted > 0); // some mutations keep it valid (an unknown field, a changed key)
+
+    // The store's x entries, mutated the same way: never a crash, every entry it keeps is valid.
+    PreviewStore store;
+    for (const Kind kind : {Kind::Card, Kind::Loop, Kind::Image}) {
+        Announcement a = sampleX(kind);
+        a.messageKey   = textreact::localKey(QStringLiteral("0123456789abcdef"), 1760000000 + static_cast<int>(kind));
+        QCOMPARE(store.add(a, 1760000100), PreviewStore::Add::Added);
+    }
+    const QByteArray json = store.toJson(1760000100);
+    for (int i = 0; i < 20000; ++i) {
+        QByteArray doc = json;
+        const int  at  = rng.bounded(doc.size());
+        switch (rng.bounded(3)) {
+        case 0:
+            doc[at] = alphabet.at(rng.bounded(alphabet.size()));
+            break;
+        case 1:
+            doc.remove(at, 1 + rng.bounded(8));
+            break;
+        default:
+            doc.insert(at, doc.mid(rng.bounded(doc.size()), 1 + rng.bounded(16)));
+            break;
+        }
+        PreviewStore mutated;
+        if (!mutated.fromJson(doc, 1760000100))
+            continue;
+        for (const Kind kind : {Kind::Card, Kind::Loop, Kind::Image}) {
+            const Announcement* a = mutated.find(textreact::localKey(QStringLiteral("0123456789abcdef"), 1760000000 + static_cast<int>(kind)),
+                                                 sampleX(kind).urlKey);
+            if (a)
+                QVERIFY(isValidAny(*a));
+        }
+    }
+}
+
+// ---- 2.5: receiving LPX / LPXNO ------------------------------------------------------------------------------
+
+void TestLinkPreviewSnd::lpxOnlyFromTheSender()
+{
+    Hub::Limits limits;
+    limits.waitTtlMs = 300;
+    newHub(limits);
+    const qint64  now  = QDateTime::currentSecsSinceEpoch();
+    const QString hash = textreact::contentHash(kAliceUid, QStringLiteral("look https://www.example.com/news/a-story"));
+    indexMessage(hash, now - 2, kAliceUid);
+    const auto lpx = [](const QString& h, proto::Scope scope = proto::Scope::Channel, Kind kind = Kind::Card) {
+        return makeLpx(sampleX(kind), scope, textreact::wireRef(h, 2), kLpxShortCap);
+    };
+    // Bob for Alice's message: waits for one of his, then gives up.
+    m_hub->received(fakets3::kConnection, kBob, kBobUid, QStringLiteral("Bob"), lpx(hash));
+    QCOMPARE(m_hub->waitingCount(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->waitingCount(), 0, 3000);
+    QCOMPARE(m_hub->store()->count(), 0);
+    // ServerQuery; Carol from another channel with s=c.
+    m_hub->received(fakets3::kConnection, kQuery, QStringLiteral("serveradmin"), QStringLiteral("serveradmin"), lpx(hash));
+    m_hub->received(fakets3::kConnection, kCarol, kCarolUid, QStringLiteral("Carol"), lpx(textreact::contentHash(kCarolUid, QStringLiteral("x"))));
+    QCOMPARE(m_hub->counters().rejected, 2);
+    // Files in another channel (s=c names the channel holding them): refused.
+    Announcement elsewhere = sampleX(Kind::Card);
+    elsewhere.channelId    = kOtherChannel;
+    m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"), makeLpx(elsewhere, proto::Scope::Channel, textreact::wireRef(hash, 2), 900));
+    QCOMPARE(m_hub->counters().rejected, 3);
+    // Alice's own: stored as an LPX; its files are NOT asked for here (the chat asks when the card is on screen).
+    QSignalSpy announced(m_hub->store(), &PreviewStore::announced);
+    m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"), lpx(hash));
+    QCOMPARE(m_hub->counters().lpxAccepted, 1);
+    QCOMPARE(announced.count(), 1);
+    const Announcement* a = m_hub->store()->find(textreact::localKey(hash, now - 2), sampleX().urlKey);
+    QVERIFY(a && a->extended && a->kind == Kind::Card && a->senderUid == kAliceUid);
+    QCOMPARE(a->card.title, sampleX().card.title);
+    QTest::qWait(100);
+    QVERIFY(fakets3::downloads().isEmpty());
+    // A text-only card names no files: accepted from our channel.
+    const QString hash2 = textreact::contentHash(kAliceUid, QStringLiteral("two https://www.example.org/b"));
+    indexMessage(hash2, now - 1, kAliceUid, textreact::ChatKind::Channel, QString(), 2);
+    m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"),
+                    makeLpx(sampleX(Kind::Card, false), proto::Scope::Channel, textreact::wireRef(hash2, 1), kLpxShortCap));
+    QCOMPARE(m_hub->counters().lpxAccepted, 2);
+    // An LP for the same key isn't an LPX (and the other way round): a 2.4.0 announcement still works.
+    QCOMPARE(m_hub->counters().accepted, 0);
+}
+
+void TestLinkPreviewSnd::lpxOwnBucket()
+{
+    Hub::Limits limits;
+    limits.perSenderBurst  = 2;
+    limits.xPerSenderBurst = 3;
+    newHub(limits);
+    for (int i = 0; i < 5; ++i)
+        m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"),
+                        makeLpx(sampleX(), proto::Scope::Channel, textreact::wireRef(textreact::contentHash(kAliceUid, QString::number(i)), 2), kLpxShortCap));
+    QCOMPARE(m_hub->counters().rateLimited, 2);
+    QCOMPARE(m_hub->counters().lpxReceived, 5);
+    // LP's own allowance is untouched.
+    for (int i = 0; i < 3; ++i)
+        m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"), announcementFrom(kAliceUid, textreact::contentHash(kAliceUid, QStringLiteral("lp%1").arg(i))));
+    QCOMPARE(m_hub->counters().rateLimited, 3);
+    QCOMPARE(m_hub->waitingCount(), 3 + 2);
+    // The default: 20 a minute for LPX / LPXNO, LP's stays 10.
+    QCOMPARE(Hub::Limits().xPerSenderBurst, 20);
+    QCOMPARE(Hub::Limits().perSenderBurst, 10);
+}
+
+void TestLinkPreviewSnd::lpxnoReceivedWithReasons()
+{
+    const qint64  now  = QDateTime::currentSecsSinceEpoch();
+    const QString hash = textreact::contentHash(kAliceUid, QStringLiteral("three links"));
+    indexMessage(hash, now - 2, kAliceUid);
+    const QString key = textreact::localKey(hash, now - 2);
+    const QString k1 = QStringLiteral("00112233445566778899aabbccddeeff"), k2 = QStringLiteral("8eb4311921f7b1964785a11a4cc1f418"),
+                  k3 = QStringLiteral("2019fab9d770c5f007bced59a5abfa1e");
+    QSignalSpy skipped(m_hub.get(), &Hub::skipped);
+    // The intake notice: three keys, no reason.
+    m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"), makeLpxSkip(proto::Scope::Channel, textreact::wireRef(hash, 2), {k1, k2, k3}));
+    QCOMPARE(skipped.count(), 3);
+    for (const QString& k : {k1, k2, k3}) {
+        QVERIFY(m_hub->isSkipped(key, k));
+        QCOMPARE(m_hub->skipReason(key, k), SkipReason::Unknown);
+    }
+    QCOMPARE(m_hub->counters().lpxSkipsAccepted, 3);
+    // r=n and r=x for one link each; the newest notice of a link wins.
+    m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"), makeLpxSkip(proto::Scope::Channel, textreact::wireRef(hash, 2), {k1}, SkipReason::Nothing));
+    m_hub->received(fakets3::kConnection, kAlice, kAliceUid, QStringLiteral("Alice"), makeLpxSkip(proto::Scope::Channel, textreact::wireRef(hash, 2), {k2}, SkipReason::CrossSite));
+    QCOMPARE(m_hub->skipReason(key, k1), SkipReason::Nothing);
+    QCOMPARE(m_hub->skipReason(key, k2), SkipReason::CrossSite);
+    QCOMPARE(m_hub->skipReason(key, k3), SkipReason::Unknown);
+    // Bob can't speak for Alice's message.
+    m_hub->received(fakets3::kConnection, kBob, kBobUid, QStringLiteral("Bob"), makeLpxSkip(proto::Scope::Channel, textreact::wireRef(hash, 2), {k3}, SkipReason::Nothing));
+    QCOMPARE(m_hub->skipReason(key, k3), SkipReason::Unknown);
+    QCOMPARE(m_hub->store()->count(), 0);
+}
+
+// ---- 2.5: the sender's page links ----------------------------------------------------------------------------
+
+void TestLinkPreviewSnd::senderCardWithPicture()
+{
+    const QString text = QStringLiteral("look [URL]https://www.example.com/news/a-story[/URL]");
+    sendOwn(text);
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    const FakeFetch::Load load = m_fetch->loads.first();
+    QCOMPARE(load.target.cls, LinkClass::Web);
+    QCOMPARE(load.caps.page, qint64(512 * 1024));      // the sender ignores data saver
+    QCOMPARE(load.caps.picture, qint64(2 * 1024 * 1024));
+    QCOMPARE(load.caps.media, qint64(25 * 1024 * 1024)); // a page that turns out to be media
+    QVERIFY(!load.caps.userAsked);
+    CardData card;
+    card.site        = QStringLiteral("Example News");
+    card.title       = QStringLiteral("A story about something");
+    card.description = QStringLiteral("What happened, in a sentence.");
+    card.layout      = CardLayout::Large;
+    card.hasColor    = true;
+    card.color       = qRgb(0x2e, 0x7d, 0x32);
+    answerCard(card, picture(1600, 900));
+    QVERIFY(serveUntil([this] { return lastSentX().has_value(); }));
+    const std::optional<Incoming> in = lastSentX();
+    const Announcement&           a  = in->announcement;
+    QCOMPARE(a.kind, Kind::Card);
+    QCOMPARE(a.urlKey, load.target.key);
+    QCOMPARE(a.card.title, card.title);
+    QCOMPARE(a.card.site, card.site);
+    QCOMPARE(a.card.description, card.description);
+    QCOMPARE(a.card.layout, CardLayout::Large);
+    QVERIFY(a.card.hasColor);
+    QCOMPARE(a.width, 1600);
+    QCOMPARE(a.height, 900);
+    QVERIFY(a.mediaPath.isEmpty()); // a card never uploads more than its picture
+    QVERIFY(a.previewPath.startsWith(QLatin1String("/tsmedia/previews/")));
+    const QByteArray preview = fakets3::serverFile(a.previewPath);
+    QCOMPARE(a.previewSha, shaOf(preview));
+    QImage shown;
+    QVERIFY(shown.loadFromData(preview));
+    QCOMPARE(qMax(shown.width(), shown.height()), 800); // a large card's picture fits 800 x 800
+    QVERIFY(preview.size() <= kMaxPreviewBytes);
+    // One LPX within this connection's cap, never an LP; our own copy is stored.
+    QCOMPARE(sentTypes(), QByteArrayList({"LPX"}));
+    QVERIFY(m_backend->sent.last().payload.size() <= kLpxShortCap);
+    QCOMPARE(m_hub->pipeline()->counters().lpxSent, 1);
+    QCOMPARE(m_hub->pipeline()->counters().lpxCapUsed, kLpxShortCap);
+    QCOMPARE(m_hub->store()->count(), 1);
+    QVERIFY(fakets3::messages().isEmpty());
+    QCOMPARE(chatLines(), 0);
+}
+
+void TestLinkPreviewSnd::senderTextOnlyCard()
+{
+    sendOwn(QStringLiteral("https://www.example.org/docs/a-page"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    CardData card;
+    card.title       = QStringLiteral("A page");
+    card.description = QStringLiteral("The page's own short text.");
+    answerCard(card);
+    QVERIFY(serveUntil([this] { return lastSentX().has_value(); }));
+    const Announcement a = lastSentX()->announcement;
+    QCOMPARE(a.kind, Kind::Card);
+    QVERIFY(a.previewPath.isEmpty() && a.channelId == 0);
+    QCOMPARE(a.card.description, card.description);
+    QVERIFY(fakets3::uploads().isEmpty()); // nothing went up
+    // A card without its text or its picture is no card: LPXNO (without a reason: receivers may try).
+    sendOwn(QStringLiteral("https://www.example.org/docs/b-page"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 2, 3000);
+    CardData bare;
+    bare.title = QStringLiteral("Only a title");
+    answerCard(bare);
+    QTRY_COMPARE_WITH_TIMEOUT(sentTypes().size(), 2, 3000);
+    QCOMPARE(sentTypes().last(), QByteArray("LPXNO"));
+    QCOMPARE(readLpxSkip(sentMessages().last())->reason, SkipReason::Unknown);
+}
+
+void TestLinkPreviewSnd::senderLoopGifCap()
+{
+    m_hub->pipeline()->setVideoProbe(busyVideoProbe);
+    sendOwn(QStringLiteral("https://giphy.com/gifs/teacher-anyone-ferris-bueller-8FhXc8w45aN32"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    QCOMPARE(m_fetch->loads.first().target.cls, LinkClass::MediaPage);
+    QCOMPARE(m_fetch->loads.first().caps.media, qint64(20 * 1024 * 1024));
+    const auto answerLoop = [this](int bytes) {
+        const FakeFetch::Load load = m_fetch->loads.last();
+        const QString         path = load.cacheDir + QLatin1Char('/') + load.target.key + QStringLiteral(".mp4");
+        QDir().mkpath(load.cacheDir);
+        QFile out(path);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        out.write(sampleMp4(bytes));
+        out.close();
+        Result r;
+        r.ok         = true;
+        r.kind       = Kind::Loop;
+        r.localFile  = path;
+        r.size       = bytes;
+        r.mime       = QStringLiteral("video/mp4");
+        r.durationMs = 4200;
+        m_hub->pipeline()->fetched(load.target.key, r);
+    };
+    answerLoop(3 * 1024 * 1024);
+    QVERIFY(serveUntil([this] { return lastSentX().has_value(); }, 20000));
+    Announcement a = lastSentX()->announcement;
+    QCOMPARE(a.kind, Kind::Loop); // k=a: a silent loop, shown like a GIF
+    QVERIFY(a.mediaPath.endsWith(QLatin1String(".mp4")));
+    QVERIFY(a.mediaSize >= 3 * 1024 * 1024 && a.mediaSize < 3 * 1024 * 1024 + 64); // the whole file went up
+    QVERIFY(!a.previewPath.isEmpty());
+    // Over the GIF cap (8 MB): only its poster goes up.
+    sendOwn(QStringLiteral("https://giphy.com/gifs/movie-80s-ferris-buellers-day-off-bkIgPwdV3Afzq"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 2, 3000);
+    const int before = m_backend->sent.size();
+    answerLoop(9 * 1024 * 1024);
+    QVERIFY(serveUntil([this, before] { return m_backend->sent.size() > before; }, 20000));
+    a = lastSentX()->announcement;
+    QCOMPARE(a.kind, Kind::Loop);
+    QVERIFY(a.mediaPath.isEmpty());
+    QVERIFY(!a.previewPath.isEmpty());
+}
+
+void TestLinkPreviewSnd::senderCrossSiteNoCard()
+{
+    sendOwn(QStringLiteral("https://bit.example.com/abc123"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    CardData card;
+    card.title       = QStringLiteral("Somewhere else");
+    card.description = QStringLiteral("A page on another website.");
+    answerCard(card, picture(800, 400), QStringLiteral("other.example.net"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), 1, 3000);
+    QCOMPARE(sentTypes(), QByteArrayList({"LPXNO"}));
+    const std::optional<SkipX> skip = readLpxSkip(sentMessages().first());
+    QVERIFY(skip && skip->reason == SkipReason::CrossSite && skip->urlKeys.size() == 1);
+    QCOMPARE(m_hub->pipeline()->counters().lpxSkipsCrossSite, 1);
+    QVERIFY(fakets3::uploads().isEmpty());
+    // Our own chat still shows it (with the host it went to).
+    const SenderPipeline::OwnLink* own = m_hub->pipeline()->latestOwnLink(m_fetch->loads.first().target.key);
+    QVERIFY(own && own->state == SenderPipeline::OwnLink::State::Fetched);
+    QCOMPARE(own->result.finalHost, QStringLiteral("other.example.net"));
+}
+
+void TestLinkPreviewSnd::senderWalledNoCard()
+{
+    const QStringList errorsInOrder{QString::fromLatin1(errors::kWalled), QString::fromLatin1(errors::kNothing), QString::fromLatin1(errors::kExpired),
+                                    QString::fromLatin1(errors::kNotFound), QString::fromLatin1(errors::kRateLimited)};
+    for (int i = 0; i < errorsInOrder.size(); ++i) {
+        sendOwn(QStringLiteral("https://www.example.com/page-%1").arg(i));
+        QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), i + 1, 3000);
+        Result r;
+        r.error = errorsInOrder.at(i);
+        m_hub->pipeline()->fetched(m_fetch->loads.last().target.key, r);
+        QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), i + 1, 3000);
+    }
+    const QList<proto::Message> sent = sentMessages();
+    QCOMPARE(sent.size(), 5);
+    // Review fix: a wall (a consent page, a bot check) depends on the sender (their region, their address), not on the
+    // page: a plain LPXNO, so receivers may still load it themselves (their own walled memo bounds it). Only "the page
+    // has no card" and "the link is expired" are facts about the content (r=n).
+    const QVector<SkipReason> want{SkipReason::Unknown, SkipReason::Nothing, SkipReason::Nothing, SkipReason::Unknown, SkipReason::Unknown};
+    for (int i = 0; i < 5; ++i) {
+        QCOMPARE(sent.at(i).type, QByteArray("LPXNO"));
+        QCOMPARE(readLpxSkip(sent.at(i))->reason, want.at(i));
+    }
+    QCOMPARE(m_hub->pipeline()->counters().lpxSkipsNothing, 2);
+    QCOMPARE(m_hub->pipeline()->counters().lpxSkips, 5);
+    QCOMPARE(m_hub->pipeline()->counters().skipNotices, 0); // LPNO only for the 2.4 classes
+}
+
+void TestLinkPreviewSnd::senderWebCardsOff()
+{
+    Settings::instance().showWebCards = false;
+    sendOwn(QStringLiteral("look https://www.example.com/news/a-story"));
+    QTest::qWait(50);
+    QVERIFY(m_fetch->loads.isEmpty());
+    QVERIFY(m_backend->sent.isEmpty()); // no job, no notice: our "lw" is off, nobody waits
+    // A media site and a well-known site still get theirs.
+    sendOwn(QStringLiteral("https://giphy.com/gifs/teacher-anyone-ferris-bueller-8FhXc8w45aN32 https://www.example.com/x"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    QCOMPARE(m_fetch->loads.first().target.provider, QStringLiteral("giphy"));
+    sendOwn(QStringLiteral("https://vimeo.com/76979871"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->pipeline()->jobCount(), 2, 3000);
+    // 2.5 (design2 2.10): a Nextcloud share always gets its job ("lx": it may be a picture, a GIF or a video), with a
+    // video's cap for a video.
+    sendOwn(QStringLiteral("https://cloud.example.org/s/Ab3dE6gH9jK2mN5"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->pipeline()->jobCount(), 3, 3000);
+    const Target share = classify(QStringLiteral("https://cloud.example.org/s/Ab3dE6gH9jK2mN5"));
+    QCOMPARE(share.provider, QStringLiteral("nextcloud"));
+    const Caps caps = m_hub->pipeline()->fetchCapsFor(share);
+    QCOMPARE(caps.media, m_hub->pipeline()->fetchCapsFor(classify(QStringLiteral("https://example.com/a.png"))).media);
+    QCOMPARE(caps.video, m_hub->pipeline()->fetchCapsFor(classify(QStringLiteral("https://example.com/clip.mp4"))).media);
+    QVERIFY(caps.video > caps.media);
+    QCOMPARE(m_hub->pipeline()->fetchCapsFor(classify(QStringLiteral("https://giphy.com/gifs/x-8FhXc8w45aN32"))).video, qint64(-1));
+}
+
+void TestLinkPreviewSnd::senderFollowsWebCardsSwitch()
+{
+    // Review fix: Show cards for other web pages changed while our jobs run. A share link's running fetch holds the
+    // switch as it started (Caps::webCards): it starts again under the new value.
+    const QString share = QStringLiteral("https://cloud.example.org/s/Ab3dE6gH9jK2mN5");
+    sendOwn(share);
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    const QString key = m_fetch->loads.first().target.key;
+    QVERIFY(m_fetch->loads.first().caps.webCards);
+    Settings::instance().showWebCards = false;
+    m_hub->applySettings();
+    QCOMPARE(m_fetch->canceled, QStringList({key}));
+    QCOMPARE(m_fetch->loads.size(), 2);
+    QCOMPARE(m_fetch->loads.last().target.key, key);
+    QVERIFY(!m_fetch->loads.last().caps.webCards); // that other website's page is never loaded now
+    // The canceled fetch's answer doesn't end the job; applied again without a change: nothing more.
+    Result canceled;
+    canceled.error = QString::fromLatin1(errors::kCanceled);
+    m_hub->pipeline()->fetched(key, canceled);
+    m_hub->applySettings();
+    QCOMPARE(m_hub->pipeline()->jobCount(), 1);
+    QCOMPARE(m_fetch->loads.size(), 2);
+    QVERIFY(m_backend->sent.isEmpty());
+    // The new fetch's answer ends it as always: another website while off, LPXNO r=x.
+    Result away;
+    away.error     = QString::fromLatin1(errors::kWebOff);
+    away.finalHost = QStringLiteral("go.example.net");
+    m_hub->pipeline()->fetched(key, away);
+    QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), 1, 3000);
+    QCOMPARE(readLpxSkip(sentMessages().last())->reason, SkipReason::CrossSite);
+    // On again: a share fetch started with it off loads again with it on (it would end with kWebOff otherwise).
+    sendOwn(QStringLiteral("https://cloud.example.org/s/Zy9xW8vU7tS6rQ5"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 3, 3000);
+    QVERIFY(!m_fetch->loads.last().caps.webCards);
+    Settings::instance().showWebCards = true;
+    m_hub->applySettings();
+    QCOMPARE(m_fetch->loads.size(), 4);
+    QVERIFY(m_fetch->loads.last().caps.webCards);
+    QCOMPARE(m_fetch->canceled.size(), 2);
+    Result nothing;
+    nothing.error = QString::fromLatin1(errors::kNothing);
+    m_hub->pipeline()->fetched(m_fetch->loads.last().target.key, nothing);
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->pipeline()->jobCount(), 0, 3000);
+    // Other links' fetches don't hold that switch: never started again.
+    sendOwn(QStringLiteral("https://giphy.com/gifs/teacher-anyone-ferris-bueller-8FhXc8w45aN32"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 5, 3000);
+    Settings::instance().showWebCards = false;
+    m_hub->applySettings();
+    QCOMPARE(m_fetch->loads.size(), 5);
+    QCOMPARE(m_fetch->canceled.size(), 2);
+    m_hub->pipeline()->fetched(m_fetch->loads.last().target.key, nothing);
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->pipeline()->jobCount(), 0, 3000);
+    // Off: web links' jobs that haven't loaded their page (running and queued) stop, with an LPXNO each, and the
+    // queued one is never loaded.
+    Settings::instance().showWebCards = true;
+    m_hub->applySettings();
+    sendOwn(QStringLiteral("https://www.example.com/news/one https://www.example.com/news/two"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 6, 3000);
+    QCOMPARE(m_hub->pipeline()->jobCount(), 2);
+    const QString running = m_fetch->loads.last().target.key;
+    const int     before  = m_backend->sent.size();
+    Settings::instance().showWebCards = false;
+    m_hub->applySettings();
+    QCOMPARE(m_hub->pipeline()->jobCount(), 0);
+    QVERIFY(m_fetch->canceled.contains(running));
+    QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), before + 2, 3000);
+    for (const proto::Message& m : sentMessages().mid(before))
+        QCOMPARE(m.type, QByteArray("LPXNO"));
+    QTest::qWait(50);
+    QCOMPARE(m_fetch->loads.size(), 6);
+}
+
+void TestLinkPreviewSnd::intakeNoticeOnePerMessage()
+{
+    // Six links fill the minute's allowance (each its own job; they wait for the fake website).
+    for (int i = 0; i < 6; ++i)
+        sendOwn(QStringLiteral("https://www.example.com/story-%1").arg(i));
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->pipeline()->jobCount(), 6, 3000);
+    QVERIFY(m_backend->sent.isEmpty());
+    // The next message's two page links are refused at intake: ONE LPXNO names both. Review fix: its file link has an
+    // allowance of its own (2.4.0 receivers never read LPXNO): it gets its job.
+    const QString text = QStringLiteral("https://example.com/a.png https://www.example.com/more https://vimeo.com/76979871");
+    sendOwn(text);
+    QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), 1, 3000);
+    const std::optional<SkipX> notice = readLpxSkip(sentMessages().first());
+    QVERIFY(notice);
+    QCOMPARE(notice->urlKeys.size(), 2);
+    QVERIFY(!notice->urlKeys.contains(classify(QStringLiteral("https://example.com/a.png")).key));
+    QCOMPARE(m_hub->pipeline()->jobCount(), 7);
+    QCOMPARE(notice->reason, SkipReason::Unknown);
+    QCOMPARE(notice->hash, message::identityHash(kOwnUid, text));
+    QCOMPARE(m_hub->pipeline()->counters().intakeNotices, 1);
+    // Another refused message within 10 s: no second notice (receivers' own model covers it).
+    sendOwn(QStringLiteral("https://www.example.com/again"));
+    QTest::qWait(50);
+    QCOMPARE(m_backend->sent.size(), 1);
+    QCOMPARE(m_hub->pipeline()->counters().intakeNotices, 1);
+    // Flood costs: every accepted job sends at most one command (LP/LPNO or LPX/LPXNO), plus at most one notice per
+    // message.
+    for (int i = 0; i < 7; ++i) {
+        Result r;
+        r.error = QString::fromLatin1(errors::kNotFound);
+        QTRY_VERIFY_WITH_TIMEOUT(m_fetch->loads.size() > i, 3000);
+        m_hub->pipeline()->fetched(m_fetch->loads.at(i).target.key, r);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(m_hub->pipeline()->jobCount(), 0, 3000);
+    QCOMPARE(m_backend->sent.size(), 7 + 1);
+}
+
+void TestLinkPreviewSnd::ownLinkRecordsForCards()
+{
+    sendOwn(QStringLiteral("https://www.example.com/news/a-story"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    const QString key = m_fetch->loads.first().target.key;
+    const SenderPipeline::OwnLink* rec = m_hub->pipeline()->latestOwnLink(key);
+    QVERIFY(rec && rec->state == SenderPipeline::OwnLink::State::Fetching);
+    QCOMPARE(rec->target.cls, LinkClass::Web);
+    CardData card;
+    card.title       = QStringLiteral("A story");
+    card.description = QStringLiteral("Its text.");
+    answerCard(card, picture(1200, 630));
+    rec = m_hub->pipeline()->latestOwnLink(key);
+    QVERIFY(rec && rec->state == SenderPipeline::OwnLink::State::Fetched);
+    QCOMPARE(rec->result.kind, Kind::Card);
+    QCOMPARE(rec->result.card.title, card.title); // our own chat adopts the card at once (before the upload)
+    QVERIFY(QFileInfo::exists(rec->result.card.pictureFile));
+}
+
+void TestLinkPreviewSnd::refusedUploadRemembered()
+{
+    // Review fix: a channel that refuses our preview uploads (no permission there) is remembered for a few minutes: the
+    // next page links of that channel make no upload request that would fail again. A card with its text goes without
+    // its picture at once; a card that is only a picture ends with a plain LPXNO.
+    m_refuseUploads = true;
+    CardData card;
+    card.title       = QStringLiteral("A story");
+    card.description = QStringLiteral("What happened.");
+    card.layout      = CardLayout::Large;
+    sendOwn(QStringLiteral("https://www.example.com/news/one"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    answerCard(card, picture(800, 450));
+    QVERIFY(serveUntil([this] { return lastSentX().has_value(); }, 20000));
+    QCOMPARE(lastSentX()->announcement.card.layout, CardLayout::None); // its text, without the picture
+    const int uploadsAfterFirst = fakets3::uploads().size();
+    QVERIFY(uploadsAfterFirst >= 1);
+    // The next card of this channel: no upload request at all, its text at once.
+    sendOwn(QStringLiteral("https://www.example.com/news/two"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 2, 3000);
+    answerCard(card, picture(800, 450));
+    QVERIFY(serveUntil([this] { return sentTypes().size() == 2; }, 20000));
+    QCOMPARE(sentTypes(), QByteArrayList({"LPX", "LPX"}));
+    QCOMPARE(lastSentX()->announcement.card.layout, CardLayout::None);
+    QCOMPARE(fakets3::uploads().size(), uploadsAfterFirst);
+    // A card that is only a picture: a plain LPXNO, no upload.
+    CardData only;
+    only.title  = QStringLiteral("Only a picture");
+    only.layout = CardLayout::Large;
+    sendOwn(QStringLiteral("https://www.example.com/news/three"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 3, 3000);
+    answerCard(only, picture(800, 450));
+    QVERIFY(serveUntil([this] { return sentTypes().size() == 3; }, 20000));
+    QCOMPARE(sentTypes().last(), QByteArray("LPXNO"));
+    QCOMPARE(readLpxSkip(sentMessages().last())->reason, SkipReason::Unknown);
+    QCOMPARE(fakets3::uploads().size(), uploadsAfterFirst);
+    QCOMPARE(m_hub->pipeline()->counters().uploadsSkipped, 2);
+}
+
+void TestLinkPreviewSnd::pageMediaSensitiveMade()
+{
+    // D24: media from a page that declares adult content goes out marked (the LPX's sn=1), like the page's card would.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString file = dir.path() + QStringLiteral("/x.png");
+    QVERIFY(picture(64, 48).save(file, "PNG"));
+    QVERIFY(QDir().mkpath(dir.path() + QStringLiteral("/out")));
+    maker::Input in;
+    in.target = classify(QStringLiteral("https://someblog.tumblr.com/post/223456789"));
+    QCOMPARE(in.target.cls, LinkClass::MediaPage);
+    in.fetched.ok             = true;
+    in.fetched.kind           = Kind::Image;
+    in.fetched.localFile      = file;
+    in.fetched.card.sensitive = true;
+    in.workDir                = dir.path() + QStringLiteral("/out");
+    in.mayMove                = false; // copied: the second make below reads it again
+    in.caps.imageMediaBytes   = 1024 * 1024;
+    maker::Made made          = maker::make(in);
+    QVERIFY2(made.ok, qPrintable(made.error));
+    QCOMPARE(made.kind, Kind::Image);
+    QVERIFY(made.sensitive);
+    QVERIFY(QDir().mkpath(dir.path() + QStringLiteral("/out2")));
+    in.workDir                = dir.path() + QStringLiteral("/out2");
+    in.fetched.card.sensitive = false;
+    made                      = maker::make(in);
+    QVERIFY(made.ok);
+    QVERIFY(!made.sensitive);
+}
+
+void TestLinkPreviewSnd::cardMakerSafeAndSmall()
+{
+    // A card's picture is decoded by its bytes only: an SVG named .jpg gives no picture (a text card stays a card).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString svg = dir.path() + QStringLiteral("/x-thumb.jpg");
+    QFile         f(svg);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("<svg xmlns='http://www.w3.org/2000/svg'><image href='//127.0.0.1/share/x.png'/></svg>");
+    f.close();
+    maker::Input in;
+    in.target = classify(QStringLiteral("https://www.example.com/a"));
+    QCOMPARE(in.target.cls, LinkClass::Web);
+    in.fetched.ok               = true;
+    in.fetched.kind             = Kind::Card;
+    in.fetched.card.title       = QStringLiteral("Title");
+    in.fetched.card.description = QStringLiteral("Text");
+    in.fetched.card.pictureFile = svg;
+    in.fetched.card.layout      = CardLayout::Large;
+    in.workDir                  = dir.path();
+    maker::Made made            = maker::make(in);
+    QVERIFY(made.ok);
+    QVERIFY(made.previewFile.isEmpty());
+    QCOMPARE(made.card.layout, CardLayout::None);
+    // Without text it would be nothing.
+    in.fetched.card.description.clear();
+    QVERIFY(!maker::make(in).ok);
+    // A thumbnail card's picture fits 256 x 256; a transparent one stays PNG.
+    QImage alpha = picture(1000, 500, true);
+    bool   png   = false;
+    const QByteArray thumb = maker::encodeCardPicture(alpha, CardLayout::Thumb, &png);
+    QVERIFY(png);
+    QImage back;
+    QVERIFY(back.loadFromData(thumb));
+    QCOMPARE(back.width(), 256);
+    QVERIFY(back.hasAlphaChannel());
+    // A noisy large picture stays within 2 MB.
+    QImage           noisy(2000, 1500, QImage::Format_RGB32);
+    QRandomGenerator noise(5);
+    for (int y = 0; y < noisy.height(); y += 1)
+        for (int x = 0; x < noisy.width(); x += 1)
+            noisy.setPixel(x, y, qRgb(noise.bounded(256), noise.bounded(256), noise.bounded(256)));
+    const QByteArray large = maker::encodeCardPicture(noisy, CardLayout::Large, &png);
+    QVERIFY(!large.isEmpty() && large.size() <= kMaxPreviewBytes);
+    QVERIFY(!png);
 }
 
 TSMEDIA_REGISTER_TEST(TestLinkPreviewSnd)

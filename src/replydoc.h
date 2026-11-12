@@ -22,6 +22,7 @@
 #include <QTextFormat>
 #include <QVector>
 
+#include "previewscale.h" // 2.5 zoom: the reply line carries its du size
 #include "replies.h"
 
 class QTextBlock;
@@ -82,7 +83,8 @@ QString textOf(const QString& text, const QTextCharFormat& format);
 
 // Takes m's raw quote line out and puts our picture (name, logical size) and our line break at the start
 // of its block. False if m doesn't describe the document any more.
-bool collapse(QTextDocument* doc, const Message& m, const QString& name, const QSizeF& size);
+// 2.5 zoom: size in du; the picture is du x scale (the chat's chrome scale, PreviewScale::chrome()).
+bool collapse(QTextDocument* doc, const Message& m, const QString& name, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 // Gives the quote line back for our picture at position. False if there is none there.
 bool restore(QTextDocument* doc, int position);
 // Every picture of ours in doc, and line breaks of ours left without one. Returns how many.
@@ -91,7 +93,7 @@ int restoreAll(QTextDocument* doc);
 // shows any more (TeamSpeak swapped it out and may show it again later).
 int giveBack(QTextDocument* doc);
 // A new size for our picture at position (the chat got wider, another font).
-void resizeObject(QTextDocument* doc, int position, const QSizeF& size);
+void resizeObject(QTextDocument* doc, int position, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 // Positions of our pictures in doc.
 QVector<int> objectPositions(QTextDocument* doc);
 

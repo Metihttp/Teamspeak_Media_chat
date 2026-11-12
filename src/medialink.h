@@ -74,6 +74,9 @@ struct MediaLink {
     int        albumCount = 0;     // 2..kMaxAlbumItems
     bool       voice      = false;
     QByteArray waveform;           // kWaveformLevels bytes of 0..kWaveformMax, or empty
+    // 2.5: a silent looping video shown like a GIF (link previews only; never written into a TS Media file link:
+    // toUrl() and parse() ignore it, key() too).
+    bool       loop       = false;
 
     bool    isValid() const;
     bool    isTsMedia() const { return protocol >= 2; }

@@ -51,6 +51,15 @@
 // 2.3.4 newer-version hint:
 //   hint.inject {version, inChannel}  as if a peer's hello named that version (Updater::notePeerVersion)
 //   hint.click                      a left click on the newest hint link of the visible chat (runPart6)
+// 2.5 zoom live pass:
+//   chat.zoom {steps}               zoomIn/zoomOut on the visible chat (0: only report the font, scale, passes and holds)
+//   chat.wheel {steps, ms, delta}   a Ctrl + wheel gesture: QWheelEvents with Ctrl on the chat's viewport, one per ms
+//   key {..., shortcut: true}       the key offered to the application's shortcuts first (keys Plus, Minus, Equal too)
+//   settings.combo {text, value}    a combo box of Settings by accessible name: reported, or value picked
+//   settings.button {name}          ok, restore or cancel clicked
+//   fontdlg {pt, family}            the open QFontDialog (Options > Chat > Change Font): that font, then OK
+//   where {widest}                  also the horizontal scroll range, the view and the document width; widest: the
+//                                   blocks reaching farthest right (and their widest picture)
 
 #ifdef TSMEDIA_TESTHOOKS
 
@@ -62,6 +71,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QSpinBox>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QElapsedTimer>
@@ -69,6 +80,7 @@
 #include <QToolTip>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFontDialog>
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
@@ -81,6 +93,7 @@
 #include <QMap>
 #include <QMainWindow>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSplitter>
@@ -102,13 +115,18 @@
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTimer>
+#include <QWheelEvent>
 
 #include <functional>
+
+// QtGui's own (exported, the path QTest uses): a key offered to the application's shortcuts as real input is.
+Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int k, Qt::KeyboardModifiers mods, const QString& text, bool autorep, ushort count);
 
 #include "chatavatars.h"   // 2.3 live pass A: avatar file names
 #include "chatemoji.h"     // part 3: HD emoji counts
 #include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatintegration.h"
+#include "chatscale.h"       // 2.5 zoom live pass: passes and holds per chat
 #include "chatpolls.h"     // 2.3 poll: the poll.* commands
 #include "chatlinkpreviews.h" // 2.4 link previews: the links.* commands
 #include "linkpreview/announcement.h" // 2.4 live pass A: lp.forge
@@ -127,6 +145,9 @@
 #include "actionbar.h"     // part 4: the chat redesign's action bar
 #include "chatlayout.h"    // part 4
 #include "emojiinput.h"    // part 4: TeamSpeak's emoji button taken over
+#include "emojipicker.h"   // 2.5 GIFs: the picker's pages
+#include "giflibrary.h"    // 2.5 GIFs
+#include "gifpanel.h"      // 2.5 GIFs: the tab's grid
 #include "layoutbubbles.h" // 2.3.1 live test: the bubbles as laid out (ownplaces)
 #include "layoutdoc.h"     // part 4: chips
 #include "layoutformat.h"  // part 4
@@ -186,7 +207,326 @@ void say(const QString& text)
     ts3::log(QString::fromLatin1("[test] script: ") + text);
 }
 
+// 2.5 GIFs: a uid in the log as a short hash.
+QString hashedUid(const QString& uid)
+{
+    return uid.isEmpty() ? QString::fromLatin1("-")
+                         : QString::fromLatin1(QCryptographicHash::hash(uid.toUtf8(), QCryptographicHash::Sha256).toHex().left(8));
+}
+
 } // namespace
+
+// 2.5 GIFs: the live-test commands of the emoji picker's GIFs tab (design_gifs 11).
+QString SelfTest::runGifs(const QString& cmd, const QJsonObject& c)
+{
+    GifLibrary* lib   = GifLibrary::instance();
+    EmojiInput* input = m_chat->emoji() ? m_chat->emoji()->input() : nullptr;
+    if (!lib || !input)
+        return QString::fromLatin1("%1: no GIF library").arg(cmd);
+    const auto stateName = [lib] {
+        switch (lib->state()) {
+        case GifLibrary::State::Ok:
+            return QString::fromLatin1("ok");
+        case GifLibrary::State::ReadOnly:
+            return QString::fromLatin1("read-only");
+        case GifLibrary::State::Unavailable:
+            break;
+        }
+        return QString::fromLatin1("unavailable");
+    };
+    if (cmd == QLatin1String("gifs.list")) {
+        int links = 0, files = 0;
+        for (const gifs::Item& item : lib->items())
+            (item.source == gifs::Source::Link ? links : files) += 1;
+        return QString::fromLatin1("list %1 (links %2, files %3), unconfirmed %4, copies %5 bytes, state %6")
+            .arg(lib->count())
+            .arg(links)
+            .arg(files)
+            .arg(lib->unconfirmedCount())
+            .arg(lib->copyBytes())
+            .arg(stateName());
+    }
+    if (cmd == QLatin1String("gifs.open")) {
+        QTextEdit* edit = nullptr;
+        for (const QPointer<QWidget>& w : m_chat->m_inputs) {
+            if (auto* e = qobject_cast<QTextEdit*>(w.data()); e && e->isVisible())
+                edit = e;
+        }
+        if (!edit)
+            return QString::fromLatin1("open: no visible chat input");
+        const bool    key = c.value(QString::fromLatin1("by")).toString() == QLatin1String("key");
+        QElapsedTimer clock; // live pass: the opening and its first paint, on the GUI thread
+        clock.start();
+        input->openPicker(edit, key ? EmojiInput::Opener::Keyboard : EmojiInput::Opener::Mouse);
+        EmojiPicker* picker = input->picker();
+        const qint64 opened = clock.elapsed();
+        if (picker)
+            picker->repaint();
+        if (picker && picker->gifPanel() && picker->page() == EmojiPicker::Page::Gifs)
+            picker->gifPanel()->grid()->repaint();
+        return QString::fromLatin1("open by %1: picker %2, GIFs tab %3, page %4; open %5 ms, open + paint %6 ms, %7 items, %8 thumbnail decodes")
+            .arg(key ? QString::fromLatin1("key") : QString::fromLatin1("mouse"))
+            .arg(picker ? 1 : 0)
+            .arg(picker && picker->hasGifHost() ? 1 : 0)
+            .arg(picker && picker->page() == EmojiPicker::Page::Gifs ? QString::fromLatin1("gifs") : QString::fromLatin1("emoji"))
+            .arg(opened)
+            .arg(clock.elapsed())
+            .arg(lib->count())
+            .arg(lib->thumbnailDecodes());
+    }
+    if (cmd == QLatin1String("gifs.items")) {
+        // Live pass: every item in display order (test data only: the link's host or the file's name, never a URL).
+        QStringList out;
+        int         n = 0;
+        for (const gifs::Item& item : lib->items()) {
+            out << QString::fromLatin1("#%1 %2/%3/%4 thumb %5 anim %6 size %7 %8x%9 d %10%11%12%13 \"%14\"")
+                       .arg(n++)
+                       .arg(item.source == gifs::Source::Link ? QString::fromLatin1("link") : QString::fromLatin1("file"))
+                       .arg(item.kind == gifs::Kind::Loop ? QString::fromLatin1("loop") : item.kind == gifs::Kind::Webp ? QString::fromLatin1("webp") : QString::fromLatin1("gif"))
+                       .arg(item.how == gifs::How::Saved ? QString::fromLatin1("saved") : QString::fromLatin1("sent"))
+                       .arg(item.thumb.isEmpty() ? 0 : 1)
+                       .arg(item.anim.isEmpty() ? 0 : 1)
+                       .arg(item.size)
+                       .arg(item.width)
+                       .arg(item.height)
+                       .arg(item.durationMs)
+                       .arg(item.spoiler ? QString::fromLatin1(" spoiler") : QString())
+                       .arg(item.plain ? QString::fromLatin1(" plain") : QString())
+                       .arg(lib->isUnconfirmed(item.id) ? QString::fromLatin1(" unconfirmed") : QString())
+                       .arg(item.source == gifs::Source::Link ? lib->hostOf(item) : item.name);
+        }
+        return QString::fromLatin1("items %1: %2").arg(lib->count()).arg(out.join(QString::fromLatin1(" | ")));
+    }
+    if (cmd == QLatin1String("gifs.pickers")) {
+        // Live pass: every emoji picker shown (the chat input's, React mode's, the send window's) and its parts.
+        QStringList out;
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            auto* p = qobject_cast<EmojiPicker*>(w);
+            if (!p || !p->isVisible())
+                continue;
+            QStringList parts;
+            for (QObject* o : p->children()) {
+                auto* child = qobject_cast<QWidget*>(o);
+                if (child && child->isVisible())
+                    parts << QString::fromLatin1("%1#%2@%3,%4 %5x%6")
+                                 .arg(QString::fromLatin1(child->metaObject()->className()), child->objectName())
+                                 .arg(child->x())
+                                 .arg(child->y())
+                                 .arg(child->width())
+                                 .arg(child->height());
+            }
+            out << QString::fromLatin1("%1 %2x%3 at %4,%5 dpr %6, GIFs tab %7, page %8, switch %9: %10")
+                       .arg(p->objectName())
+                       .arg(p->width())
+                       .arg(p->height())
+                       .arg(p->x())
+                       .arg(p->y())
+                       .arg(p->devicePixelRatioF())
+                       .arg(p->hasGifHost() ? 1 : 0)
+                       .arg(p->page() == EmojiPicker::Page::Gifs ? QString::fromLatin1("gifs") : QString::fromLatin1("emoji"))
+                       .arg(p->pageSwitch() && p->pageSwitch()->isVisible() ? 1 : 0)
+                       .arg(parts.join(QString::fromLatin1(", ")));
+        }
+        return QString::fromLatin1("pickers %1: %2").arg(out.size()).arg(out.join(QString::fromLatin1(" || ")));
+    }
+    if (cmd == QLatin1String("gifs.trigger")) {
+        // Live pass: a QAction by objectName in any shown window (the send window's emoji action, tsmediaEmojiAction).
+        const QString name = c.value(QString::fromLatin1("object")).toString();
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (!w->isVisible())
+                continue;
+            for (QAction* a : w->findChildren<QAction*>()) {
+                if (a->objectName() == name) {
+                    a->trigger();
+                    return QString::fromLatin1("trigger: %1 in %2").arg(name, w->objectName());
+                }
+            }
+        }
+        return QString::fromLatin1("trigger: no action ") + name;
+    }
+    if (cmd == QLatin1String("gifs.box")) {
+        // Live pass: the message box shown (Clear cache, Remove all GIFs): its texts, a grab, and a button clicked (queued).
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            auto* box = qobject_cast<QMessageBox*>(w);
+            if (!box || !box->isVisible())
+                continue;
+            QStringList buttons;
+            QAbstractButton* chosen = nullptr;
+            for (QAbstractButton* b : box->buttons()) {
+                buttons << withoutMnemonic(b->text());
+                if (withoutMnemonic(b->text()) == c.value(QString::fromLatin1("click")).toString())
+                    chosen = b;
+            }
+            const QString grab = c.value(QString::fromLatin1("name")).toString().isEmpty() ? QString() : saveGrab(box, c.value(QString::fromLatin1("name")).toString());
+            if (chosen)
+                QMetaObject::invokeMethod(chosen, "click", Qt::QueuedConnection);
+            return QString::fromLatin1("box: \"%1\" / \"%2\" [%3]%4 %5")
+                .arg(box->text(), box->informativeText(), buttons.join(QString::fromLatin1(", ")),
+                     chosen ? QString::fromLatin1(" clicked ") + withoutMnemonic(chosen->text()) : QString(), grab);
+        }
+        return QString::fromLatin1("box: none shown");
+    }
+    if (cmd == QLatin1String("gifs.savefile")) {
+        // Live pass (L11): Save to GIFs of a Ready TS Media file by name, in this tick (its copy starts on the worker).
+        const QString key = findKey(c.value(QString::fromLatin1("name")).toString());
+        QString       message;
+        const bool    ok = !key.isEmpty() && lib->saveFile(key, &message);
+        return QString::fromLatin1("savefile: %1 (%2)").arg(ok ? QString::fromLatin1("started") : QString::fromLatin1("refused"), key.isEmpty() ? QString::fromLatin1("no entry") : message);
+    }
+    EmojiPicker* picker = input->picker();
+    if (!picker)
+        return QString::fromLatin1("%1: no picker open").arg(cmd);
+    if (cmd == QLatin1String("gifs.tab")) {
+        const bool gifsPage = c.value(QString::fromLatin1("page")).toString() == QLatin1String("gifs");
+        picker->showPage(gifsPage ? EmojiPicker::Page::Gifs : EmojiPicker::Page::Emoji);
+        return QString::fromLatin1("tab %1").arg(gifsPage ? QString::fromLatin1("gifs") : QString::fromLatin1("emoji"));
+    }
+    if (cmd == QLatin1String("gifs.key")) {
+        const QString name = c.value(QString::fromLatin1("name")).toString();
+        QWidget*      to   = QApplication::focusWidget() ? QApplication::focusWidget() : picker;
+        int           key  = Qt::Key_Return;
+        Qt::KeyboardModifiers mods = Qt::NoModifier;
+        QString       text;
+        if (name == QLatin1String("Space")) {
+            key  = Qt::Key_Space;
+            text = QString::fromLatin1(" ");
+        } else if (name == QLatin1String("Delete")) {
+            key = Qt::Key_Delete;
+        } else if (name == QLatin1String("Down")) {
+            key = Qt::Key_Down;
+        } else if (name == QLatin1String("CtrlTab")) {
+            key  = Qt::Key_Tab;
+            mods = Qt::ControlModifier;
+        }
+        QKeyEvent override(QEvent::ShortcutOverride, key, mods, text);
+        override.ignore();
+        QCoreApplication::sendEvent(to, &override);
+        QKeyEvent press(QEvent::KeyPress, key, mods, text);
+        QCoreApplication::sendEvent(to, &press);
+        QKeyEvent release(QEvent::KeyRelease, key, mods, text);
+        QCoreApplication::sendEvent(to, &release);
+        return QString::fromLatin1("key %1 to %2 (override accepted %3), page %4, picker open %5")
+            .arg(name, to ? to->objectName() : QString())
+            .arg(override.isAccepted() ? 1 : 0)
+            .arg(picker && picker->page() == EmojiPicker::Page::Gifs ? QString::fromLatin1("gifs") : QString::fromLatin1("emoji"))
+            .arg(input->picker() ? 1 : 0);
+    }
+    GifPanel* panel = picker->gifPanel();
+    if (cmd == QLatin1String("gifs.state")) {
+        // The host's state for the visible input, its fingerprint with the uids hashed.
+        ChatTarget t;
+        bool       known = false;
+        for (const QPointer<QWidget>& w : m_chat->m_inputs) {
+            if (w && w->isVisible())
+                known = m_chat->resolveTarget(w.data(), &t);
+        }
+        const gifs::SendState s = lib->stateFor(t, known, QString());
+        if (panel)
+            panel->refreshState();
+        return QString::fromLatin1("state: text %1, files %2 (%3), server chat %4, chat sch %5 server %6 mode %7 partner %8 channel %9; page %10, footer \"%11\"")
+            .arg(s.canText ? 1 : 0)
+            .arg(s.canFiles ? 1 : 0)
+            .arg(s.canText ? s.filesBlocked : s.blocked)
+            .arg(s.serverChat ? 1 : 0)
+            .arg(s.chat.sch)
+            .arg(hashedUid(s.chat.serverUid))
+            .arg(s.chat.mode)
+            .arg(hashedUid(s.chat.clientUid))
+            .arg(s.chat.channelId)
+            .arg(picker->page() == EmojiPicker::Page::Gifs ? QString::fromLatin1("gifs") : QString::fromLatin1("emoji"),
+                 panel ? panel->footerText() : QString());
+    }
+    if (!panel)
+        return QString::fromLatin1("%1: the GIFs page isn't shown").arg(cmd);
+    const int index = c.value(QString::fromLatin1("index")).toInt(-1);
+    if (cmd == QLatin1String("gifs.footer")) {
+        return QString::fromLatin1("footer: \"%1\" / \"%2\" (danger %3, lines %4)")
+            .arg(panel->footerTitle(), panel->footerTextLines().join(QString::fromLatin1("\" + \"")))
+            .arg(panel->footerDanger() ? 1 : 0)
+            .arg(panel->footerTextLines().size());
+    }
+    if (cmd == QLatin1String("gifs.click")) {
+        // Live pass: a real mouse click on a tile of the grid (left: press + release, which the open guard may refuse;
+        // right: the context menu). index -1: an empty point of the grid.
+        QWidget*     grid  = panel->grid();
+        const QPoint at    = index >= 0 ? grid->mapFrom(panel, panel->tileRect(index).center()) : QPoint(grid->width() / 2, grid->height() - 6);
+        const bool   right = c.value(QString::fromLatin1("button")).toString() == QLatin1String("right");
+        const bool   guard = panel->pressGuarded();
+        if (right) {
+            QContextMenuEvent menu(QContextMenuEvent::Mouse, at, grid->mapToGlobal(at), Qt::NoModifier);
+            QCoreApplication::sendEvent(grid, &menu);
+            QWidget* popup = QApplication::activePopupWidget();
+            return QString::fromLatin1("click %1 right at %2,%3: popup %4").arg(index).arg(at.x()).arg(at.y()).arg(popup ? popup->objectName() : QString::fromLatin1("none"));
+        }
+        const Qt::KeyboardModifiers mods = c.value(QString::fromLatin1("shift")).toInt() != 0 ? Qt::ShiftModifier : Qt::NoModifier;
+        const QPointer<QWidget>     alive(grid);
+        QMouseEvent press(QEvent::MouseButtonPress, at, grid->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, mods);
+        QCoreApplication::sendEvent(grid, &press);
+        if (alive) {
+            QMouseEvent release(QEvent::MouseButtonRelease, at, grid->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, mods);
+            QCoreApplication::sendEvent(grid, &release);
+        }
+        EmojiPicker* after = input->picker();
+        return QString::fromLatin1("click %1 left at %2,%3: guarded %4; picker open %5, footer \"%6\"")
+            .arg(index)
+            .arg(at.x())
+            .arg(at.y())
+            .arg(guard ? 1 : 0)
+            .arg(after && after->isVisible() ? 1 : 0)
+            .arg(after && after->gifPanel() ? after->gifPanel()->footerTitle() + QString::fromLatin1(" / ") + after->gifPanel()->footerText() : QString());
+    }
+    if (cmd == QLatin1String("gifs.tip")) {
+        // Live pass: the tile's tool tip as shown (a real QHelpEvent) and the footer while it is hovered.
+        panel->hoverIndex(index);
+        QWidget*     grid = panel->grid();
+        const QPoint at   = grid->mapFrom(panel, panel->tileRect(index).center());
+        QHelpEvent   help(QEvent::ToolTip, at, grid->mapToGlobal(at));
+        QCoreApplication::sendEvent(grid, &help);
+        return QString::fromLatin1("tip %1: shown %2 \"%3\"; plain \"%4\"; footer \"%5\" / \"%6\"")
+            .arg(index)
+            .arg(QToolTip::isVisible() ? 1 : 0)
+            .arg(QToolTip::text().replace(QLatin1Char('\n'), QString::fromLatin1("\\n")), panel->toolTipFor(index).replace(QLatin1Char('\n'), QString::fromLatin1("\\n")),
+                 panel->footerTitle(), panel->footerTextLines().join(QString::fromLatin1("\" + \"")));
+    }
+    if (cmd == QLatin1String("gifs.menu")) {
+        // Live pass: the options menu, as the more button opens it (a tile's menu: gifs.click with button right).
+        panel->openMenu(panel->mapToGlobal(QPoint(panel->width() / 2, 40)), QString());
+        QWidget* popup = QApplication::activePopupWidget();
+        return QString::fromLatin1("menu: popup %1").arg(popup ? popup->objectName() : QString::fromLatin1("none"));
+    }
+    if (cmd == QLatin1String("gifs.scroll")) {
+        panel->scrollTo(c.value(QString::fromLatin1("y")).toInt(0));
+        return QString::fromLatin1("scroll %1").arg(c.value(QString::fromLatin1("y")).toInt(0));
+    }
+    if (cmd == QLatin1String("gifs.hover")) {
+        panel->hoverIndex(index);
+        return QString::fromLatin1("hover %1: animation jobs %2, players %3, animating %4").arg(index).arg(lib->animationJobs()).arg(panel->playersCreated()).arg(panel->animating() ? 1 : 0);
+    }
+    if (cmd == QLatin1String("gifs.focus")) {
+        panel->focusGrid();
+        QKeyEvent home(QEvent::KeyPress, Qt::Key_Home, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel->grid(), &home);
+        for (int i = 0; i < index; ++i) {
+            QKeyEvent right(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+            QCoreApplication::sendEvent(panel->grid(), &right);
+        }
+        return QString::fromLatin1("focus %1: animation jobs %2, players %3").arg(index).arg(lib->animationJobs()).arg(panel->playersCreated());
+    }
+    if (cmd == QLatin1String("gifs.send")) {
+        const bool ok = panel->sendIndex(index, c.value(QString::fromLatin1("shift")).toInt() != 0);
+        return QString::fromLatin1("send %1: %2, footer \"%3\"").arg(index).arg(ok ? QString::fromLatin1("sent") : QString::fromLatin1("not sent"), panel->footerText());
+    }
+    if (cmd == QLatin1String("gifs.remove")) {
+        panel->removeIndex(index);
+        return QString::fromLatin1("remove %1: list %2").arg(index).arg(lib->count());
+    }
+    if (cmd == QLatin1String("gifs.clear")) {
+        panel->showConfirm();
+        panel->confirmRemoveAll();
+        return QString::fromLatin1("clear: list %1").arg(lib->count());
+    }
+    return QString::fromLatin1("unknown command ") + cmd;
+}
 
 // 2.3 live music: music.state, music.volume, music.devices (selftestmusic.cpp).
 bool selfTestMusic(const QString& cmd, const QJsonObject& c, quint64 sch, QObject* owner, const std::function<void(const QString&)>& say);
@@ -549,6 +889,68 @@ bool SelfTest::run(const QJsonObject& c)
     if (!m_chat) {
         say(QString::fromLatin1("no chat integration"));
         return true;
+    }
+    // 2.5 zoom: Ctrl + mouse wheel without a mouse: {"cmd":"chat.zoom","steps":3} (or -3) zooms the visible chat with
+    // TeamSpeak's own path (QTextEdit::zoomIn / zoomOut, as the wheel does); the [scale] line follows once it settles.
+    if (cmd == QLatin1String("chat.zoom")) {
+        QTextBrowser* b = m_chat->visibleChatBrowser();
+        if (!b) {
+            say(QString::fromLatin1("chat.zoom: no visible chat"));
+            return true;
+        }
+        const int steps = c.value(QString::fromLatin1("steps")).toInt(1);
+        for (int i = 0; i < qAbs(steps); ++i) { // one notch at a time, like a wheel gesture
+            if (steps > 0)
+                b->zoomIn(1);
+            else
+                b->zoomOut(1);
+        }
+        const PreviewScale now    = m_chat->scaleOf(b);
+        const ChatScale*   scaler = m_chat->chatScale(b);
+        say(QString::fromLatin1("chat.zoom %1: font %2 pt, the applied scale before the pass s %3 c %4 R %5; passes %6 holds %7 pending %8; "
+                                "pictures %9 MiB in %10 booked, budget scans %11")
+                .arg(steps)
+                .arg(b->font().pointSizeF())
+                .arg(now.s(), 0, 'f', 2)
+                .arg(now.c(), 0, 'f', 2)
+                .arg(now.ratio(), 0, 'f', 2)
+                .arg(scaler ? scaler->passes() : -1)
+                .arg(scaler ? scaler->holds() : -1)
+                .arg(scaler && scaler->pending() ? 1 : 0)
+                .arg(scaler ? static_cast<double>(scaler->pictureBytes()) / (1024.0 * 1024.0) : -1.0, 0, 'f', 1)
+                .arg(scaler ? scaler->pictureCount() : -1)
+                .arg(scaler ? scaler->budgetScans() : -1));
+        return true;
+    }
+    // 2.5 zoom live pass: a Ctrl + mouse wheel gesture as Qt delivers it: a QWheelEvent with Ctrl on the chat's
+    // viewport (through every event filter there, then QTextEdit::wheelEvent), one notch every ms.
+    // {"cmd":"chat.wheel","steps":3,"ms":40} (negative steps zoom out; "delta" 120 per notch, less for a touchpad).
+    if (cmd == QLatin1String("chat.wheel")) {
+        QTextBrowser* b = m_chat->visibleChatBrowser();
+        if (!b) {
+            say(QString::fromLatin1("chat.wheel: no visible chat"));
+            return true;
+        }
+        const int                    steps  = c.value(QString::fromLatin1("steps")).toInt(1);
+        const int                    ms     = qMax(0, c.value(QString::fromLatin1("ms")).toInt(40));
+        const int                    delta  = c.value(QString::fromLatin1("delta")).toInt(120) * (steps < 0 ? -1 : 1);
+        const qreal                  before = b->font().pointSizeF();
+        const QPointer<QTextBrowser> guard(b);
+        for (int i = 0; i < qAbs(steps); ++i) {
+            later(i * ms, [guard, delta] {
+                if (!guard)
+                    return;
+                QWidget*      vp = guard->viewport();
+                const QPointF pos(vp->width() / 2.0, vp->height() / 2.0);
+                QWheelEvent   e(pos, QPointF(vp->mapToGlobal(pos.toPoint())), QPoint(), QPoint(0, delta), Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+                QApplication::sendEvent(vp, &e);
+            });
+        }
+        later(qAbs(steps) * ms, [this, guard, steps, before] {
+            say(QString::fromLatin1("chat.wheel %1: font %2 -> %3 pt").arg(steps).arg(before).arg(guard ? guard->font().pointSizeF() : -1.0));
+            next(0);
+        });
+        return false;
     }
     if (cmd == QLatin1String("upload")) {
         m_core->uploadFiles(stringList(c.value(QString::fromLatin1("files"))), m_chat->currentTarget());
@@ -954,6 +1356,30 @@ bool SelfTest::run(const QJsonObject& c)
         say(QString::fromLatin1("dumpui: %1 lines").arg(out.count(QLatin1Char('\n'))));
         return true;
     }
+    // 2.5 zoom live pass: a font dialog TeamSpeak opened (Options > Chat > Change Font, QFontDialog::getFont): that
+    // font at pt points (the family kept unless given), then OK. {"cmd":"fontdlg","pt":12}
+    if (cmd == QLatin1String("fontdlg")) {
+        QFontDialog* dialog = nullptr;
+        for (QWidget* top : QApplication::topLevelWidgets()) {
+            if (auto* d = qobject_cast<QFontDialog*>(top); d && d->isVisible())
+                dialog = d;
+        }
+        if (!dialog) {
+            say(QString::fromLatin1("fontdlg: no font dialog"));
+            return true;
+        }
+        QFont font = dialog->currentFont();
+        const QString before = font.toString();
+        if (c.contains(QString::fromLatin1("family")))
+            font.setFamily(c.value(QString::fromLatin1("family")).toString());
+        if (c.contains(QString::fromLatin1("pt")))
+            font.setPointSizeF(c.value(QString::fromLatin1("pt")).toDouble());
+        dialog->setCurrentFont(font);
+        say(QString::fromLatin1("fontdlg: \"%1\" -> \"%2\", OK").arg(before, dialog->currentFont().toString()));
+        QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection); // getFont's own loop ends from the event loop
+        next(1200);
+        return false;
+    }
     if (cmd == QLatin1String("click")) {
         // A button of a visible TeamSpeak window (e.g. Options > Addons > "Reload" of our plugin), clicked
         // through a queued call: TeamSpeak may unload this DLL in that click, so none of our code may be on
@@ -1143,6 +1569,18 @@ bool SelfTest::run(const QJsonObject& c)
     const bool result8 = runPart8(cmd, c, &handled); // 2.4 live pass B (click-to-load, network safety)
     if (handled)
         return result8;
+    // 2.5 GIFs: gifs.list, gifs.open {by: mouse|key}, gifs.tab {page: emoji|gifs}, gifs.hover / gifs.focus {index},
+    // gifs.key {name: Return|Space|Delete|Down|CtrlTab}, gifs.send {index, shift}, gifs.remove {index}, gifs.clear,
+    // gifs.state; logged as "[test] gifs: ..." (counts only; uids hashed).
+    // GIFs live pass: gifs.items (each item, its host or name), gifs.pickers (every picker shown and its parts),
+    // gifs.footer, gifs.click {index, button: left|right, shift} (real mouse events on the grid), gifs.tip {index}
+    // (the tile's tool tip as shown), gifs.menu (the options menu), gifs.scroll {y}, gifs.trigger {object} (a QAction by
+    // objectName), gifs.savefile {name} (Save to GIFs of a Ready file, same tick), gifs.box {name, click} (the message box
+    // shown: its texts, a grab, a button); gifs.open also gives its time.
+    if (cmd.startsWith(QLatin1String("gifs."))) {
+        ts3::log(QString::fromLatin1("[test] gifs: ") + runGifs(cmd, c));
+        return true;
+    }
     // 2.3 poll: {"cmd":"poll.post","question":"...","options":["a","b"],"multiple":false} {"cmd":"poll.vote","option":1}
     // {"cmd":"poll.retract"} {"cmd":"poll.retry"} {"cmd":"poll.log"} {"cmd":"poll.attach"} {"cmd":"poll.creator"}
     if (cmd.startsWith(QLatin1String("poll.")) && m_chat->polls()) {
@@ -1150,6 +1588,12 @@ bool SelfTest::run(const QJsonObject& c)
         return true;
     }
     // 2.4 link previews: {"cmd":"links.log"} {"cmd":"links.click","index":0,"zone":"action|hide|body"} {"cmd":"links.auto"}
+    // (2.5 player live pass: zone also consentPlay|consentBrowser|terms|privacy|question|notice|title|footer|play)
+    // 2.5 YouTube player: {"cmd":"yt.state"} {"cmd":"yt.play","index":0} {"cmd":"yt.popup","index":0} {"cmd":"yt.stop"} {"cmd":"yt.spike"}
+    if (cmd.startsWith(QLatin1String("yt.")) && m_chat->linkPreviews()) {
+        say(m_chat->linkPreviews()->testCommand(cmd, c));
+        return true;
+    }
     if (cmd.startsWith(QLatin1String("links.")) && m_chat->linkPreviews()) {
         say(m_chat->linkPreviews()->testCommand(cmd, c));
         return true;
@@ -1483,6 +1927,8 @@ int keyCode(const QString& name)
         {QString::fromLatin1("Space"), Qt::Key_Space},       {QString::fromLatin1("Backspace"), Qt::Key_Backspace},
         {QString::fromLatin1("Home"), Qt::Key_Home},         {QString::fromLatin1("End"), Qt::Key_End},
         {QString::fromLatin1("PageUp"), Qt::Key_PageUp},     {QString::fromLatin1("PageDown"), Qt::Key_PageDown},
+        {QString::fromLatin1("Plus"), Qt::Key_Plus},         {QString::fromLatin1("Minus"), Qt::Key_Minus}, // 2.5 zoom live pass
+        {QString::fromLatin1("Equal"), Qt::Key_Equal},
     };
     if (keys.contains(name))
         return keys.value(name);
@@ -2044,6 +2490,14 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
             say(QString::fromLatin1("type: \"%1\" into %2#%3").arg(text, QString::fromLatin1(target->metaObject()->className()), target->objectName()));
         } else {
             const int key = keyCode(str("key", ""));
+            // 2.5 zoom live pass: "shortcut": true offers the key to the application's shortcuts first, as real input
+            // does (QTest's path: ShortcutOverride, then QShortcutMap); a key a shortcut took never reaches the target.
+            if (c.value(QString::fromLatin1("shortcut")).toBool()
+                && qt_sendShortcutOverrideEvent(target, static_cast<ulong>(QDateTime::currentMSecsSinceEpoch()), key, modsOf(), str("text", ""), false, 1)) {
+                say(QString::fromLatin1("key: %1 (mods %2) taken by a shortcut").arg(str("key", "")).arg(static_cast<int>(modsOf())));
+                next(c.value(QString::fromLatin1("ms")).toInt(500));
+                return false;
+            }
             sendKey(target, key, modsOf(), str("text", ""));
             say(QString::fromLatin1("key: %1 (mods %2) into %3#%4").arg(str("key", "")).arg(static_cast<int>(modsOf())).arg(QString::fromLatin1(target->metaObject()->className()), target->objectName()));
         }
@@ -2156,6 +2610,54 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
                 .arg(a.offset)
                 .arg(a.height)
                 .arg(visible(tb.text().left(90))));
+        // 2.5 zoom live pass: sideways scrolling (a preview wider than the chat), the view and the blocks
+        QScrollBar* hbar = b->horizontalScrollBar();
+        say(QString::fromLatin1("where: hbar max %1 visible %2, viewport %3x%4, document width %5 idealWidth %6, blocks %7")
+                .arg(hbar->maximum())
+                .arg(hbar->isVisible() ? 1 : 0)
+                .arg(b->viewport()->width())
+                .arg(b->viewport()->height())
+                .arg(b->document()->size().width())
+                .arg(b->document()->idealWidth())
+                .arg(b->document()->blockCount()));
+        // {"cmd":"where","widest":3}: the blocks whose laid-out lines reach farthest right (what makes the chat scroll
+        // sideways: a picture of ours or TeamSpeak's own text), with the widest picture in each.
+        if (const int top = c.value(QString::fromLatin1("widest")).toInt(0); top > 0) {
+            struct Row {
+                qreal   right = 0, image = 0;
+                int     block = 0;
+                QString text, name;
+            };
+            QVector<Row> rows;
+            for (QTextBlock blk = b->document()->begin(); blk.isValid(); blk = blk.next()) {
+                const QTextLayout* tl = blk.layout();
+                if (!blk.isVisible() || !tl)
+                    continue;
+                Row row;
+                row.block = blk.blockNumber();
+                for (int i = 0; i < tl->lineCount(); ++i) {
+                    const QTextLine line = tl->lineAt(i);
+                    row.right            = qMax(row.right, tl->position().x() + line.x() + line.naturalTextWidth());
+                }
+                for (auto it = blk.begin(); !it.atEnd(); ++it) {
+                    const QTextCharFormat f = it.fragment().charFormat();
+                    if (f.isImageFormat() && f.toImageFormat().width() > row.image) {
+                        row.image = f.toImageFormat().width();
+                        row.name  = f.toImageFormat().name().left(48);
+                    }
+                }
+                row.text = visible(blk.text().left(60));
+                rows.append(row);
+            }
+            std::sort(rows.begin(), rows.end(), [](const Row& x, const Row& y) { return x.right > y.right; });
+            for (int i = 0; i < qMin(top, rows.size()); ++i)
+                say(QString::fromLatin1("where: widest %1: block %2 right %3, widest picture %4 (%5): \"%6\"")
+                        .arg(i + 1)
+                        .arg(rows.at(i).block)
+                        .arg(rows.at(i).right, 0, 'f', 1)
+                        .arg(rows.at(i).image, 0, 'f', 1)
+                        .arg(rows.at(i).name, rows.at(i).text));
+        }
         return true;
     }
     if (cmd == QLatin1String("react.add")) {
@@ -2191,8 +2693,9 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
                 next(0);
                 return;
             }
-            const QRectF pic    = picture();
-            const QPoint button = rx::addButtonRect(pic.size()).translated(pic.topLeft()).center().toPoint();
+            const QRectF       pic    = picture();
+            const PreviewScale scale  = m_chat->scaleOf(guard.data()); // 2.5 zoom: the row is laid out in du
+            const QPoint       button = scale.toLogical(rx::addButtonRect(scale.toDu(pic.size()))).translated(pic.topLeft()).center().toPoint();
             sendMouse(vp, QEvent::MouseMove, button, Qt::NoButton, Qt::NoButton);
             sendMouse(vp, QEvent::MouseButtonPress, button, Qt::LeftButton, Qt::LeftButton);
             sendMouse(vp, QEvent::MouseButtonRelease, button, Qt::LeftButton, Qt::NoButton);
@@ -2225,7 +2728,7 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         }
         const int    pill = c.value(QString::fromLatin1("pill")).toInt(-1);
         const QRectF zone = pill >= 0 && pill < geometry.row.pills.size() ? geometry.row.pills.at(pill) : geometry.row.addPill;
-        const QPoint at   = (object.topLeft() + QPointF(0, geometry.picture.height()) + zone.center()).toPoint();
+        const QPoint at   = (object.topLeft() + (QPointF(0, geometry.picture.height()) + zone.center()) * m_chat->scaleOf(b).s()).toPoint(); // 2.5 zoom: du
         QWidget*     vp   = b->viewport();
         sendMouse(vp, QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton);
         sendMouse(vp, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
@@ -3396,11 +3899,90 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
     const uint64  sch = ts3::currentConnection();
     QTextBrowser* b   = m_chat->visibleChatBrowser();
 
-    if (cmd == QLatin1String("settings.check") || cmd == QLatin1String("settings.apply") || cmd == QLatin1String("settings.close")) {
+    if (cmd == QLatin1String("settings.check") || cmd == QLatin1String("settings.apply") || cmd == QLatin1String("settings.close")
+        || cmd == QLatin1String("settings.combo") || cmd == QLatin1String("settings.button") || cmd == QLatin1String("settings.spin")) {
         QWidget* dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
         if (!dialog) {
             say(cmd + QString::fromLatin1(": no settings dialog"));
             return true;
+        }
+        // 2.5 regression live pass: a spin box by its accessible name or its form label ('&' ignored), e.g.
+        // {"cmd":"settings.spin","text":"Download videos","value":15} sets it as typing does (the dialog's own signals run);
+        // without "value" it only reports.
+        if (cmd == QLatin1String("settings.spin")) {
+            const QString want = str("text", "");
+            QSpinBox*     spin = nullptr;
+            for (QSpinBox* box : dialog->findChildren<QSpinBox*>()) {
+                if (!want.isEmpty() && box->accessibleName().contains(want, Qt::CaseInsensitive)) {
+                    spin = box;
+                    break;
+                }
+            }
+            for (QLabel* label : dialog->findChildren<QLabel*>()) {
+                if (spin || want.isEmpty())
+                    break;
+                if (auto* buddy = qobject_cast<QSpinBox*>(label->buddy()); buddy && withoutMnemonic(label->text()).contains(want, Qt::CaseInsensitive))
+                    spin = buddy;
+            }
+            if (!spin) {
+                say(QString::fromLatin1("settings.spin: no spin box \"%1\"").arg(want));
+                return true;
+            }
+            QString out = QString::fromLatin1("settings.spin: \"%1\" %2 (\"%3\") enabled %4").arg(want).arg(spin->value()).arg(spin->text()).arg(spin->isEnabled() ? 1 : 0);
+            if (c.contains(QString::fromLatin1("value"))) {
+                spin->setValue(c.value(QString::fromLatin1("value")).toInt()); // valueChanged, as typed
+                out += QString::fromLatin1(" -> %1 (\"%2\")").arg(spin->value()).arg(spin->text());
+            }
+            say(out);
+            return true;
+        }
+        // 2.5 zoom live pass: a combo box by its accessible name, e.g. {"cmd":"settings.combo","text":"Preview size",
+        // "value":"Large"} picks that item as the user does (the dialog's own signals run); without "value" it only reports.
+        if (cmd == QLatin1String("settings.combo")) {
+            const QString want  = str("text", "");
+            QComboBox*    combo = nullptr;
+            for (QComboBox* box : dialog->findChildren<QComboBox*>()) {
+                if (!want.isEmpty() && box->accessibleName().contains(want, Qt::CaseInsensitive)) {
+                    combo = box;
+                    break;
+                }
+            }
+            if (!combo) {
+                say(QString::fromLatin1("settings.combo: no combo box \"%1\"").arg(want));
+                return true;
+            }
+            QString out = QString::fromLatin1("settings.combo: \"%1\" \"%2\" (data %3) enabled %4 tip \"%5\"")
+                              .arg(combo->accessibleName(), combo->currentText(), combo->currentData().toString())
+                              .arg(combo->isEnabled() ? 1 : 0)
+                              .arg(combo->toolTip());
+            if (c.contains(QString::fromLatin1("value"))) {
+                const int index = combo->findText(str("value", ""), Qt::MatchFixedString);
+                if (index < 0) {
+                    out += QString::fromLatin1(" -> no item ") + str("value", "");
+                } else {
+                    combo->setCurrentIndex(index); // currentIndexChanged, as a pick from the list
+                    out += QString::fromLatin1(" -> \"%1\" (data %2)").arg(combo->currentText(), combo->currentData().toString());
+                }
+            }
+            say(out);
+            return true;
+        }
+        // {"cmd":"settings.button","name":"ok"|"restore"|"cancel"}: that button clicked (Apply: settings.apply).
+        if (cmd == QLatin1String("settings.button")) {
+            auto*         box  = dialog->findChild<QDialogButtonBox*>();
+            const QString name = str("name", "");
+            const QDialogButtonBox::StandardButton which = name == QLatin1String("ok")        ? QDialogButtonBox::Ok
+                                                           : name == QLatin1String("restore") ? QDialogButtonBox::RestoreDefaults
+                                                                                              : QDialogButtonBox::Cancel;
+            QPushButton* button = box ? box->button(which) : nullptr;
+            QPushButton* apply  = box ? box->button(QDialogButtonBox::Apply) : nullptr;
+            say(QString::fromLatin1("settings.button: %1 %2 (Apply enabled %3)")
+                    .arg(name, button ? QString::fromLatin1("clicked") : QString::fromLatin1("not found"))
+                    .arg(apply && apply->isEnabled() ? 1 : 0));
+            if (button)
+                button->click();
+            next(1500);
+            return false;
         }
         if (cmd == QLatin1String("settings.close")) {
             if (auto* d = qobject_cast<QDialog*>(dialog))
@@ -3484,7 +4066,21 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
             // live pass C: the plugin never registers a metatype (an unload would leave Qt pointing at freed code)
             + QString::fromLatin1("; metatypes Result %1 Announcement %2")
                   .arg(QMetaType::type("linkpreview::Result"))
-                  .arg(QMetaType::type("linkpreview::Announcement")));
+                  .arg(QMetaType::type("linkpreview::Announcement"))
+            // 2.5 (appended): LPX and LPXNO, the intake notices, the web cards switch, the LPX cap used last
+            + QString::fromLatin1("; LPX received %1 accepted %2; LPXNO received %3 accepted %4; sender LPX %5 LPXNO %6 (nothing %7, cross-site %8) "
+                                  "intake notices %9; web cards %10; LPX cap %11")
+                  .arg(n.lpxReceived)
+                  .arg(n.lpxAccepted)
+                  .arg(n.lpxSkipsReceived)
+                  .arg(n.lpxSkipsAccepted)
+                  .arg(p.lpxSent)
+                  .arg(p.lpxSkips)
+                  .arg(p.lpxSkipsNothing)
+                  .arg(p.lpxSkipsCrossSite)
+                  .arg(p.intakeNotices)
+                  .arg(s.showWebCards ? 1 : 0)
+                  .arg(p.lpxCapUsed > 0 ? p.lpxCapUsed : linkpreview::kLpxShortCap));
         return true;
     }
     if (cmd == QLatin1String("lp.forge")) {

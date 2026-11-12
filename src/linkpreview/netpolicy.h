@@ -17,7 +17,9 @@
 //    connection, so the local DNS check and the connected-address check are left out then (the peer is
 //    the proxy); every other rule above still applies. Without a proxy nothing changes.
 
+#include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 #include <array>
@@ -99,5 +101,54 @@ bool isOEmbedHop(const QUrl& url); // https://www.youtube.com/oembed... or youtu
 bool isAllowedThumbnail(const QUrl& url, const QString& videoId);
 bool isThumbnailHop(const QUrl& url); // a redirect while fetching a thumbnail must stay on i.ytimg.com
 QUrl defaultThumbnail(const QString& videoId); // https://i.ytimg.com/vi/<id>/hqdefault.jpg
+// 2.5 zoom: the 1280 x 720 picture, asked for first (sharp on high-DPI screens); some videos have none (404), or a
+// small placeholder: then the standard one.
+QUrl maxresThumbnail(const QString& videoId); // https://i.ytimg.com/vi/<id>/maxresdefault.jpg
+constexpr int kMaxresMinWidth = 640; // a maxres answer narrower than this is YouTube's placeholder
+
+// ---- 2.5: pages, sites and their pictures ----------------------------------------------------------------------
+
+constexpr int    kPageTimeoutMs        = 15 * 1000;  // a whole page / oEmbed / JSON / feed / manifest / redirect request (all hops)
+constexpr qint64 kPageMinBytes         = 16 * 1024;  // a page that sent less than this ...
+constexpr int    kPageMinBytesAfterMs  = 5 * 1000;   // ... after this long stops (a slow drip of bytes)
+constexpr qint64 kMaxPageBytes         = 512 * 1024; // the most of a page ever read (its head)
+constexpr qint64 kMaxFeedBytes         = 64 * 1024;  // a Reddit RSS feed
+constexpr qint64 kMaxManifestBytes     = 16 * 1024;  // a DASH manifest
+constexpr qint64 kMaxJsonBytes         = kMaxOEmbedBytes; // oEmbed and the keyless JSON APIs
+
+// The one honest User-Agent of every request (media too): "Mozilla/5.0 (compatible; TSMediaChat/<major>.<minor>;
+// +https://github.com/Metihttp/Teamspeak_Media_chat)", built from TSMEDIA_VERSION.
+QByteArray userAgent();
+
+// The registrable domain of a host: its last two labels, or one more when they end in a public suffix of the
+// built-in list ("co.uk", "github.io", "s3.amazonaws.com", ...). A host that is such a suffix is its own. Used for
+// HostGate's health keys, the cross-site redirect check of a web card and the site-name match.
+QString registrableDomain(const QString& host);
+
+// An address a page, an oEmbed answer, a JSON API, a feed or a manifest named (og:image, thumbnail_url, ...),
+// resolved against base (the final address of the response it came from; relative and "//host" forms work, <base>
+// is ignored) and checked like a link: ASCII white space trimmed, TAB/CR/LF removed, any other bad character
+// refused, at most kMaxUrlChars; https kept, http upgraded once to https (port 80 or none); every other scheme
+// refused; no user info, no '@' or backslash in the authority, port none or 443, a public DNS name, isAllowedUrl();
+// the fragment dropped; a path ending .svg / .svgz refused. Invalid when refused.
+QUrl resolveExtracted(const QUrl& base, const QString& raw);
+
+// Retry-After: delta seconds (1-9 ASCII digits) or an IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT", against the
+// PC's clock nowWallMs); ms, or -1 when absent or unreadable. A date in the past is 0.
+qint64 parseRetryAfter(const QByteArray& value, qint64 nowWallMs);
+// x-ratelimit-reset-after (Discord; seconds, decimals allowed) wins; else x-ratelimit-reset: up to 86400 is seconds
+// from now (Reddit: "43"); at least 1 000 000 000 is a Unix time in seconds (GitHub, Discord; decimals allowed).
+// ms from now, or -1 when absent, unreadable or past.
+qint64 parseRateReset(const QByteArray& resetAfter, const QByteArray& reset, qint64 nowWallMs);
+
+// A signed Discord attachment link (cdn.discordapp.com / media.discordapp.net with ?ex=<hex Unix time>) whose time
+// is more than 60 s over: the Fetcher makes no request (errors::kExpired).
+bool expiredSignedLink(const QUrl& url, qint64 nowSec);
+
+// The PC's own DNS suffixes (each adapter's DNS suffix and suffix list, the primary domain, the search list),
+// lower case, at least two labels; cached 10 minutes. Through the Windows proxy a host under one of them is never
+// fetched (the proxy may reach the intranet).
+QStringList localDnsSuffixes();
+bool        underLocalSuffix(const QString& host, const QStringList& suffixes);
 
 } // namespace linkpreview::net

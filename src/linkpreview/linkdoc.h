@@ -4,10 +4,11 @@
 // on documents built like TeamSpeak's (tests/tschat.h).
 //
 // Which links: the web anchors TeamSpeak made in chat messages (it links typed addresses; [URL] BBCode too)
-// that linkpreview::classify() takes (YouTube videos, also http ones, as TeamSpeak links an address typed
-// without a scheme; https picture / GIF / video files). Never in TS Media's own
+// that linkpreview::classify() takes (2.4: YouTube videos and https picture / GIF / video files; 2.5: also media
+// sites, well-known sites and other web pages, http ones fetched as https). Never in TS Media's own
 // lines, never after a TS Media file link in its message (the "plugin required" note and its link), never the
-// plugin's own addresses (the caller passes them), at most kMaxPerMessage per message, one per address.
+// plugin's own addresses (the caller passes them), at most kMaxPerMessage per message (linkpreview::selectLinks:
+// the 2.4 classes first), one per address.
 //
 // The slot: right after the link, our line break (U+2028) and one picture, then another line break of ours
 // when text follows on that line. The picture is either a card of ours ("tsmedia-link:<n>", drawn by
@@ -18,6 +19,7 @@
 // TeamSpeak's document back exactly (scrubbing what TeamSpeak copied of our formats into the next line).
 // Everything read from a chat is untrusted: only checked addresses come out of it, nothing is fetched here.
 
+#include <QRectF>
 #include <QSizeF>
 #include <QString>
 #include <QStringList>
@@ -25,6 +27,7 @@
 #include <QVector>
 
 #include "linkpreview/linkurl.h"
+#include "previewscale.h" // 2.5 zoom: slots carry their du size
 
 class QTextBlock;
 class QTextCharFormat;
@@ -56,10 +59,16 @@ struct Link {
     QString             href;
     linkpreview::Target target;
     bool                outgoing = false; // your message
+    int                 index    = 0;     // 2.5: its place among the message's selected links (0..2; only 0 may be large)
 };
 // excluded: addresses that are never previewed (the plugin's own: its download link, update pages).
+// 2.5: the first linkpreview::kMaxScannedLinks web anchors of the message, read as trimLinkEnd + classifyCached, then
+// linkpreview::selectLinks (the same links the sender's plugin picks from its BBCode).
 QVector<Link> linksIn(const QTextBlock& block, const QStringList& excluded = {});
 QVector<Link> findLinks(QTextDocument* doc, const QStringList& excluded = {}, int maxBlocks = kMaxBlocks);
+// 2.5: where the line holding position is, in document coordinates (empty: not laid out). A quiet slot (one with no
+// object: the web class while nothing is shown) is "on screen" when this rect of its link is.
+QRectF lineRect(QTextDocument* doc, int position);
 
 struct Slot {
     int     separator = -1; // our line break before the picture
@@ -68,7 +77,7 @@ struct Slot {
     QString name;           // the picture's name
     QString urlKey;
     QString href;
-    QSizeF  size;
+    QSizeF  size;           // 2.5 zoom: du (the size it was laid out for; logical px = du x s)
     bool isCard() const { return name.startsWith(cardPrefix()); }
     bool exists() const { return object >= 0; }
 };
@@ -78,12 +87,13 @@ QVector<Slot> allSlots(QTextDocument* doc);
 Slot slotAfter(const QTextBlock& block, const Link& link);
 
 // ---- edits (the caller keeps the mutating flags set; several may share one edit block) -----------------
-// Puts a slot after link: our line break, the picture (name, logical size), and our line break after it when
-// the line goes on with text. False when link doesn't describe the document any more or a slot is there.
-bool insertSlot(QTextDocument* doc, const Link& link, const QString& name, const QSizeF& size);
+// Puts a slot after link: our line break, the picture (name, du size: du x scale on whole device px, the du size
+// kept in the format), and our line break after it when the line goes on with text. False when link doesn't
+// describe the document any more or a slot is there.
+bool insertSlot(QTextDocument* doc, const Link& link, const QString& name, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 // Another picture in the slot whose picture is at object (a card becomes the media preview and back).
-bool replaceObject(QTextDocument* doc, int object, const QString& name, const QSizeF& size);
-bool resizeObject(QTextDocument* doc, int object, const QSizeF& size);
+bool replaceObject(QTextDocument* doc, int object, const QString& name, const QSizeF& size, const PreviewScale& scale = PreviewScale());
+bool resizeObject(QTextDocument* doc, int object, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 // The slot whose picture is at object out (its line breaks too); the next line scrubbed.
 bool removeSlot(QTextDocument* doc, int object);
 // TeamSpeak appends a line with a new block that takes the format of the character before it: after a slot

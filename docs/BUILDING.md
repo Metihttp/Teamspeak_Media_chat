@@ -10,6 +10,7 @@ How to build the plugin DLLs and the `.ts3_plugin` package yourself, run the uni
 - [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/) with the **Desktop development with C++** workload (MSVC, the Windows SDK and the bundled CMake)
 - Qt 5.15.2 for MSVC 2019, both 64-bit (`msvc2019_64`) and 32-bit (`msvc2019`). This is the Qt version TeamSpeak 3.6 ships. The easiest way to get it is [aqtinstall](https://github.com/miurahr/aqtinstall).
 - Git and Python 3
+- For the YouTube player (64-bit only): the [Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2) NuGet package 1.0.4314.35, unpacked (it is a zip) to a folder outside the repository, passed as `-DTSMEDIA_WEBVIEW2_DIR=<folder>`. Without it the plugin builds without the player (Play opens the browser).
 
 ## Build
 
@@ -33,6 +34,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | Option | Effect |
 | --- | --- |
 | `-Qt64 <dir>` / `-Qt32 <dir>` | Qt folders, if Qt is not in `C:\dev\Qt\5.15.2\...` |
+| `-WebView2 <dir>` | the unpacked WebView2 SDK for the YouTube player (default `$env:TSMEDIA_WEBVIEW2_DIR`); without it the 64-bit DLL has no player and Play opens the browser. Required with `-Release` |
 | `-No32` | build the 64-bit DLL only (refused when `tsmedia-update.json` is signed, for 2.2.1 and with `-Sign`: users of 2.2.0 on 32-bit TeamSpeak need its 32-bit files) |
 | `-Config <Release\|Debug>` | build configuration (default `Release`) |
 | `-Install` | also copy the 64-bit DLL into `%APPDATA%\TS3Client\plugins` (close TeamSpeak first) |
@@ -62,6 +64,8 @@ cmake --build build --config Release
 | `TSMEDIA_VERSION_OVERRIDE` | empty | test builds only: build another version number, for example `2.2.9`, to offer as an update |
 | `TSMEDIA_BUILD_TESTS` | `ON` | the `tsmedia_tests` executable |
 | `TSMEDIA_BUILD_TOOLS` | `ON` | the developer tools below |
+| `TSMEDIA_WEBVIEW2_DIR` | empty | the unpacked WebView2 SDK: builds the YouTube player helper `tsmedia_player_win64.dll` (static CRT, only system DLLs: a post-build step checks its imports) and embeds it in the plugin DLL as the resource `TSMP`. `build.ps1` requires it for 64-bit release builds |
+| `TSMEDIA_PLAYER_WIN32` | `OFF` | also build the player for 32-bit TeamSpeak (off in 2.5.0: no 32-bit live test yet) |
 
 ## Unit tests
 
@@ -79,6 +83,7 @@ The 64-bit build also builds these in `build\Release`. Put Qt's `bin` folder on 
 
 - `mfvideo_smoketest <video> <outdir>` probes and plays a video headless through Media Foundation, checks pause, seek, loop and teardown, and saves frames. It is completely silent: players stay muted at volume 0.
 - `render_gallery <outdir> [<media dir>]` renders every preview, card, album, spoiler, reaction and player state, light and dark, to PNG files, and checks contrast and that nothing jumps while media loads.
+- `player_smoke` (with `TSMEDIA_WEBVIEW2_DIR`) drives the YouTube player helper outside TeamSpeak: a page and a fake player from memory (no network), the Referer YouTube would get, commands, clipping, owner minimize/restore/destroy, Esc, shutdown during creation and the engine's release. `player_smoke --youtube M7lc1UVf-VE` plays YouTube's documentation video for 10 s. Every web view is muted. It starts WebView2's processes: never run it during a live test.
 - `tsmedia_update_helper` is the small restart helper of the updater (`tools/update_helper`). It is published as a release asset, never embedded in the DLL.
 
 ## Test hooks

@@ -21,6 +21,8 @@
 
 #include "chatemoji.h"
 #include "chatintegration.h"
+#include "chatscale.h"
+#include "previewpaint.h" // fontForRatio
 #include "chatlayout.h"
 #include "chatreplies.h"
 #include "emojidata.h"
@@ -286,7 +288,7 @@ void ChatTextReactions::giveBack(QTextDocument* doc, View* view)
         view->rendered.clear();
     }
     for (const QString& name : qAsConst(names))
-        doc->addResource(QTextDocument::ImageResource, QUrl(name), QVariant()); // the picture's memory goes
+        m_chat->dropChromePicture(doc, name); // the picture's memory goes
 }
 
 void ChatTextReactions::classify(View& v, bool force)
@@ -346,7 +348,8 @@ quint64 ChatTextReactions::signatureOf(const QTextBlock& block)
 
 QString ChatTextReactions::lookKeyOf(const Look& look)
 {
-    return look.font.key() + QLatin1Char('|') + QString::number(look.maxWidth);
+    // 2.5 zoom: the chrome ratio too (the chat's text size changed: every row at the new scale).
+    return look.font.key() + QLatin1Char('|') + QString::number(look.maxWidth) + QLatin1Char('|') + QString::number(look.dpr);
 }
 
 // One block as a message: its key when it can get reactions. dates: the document's days, read when first needed
@@ -515,12 +518,15 @@ bool ChatTextReactions::wantsRow(const View& v, int n) const
 ChatTextReactions::Look ChatTextReactions::lookOf(QTextBrowser* browser) const
 {
     const PreviewStyle style = m_chat->styleFor(browser);
+    // 2.5 zoom: chrome: the row follows the chat's text size (c), never Preview size; laid out in du.
+    const PreviewScale chrome = m_chat->scaleOf(browser).chrome();
+    const int          indent = m_chat->m_layout ? m_chat->m_layout->indentFor(browser) : 0;
     Look               look;
     look.dark     = style.dark;
     look.base     = browser->viewport()->palette().color(QPalette::Base);
-    look.font     = style.font;
-    look.dpr      = style.dpr;
-    look.maxWidth = qMax(rx::kAddPillWidth, style.maxWidth);
+    look.dpr      = chrome.ratio();
+    look.font     = previewpaint::fontForRatio(style.font, look.dpr); // unhinted above R 1 (live test)
+    look.maxWidth = qMax(rx::kAddPillWidth, previewscale::mediaMaxWidthDu(Settings::instance().previewMaxWidth, m_chat->previewAreaWidth(browser), indent, chrome));
     look.onBubble = !style.bubbles.isEmpty();
     return look;
 }
@@ -536,6 +542,21 @@ rx::RowLayout ChatTextReactions::layoutFor(const View&, const QString& key, cons
     // 2.3.1: right-aligned under right-to-left text of yours: the pills from the right, flush with the text (the add
     // pill's slot, empty until the row is hovered, on the left).
     return mirrored ? rx::mirrored(row) : row;
+}
+
+void ChatTextReactions::pictureSwapped(QTextBrowser* browser, const QString& name)
+{
+    if (View* v = viewFor(browser))
+        v->rendered.remove(name); // renderVisible draws it again once it is on screen
+}
+
+void ChatTextReactions::applyChromeScale(QTextBrowser* browser)
+{
+    View* v = viewFor(browser);
+    if (!v || !v->document || v->document != browser->document())
+        return;
+    v->rendered.clear(); // drawn again at the new ratio when on screen
+    reconcileAll(*v);
 }
 
 void ChatTextReactions::reconcileAll(View& v)
@@ -571,8 +592,9 @@ void ChatTextReactions::reconcile(View& v, const QVector<int>& blocks)
         QSizeF  size;
         bool    current = false; // the block's entry was read from its text as it is now
     };
-    QVector<Edit> edits;
-    const Look    look = lookOf(browser);
+    QVector<Edit>      edits;
+    const Look         look   = lookOf(browser);
+    const PreviewScale chrome = m_chat->scaleOf(browser).chrome(); // 2.5 zoom
     for (int n : blocks) {
         const QTextBlock b = doc->findBlockByNumber(n);
         if (!b.isValid())
@@ -599,12 +621,14 @@ void ChatTextReactions::reconcile(View& v, const QVector<int>& blocks)
                 edits.append({n, 3, QString(), QSizeF(), current});
             continue;
         }
-        const QSizeF size(layout.size);
+        const QSizeF size(layout.size); // 2.5 zoom: du
+        const QSizeF logical = chrome.toLogical(size);
         if (!row.exists())
             edits.append({n, 1, key, size, current});
         else if (row.key != key)
             edits.append({n, 4, key, size, current});
-        else if (!qFuzzyCompare(row.format.width(), size.width()) || !qFuzzyCompare(row.format.height(), size.height()))
+        else if (previewscale::duSizeOf(row.format) != size || !qFuzzyCompare(row.format.width(), logical.width())
+                 || !qFuzzyCompare(row.format.height(), logical.height()))
             edits.append({n, 2, key, size, current});
     }
     if (v.retry && v.browser) {
@@ -623,17 +647,17 @@ void ChatTextReactions::reconcile(View& v, const QVector<int>& blocks)
                     const textreactdoc::Row row = textreactdoc::rowOf(doc->findBlockByNumber(e.block));
                     if (row.exists()) {
                         v.rendered.remove(row.format.name());
-                        doc->addResource(QTextDocument::ImageResource, QUrl(row.format.name()), QVariant());
+                        m_chat->dropChromePicture(doc, row.format.name());
                     }
                     textreactdoc::removeRow(doc, e.block);
                 }
                 if (e.kind == 1 || e.kind == 4) {
                     const QString name = newName();
-                    doc->addResource(QTextDocument::ImageResource, QUrl(name), m_blank);
-                    textreactdoc::insertRow(doc, e.block, name, e.key, e.size);
+                    m_chat->putChromePicture(doc, name, m_blank, ChatScale::TextReactions);
+                    textreactdoc::insertRow(doc, e.block, name, e.key, e.size, chrome);
                 }
                 if (e.kind == 2)
-                    textreactdoc::resizeRow(doc, e.block, e.size);
+                    textreactdoc::resizeRow(doc, e.block, e.size, chrome);
             }
             batch.endEditBlock(); // TeamSpeak's view hears of it while we are still "mutating"
         }
@@ -642,7 +666,8 @@ void ChatTextReactions::reconcile(View& v, const QVector<int>& blocks)
             if (e.current && e.block < v.entries.size())
                 v.entries[e.block].signature = signatureOf(doc->findBlockByNumber(e.block));
         }
-        restorePlace(browser, place);
+        if (!m_chat->m_scaling) // 2.5 zoom: inside a scale pass the place comes back once, at its end
+            restorePlace(browser, place);
         afterEdit(browser);
     }
     // The pictures of what changed and is on screen now (the rest when it comes into view).
@@ -735,14 +760,14 @@ void ChatTextReactions::renderVisible(View& v)
         if (n >= shown.first && n <= shown.second)
             continue;
         if (v.rendered.size() > kMaxDrawn / 2 + onScreen && v.rendered.remove(name) > 0)
-            doc->addResource(QTextDocument::ImageResource, QUrl(name), m_blank);
+            m_chat->putChromePicture(doc, name, m_blank, ChatScale::TextReactions);
     }
     for (auto it = v.rendered.begin(); it != v.rendered.end();) {
         if (present.contains(it.key())) {
             ++it;
             continue;
         }
-        doc->addResource(QTextDocument::ImageResource, QUrl(it.key()), QVariant());
+        m_chat->dropChromePicture(doc, it.key());
         it = v.rendered.erase(it);
     }
 }
@@ -789,7 +814,8 @@ bool ChatTextReactions::renderRow(View& v, int n, bool force)
     if (!force && v.rendered.value(name) == signature)
         return false;
     const rx::RowLayout layout = layoutFor(v, row.key, look, keep, mirrored);
-    const QSize         size(qMax(1, qRound(row.format.width())), qMax(1, qRound(row.format.height())));
+    const QSizeF        du = previewscale::duSizeOf(row.format); // 2.5 zoom: drawn in du at the chrome ratio
+    const QSize         size(qMax(1, qRound(du.width())), qMax(1, qRound(du.height())));
     QImage              image(size * look.dpr, QImage::Format_ARGB32_Premultiplied);
     image.setDevicePixelRatio(look.dpr);
     image.fill(Qt::transparent);
@@ -798,7 +824,8 @@ bool ChatTextReactions::renderRow(View& v, int n, bool force)
         rx::drawRow(p, QPointF(0, 0), layout, view, paint, rx::rowColors(look.dark, look.base, look.onBubble), look.font);
         p.end();
     }
-    doc->addResource(QTextDocument::ImageResource, QUrl(name), QPixmap::fromImage(image));
+    // 2.5 zoom (1.12): booked for the chat's picture budget like every preview picture.
+    m_chat->putChromePicture(doc, name, QPixmap::fromImage(previewscale::forDocument(image, m_chat->scaleOf(browser).chrome().displayRatio())), ChatScale::TextReactions);
     v.rendered.insert(name, signature);
     return true;
 }
@@ -852,7 +879,10 @@ ChatTextReactions::Hit ChatTextReactions::hitAt(View& v, const QPoint& pos) cons
     const rx::RowLayout     layout = layoutFor(v, row.key, look, m_hub->view(row.key).isEmpty(), layoutformat::isOwnRightAligned(block));
     hit.block  = n;
     hit.object = rect;
-    hit.zone   = rx::zoneAt(QSizeF(0, 0), layout, false, QPointF(pos) - rect.topLeft());
+    // 2.5 zoom: the row is laid out in du (chrome scale); its zone rect comes back as logical px.
+    const PreviewScale chrome = m_chat->scaleOf(v.browser).chrome();
+    hit.zone                  = rx::zoneAt(QSizeF(0, 0), layout, false, chrome.toDu(QPointF(pos) - rect.topLeft()));
+    hit.zone.rect             = chrome.toLogical(hit.zone.rect);
     if (hit.zone.zone == rx::Zone::None)
         hit.zone.zone = rx::Zone::Row;
     return hit;

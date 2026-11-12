@@ -159,6 +159,44 @@ QList<QUrl> webLinks(const QString& bbcode, int max)
     return out;
 }
 
+QStringList linkHrefs(const QString& bbcode, int max)
+{
+    static const QRegularExpression bare(QStringLiteral("https?://[^\\s<>\"\\[\\]]+"), QRegularExpression::CaseInsensitiveOption);
+    QStringList out;
+    auto add = [&](const QString& href, bool tagged) {
+        if (out.size() >= max)
+            return;
+        QString target = href.trimmed();
+        // A [URL] of an address typed without a scheme: the chat links it as http:// (classify() fetches https).
+        if (tagged && target.startsWith(QLatin1String("www."), Qt::CaseInsensitive))
+            target.prepend(QLatin1String("http://"));
+        if (!target.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) && !target.startsWith(QLatin1String("https://"), Qt::CaseInsensitive))
+            return;
+        out.append(target); // as written: the end is trimmed by trimLinkEnd() on both sides alike
+    };
+    // Live test fix: TeamSpeak shows an address without [URL] as a link only at the start of the message or after
+    // white space; "(https://...)", "x:https://...", "\"https://..." and an address right after a tag's text stay
+    // plain text on every receiver, so the sender makes no preview of them either.
+    QChar before = QLatin1Char(' ');
+    for (const Piece& piece : parse(bodyOf(bbcode))) {
+        if (out.size() >= max)
+            break;
+        if (!piece.href.isEmpty()) {
+            add(piece.href, true);
+        } else {
+            for (auto it = bare.globalMatch(piece.text); it.hasNext() && out.size() < max;) {
+                const QRegularExpressionMatch m    = it.next();
+                const QChar                   prev = m.capturedStart(0) > 0 ? piece.text.at(m.capturedStart(0) - 1) : before;
+                if (prev.isSpace())
+                    add(m.captured(0), false);
+            }
+        }
+        if (!piece.text.isEmpty())
+            before = piece.text.at(piece.text.size() - 1);
+    }
+    return out;
+}
+
 bool isMediaMessage(const QString& bbcode)
 {
     return bbcode.contains(QLatin1String("ts3file"), Qt::CaseInsensitive);

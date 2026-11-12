@@ -35,8 +35,14 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 class ChatInputs;
 class EmojiPicker;
+
+namespace gifs {
+struct Host;
+}
 class QAbstractButton;
 class QLineEdit;
 class QTextEdit;
@@ -56,7 +62,15 @@ class EmojiInput : public QObject
     void settingsChanged(); // Settings::emojiButton
     bool hasInput() const;
     void insertEmoji(int id);      // into the input that is shown (the last used one)
-    void openPicker(QTextEdit* input);
+    // 2.5 GIFs: how the picker was opened. A mouse opening (TeamSpeak's button, the fallback) opens on the page used
+    // last; Ctrl+E always on the emoji, so Ctrl+E and typing or Enter do exactly what they did in 2.2.1.
+    enum class Opener { Mouse, Keyboard };
+    void openPicker(QTextEdit* input, Opener opener = Opener::Mouse);
+    // 2.5 GIFs (ChatIntegration::setGifs): the GIFs tab's host for an input's picker; empty: no GIFs tab.
+    void setGifHostFactory(std::function<gifs::Host(QTextEdit*)> factory);
+    // 2.5 GIFs: the server tab changed (plugin.cpp): a picker with a GIFs tab closes, whichever page it shows.
+    void closeGifPicker();
+    EmojiPicker* picker() const; // the open picker (tests, the live-test driver), or nullptr
     // The attached inputs' placeholders, and putting text into them (2.2.1).
     ChatInputs* inputs() const { return m_text; }
 
@@ -122,6 +136,7 @@ class EmojiInput : public QObject
     QVector<Input>          m_inputs;
     QPointer<QTextEdit>     m_last; // the input the picker was last used for
     QPointer<EmojiPicker>   m_picker;
+    std::function<gifs::Host(QTextEdit*)> m_gifHostFactory; // 2.5 GIFs
     QHash<QString, QPixmap> m_pixmaps;        // faces by size, ratio, tone and look
     ChatInputs*             m_text = nullptr; // a child
 };

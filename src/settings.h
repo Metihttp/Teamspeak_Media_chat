@@ -27,8 +27,11 @@ struct Settings {
     int  autoDownloadMaxMB   = 15;   // images and GIFs up to this size load automatically
     bool autoplayGifs        = true; // otherwise GIFs animate while hovered
     int  videoAutoDownloadMB = 0;    // videos up to this size download automatically; 0 = when you press play
-    int  previewMaxWidth     = 400;
+    int  previewMaxWidth     = 400; // at Normal size and 100% display scaling (2.5: previews grow with both)
     int  previewMaxHeight    = 300;
+    // 2.5 zoom: "Preview size" in percent: 85 Small, 100 Normal, 125 Large, 150 Larger (load() takes the nearest of
+    // these, ties down). Previews also follow Windows scaling and the chat's text size (previewscale.h). Global.
+    int  previewScale        = 100;
     // 2.2 data saver: no automatic downloads of full files (previews still load); the limits above are kept.
     bool dataSaver = false;
     bool revealSpoilers      = false; // 2.2 spoiler: "Show spoilers without blurring" (no covers at all)
@@ -88,9 +91,20 @@ struct Settings {
     // preview from the website by themselves (on screen, within the automatic download limits); off: a click
     // ("Load preview"). Needs showLinkPreviews.
     // makeLinkPreviews: "Make previews for links I send" (the sender pipeline; needs showLinkPreviews too).
+    // 2.5 showWebCards: "Show cards for other web pages": links to pages that aren't videos, GIFs, pictures or
+    // well-known sites get a card (title, short text, picture) read from the page. Off: no card, no request, no
+    // "lw" cap (our own links of that kind get no preview either). Needs showLinkPreviews.
     bool showLinkPreviews     = true;
     bool autoLoadLinkPreviews = true;
     bool makeLinkPreviews     = true;
+    bool showWebCards         = true;
+    // 2.5 YouTube player (global): "Play YouTube videos in the chat": Play on a YouTube card shows YouTube's own player
+    // (Microsoft Edge WebView2, src/ytplayer); off: Play opens the video in the browser as in 2.4. Needs
+    // showLinkPreviews. youTubeNoticeShown: the Consent state was answered with Play once (never reset by Restore
+    // defaults, like chatLayoutIntroShown). youTubeWindowSize: the popup player's size, "WxH" in du (empty: 640x360).
+    bool    playYouTubeInChat  = true;
+    bool    youTubeNoticeShown = false;
+    QString youTubeWindowSize;
     // 2.2.1 voice: voice messages have no settings any more (TeamSpeak's microphone, muted while
     // recording, the start and stop sounds); 2.2.0's voice* keys in the ini are ignored.
 
@@ -98,6 +112,9 @@ struct Settings {
     bool hdEmoji     = true; // emoji (and TeamSpeak's emoticons) in the chat as HD pictures
     bool emojiButton = true; // our picker on TeamSpeak's emoji button (the picker's shortcut works either way)
     bool jumboEmoji  = true; // messages of only emoji (up to 27) show them large
+    // 2.5 GIFs (global): the emoji picker's GIFs tab keeps the GIF links you send from GIF sites and copies of the GIF
+    // files you upload (giflibrary.h). Off: nothing is recorded; Save to GIFs and the tab keep working.
+    bool rememberGifs = true;
 
     // Chat redesign (global): the chat's layout, only in your own view.
     static constexpr Range chatLayoutRange = {0, 2};

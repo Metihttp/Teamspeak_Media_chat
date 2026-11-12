@@ -90,6 +90,10 @@ bool isPreviewActionable(const MediaEntry& entry);
 // "Waiting to download…", "Downloading… 45% · 4.5 MB of 10.0 MB", "Click to open", the error title.
 // Without the file size. cannotPreview: a Ready picture that can't be decoded.
 QString previewStatusText(const MediaEntry& entry, bool cannotPreview, bool revealOnly = false);
+// 2.5: a GIF-like looping video's tool tip detail (beyond its name), told like a GIF's: nothing while it is there
+// (it plays like a GIF; a click opens the viewer), else its state ("Click to download", "Downloading… 45%"); never a
+// video's autoplay or default-app texts. A failed one gets the error text like every entry (the caller).
+QString loopToolTipDetail(const MediaEntry& entry);
 
 // ---- 2.2 sha: a downloaded file being checked against its link's SHA-256 ---------------------------
 // True while a preview says "Checking file…": Core checks the downloaded file and it has taken a moment

@@ -163,6 +163,10 @@ struct Facts {
     // Display
     int    scalePercent = 0;
     double devicePixelRatio = 0;
+    // 2.5 zoom: the visible chat's preview scale in percent (0: no chat), its text size and the Preview size preset.
+    int    previewScalePercent = 0;
+    int    chatTextPx          = 0;
+    int    previewPreset       = 0;
     int    screens = 0;
     bool   animations = true;
     int    theme = 0; // 0 unknown, 1 light, 2 dark

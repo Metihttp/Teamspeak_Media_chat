@@ -46,6 +46,7 @@
 
 #include "core.h"
 #include "filedrag.h" // 2.2 drag-out
+#include "safeimage.h" // 2.5
 #include "i18n.h"
 #include "previewrenderer.h"
 #include "settings.h"
@@ -1257,10 +1258,10 @@ struct Decoded {
 
 Decoded decodeImage(const QString& path)
 {
-    Decoded      result;
-    QImageReader reader(path);
+    Decoded                             result;
+    const std::unique_ptr<QImageReader> safe   = safeimage::reader(path, safeimage::Source::Peer); // 2.5: by its bytes only
+    QImageReader&                       reader = *safe;
     reader.setAutoTransform(true);
-    reader.setDecideFormatFromContent(true);
     QSize size = reader.size();
     if (size.isValid() && (reader.transformation() & QImageIOHandler::TransformationRotate90))
         size.transpose();
@@ -2467,7 +2468,8 @@ void MediaViewer::Private::onDecoded(quint64 forGeneration, const Decoded& resul
 
 void MediaViewer::Private::startAnimation(const QString& path)
 {
-    QImageReader reader(path);
+    const std::unique_ptr<QImageReader> safe   = safeimage::reader(path, safeimage::Source::Peer); // 2.5: by its bytes only
+    QImageReader&                       reader = *safe;
     if (!reader.supportsAnimation() || reader.imageCount() == 1) {
         content = Content::Image; // a single-frame GIF / WebP
         loadImage(path);
@@ -2481,8 +2483,8 @@ void MediaViewer::Private::startAnimation(const QString& path)
         return;
     }
 
-    movie = new QMovie(path, QByteArray(), this);
-    if (!movie->isValid()) {
+    movie = safeimage::movie(path, safeimage::Source::Peer, this); // 2.5: the format forced
+    if (!movie || !movie->isValid()) {
         delete movie;
         movie   = nullptr;
         content = Content::Image;
@@ -2573,8 +2575,11 @@ void MediaViewer::Private::onPlayerLoaded()
     if (!player)
         return;
     player->setVolume(volume / 100.0);
-    player->setMuted(muted);
-    player->setLoop(loop);
+    // 2.5: a GIF-like link video (MediaLink::loop) opens looping and muted, like the GIF it stands for.
+    const MediaEntry* current = entry();
+    const bool        looping = current && current->link.loop;
+    player->setMuted(looping || muted);
+    player->setLoop(looping || loop);
 
     const qint64 duration = player->duration();
     {

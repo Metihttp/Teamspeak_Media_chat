@@ -21,6 +21,7 @@
 #include "i18n.h"
 #include "layoutformat.h" // chat redesign: headers kept in TS Media's chat layout
 #include "chatreactions.h" // 2.2 reactions: the album's row
+#include "chatscale.h"     // 2.5 zoom: the picture budget
 #include "inlinemedia.h"
 #include "ownedtimer.h"
 #include "settings.h"
@@ -127,10 +128,10 @@ void setBlockHidden(QTextDocument* doc, int number, bool hidden)
 }
 
 // The geometry of a grid drawn at rect's size: albums::layout() for its width (the grid is always as
-// wide as its limit) and the preview height setting.
-albums::Geometry geometryFor(int items, const QRectF& rect)
+// wide as its limit) and the preview height setting. 2.5 zoom: in du (rect is logical px, du x s).
+albums::Geometry geometryFor(int items, const QRectF& rect, const PreviewScale& scale)
 {
-    return albums::layout(items, qRound(rect.width()), Settings::instance().previewMaxHeight);
+    return albums::layout(items, qRound(rect.width() / scale.s()), Settings::instance().previewMaxHeight);
 }
 
 // A tile of g mapped to rect (the grid as it is shown; normally the same size as g.box).
@@ -422,11 +423,7 @@ void ChatIntegration::applyAlbums(QTextBrowser* browser, const AlbumPlan& plan)
     unhide.subtract(plan.hide);
     if (edits.isEmpty() && hide.isEmpty() && unhide.isEmpty()) {
         // Nothing to change; grids kept from an earlier plugin instance still need their pictures.
-        ensurePositions(*view);
-        for (auto it = view->positionsByKey.constBegin(); it != view->positionsByKey.constEnd(); ++it) {
-            if (albums::isObjectId(it.key()) && !view->resourced.contains(it.key()))
-                refreshPreview(browser, it.key(), false);
-        }
+        refreshUnresourcedAlbums(browser);
         return;
     }
 
@@ -463,14 +460,12 @@ void ChatIntegration::applyAlbums(QTextBrowser* browser, const AlbumPlan& plan)
         if (stillShown.contains(id))
             continue;
         doc->addResource(QTextDocument::ImageResource, QUrl(resourceName(id)), QPixmap());
+        if (view->scaler) // 2.5 zoom: out of the chat's picture books too (review fix)
+            view->scaler->forget(resourceName(id));
         view->resourced.remove(id);
     }
     view->positionsValid = false;
-    ensurePositions(*view);
-    for (auto it = view->positionsByKey.constBegin(); it != view->positionsByKey.constEnd(); ++it) {
-        if (albums::isObjectId(it.key()) && !view->resourced.contains(it.key()))
-            refreshPreview(browser, it.key(), false);
-    }
+    refreshUnresourcedAlbums(browser);
     // S0: hiding a block doesn't keep the chat pinned to its end.
     if (bottom)
         browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
@@ -481,6 +476,29 @@ void ChatIntegration::applyAlbums(QTextBrowser* browser, const AlbumPlan& plan)
     scheduleVisibilityUpdate();
     if (again)
         scheduleScan(browser);
+}
+
+// The grids in the chat that have no picture yet (inserted from a plan, or kept from an earlier plugin instance)
+// are drawn. 2.5 zoom live test (a crash after Options > Addons > Reload at 200%): refreshPreview may give a grid
+// another size; that edit invalidates the positions, and the next refreshPreview rebuilds positionsByKey, so the
+// keys are taken first and never iterated in the hash while drawing.
+void ChatIntegration::refreshUnresourcedAlbums(QTextBrowser* browser)
+{
+    View* view = viewFor(browser);
+    if (!view)
+        return;
+    ensurePositions(*view);
+    QStringList grids;
+    for (auto it = view->positionsByKey.constBegin(); it != view->positionsByKey.constEnd(); ++it) {
+        if (albums::isObjectId(it.key()) && !view->resourced.contains(it.key()))
+            grids.append(it.key());
+    }
+    for (const QString& id : qAsConst(grids)) {
+        View* v = viewFor(browser); // still there (nothing below removes a view), looked up again to be safe
+        if (!v || v->resourced.contains(id))
+            continue;
+        refreshPreview(browser, id, false);
+    }
 }
 
 void ChatIntegration::restoreAlbums(QTextBrowser* browser)
@@ -603,7 +621,7 @@ QImage ChatIntegration::renderAlbumFor(QTextBrowser* browser, const QString& id,
         if (m_media && t.entry->kind == MediaKind::AnimatedImage && !covered) {
             // Frames are made at the tile's cover size; a single preview of the same GIF wins.
             if (!shownAlone(key))
-                m_media->setFrameSize(key, pixels);
+                m_media->setFrameSize(key, pixels, style.dpr); // 2.5 zoom: du x R, GIFs at most ratio 2
             if (m_media->mode(key) == InlineMediaController::Mode::Animated)
                 t.frame = m_media->frame(key);
         }
@@ -629,14 +647,14 @@ QImage ChatIntegration::renderAlbumFor(QTextBrowser* browser, const QString& id,
 
 ChatIntegration::Hit ChatIntegration::albumHit(QTextBrowser* browser, const QString& id, const QRectF& rect, const QPointF& viewportPos) const
 {
-    Q_UNUSED(browser);
     Hit hit;
     hit.object            = id;
+    hit.scale             = scaleOf(browser);
     hit.rect              = rect;
     const QStringList keys = albumKeysOf(id);
     if (keys.isEmpty())
         return hit;
-    const albums::Geometry g     = geometryFor(keys.size(), rect);
+    const albums::Geometry g     = geometryFor(keys.size(), rect, scaleOf(browser));
     const qreal            sx    = rect.width() > 0 ? g.box.width() / rect.width() : 1.0;
     const qreal            sy    = rect.height() > 0 ? g.box.height() / rect.height() : 1.0;
     const QPointF          local = viewportPos - rect.topLeft();
@@ -646,15 +664,15 @@ ChatIntegration::Hit ChatIntegration::albumHit(QTextBrowser* browser, const QStr
     hit.tile     = tile;
     hit.key      = keys.at(tile);
     hit.rect     = tileRectIn(g, tile, rect);
+    hit.duSize   = g.tiles.at(tile).size(); // 2.5 zoom
     hit.overflow = tile == g.tiles.size() - 1 ? g.overflow : 0;
     return hit;
 }
 
 void ChatIntegration::albumVisibleKeys(QTextBrowser* browser, const QString& id, const QRectF& rect, const QRectF& viewport, QSet<QString>* keys) const
 {
-    Q_UNUSED(browser);
     const QStringList      items = albumKeysOf(id);
-    const albums::Geometry g     = geometryFor(items.size(), rect);
+    const albums::Geometry g     = geometryFor(items.size(), rect, scaleOf(browser));
     for (int i = 0; i < g.tiles.size(); ++i) {
         if (g.overflow > 0 && i == g.tiles.size() - 1)
             break; // under "+N": no animation

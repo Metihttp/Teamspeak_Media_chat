@@ -37,7 +37,16 @@ bool    onBubble(const PreviewStyle& style);
 QColor  accent(); // #5865F2
 qreal   cornerRadius();
 
-QFont  font(const PreviewStyle& style, qreal delta, bool bold = false); // pixel size from the chat font
+QFont  font(const PreviewStyle& style, qreal delta, bool bold = false); // pixel size: the base (11 du) + delta
+// 2.5 zoom: the base text size of every preview, 11 du whatever the chat font (the canvas ratio carries the chat's
+// size). No module computes a size from points any more (a source-rule test checks the art modules).
+qreal  basePixelSize(const QFont& font);
+// The chat font's family at factor times the base size, in pixels (polls: 1.06 / 1.0 / 0.9 / 0.95).
+QFont  emFont(const PreviewStyle& style, qreal factor, bool bold = false);
+// 2.5 zoom live test: the chat font for a canvas drawn at ratio R. Above 1 its text is laid out unhinted (fractional
+// advances; DirectWrite on Windows): hinted advances are whole pixels at the du size, so R doubled their rounding and
+// glyphs of 9-10 du text stood unevenly at 200% ("A nony mous", "1:0 2"). At 1 TeamSpeak's own hinting, as in 2.4.
+QFont  fontForRatio(QFont font, qreal ratio);
 qreal  ratio(const PreviewStyle& style);                                // device pixel ratio, bounded
 QImage canvas(const QSize& logical, qreal dpr);                         // transparent, devicePixelRatio set
 void   prepare(QPainter& p);                                            // antialiasing and smooth images

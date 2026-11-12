@@ -23,6 +23,7 @@
 #include "linkpreview/content.h"
 #include "linkpreview/autoload.h"
 #include "linkpreview/fetcher.h"
+#include "linkpreview/hostgate.h"
 #include "linkpreview/linkstate.h"
 #include "linkpreview/linkurl.h"
 #include "linkpreview/lphub.h" // linksCacheDir
@@ -37,6 +38,12 @@ using namespace linkpreview;
 namespace {
 
 const QString kVideoId = QStringLiteral("dQw4w9WgXcQ");
+
+// 2.5: the kind of a legacy link (YouTube, Direct), None for every other link (page links are tst_providers').
+Kind legacyKind(const Target& target)
+{
+    return target.isLegacy() ? target.kind : Kind::None;
+}
 
 net::Address ip(const char* text)
 {
@@ -331,6 +338,12 @@ Fetcher::Options testOptions()
 {
     Fetcher::Options options;
     options.totalTimeoutMs = 10000;
+    // 2.5: these 2.4 tests check the fetch itself, not HostGate (tst_hostgate, tst_linkpage_net): a gate whose clock
+    // jumps an hour at every look never spaces, cools or breaks anything.
+    auto clock = std::make_shared<std::atomic<qint64>>(0);
+    HostGate::Limits limits;
+    limits.pageRunning = limits.mediaRunning = 1000;
+    options.gate = std::make_shared<HostGate>([clock] { return clock->fetch_add(3600000) + 3600000; }, limits);
     return options;
 }
 
@@ -485,7 +498,10 @@ class TestLinkPreviewNet : public QObject
         QFETCH(int, kind);
         QFETCH(QString, videoId);
         QFETCH(QString, host);
-        const Target target = linkpreview::classify(href);
+        // 2.5: this is 2.4.0's table, the table of the legacy classes (YouTube, Direct); a link that isn't one may be a
+        // page link now (tst_providers has those).
+        const Target full   = linkpreview::classify(href);
+        const Target target = full.isLegacy() ? full : Target();
         QCOMPARE(int(target.kind), kind);
         QCOMPARE(target.videoId, videoId);
         QCOMPARE(target.host, host);
@@ -501,7 +517,7 @@ class TestLinkPreviewNet : public QObject
         }
         // The QUrl overload agrees for anything QUrl parses the same way.
         if (href.startsWith(QLatin1String("http"), Qt::CaseInsensitive) && !href.contains(QLatin1Char('\\')) && !href.contains(QLatin1Char('@')))
-            QCOMPARE(int(linkpreview::classify(QUrl(href)).kind), kind);
+            QCOMPARE(int(legacyKind(linkpreview::classify(QUrl(href)))), kind);
     }
 
     void classifyHugeAndHidden()
@@ -957,13 +973,73 @@ class TestLinkPreviewNet : public QObject
         QCOMPARE(r.mime, QStringLiteral("image/jpeg"));
         QCOMPARE(r.width, 480);
         QCOMPARE(r.height, 360);
-        QCOMPARE(fake->requests(), (QStringList{oEmbedFor(kVideoId), QStringLiteral("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")}));
+        // 2.5 zoom: maxresdefault first (none for this video: 404), then oEmbed's thumbnail.
+        QCOMPARE(fake->requests(), (QStringList{oEmbedFor(kVideoId), QStringLiteral("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"),
+                                                QStringLiteral("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")}));
         QCOMPARE(fake->accepts.value(0), QByteArray("application/json"));
         Result cached;
         QVERIFY(Fetcher::cached(target, dir.path(), &cached));
         QCOMPARE(cached.title, r.title);
         QCOMPARE(cached.thumbnailFile, r.thumbnailFile);
         QVERIFY(!anyPart(dir.path()));
+    }
+
+    // 2.5 zoom (Z-T10): the 1280 px thumbnail when YouTube has it; its 404 or its small placeholder: the standard one.
+    void fetchYouTubeMaxres()
+    {
+        const QString maxres = QStringLiteral("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg");
+        const QString hq     = QStringLiteral("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
+        const auto    run    = [&](const FakeResponse* big, QStringList* requests) {
+            QTemporaryDir dir;
+            auto          fake = std::make_shared<FakeTransport>();
+            FakeResponse  json;
+            json.contentType = "application/json";
+            json.body        = "{\"type\":\"video\",\"title\":\"T\",\"thumbnail_url\":\"https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg\"}";
+            fake->respond(oEmbedFor(kVideoId), json);
+            if (big)
+                fake->respond(maxres, *big);
+            FakeResponse small;
+            small.contentType = "image/jpeg";
+            small.body        = jpegBytes(480, 360);
+            fake->respond(hq, small);
+            Fetcher    fetcher(fake, testOptions());
+            QSignalSpy finished(&fetcher, &Fetcher::finished);
+            fetcher.load(linkpreview::classify(QStringLiteral("https://youtu.be/dQw4w9WgXcQ")), 0, dir.path());
+            if (!finished.wait(10000))
+                return Result();
+            *requests = fake->requests();
+            const Result r = resultOf(finished);
+            if (anyPart(dir.path()) || (!r.thumbnailFile.isEmpty() && !QFileInfo(r.thumbnailFile).isFile()))
+                return Result(); // a part file left, or no thumbnail where the result says
+            return r;
+        };
+        // 200, 1280 x 720: used, no second request.
+        FakeResponse full;
+        full.contentType = "image/jpeg";
+        full.body        = jpegBytes(1280, 720);
+        QStringList  requests;
+        Result       r = run(&full, &requests);
+        QVERIFY2(r.ok, qPrintable(r.error));
+        QCOMPARE(r.width, 1280);
+        QCOMPARE(r.height, 720);
+        QCOMPARE(requests, (QStringList{oEmbedFor(kVideoId), maxres}));
+        // 404: the standard thumbnail.
+        r = run(nullptr, &requests);
+        QVERIFY(r.ok);
+        QCOMPARE(r.width, 480);
+        QCOMPARE(requests, (QStringList{oEmbedFor(kVideoId), maxres, hq}));
+        // 200 with YouTube's 120 px placeholder: the standard thumbnail.
+        FakeResponse placeholder;
+        placeholder.contentType = "image/jpeg";
+        placeholder.body        = jpegBytes(120, 90);
+        r = run(&placeholder, &requests);
+        QVERIFY(r.ok);
+        QCOMPARE(r.width, 480);
+        QCOMPARE(requests, (QStringList{oEmbedFor(kVideoId), maxres, hq}));
+        // The address rules hold for it.
+        QVERIFY(net::isAllowedThumbnail(net::maxresThumbnail(kVideoId), kVideoId));
+        QCOMPARE(net::maxresThumbnail(kVideoId).toString(), maxres);
+        QVERIFY(!net::maxresThumbnail(QStringLiteral("bad id")).isValid());
     }
 
     void fetchYouTubeHostile()
@@ -1602,7 +1678,7 @@ class TestLinkPreviewNet : public QObject
                 earlier.load(video, linkpreview::autoload::clickCap(Kind::YouTube), links);
                 QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 2, 10000);
                 QVERIFY(resultOf(finished, 0).ok && resultOf(finished, 1).ok);
-                QCOMPARE(site->requestCount(), 3);
+                QCOMPARE(site->requestCount(), 4); // 2.5 zoom: maxresdefault (404) before the standard thumbnail
             }
 
             // This session: a transport nobody may use.
@@ -1918,9 +1994,10 @@ class TestLinkPreviewNet : public QObject
         QVERIFY(check(costOf(QStringLiteral("https://example.com/gone.png"), &r), 1, 1, 1)); // 404: no retry
         QCOMPARE(r.error, QString::fromLatin1(errors::kNotFound));
         const int before = fake->requestCount();
-        QVERIFY(check(costOf(QStringLiteral("http://www.youtube.com/watch?v=") + kVideoId, &r), 2, 2, 2));
+        // 2.5 zoom: oEmbed, maxresdefault (404 here), the standard thumbnail.
+        QVERIFY(check(costOf(QStringLiteral("http://www.youtube.com/watch?v=") + kVideoId, &r), 3, 3, 3));
         QVERIFY(r.ok);
-        QCOMPARE(fake->requests().mid(before), QStringList({oEmbedFor(kVideoId), thumbUrl}));
+        QCOMPARE(fake->requests().mid(before), QStringList({oEmbedFor(kVideoId), QStringLiteral("https://i.ytimg.com/vi/%1/maxresdefault.jpg").arg(kVideoId), thumbUrl}));
         QVERIFY(check(costOf(QStringLiteral("https://youtu.be/") + kVideoId, &r), 0, 0, 0)); // the same video, cached
         QVERIFY(r.ok);
 

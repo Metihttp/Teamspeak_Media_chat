@@ -39,6 +39,8 @@ struct Message {
     QByteArray text;
     uint64     channel = 0;
     QString    returnCode;
+    int        mode   = 0; // 2.5 GIFs: TextMessageTarget_CHANNEL / CLIENT / SERVER (which requestSend*TextMsg)
+    anyID      client = 0; // TextMessageTarget_CLIENT: to whom
 };
 
 struct Directory {
@@ -107,6 +109,8 @@ void moveClient(anyID id, uint64 channel);
 // The own identity (getClientSelfVariableAsString CLIENT_UNIQUE_IDENTIFIER; empty until set) and channel.
 void setOwnUid(const QString& uid);
 void setOwnChannel(uint64 channel);
+// 2.5 GIFs: whether the own channel has a password (getChannelVariableAsInt CHANNEL_FLAG_PASSWORD; install(): no).
+void setChannelPassword(bool password);
 // 2.4 link previews: plugin commands sent (sendPluginCommand), in order. Nobody answers: the test does.
 struct PluginCommand {
     QByteArray   payload;

@@ -134,6 +134,10 @@ class PeerDirectory : public QObject
         bool    presence     = true;  // Settings::sharePresence
         bool    reactions    = true;  // Settings::showReactions (caps "r")
         bool    linkPreviews = false; // 2.4: Settings::showLinkPreviews && makeLinkPreviews (caps "l": I make link previews)
+        // 2.5: "lx": I make previews of media pages and site cards (the same settings as "l"); "lw": ... and of other
+        // web pages (also Settings::showWebCards).
+        bool    linkPreviewsX   = false;
+        bool    linkPreviewsWeb = false;
     };
 
     // 2.4 auto-load: what is known of someone's capability (capabilityState).

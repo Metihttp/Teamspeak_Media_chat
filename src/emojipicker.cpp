@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
+#include <QTabBar>
 #include <QToolTip>
 #include <QWheelEvent>
 
@@ -21,7 +22,10 @@
 #include "emojidata.h"
 #include "emojiprefs.h"
 #include "emojirender.h"
+#include "giflibrary.h" // 2.5 GIFs
+#include "gifpanel.h"
 #include "i18n.h"
+#include "pickerstyle.h"
 #include "uiutil.h"
 
 namespace {
@@ -39,53 +43,14 @@ constexpr int kBar       = 8;   // scroll bar
 constexpr int kGridH     = 292; // 7 rows and a heading
 constexpr int kTabCount  = 1 + emoji::kGroupCount; // recently used + the groups
 constexpr int kMaxResults = 270;
+// 2.5 GIFs: the switch row (Emoji | GIFs) on top moves everything of the emoji page down by kSwitchShift.
+constexpr int kSwitchH     = 32;
+constexpr int kSwitchShift = 42;
+constexpr int kMore        = 28;
 
-struct Colors {
-    QColor background, border, field, fieldText, placeholder, text, muted, heading, hover, pressed, accent, ring, marked, dot, divider, thumb;
-};
-
-Colors colorsFor(bool dark, const QColor& base)
-{
-    Colors c;
-    if (dark) {
-        c.background = QColor(0x2b, 0x2d, 0x31);
-        if (base.isValid() && base.lightness() < 128)
-            c.background = ui::flatten(QColor(255, 255, 255, 10), base); // a step above the chat
-        c.border      = QColor(0x1e, 0x1f, 0x22);
-        c.field       = ui::flatten(QColor(0, 0, 0, 90), c.background);
-        c.fieldText   = QColor(0xdb, 0xde, 0xe1);
-        c.placeholder = QColor(0x94, 0x9b, 0xa4);
-        c.text        = QColor(0xf2, 0xf3, 0xf5);
-        c.muted       = QColor(0xb5, 0xba, 0xc1);
-        c.heading     = QColor(0xb5, 0xba, 0xc1);
-        c.hover       = ui::flatten(QColor(255, 255, 255, 20), c.background);
-        c.pressed     = ui::flatten(QColor(255, 255, 255, 36), c.background);
-        c.accent      = QColor(0x58, 0x65, 0xf2);
-        c.ring        = QColor(0x94, 0x9c, 0xf7); // 3:1 on the dark popup
-        c.marked      = ui::flatten(QColor(88, 101, 242, 70), c.background);
-        c.dot         = ui::flatten(QColor(255, 255, 255, 18), c.background);
-        c.divider     = ui::flatten(QColor(255, 255, 255, 14), c.background);
-        c.thumb       = ui::flatten(QColor(255, 255, 255, 46), c.background);
-    } else {
-        c.background  = QColor(0xff, 0xff, 0xff);
-        c.border      = QColor(0xe3, 0xe5, 0xe8);
-        c.field       = QColor(0xeb, 0xed, 0xef);
-        c.fieldText   = QColor(0x31, 0x33, 0x38);
-        c.placeholder = QColor(0x5c, 0x5e, 0x66);
-        c.text        = QColor(0x06, 0x06, 0x07);
-        c.muted       = QColor(0x4e, 0x50, 0x58);
-        c.heading     = QColor(0x4e, 0x50, 0x58);
-        c.hover       = QColor(0xf2, 0xf3, 0xf5);
-        c.pressed     = QColor(0xe3, 0xe5, 0xe8);
-        c.accent      = QColor(0x58, 0x65, 0xf2);
-        c.ring        = QColor(0x58, 0x65, 0xf2);
-        c.marked      = QColor(0xe6, 0xe8, 0xfd);
-        c.dot         = QColor(0xf2, 0xf3, 0xf5);
-        c.divider     = QColor(0xe3, 0xe5, 0xe8);
-        c.thumb       = QColor(0xc4, 0xc9, 0xce);
-    }
-    return c;
-}
+// The palette (2.5: shared with the GIFs tab, pickerstyle.h).
+using pickerstyle::Colors;
+using pickerstyle::colorsFor;
 
 QFont scaled(const QFont& base, qreal px, int weight)
 {
@@ -160,6 +125,14 @@ bool isPickerShortcut(const QKeyEvent* ke)
 {
     const bool ctrl = (ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier)) == Qt::ControlModifier;
     return ctrl && (ke->key() == Qt::Key_E || ke->nativeVirtualKey() == 'E');
+}
+
+// 2.5 GIFs: Ctrl+Tab / Ctrl+Shift+Tab switch the page (with a GIF host), guarded like Ctrl+E: TeamSpeak's window behind
+// never sees them (its tab-cycling shortcut would switch the chat behind the popup).
+bool isPageSwitchKey(const QKeyEvent* ke)
+{
+    const Qt::KeyboardModifiers mods = ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier);
+    return (mods == Qt::ControlModifier || mods == (Qt::ControlModifier | Qt::ShiftModifier)) && (ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab);
 }
 
 } // namespace
@@ -666,8 +639,18 @@ class EmojiPickerPrivate
     QVector<bool> tabHasItems = QVector<bool>(kTabCount, true); // from the last layout without a search
     QSet<int>     marked;
     QRect         opener; // the button it was opened with (global): a press there closes it for good
+    // 2.5 GIFs
+    int                top    = 0; // kSwitchShift with a GIF host: every absolute place of the emoji page goes through it
+    bool               hosted = false;
+    gifs::Host*        host   = nullptr; // owned
+    gifs::SendState*   opened = nullptr; // owned: the state when it opened (its fingerprint)
+    EmojiPicker::Page  page   = EmojiPicker::Page::Emoji;
+    QWidget*           switcher = nullptr;
+    QAbstractButton*   more     = nullptr;
+    GifPanel*          gifs     = nullptr;
+    QObject*           pickerKeys = nullptr;
 
-    QRect tabsRect() const { return QRect(kPad, kPad + kSearch + 6, kColumns * kCell, kTabs); }
+    QRect tabsRect() const { return QRect(kPad, top + kPad + kSearch + 6, kColumns * kCell, kTabs); }
     QRect tabRect(int tab) const
     {
         const QRect bar = tabsRect();
@@ -678,6 +661,8 @@ class EmojiPickerPrivate
 
     int tabAt(const QPoint& pos) const
     {
+        if (page == EmojiPicker::Page::Gifs)
+            return -1; // the GIFs page owns its area
         for (int t = 0; t < kTabCount; ++t) {
             if (tabRect(t).contains(pos))
                 return t;
@@ -767,12 +752,36 @@ class EmojiPickerPrivate
     {
         if (!search->text().trimmed().isEmpty())
             return -1;
-        const int top = grid->topSection();
+        const int topSection = grid->topSection();
         for (int t = 0; t < kTabCount; ++t) {
-            if (tabSection.value(t) == top)
+            if (tabSection.value(t) == topSection)
                 return t;
         }
         return -1;
+    }
+
+    // Every absolute place of the emoji page, through top (design_gifs 5.1).
+    void place()
+    {
+        search->setGeometry(kPad, top + kPad, kColumns * kCell - kSearch - 6, kSearch);
+        toneButton->move(kPad + kColumns * kCell - kSearch, top + kPad);
+        tones->move(q->width() - kPad - tones->width(), top + kPad + kSearch + 4);
+        const int gridTop = tabsRect().bottom() + 5;
+        grid->setGeometry(kPad, gridTop, kColumns * kCell + kBar, q->height() - kFooter - gridTop - 4);
+    }
+
+    void togglePage()
+    {
+        q->showPage(page == EmojiPicker::Page::Emoji ? EmojiPicker::Page::Gifs : EmojiPicker::Page::Emoji);
+        focusPage();
+    }
+
+    void focusPage()
+    {
+        if (page == EmojiPicker::Page::Gifs && gifs)
+            gifs->focusGrid(Qt::OtherFocusReason);
+        else
+            search->setFocus(Qt::OtherFocusReason);
     }
 
     void activate(int item, bool keep)
@@ -872,7 +881,8 @@ class EmojiGridKeys : public QObject
   protected:
     bool eventFilter(QObject*, QEvent* event) override
     {
-        if (event->type() == QEvent::ShortcutOverride && isPickerShortcut(static_cast<QKeyEvent*>(event))) {
+        if (event->type() == QEvent::ShortcutOverride
+            && (isPickerShortcut(static_cast<QKeyEvent*>(event)) || (m_d->hosted && isPageSwitchKey(static_cast<QKeyEvent*>(event))))) {
             event->accept(); // comes as a key press, not to a shortcut of the window behind
             return true;
         }
@@ -881,6 +891,10 @@ class EmojiGridKeys : public QObject
         auto*      ke    = static_cast<QKeyEvent*>(event);
         if (isPickerShortcut(ke)) {
             m_d->q->close();
+            return true;
+        }
+        if (m_d->hosted && isPageSwitchKey(ke)) {
+            m_d->togglePage();
             return true;
         }
         EmojiGrid* grid  = m_d->grid;
@@ -984,6 +998,252 @@ class EmojiGridKeys : public QObject
     EmojiPickerPrivate* m_d;
 };
 
+// ============================================================================================
+// 2.5 GIFs: the switch row, the ⋯ button, and the keys every new child guards
+// ============================================================================================
+
+// Ctrl+E closes the picker and Ctrl+Tab switches its page from the switch row, the ⋯ button, the GIF grid, the bar's
+// buttons and the tone button; their ShortcutOverride is accepted, so TeamSpeak's window behind never sees them.
+class PickerKeys : public QObject
+{
+  public:
+    PickerKeys(EmojiPickerPrivate* d, QObject* parent)
+        : QObject(parent)
+        , m_d(d)
+    {
+    }
+
+  protected:
+    bool eventFilter(QObject*, QEvent* event) override
+    {
+        if (event->type() != QEvent::ShortcutOverride && event->type() != QEvent::KeyPress)
+            return false;
+        auto*      ke     = static_cast<QKeyEvent*>(event);
+        const bool picker = isPickerShortcut(ke);
+        const bool page   = m_d->hosted && isPageSwitchKey(ke);
+        if (!picker && !page)
+            return false;
+        if (event->type() == QEvent::ShortcutOverride) {
+            event->accept();
+            return true;
+        }
+        if (picker)
+            m_d->q->close();
+        else
+            m_d->togglePage();
+        return true;
+    }
+
+  private:
+    EmojiPickerPrivate* m_d;
+};
+
+// "Emoji" | "GIFs": two text tabs (design_gifs 5.2). One focus stop; Left / Right move between the tabs, Enter or Space
+// shows the focused one, Down goes into the page.
+class PickerSwitch : public QWidget
+{
+  public:
+    PickerSwitch(EmojiPickerPrivate* d, QWidget* parent)
+        : QWidget(parent)
+        , m_d(d)
+    {
+        setObjectName(QString::fromLatin1("tsmediaPickerSwitch"));
+        setMouseTracking(true);
+        setFocusPolicy(Qt::TabFocus);
+        setCursor(Qt::PointingHandCursor);
+        updateAccessible();
+    }
+
+    QRect tabRect(int tab) const
+    {
+        const QFontMetrics fm(labelFont());
+        const int          emojiW = fm.horizontalAdvance(label(0)) + 24;
+        return tab == 0 ? QRect(0, 0, emojiW, kSwitchH) : QRect(emojiW + 4, 0, fm.horizontalAdvance(label(1)) + 24, kSwitchH);
+    }
+
+    void updateAccessible()
+    {
+        const int active = m_d->page == EmojiPicker::Page::Gifs ? 1 : 0;
+        const int shown  = hasFocus() ? m_focusTab : active;
+        setAccessibleName(label(shown) + (shown == active ? i18n::t(", selected") : QString()));
+        setAccessibleDescription(i18n::t("Emoji and GIFs pages. Ctrl+Tab switches."));
+        update();
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const pickerstyle::Colors& c      = m_d->colors;
+        const int                  active = m_d->page == EmojiPicker::Page::Gifs ? 1 : 0;
+        const QFont                f      = labelFont();
+        const QFontMetrics         fm(f);
+        p.setFont(f);
+        for (int t = 0; t < 2; ++t) {
+            const QRect r = tabRect(t);
+            if (t == m_hover) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(c.hover);
+                p.drawRoundedRect(QRectF(r.left(), 2, r.width(), 28), 6, 6);
+            }
+            if (hasFocus() && t == m_focusTab) {
+                p.setPen(QPen(c.ring, 2.0));
+                p.setBrush(Qt::NoBrush);
+                p.drawRoundedRect(QRectF(r.left() + 1, 3, r.width() - 2, 26), 6, 6);
+            }
+            p.setPen(t == active ? c.text : c.muted);
+            p.drawText(QRect(r.left(), 2, r.width(), 26), Qt::AlignCenter, label(t));
+            if (t == active) {
+                const int w = fm.horizontalAdvance(label(t));
+                p.setPen(Qt::NoPen);
+                p.setBrush(c.accent);
+                p.drawRoundedRect(QRectF(r.center().x() - w / 2.0 + 0.5, 29, w, 3), 1.5, 1.5);
+            }
+        }
+    }
+
+    bool event(QEvent* event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            auto*     he  = static_cast<QHelpEvent*>(event);
+            const int tab = tabAt(he->pos());
+            if (tab >= 0)
+                QToolTip::showText(he->globalPos(), tab == 0 ? i18n::t("Emoji (Ctrl+Tab)") : i18n::t("GIFs (Ctrl+Tab)"), this, tabRect(tab));
+            else
+                QToolTip::hideText();
+            return true;
+        }
+        return QWidget::event(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        const int tab = tabAt(event->pos());
+        if (tab != m_hover) {
+            m_hover = tab;
+            update();
+        }
+    }
+
+    void leaveEvent(QEvent*) override
+    {
+        m_hover = -1;
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        const int tab = tabAt(event->pos());
+        if (event->button() == Qt::LeftButton && tab >= 0) {
+            m_focusTab = tab;
+            m_d->q->showPage(tab == 1 ? EmojiPicker::Page::Gifs : EmojiPicker::Page::Emoji);
+            m_d->focusPage();
+        }
+    }
+
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        switch (event->key()) {
+        case Qt::Key_Left:
+        case Qt::Key_Right:
+            m_focusTab = event->key() == Qt::Key_Left ? 0 : 1;
+            updateAccessible();
+            return;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+        case Qt::Key_Space:
+            m_d->q->showPage(m_focusTab == 1 ? EmojiPicker::Page::Gifs : EmojiPicker::Page::Emoji);
+            updateAccessible();
+            return;
+        case Qt::Key_Down:
+            m_d->focusPage();
+            return;
+        case Qt::Key_Escape:
+            m_d->q->close();
+            return;
+        default:
+            QWidget::keyPressEvent(event);
+        }
+    }
+
+    void focusInEvent(QFocusEvent*) override
+    {
+        m_focusTab = m_d->page == EmojiPicker::Page::Gifs ? 1 : 0;
+        updateAccessible();
+    }
+    void focusOutEvent(QFocusEvent*) override { update(); }
+
+  private:
+    static QString label(int tab) { return tab == 0 ? i18n::t("Emoji") : i18n::t("GIFs"); }
+    QFont          labelFont() const
+    {
+        QFont f = font();
+        f.setPixelSize(13);
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+    int tabAt(const QPoint& pos) const
+    {
+        for (int t = 0; t < 2; ++t) {
+            if (tabRect(t).contains(pos))
+                return t;
+        }
+        return -1;
+    }
+
+    EmojiPickerPrivate* m_d;
+    int                 m_hover    = -1;
+    int                 m_focusTab = 0;
+};
+
+// The GIFs page's ⋯ button: its options menu.
+class MoreButton : public QAbstractButton
+{
+  public:
+    MoreButton(const pickerstyle::Colors* colors, QWidget* parent)
+        : QAbstractButton(parent)
+        , m_colors(colors)
+    {
+        setObjectName(QString::fromLatin1("tsmediaGifMore"));
+        setFixedSize(kMore, kMore);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+        setAttribute(Qt::WA_Hover);
+        setToolTip(i18n::t("More"));
+        setAccessibleName(i18n::t("GIF options"));
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        if (underMouse() || isDown() || hasFocus()) {
+            p.setPen(hasFocus() ? QPen(m_colors->ring, 2.0) : Qt::NoPen);
+            p.setBrush(isDown() ? m_colors->pressed : m_colors->hover);
+            p.drawRoundedRect(QRectF(rect()).adjusted(1, 1, -1, -1), 6, 6);
+        }
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_colors->muted);
+        const qreal cy = height() / 2.0;
+        for (int i = -1; i <= 1; ++i)
+            p.drawEllipse(QPointF(width() / 2.0 + i * 6.0, cy), 1.5, 1.5);
+    }
+
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space || event->key() == Qt::Key_Down) {
+            click();
+            return;
+        }
+        QAbstractButton::keyPressEvent(event);
+    }
+
+  private:
+    const pickerstyle::Colors* m_colors;
+};
+
 EmojiPicker::EmojiPicker(Mode mode, bool dark, const QColor& base, QWidget* parent)
     : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
     , d(new EmojiPickerPrivate{this, mode, dark, colorsFor(dark, base)})
@@ -1004,7 +1264,6 @@ EmojiPicker::EmojiPicker(Mode mode, bool dark, const QColor& base, QWidget* pare
     d->search->setClearButtonEnabled(true);
     d->search->setMaxLength(60);
     d->search->setFrame(false);
-    d->search->setGeometry(kPad, kPad, kColumns * kCell - kSearch - 6, kSearch);
     const Colors& c = d->colors;
     // fromLatin1: TeamSpeak's style keeps the last parsed sheet text beyond this DLL's lifetime.
     d->search->setStyleSheet(QString::fromLatin1("QLineEdit{background:%1;color:%2;border:none;border-radius:6px;padding:0 6px;font-size:13px;"
@@ -1028,15 +1287,12 @@ EmojiPicker::EmojiPicker(Mode mode, bool dark, const QColor& base, QWidget* pare
     d->search->installEventFilter(this);
 
     d->toneButton = new ToneButton(&d->colors, this);
-    d->toneButton->move(kPad + kColumns * kCell - kSearch, kPad);
     d->toneButton->setTone(d->tone);
 
     d->grid = new EmojiGrid(&d->colors, this);
-    const int gridTop = d->tabsRect().bottom() + 5;
-    d->grid->setGeometry(kPad, gridTop, kColumns * kCell + kBar, height() - kFooter - gridTop - 4);
 
     d->tones = new TonePopup(&d->colors, this);
-    d->tones->move(width() - kPad - d->tones->width(), kPad + kSearch + 4);
+    d->place(); // 2.5 GIFs: through d->top (0 without a GIF host: as before)
 
     d->grid->onHover = [this](int item) {
         const int id = d->grid->idAt(item);
@@ -1067,12 +1323,118 @@ EmojiPicker::EmojiPicker(Mode mode, bool dark, const QColor& base, QWidget* pare
 
 EmojiPicker::~EmojiPicker()
 {
+    delete d->host;
+    delete d->opened;
     delete d;
 }
 
 QSize EmojiPicker::preferredSize()
 {
     return QSize(2 * kPad + kColumns * kCell + kBar, kPad + kSearch + 6 + kTabs + 5 + kGridH + 4 + kFooter);
+}
+
+QSize EmojiPicker::preferredSize(bool gifs)
+{
+    return preferredSize() + QSize(0, gifs ? kSwitchShift : 0);
+}
+
+void EmojiPicker::setGifHost(const gifs::Host& host)
+{
+    if (d->hosted || !host.library || d->mode != Mode::Insert)
+        return;
+    d->hosted = true;
+    d->host   = new gifs::Host(host);
+    d->opened = new gifs::SendState(host.state ? host.state() : gifs::SendState());
+    d->top    = kSwitchShift;
+    setFixedSize(preferredSize(true));
+    d->place();
+    setAccessibleName(i18n::t("Emoji and GIFs"));
+    d->pickerKeys = new PickerKeys(d, this);
+    d->switcher   = new PickerSwitch(d, this);
+    d->switcher->setGeometry(kPad, kPad, kColumns * kCell - kMore - 4, kSwitchH);
+    d->switcher->installEventFilter(d->pickerKeys);
+    d->more = new MoreButton(&d->colors, this);
+    d->more->move(width() - kPad - kMore, kPad + 2); // (348, 10)
+    d->more->hide();
+    d->more->installEventFilter(d->pickerKeys);
+    d->toneButton->installEventFilter(d->pickerKeys);
+    connect(d->more, &QAbstractButton::clicked, this, [this] {
+        if (d->gifs)
+            d->gifs->openMenu(d->more->mapToGlobal(QPoint(0, d->more->height())), QString());
+    });
+    setTabOrder(d->switcher, d->more);
+    setTabOrder(d->more, d->search);
+    // The chat tab changed behind the popup: it closes (a send would go elsewhere; design_gifs 6.1).
+    if (host.chatTabs)
+        connect(host.chatTabs.data(), &QTabBar::currentChanged, this, [this] { close(); });
+}
+
+bool EmojiPicker::hasGifHost() const
+{
+    return d->hosted;
+}
+
+EmojiPicker::Page EmojiPicker::page() const
+{
+    return d->page;
+}
+
+GifPanel* EmojiPicker::gifPanel() const
+{
+    return d->gifs;
+}
+
+QWidget* EmojiPicker::pageSwitch() const
+{
+    return d->switcher;
+}
+
+QWidget* EmojiPicker::moreButton() const
+{
+    return d->more;
+}
+
+void EmojiPicker::showPage(Page page)
+{
+    if (!d->hosted)
+        return;
+    d->page          = page;
+    const bool emoji = page == Page::Emoji;
+    d->search->setVisible(emoji);
+    d->toneButton->setVisible(emoji);
+    d->grid->setVisible(emoji);
+    if (!emoji)
+        d->tones->hide();
+    d->hoverTab = -1;
+    if (!emoji && !d->gifs) {
+        // Created on first use; its snapshot of the list is taken now (design_gifs 5.3).
+        d->gifs = new GifPanel(&d->colors, *d->host, *d->opened, this);
+        d->gifs->setGeometry(0, kPad + kSwitchH + 6, width(), height() - (kPad + kSwitchH + 6));
+        for (QWidget* w : d->gifs->keyWidgets())
+            w->installEventFilter(d->pickerKeys);
+        connect(d->gifs, &GifPanel::sent, this, [this](bool keepOpen) {
+            if (!keepOpen)
+                close();
+        });
+        connect(d->gifs, &GifPanel::typed, this, [this](const QString& text) {
+            showPage(Page::Emoji);
+            d->search->setFocus(Qt::OtherFocusReason);
+            d->search->insert(text);
+        });
+        connect(d->gifs, &GifPanel::upFromGrid, this, [this] { d->switcher->setFocus(Qt::BacktabFocusReason); });
+        connect(d->gifs, &GifPanel::closeRequested, this, [this] { close(); });
+        setTabOrder(d->more, d->gifs->grid());
+    }
+    if (d->gifs) {
+        d->gifs->setVisible(!emoji);
+        d->gifs->setShown(!emoji);
+        if (!emoji)
+            d->gifs->refreshState();
+    }
+    d->more->setVisible(!emoji);
+    emoji::prefs::setLastTabGifs(!emoji);
+    static_cast<PickerSwitch*>(d->switcher)->updateAccessible();
+    update();
 }
 
 void EmojiPicker::setMarked(const QSet<int>& ids)
@@ -1118,6 +1480,10 @@ void EmojiPicker::openAt(const QRect& anchor, bool preferBelow)
     show();
     raise();
     activateWindow();
+    if (d->page == Page::Gifs && d->gifs) {
+        d->gifs->focusGrid(Qt::PopupFocusReason); // the grid, with no focused item: a stray Enter does nothing
+        return;
+    }
     d->search->setFocus(Qt::PopupFocusReason);
     d->grid->prefetchAround();
 }
@@ -1129,6 +1495,11 @@ void EmojiPicker::paintEvent(QPaintEvent*)
     p.setPen(QPen(d->colors.border, 1.0));
     p.setBrush(d->colors.background);
     p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+    p.setPen(QPen(d->colors.divider, 1.0));
+    if (d->hosted) // 2.5 GIFs: under the switch row
+        p.drawLine(QPointF(kPad, kPad + kSwitchH + 5.5), QPointF(width() - kPad, kPad + kSwitchH + 5.5));
+    if (d->page == Page::Gifs)
+        return; // the GIFs page paints its own grid and footer
     d->paintTabs(p);
     p.setPen(QPen(d->colors.divider, 1.0));
     const int line = d->tabsRect().bottom() + 2;
@@ -1214,7 +1585,8 @@ void EmojiPicker::leaveEvent(QEvent*)
 
 bool EmojiPicker::eventFilter(QObject* watched, QEvent* event)
 {
-    if (watched == d->search && event->type() == QEvent::ShortcutOverride && isPickerShortcut(static_cast<QKeyEvent*>(event))) {
+    if (watched == d->search && event->type() == QEvent::ShortcutOverride
+        && (isPickerShortcut(static_cast<QKeyEvent*>(event)) || (d->hosted && isPageSwitchKey(static_cast<QKeyEvent*>(event))))) {
         event->accept();
         return true;
     }
@@ -1222,6 +1594,10 @@ bool EmojiPicker::eventFilter(QObject* watched, QEvent* event)
         auto* ke = static_cast<QKeyEvent*>(event);
         if (isPickerShortcut(ke)) {
             close();
+            return true;
+        }
+        if (d->hosted && isPageSwitchKey(ke)) { // 2.5 GIFs
+            d->togglePage();
             return true;
         }
         switch (ke->key()) {

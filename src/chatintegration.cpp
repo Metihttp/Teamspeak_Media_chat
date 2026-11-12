@@ -29,6 +29,7 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollBar>
 #include <QStandardPaths>
 #include <QStyle>
@@ -49,6 +50,7 @@
 #include "audiocard.h" // 2.2 audio
 #include "filedrag.h" // 2.2 drag-out
 #include "albums.h" // 2.2 album
+#include "safeimage.h" // 2.5: received pictures decoded by their bytes only
 #include "chatemoji.h"     // 2.2 emoji
 #include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatlayout.h"    // chat redesign
@@ -59,6 +61,8 @@
 #include "attachmenu.h"    // 2.3 attach
 #include "chatpolls.h"     // 2.3 poll
 #include "chatlinkpreviews.h" // 2.4 link previews
+#include "emojiinput.h"       // 2.5 GIFs: the picker's GIFs tab
+#include "giflibrary.h"       // 2.5 GIFs
 #include "linkpreview/linkdoc.h"
 #include "i18n.h"
 #include "inlinemedia.h"
@@ -77,14 +81,17 @@
 #include "composemodel.h"
 #include "voicecard.h"       // 2.2 voice
 #include "voicecontroller.h" // 2.2 voice
+#include "chatscale.h" // 2.5 zoom
+#include "previewpaint.h" // fontForRatio
+#include "chatscroll.h"
 
 namespace {
 
 const QString kScheme = QStringLiteral("tsmedia:");
 
-// Breathing room between the message line and its preview (and below it), in logical pixels. The
-// gap is transparent padding inside the image object: a preview's QTextImageFormat is the content
-// size plus both gaps. Geometry helpers work on the content size (contentSizeOf).
+// Breathing room between the message line and its preview (and below it), in du (2.5 zoom: logical px = du x s).
+// The gap is transparent padding inside the image object: a preview's QTextImageFormat is the content size plus
+// both gaps. Geometry helpers work on the content size (contentSizeOf).
 constexpr int kGapTop    = 14;
 constexpr int kGapBottom = 4;
 
@@ -92,10 +99,12 @@ constexpr int kGapBottom = 4;
 // chat's own line breaks when previews are removed again.
 constexpr int kSeparatorProperty = QTextFormat::UserProperty + 0x7453;
 
-// Content (drawn picture) size of a preview object, without the transparent gaps.
+// Content (drawn picture) size of a preview object in du, without the transparent gaps (2.5 zoom: the du size the
+// object was laid out for, previewscale::kDuSizeProperty).
 QSizeF contentSizeOf(const QTextImageFormat& format)
 {
-    return QSizeF(format.width(), qMax(0.0, format.height() - kGapTop - kGapBottom));
+    const QSizeF du = previewscale::duSizeOf(format);
+    return QSizeF(du.width(), qMax(0.0, du.height() - kGapTop - kGapBottom));
 }
 
 QTextCharFormat separatorFormat()
@@ -119,7 +128,9 @@ bool isOurSeparator(QTextDocument* doc, int position)
     return position >= 0 && doc->characterAt(position) == QChar::LineSeparator && formatAt(doc, position).boolProperty(kSeparatorProperty);
 }
 
-QPixmap paddedPixmap(const QImage& content)
+// 2.5 zoom: displayRatio is the screen's device px per du (PreviewScale::displayRatio): a picture drawn at a higher ratio
+// (never below 1) is made smaller, smoothly, once padded.
+QPixmap paddedPixmap(const QImage& content, qreal displayRatio)
 {
     const qreal dpr = content.devicePixelRatio();
     QImage      out(content.width(), content.height() + qRound((kGapTop + kGapBottom) * dpr), QImage::Format_ARGB32_Premultiplied);
@@ -129,7 +140,7 @@ QPixmap paddedPixmap(const QImage& content)
     p.setCompositionMode(QPainter::CompositionMode_Source);
     p.drawImage(QPointF(0, kGapTop), content);
     p.end();
-    return QPixmap::fromImage(out);
+    return QPixmap::fromImage(previewscale::forDocument(out, displayRatio));
 }
 
 constexpr qint64 kMaxCopyPixels = 80LL * 1000 * 1000;
@@ -214,10 +225,11 @@ anyID clientForTab(uint64 sch, const TabText& tab)
     return matches == 1 ? found : 0;
 }
 
+// 2.5: the same end as ChatLayout's and ChatScale's (chatscroll::atBottom): the room the layout keeps under the last
+// line counts as the end too, so previews coming in (a reload of the plugin, a scale pass) keep a chat at its end.
 bool isAtBottom(QTextBrowser* b)
 {
-    const QScrollBar* sb = b->verticalScrollBar();
-    return sb->value() >= sb->maximum() - 4;
+    return chatscroll::atBottom(b);
 }
 
 bool isMediaKind(MediaKind kind)
@@ -264,6 +276,14 @@ ChatIntegration::ChatIntegration(Core* core, QObject* parent)
 
 ChatIntegration::~ChatIntegration()
 {
+    // 2.5 zoom: every chat's coordinator first: timers stopped, its filter off the chat, no pass after this.
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->scaler) {
+            it->scaler->prepareShutdown();
+            delete it->scaler;
+            it->scaler = nullptr;
+        }
+    }
     // 2.2 voice: first, while the players and Core exist: a recording is canceled, the mic given back.
     delete m_voice;
     m_voice = nullptr;
@@ -451,6 +471,8 @@ void ChatIntegration::discover()
             v.positionsValid = false;
             v.resourced.clear();
             v.stale.clear();
+            if (v.scaler) // 2.5 zoom: the old document's pictures went with it; the books start again (review fix)
+                v.scaler->resetLedger();
             watchDocument(v.browser, v.document);
             scheduleScan(v.browser);
             if (m_emoji) // 2.2 emoji
@@ -472,9 +494,16 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
     View v;
     v.browser  = browser;
     v.document = browser->document();
+    v.number   = ++m_chatNumbers; // 2.5 zoom: the log's chat number
     m_views.insert(browser, v);
+    attachScale(browser); // 2.5 zoom
 
     connect(browser, &QObject::destroyed, this, [this, browser] {
+        if (View* gone = viewFor(browser); gone && gone->scaler) { // 2.5 zoom
+            gone->scaler->prepareShutdown();
+            delete gone->scaler;
+            gone->scaler = nullptr;
+        }
         m_views.remove(browser);
         scheduleVisibilityUpdate(); // players whose preview went with it are stopped
     });
@@ -797,10 +826,13 @@ PreviewStyle ChatIntegration::styleFor(QTextBrowser* browser) const
     style.font = browser->font();
     if (style.font.pointSizeF() <= 0 && style.font.pixelSize() <= 0)
         style.font.setPointSizeF(9);
-    style.dpr       = browser->devicePixelRatioF();
+    // 2.5 zoom: everything below is in du; the chat's scale gives the canvas ratio R (previewscale.h).
+    const PreviewScale scale = scaleOf(browser);
+    style.dpr                = scale.ratio();
+    style.font               = previewpaint::fontForRatio(style.font, style.dpr); // unhinted above R 1 (live test)
     // Chat redesign: previews sit in the layout's content column (G or L narrower).
     const int indent = m_layout ? m_layout->indentFor(browser) : 0;
-    style.maxWidth  = qMin(s.previewMaxWidth, qMax(160, previewAreaWidth(browser) - 48 - indent));
+    style.maxWidth  = previewscale::mediaMaxWidthDu(s.previewMaxWidth, previewAreaWidth(browser), indent, scale);
     style.maxHeight = s.previewMaxHeight;
     style.animate   = ui::animationsEnabled();
     // 2.3: in Cozy with bubbles every message is on a bubble: cards draw no panel of their own there.
@@ -833,6 +865,289 @@ int ChatIntegration::previewAreaWidth(QTextBrowser* browser) const
         return viewportWidth;
     }
     return viewportWidth - (m_scrollBarExtent > 0 ? m_scrollBarExtent : bar->sizeHint().width());
+}
+
+// ============================================================================================
+// 2.5 zoom: the chat's scale (previewscale.h, chatscale.h)
+// ============================================================================================
+
+PreviewScale ChatIntegration::computeScaleFor(QTextBrowser* browser) const
+{
+    if (!browser)
+        return PreviewScale();
+    // The column a preview may use (the layout's content column) and the bubble's right edge (Cozy with bubbles).
+    const int indent = m_layout ? m_layout->indentFor(browser) : 0;
+    const int bubble = m_layout ? m_layout->bubbleRightFor(browser) : 0;
+    return previewscale::computeScale(previewscale::chatPxOf(browser->document()), Settings::instance().previewScale, previewAreaWidth(browser) - indent,
+                                      browser->document()->documentMargin(), bubble, browser->devicePixelRatioF());
+}
+
+PreviewScale ChatIntegration::scaleOf(QTextBrowser* browser) const
+{
+    const auto it = m_views.constFind(browser);
+    if (it != m_views.constEnd() && it->scaler)
+        return it->scale; // the one every object of the chat is laid out for
+    return computeScaleFor(browser);
+}
+
+bool ChatIntegration::visibleChatScale(PreviewScale* scale, int* chatPx) const
+{
+    QTextBrowser* browser = visibleChatBrowser();
+    if (!browser)
+        return false;
+    if (scale)
+        *scale = scaleOf(browser);
+    if (chatPx)
+        *chatPx = previewscale::chatPxOf(browser->document());
+    return true;
+}
+
+ChatScale* ChatIntegration::chatScale(QTextBrowser* browser) const
+{
+    const auto it = m_views.constFind(browser);
+    return it == m_views.constEnd() ? nullptr : it->scaler;
+}
+
+QSizeF ChatIntegration::objectLogicalSize(const PreviewScale& scale, const QSize& duContent) const
+{
+    return scale.toLogical(QSizeF(duContent.width(), duContent.height() + kGapTop + kGapBottom));
+}
+
+void ChatIntegration::attachScale(QTextBrowser* browser)
+{
+    View* view = viewFor(browser);
+    if (!view || view->scaler)
+        return;
+    const QPointer<QTextBrowser> b(browser);
+    ChatScale::Host              host;
+    host.compute   = [this, b] { return b ? computeScaleFor(b) : PreviewScale(); };
+    host.apply     = [this, b](const PreviewScale& scale) {
+        if (b)
+            applyScale(b, scale);
+    };
+    host.after     = [this, b] {
+        if (b)
+            afterScale(b);
+    };
+    host.changed   = [this, b](const PreviewScale& scale) {
+        if (b)
+            logScale(b, scale);
+    };
+    // A FontChange on the chat (Ctrl + wheel, the chat font, a monitor move): a pass, the place captured now (before
+    // Qt lays the chat out with the new font).
+    host.fontEvent = [this, b] {
+        if (View* v = b ? viewFor(b) : nullptr; v && v->scaler)
+            v->scaler->request();
+    };
+    host.swapped   = [this, b](const QString& name, int module) {
+        if (b)
+            pictureSwapped(b, name, module);
+    };
+    host.log       = [this, b](const QString& line) {
+        if (View* v = b ? viewFor(b) : nullptr)
+            ts3::log(QStringLiteral("[scale] chat %1 %2").arg(v->number).arg(line));
+    };
+    view->scaler = new ChatScale(browser, host, this);
+    view->scale  = computeScaleFor(browser);
+    view->scaler->setScale(view->scale);
+    logScale(browser, view->scale);
+}
+
+void ChatIntegration::checkScale(QTextBrowser* browser, bool force)
+{
+    View* view = viewFor(browser);
+    if (!view || !view->scaler || !browser)
+        return;
+    if (view->scaler->pending())
+        return; // the pass that is coming computes it
+    // Cheap inputs first (Paint runs this up to 30 times a second while a video plays): QFontInfo and the scale only
+    // when one of them changed.
+    const QFont font   = browser->document()->defaultFont();
+    const int   width  = previewAreaWidth(browser);
+    const int   indent = m_layout ? m_layout->indentFor(browser) : 0;
+    const int   bubble = m_layout ? m_layout->bubbleRightFor(browser) : 0;
+    const int   preset = Settings::instance().previewScale;
+    const int   dpi    = browser->logicalDpiY();
+    const qreal dpr    = browser->devicePixelRatioF();
+    const bool  same   = qFuzzyCompare(font.pointSizeF() + 2, view->keyPoint + 2) && font.pixelSize() == view->keyPixel && font.family() == view->keyFamily
+                      && dpi == view->keyDpi && qFuzzyCompare(dpr, view->keyDpr) && width == view->keyWidth && preset == view->keyPreset
+                      && indent == view->keyIndent && bubble == view->keyBubble;
+    if (same && !force)
+        return;
+    view->keyPoint  = font.pointSizeF();
+    view->keyPixel  = font.pixelSize();
+    view->keyFamily = font.family();
+    view->keyDpi    = dpi;
+    view->keyDpr    = dpr;
+    view->keyWidth  = width;
+    view->keyPreset = preset;
+    view->keyIndent = indent;
+    view->keyBubble = bubble;
+    if (!computeScaleFor(browser).sameAs(view->scale))
+        view->scaler->request();
+}
+
+void ChatIntegration::applyScale(QTextBrowser* browser, const PreviewScale& scale)
+{
+    View* view = viewFor(browser);
+    if (!view || !browser || view->document != browser->document())
+        return;
+    const bool wasScaling = m_scaling;
+    m_scaling             = true;
+    view->scale           = scale;
+    // Our objects (uploaded media, albums, a link's media): the du size each was laid out for, at the new scale. No
+    // drawing: the pictures (drawn at the old ratio) are stale; what is near the view is drawn after the pass, the
+    // rest when it comes near (Qt scales the old picture until then, off screen).
+    ensurePositions(*view);
+    QTextDocument* doc         = browser->document();
+    const bool     wasMutating = m_mutating;
+    m_mutating                 = true;
+    for (const PreviewPos& pp : qAsConst(view->previews)) {
+        QTextCursor c(doc);
+        c.setPosition(pp.position);
+        c.setPosition(pp.position + 1, QTextCursor::KeepAnchor);
+        QTextImageFormat f = c.charFormat().toImageFormat();
+        if (!f.isValid() || !f.name().startsWith(kScheme))
+            continue;
+        const QSizeF du   = previewscale::duSizeOf(f);
+        const QSizeF want = scale.toLogical(du);
+        if (qFuzzyCompare(f.width(), want.width()) && qFuzzyCompare(f.height(), want.height()))
+            continue;
+        previewscale::setObjectSize(f, du, scale);
+        c.setCharFormat(f);
+    }
+    m_mutating = wasMutating;
+    ensurePositions(*view);
+    for (auto it = view->positionsByKey.constBegin(); it != view->positionsByKey.constEnd(); ++it)
+        view->stale.insert(it.key());
+    // The width path (scheduleRelayout) is up to date with this scale.
+    const PreviewStyle style = styleFor(browser);
+    // 2.5 zoom live test: a scale pass keeps each object's du size, but the column in du shrinks when the scale grows
+    // or the chat narrows (the fit), and the width path above won't run for it. Objects now wider than the chat itself
+    // would make it scroll sideways until they come near the view: they are laid out again after the pass, wherever
+    // they are (refreshPreview keeps the reader's place for those above the view). Only those: an object that merely
+    // lost some of its margin still fits, and drawing every picture of a long chat at once stalls TeamSpeak.
+    view->overColumn.clear();
+    const qreal room = previewAreaWidth(browser) - (m_layout ? m_layout->indentFor(browser) : 0) - 2 * doc->documentMargin();
+    for (auto it = view->formatSizes.constBegin(); it != view->formatSizes.constEnd(); ++it) {
+        if (scale.toLogical(QSizeF(it.value())).width() > room + 0.5)
+            view->overColumn.insert(it.key());
+    }
+    view->layoutWidth        = style.maxWidth;
+    view->layoutDpr          = style.dpr;
+    view->layoutDark         = style.dark;
+    view->layoutBubbles      = surfacesKey(style);
+    if (m_links) // link cards and strips
+        m_links->applyScale(browser, scale);
+    if (m_polls)
+        m_polls->applyScale(browser, scale);
+    if (m_replies) // chrome: reply lines follow c
+        m_replies->applyChromeScale(browser);
+    if (m_textReactions) // chrome: reaction rows under text follow c
+        m_textReactions->applyChromeScale(browser);
+    m_scaling = wasScaling;
+}
+
+void ChatIntegration::afterScale(QTextBrowser* browser)
+{
+    View* view = viewFor(browser);
+    if (!view || !browser)
+        return;
+    // What is near the view now is drawn at the new ratio (a column-limited preview may get another du size here:
+    // refreshPreview keeps the reader's place for it). The rest stays stale until it comes near.
+    const QSet<QString> stale = view->stale;
+    const QSet<QString> over  = view->overColumn;
+    view->overColumn.clear();
+    QSet<QString> drawn;
+    for (const QString& key : stale) {
+        if (onScreen(browser, *view, key)) {
+            refreshPreview(browser, key, false);
+            drawn.insert(key);
+        }
+    }
+    // Wider than the column at the new scale: laid out again now, on screen or not (never a sideways scroll bar).
+    for (const QString& key : over) {
+        if (!drawn.contains(key))
+            refreshPreview(browser, key, false);
+    }
+    browser->viewport()->update(); // cards, polls and reply lines are drawn right before the chat paints
+    scheduleVisibilityUpdate();    // players get their new frame sizes
+}
+
+void ChatIntegration::pictureSwapped(QTextBrowser* browser, const QString& name, int module)
+{
+    switch (module) {
+    case ChatScale::Media:
+        if (View* view = viewFor(browser); view && name.startsWith(kScheme))
+            view->stale.insert(name.mid(kScheme.length())); // drawn again within 400 px of the view
+        break;
+    case ChatScale::Links:
+        if (m_links)
+            m_links->pictureSwapped(browser, name);
+        break;
+    case ChatScale::Polls:
+        if (m_polls)
+            m_polls->pictureSwapped(browser, name);
+        break;
+    case ChatScale::Replies:
+        if (m_replies)
+            m_replies->pictureSwapped(browser, name); // drawn again before the chat paints it on screen
+        break;
+    case ChatScale::TextReactions:
+        if (m_textReactions)
+            m_textReactions->pictureSwapped(browser, name);
+        break;
+    default:
+        break;
+    }
+}
+
+void ChatIntegration::putChromePicture(QTextDocument* doc, const QString& name, const QPixmap& pixmap, int module)
+{
+    if (!doc || name.isEmpty())
+        return;
+    for (auto it = m_views.constBegin(); it != m_views.constEnd(); ++it) {
+        if (it->browser && it->browser->document() == doc && it->scaler) {
+            it->scaler->putPicture(name, pixmap, module); // a blank or a null pixmap books (almost) nothing
+            return;
+        }
+    }
+    doc->addResource(QTextDocument::ImageResource, QUrl(name), pixmap);
+}
+
+void ChatIntegration::dropChromePicture(QTextDocument* doc, const QString& name)
+{
+    if (!doc || name.isEmpty())
+        return;
+    for (auto it = m_views.constBegin(); it != m_views.constEnd(); ++it) {
+        if (it->browser && it->browser->document() == doc && it->scaler)
+            it->scaler->forget(name);
+    }
+    doc->addResource(QTextDocument::ImageResource, QUrl(name), QVariant());
+}
+
+void ChatIntegration::logScale(QTextBrowser* browser, const PreviewScale& scale) const
+{
+    const auto it = m_views.constFind(browser);
+    if (it == m_views.constEnd() || !browser)
+        return;
+    const QFont   font   = browser->document()->defaultFont();
+    const QScreen* screen = browser->screen();
+    const QSize   size   = screen ? screen->size() : QSize();
+    // No names, no message text.
+    ts3::log(QStringLiteral("[scale] chat %1 font \"%2\" pt %3 px %4 dpiY %5 dpr %6 screen %7x%8 preset %9 s %10 c %11 R %12")
+                 .arg(it->number)
+                 .arg(font.family())
+                 .arg(font.pointSizeF())
+                 .arg(previewscale::chatPxOf(browser->document()))
+                 .arg(browser->logicalDpiY())
+                 .arg(browser->devicePixelRatioF())
+                 .arg(size.width())
+                 .arg(size.height())
+                 .arg(Settings::instance().previewScale)
+                 .arg(scale.s(), 0, 'f', 2)
+                 .arg(scale.c(), 0, 'f', 2)
+                 .arg(scale.ratio(), 0, 'f', 2));
 }
 
 QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSize* logicalSize)
@@ -878,11 +1193,21 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
             o.hover = VideoZone::None; // the pointer is over this card in another chat
         o.pressed = style.pressed ? o.hover : VideoZone::None;
         img       = renderAudioCard(*e, o, style, &size);
-        m_media->setFrameSize(key, size * style.dpr); // paces the card's progress repaints
+        m_media->setFrameSize(key, size * style.dpr, style.dpr); // paces the card's progress repaints
     } else if (mode == InlineMediaController::Mode::Animated) {
         const QImage frame = m_media->frame(key);
         if (!frame.isNull())
             img = renderAnimatedFrame(*e, frame, style, &size);
+    } else if (mode == InlineMediaController::Mode::Loop) {
+        // 2.5: a looping link video is drawn exactly like an animated GIF (its frame, or its poster as the still).
+        MediaEntry shown = *e;
+        shown.kind       = MediaKind::AnimatedImage;
+        const QImage frame = m_media->frame(key);
+        if (!frame.isNull())
+            img = renderAnimatedFrame(shown, frame, style, &size);
+        else
+            img = renderPreview(shown, m_core->still(key, stillPixels), style, &size);
+        fromStill = frame.isNull();
     }
     if (img.isNull()) {
         img       = renderPreview(*e, media ? m_core->still(key, stillPixels) : MediaStill(), style, &size);
@@ -892,10 +1217,11 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     // Frames are produced at the size they are shown at. Without link dimensions the still decides
     // the layout (frames must not change it).
     if (m_media && media) {
+        // 2.5 zoom: du x R (GIF frames are decoded at most at ratio 2 and never above their size: inlinemedia.cpp).
         if (hasDims || e->kind == MediaKind::Video)
-            m_media->setFrameSize(key, previewLogicalSize(*e, style) * style.dpr);
+            m_media->setFrameSize(key, previewLogicalSize(*e, style) * style.dpr, style.dpr);
         else if (fromStill)
-            m_media->setFrameSize(key, size * style.dpr);
+            m_media->setFrameSize(key, size * style.dpr, style.dpr);
     }
     // 2.2 reactions: the reaction row under the media and the add button (outside previewLogicalSize).
     if (m_reactions)
@@ -915,7 +1241,10 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
     QTextDocument* doc    = browser->document();
     const bool     bottom = isAtBottom(browser);
     const QUrl     url(kScheme + key);
-    doc->addResource(QTextDocument::ImageResource, url, paddedPixmap(img));
+    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
+        scaler->putPicture(url.toString(), paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media);
+    else
+        doc->addResource(QTextDocument::ImageResource, url, paddedPixmap(img, scaleOf(browser).displayRatio()));
     if (View* view = viewFor(browser)) {
         view->resourced.insert(key);
         // While a relayout is pending, the older previews still have the width it was queued for:
@@ -937,8 +1266,8 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
 
     QTextImageFormat image;
     image.setName(url.toString());
-    image.setWidth(size.width());
-    image.setHeight(size.height() + kGapTop + kGapBottom);
+    // 2.5 zoom: du x s on whole device px, the du size kept next to it.
+    previewscale::setObjectSize(image, QSizeF(size.width(), size.height() + kGapTop + kGapBottom), scaleOf(browser));
     c.insertImage(image);
     if (!c.atBlockEnd())
         c.insertText(QString(QChar::LineSeparator), separator);
@@ -976,10 +1305,14 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         return;
 
     QTextDocument* doc = browser->document();
-    doc->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img));
+    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
+        scaler->putPicture(kScheme + key, paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media);
+    else
+        doc->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img, scaleOf(browser).displayRatio()));
     view->resourced.insert(key);
     view->stale.remove(key);
 
+    // 2.5 zoom: sizes are compared in du (the formats keep theirs), never as converted logical sizes.
     if (view->formatSizes.value(key) != size) {
         // The layout size changed (plain links once the picture is known, chat resized, ...).
         const bool    bottom = isAtBottom(browser);
@@ -1000,20 +1333,23 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
             QTextImageFormat f = c.charFormat().toImageFormat();
             if (f.name() != name)
                 continue;
-            f.setWidth(size.width());
-            f.setHeight(size.height() + kGapTop + kGapBottom);
+            previewscale::setObjectSize(f, QSizeF(size.width(), size.height() + kGapTop + kGapBottom), scaleOf(browser));
             c.setCharFormat(f);
         }
         m_mutating = false;
         if (View* v = viewFor(browser))
             v->formatSizes.insert(key, size);
         browser->viewport()->update();
-        if (bottom) {
+        if (m_scaling) {
+            // 2.5 zoom: inside a ChatScale pass the place comes back once, at its end.
+        } else if (bottom) {
             browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
         } else if (above) { // 2.2 reactions: scroll anchoring
             doc->documentLayout()->documentSize(); // lays out the change, so the range is current
-            QScrollBar* bar = browser->verticalScrollBar();
-            bar->setValue(bar->value() + positions.size() * (size.height() - oldSize.height()));
+            QScrollBar*        bar   = browser->verticalScrollBar();
+            const PreviewScale scale = scaleOf(browser);
+            const qreal        grew  = objectLogicalSize(scale, size).height() - objectLogicalSize(scale, oldSize).height();
+            bar->setValue(bar->value() + qRound(positions.size() * grew));
         }
         scheduleVisibilityUpdate();
     } else {
@@ -1076,12 +1412,20 @@ void ChatIntegration::refreshAll()
                 c.removeSelectedText();
             }
             m_mutating = false;
+            // 2.5 zoom: the pictures go from the document's memory and the chat's books too (review fix: a ledger that
+            // kept them could never get back under its budget).
+            for (const QString& key : qAsConst(it->resourced)) {
+                doc->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), QVariant());
+                if (it->scaler)
+                    it->scaler->forget(kScheme + key);
+            }
             it->resourced.clear();
             it->stale.clear();
             scan(b); // notes stay hidden
             continue;
         }
         scan(b);
+        checkScale(b, true); // 2.5 zoom: Preview size: every chat through its ChatScale (one pass, no jump)
         if (View* view = viewFor(b)) {
             ensurePositions(*view);
             const PreviewStyle style = styleFor(b);
@@ -1116,7 +1460,19 @@ void ChatIntegration::onFrameChanged(const QString& key)
 void ChatIntegration::scheduleRelayout(QTextBrowser* browser)
 {
     View* view = viewFor(browser);
-    if (!view || view->relayoutQueued)
+    if (!view)
+        return;
+    // 2.5 zoom: a new scale (the chat's text size, the column's fit, the display) is ChatScale's one batched,
+    // visible-only pass, not the per-key loop below. ChatLayout's restyle after a font change ends up here too.
+    if (view->scaler) {
+        if (view->scaler->pending())
+            return; // the pass that is coming lays everything out
+        if (!computeScaleFor(browser).sameAs(view->scale)) {
+            view->scaler->request();
+            return;
+        }
+    }
+    if (view->relayoutQueued)
         return;
     view->relayoutQueued = true;
     QPointer<QTextBrowser> guard(browser);
@@ -1196,11 +1552,13 @@ QRectF ChatIntegration::previewRect(QTextBrowser* browser, int position, const Q
     const qreal  x1        = line.cursorToX(rel);
     const qreal  x2        = line.cursorToX(rel + 1);
     const qreal  left      = qAbs(x2 - x1) > 0.5 ? qMin(x1, x2) : x1;
-    // Inline objects sit on the baseline; the content starts below the transparent top gap.
-    const qreal objectHeight = size.height() + kGapTop + kGapBottom;
-    const qreal top          = qMax(line.y(), line.y() + line.ascent() - objectHeight) + kGapTop;
+    // Inline objects sit on the baseline; the content starts below the transparent top gap. 2.5 zoom: size is du,
+    // the object and its gaps are du x s (as setObjectSize made them).
+    const PreviewScale scale  = scaleOf(browser);
+    const QSizeF       object = objectLogicalSize(scale, size.toSize());
+    const qreal        top    = qMax(line.y(), line.y() + line.ascent() - object.height()) + kGapTop * scale.s();
     return QRectF(blockRect.left() + left - browser->horizontalScrollBar()->value(), blockRect.top() + top - browser->verticalScrollBar()->value(),
-                  size.width(), size.height());
+                  object.width(), size.height() * scale.s());
 }
 
 ChatIntegration::Hit ChatIntegration::previewAt(QTextBrowser* browser, const QPoint& viewportPos) const
@@ -1223,11 +1581,22 @@ ChatIntegration::Hit ChatIntegration::previewAt(QTextBrowser* browser, const QPo
         if (key.isEmpty())
             continue;
         // The rect of what is drawn: the gaps around it belong to the chat text, not the preview.
-        QRectF r = previewRect(browser, p, contentSizeOf(cf.toImageFormat()));
+        const QSizeF du = contentSizeOf(cf.toImageFormat());
+        QRectF       r  = previewRect(browser, p, du);
         if (m_reactions) // 2.2 reactions: the row below the picture is ChatReactions'
             r = m_reactions->pictureRect(browser, key, r);
-        if (r.contains(viewportPos))
-            return albums::isObjectId(key) ? albumHit(browser, key, r, viewportPos) : Hit{key, r, key}; // 2.2 album: per tile
+        if (r.contains(viewportPos)) {
+            if (albums::isObjectId(key))
+                return albumHit(browser, key, r, viewportPos); // 2.2 album: per tile
+            Hit h;
+            h.key    = key;
+            h.rect   = r;
+            h.object = key;
+            h.scale  = scaleOf(browser);
+            // 2.5 zoom: the picture's du size (without a reaction row), as the art module laid it out.
+            h.duSize = m_reactions ? m_reactions->pictureDuSize(browser, key, du.toSize()) : du.toSize();
+            return h;
+        }
     }
     return {};
 }
@@ -1245,7 +1614,11 @@ bool ChatIntegration::onScreen(QTextBrowser* browser, View& view, const QString&
     if (!browser->isVisible() || browser->window()->isMinimized())
         return false;
     ensurePositions(view);
-    const QRectF viewport(browser->viewport()->rect());
+    QRectF viewport(browser->viewport()->rect());
+    // 2.5 zoom: a picture swapped for its stand-in (the budget) or left stale by a scale pass is drawn again before it
+    // is on screen: within kOnScreenMargin (400 px) of the view.
+    if (view.stale.contains(key))
+        viewport.adjust(0, -400, 0, 400);
     const QSizeF size(view.formatSizes.value(key));
     for (int pos : view.positionsByKey.value(key)) {
         if (previewRect(browser, pos, size).intersects(viewport))
@@ -1278,9 +1651,11 @@ void ChatIntegration::updateVisibleKeys()
         }
         if (!b->isVisible() || b->window()->isMinimized())
             continue;
+        // 2.5 zoom: the scale's inputs (TeamSpeak may set the document font directly, a monitor move changes the DPI).
+        checkScale(b, false);
         // Moving to a monitor with another scale, or a theme switch that sent no palette or style
         // event, is noticed here (this runs every 300 ms).
-        if (!view.previews.isEmpty() && view.layoutDpr > 0 && !view.relayoutQueued) {
+        if (!view.previews.isEmpty() && view.layoutDpr > 0 && !view.relayoutQueued && !(view.scaler && view.scaler->pending())) {
             const PreviewStyle style = styleFor(b);
             if (style.dpr != view.layoutDpr || style.dark != view.layoutDark || surfacesKey(style) != view.layoutBubbles)
                 scheduleRelayout(b);
@@ -1301,6 +1676,8 @@ void ChatIntegration::updateVisibleKeys()
             for (const QString& key : stale)
                 refreshPreview(b, key, true);
         }
+        if (view.scaler) // 2.5 zoom: after a scroll ended, the chat's pictures within its budget
+            view.scaler->enforceBudget();
     }
     m_media->setVisibleKeys(keys);
     if (settled)
@@ -1367,20 +1744,23 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
 
     QString    detail;
     const bool audioCard = m_media && m_media->mode(hit.key) == InlineMediaController::Mode::Audio; // 2.2 audio
+    // 2.5: a GIF-like loop is told like a GIF (a click opens the viewer or loads it): never a video's autoplay or
+    // default-app texts.
+    const bool loop = !audioCard && m_media && e->kind == MediaKind::Video && m_media->mode(hit.key) == InlineMediaController::Mode::Loop;
     if (audioCard) {
         const PlaybackOverlay o      = m_media->overlay(hit.key);
         const PreviewStyle    style  = styleFor(browser);
-        const QSize           size   = hit.rect.size().toSize();
-        const QPointF         local  = viewportPos - hit.rect.topLeft();
+        const QSize           size   = hit.duSize; // 2.5 zoom: the art module's du
+        const QPointF         local  = hit.duAt(viewportPos);
         const VideoZone       zone   = audioZoneAt(*e, o, style, size, local);
         const QString         button = audioZoneToolTip(*e, o, zone, audioSeekFractionAt(*e, o, style, size, local));
         if (!button.isEmpty()) {
             if (!o.busy)
-                *area = audioZoneRect(*e, o, style, size, local).translated(hit.rect.topLeft()).toAlignedRect();
+                *area = hit.scale.toLogical(audioZoneRect(*e, o, style, size, local)).translated(hit.rect.topLeft()).toAlignedRect();
             return button;
         }
         detail = audioToolTipDetail(*e, o);
-    } else if (e->kind == MediaKind::Video && m_media) {
+    } else if (e->kind == MediaKind::Video && m_media && !loop) {
         const PlaybackOverlay o = m_media->overlay(hit.key);
         if (o.busy) {
             if (isCheckingShown(*e)) // 2.2 sha
@@ -1394,10 +1774,10 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
             return i18n::t("Waiting to download… Click to cancel autoplay.");
         }
         if (o.controlsVisible && videoStarted(o, !m_media->frame(hit.key).isNull())) {
-            const QSize   size   = hit.rect.size().toSize();
-            const QPointF local  = viewportPos - hit.rect.topLeft();
+            const QSize   size   = hit.duSize; // 2.5 zoom: the art module's du
+            const QPointF local  = hit.duAt(viewportPos);
             const bool    center = !o.playing;
-            *area                = videoZoneRect(size, local, center).translated(hit.rect.topLeft()).toAlignedRect();
+            *area                = hit.scale.toLogical(videoZoneRect(size, local, center)).translated(hit.rect.topLeft()).toAlignedRect();
             switch (videoZoneAt(size, local, center)) {
             case VideoZone::PlayPause:
                 return o.playing ? i18n::t("Pause") : o.ended ? i18n::t("Replay") : i18n::t("Play");
@@ -1425,13 +1805,16 @@ QString ChatIntegration::toolTipText(QTextBrowser* browser, const Hit& hit, cons
         detail = e->errorText.isEmpty() ? downloadErrorText(e->error) : e->errorText;
         if (isRetryableDownload(*e))
             detail += QLatin1Char(' ') + i18n::t("Click to retry.");
+    } else if (loop) {
+        detail = loopToolTipDetail(*e);
     } else if (e->kind != MediaKind::Video) {
         // Pictures shown inline need no status; cards (and pictures still on their way) get theirs
         // in full, since the card may have shortened it.
-        const PreviewStyle style         = styleFor(browser);
-        const bool         picture       = isPreviewableImage(e->kind);
-        const bool         cannotPreview = picture && e->state == MediaState::Ready
-                                   && m_core->still(hit.key, stillPixelsFor(*e, style)).source == MediaStill::None;
+        const PreviewStyle style   = styleFor(browser);
+        const bool         picture = isPreviewableImage(e->kind);
+        const MediaStill   shown   = picture && e->state == MediaState::Ready ? m_core->still(hit.key, stillPixelsFor(*e, style)) : MediaStill();
+        // 2.5: a file that is no picture by its bytes shows the file card (renderPreview), never its blurhash.
+        const bool cannotPreview = picture && e->state == MediaState::Ready && (shown.source == MediaStill::None || shown.notAPicture);
         const bool revealOnly = !picture && e->state == MediaState::Ready && m_core->isUnsafeToOpen(hit.key);
         if (revealOnly)
             detail = i18n::t("Programs and scripts from chat aren't opened directly. Click to show the file in its folder.");
@@ -1475,17 +1858,26 @@ void ChatIntegration::activate(const Hit& hit, const QPointF& viewportPos, bool 
             return;
         const PlaybackOverlay o     = m_media->overlay(key);
         const PreviewStyle    style = styleFor(browser);
-        const QSize           size  = hit.rect.size().toSize();
-        const QPointF         local = viewportPos - hit.rect.topLeft();
+        const QSize           size  = hit.duSize; // 2.5 zoom: du
+        const QPointF         local = hit.duAt(viewportPos);
         m_media->click(key, audioZoneAt(*e, o, style, size, local), audioSeekFractionAt(*e, o, style, size, local));
+        return;
+    }
+
+    // 2.5: a looping link video is clicked like a GIF: the viewer (it loops there, muted).
+    if (m_media && m_media->mode(key) == InlineMediaController::Mode::Loop) {
+        if (e->state == MediaState::Ready)
+            QMetaObject::invokeMethod(this, [this, key] { openViewer(key); }, Qt::QueuedConnection); // outside the event filter
+        else
+            m_core->download(key, true);
         return;
     }
 
     if (e->kind == MediaKind::Video) {
         if (!m_media)
             return;
-        const QSize   size  = hit.rect.size().toSize();
-        const QPointF local = viewportPos - hit.rect.topLeft();
+        const QSize   size  = hit.duSize; // 2.5 zoom: du
+        const QPointF local = hit.duAt(viewportPos);
         // Hidden controls cannot be aimed at: a click anywhere on the picture just toggles playback
         // (also on the seek bar's band). controlsVisible is the state when the button went down.
         VideoZone zone = videoZoneAt(size, local, !m_media->overlay(key).playing);
@@ -1613,9 +2005,10 @@ bool ChatIntegration::copyImage(const QString& key, QString* feedback)
     const MediaEntry* e = m_core->entry(key);
     if (!e || e->state != MediaState::Ready || !isPreviewableImage(e->kind))
         return false;
-    QImageReader reader(e->localPath);
+    // 2.5: decoded by its bytes only (safeimage.h).
+    const std::unique_ptr<QImageReader> safe   = safeimage::reader(e->localPath, safeimage::Source::Peer);
+    QImageReader&                       reader = *safe;
     reader.setAutoTransform(true);
-    reader.setDecideFormatFromContent(true);
     const QSize size = reader.size();
     if (size.isValid() && static_cast<qint64>(size.width()) * size.height() > kMaxCopyPixels) {
         *feedback = i18n::t("This image is too large to copy. Open it in your default app and copy it from there.");
@@ -1723,9 +2116,10 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             primary = reveal;
     }
     // 2.4 link previews: a web link's media: Open in browser, Hide preview; "Copy link" copies the web address.
-    QUrl webUrl;
+    QUrl                webUrl;
+    linkpreview::Target webTarget; // 2.5 GIFs
     if (m_links && !albumTile)
-        m_links->addMediaMenu(menu, browser, key, browser->viewport()->mapFromGlobal(globalPos), &webUrl);
+        m_links->addMediaMenu(menu, browser, key, browser->viewport()->mapFromGlobal(globalPos), &webUrl, &webTarget);
     menu->addSeparator();
 
     // Keeping or passing it on. No Ctrl+C / Ctrl+S hints: in the chat those keys act on the text selection.
@@ -1742,6 +2136,7 @@ void ChatIntegration::showContextMenu(QTextBrowser* browser, const QString& key,
             showFeedback(viewport(), feedback, !ok);
         });
     }
+    addGifMenu(menu, key, webUrl, webTarget, viewport); // 2.5 GIFs: Save to GIFs, right after Save as
     if (ready && isPreviewableImage(e->kind)) {
         menu->addAction(i18n::t("&Copy image"), this, [this, key, viewport] {
             QString    feedback;
@@ -1992,9 +2387,9 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
         if (covered || hit.tile >= 0) // 2.2 album: tiles have no controls
             zone = VideoZone::Body;
         else if (mode == InlineMediaController::Mode::Video)
-            zone = videoZoneAt(hit.rect.size().toSize(), viewportPos - hit.rect.topLeft(), !m_media->overlay(hit.key).playing);
+            zone = videoZoneAt(hit.duSize, hit.duAt(viewportPos), !m_media->overlay(hit.key).playing); // 2.5 zoom: du
         else if (mode == InlineMediaController::Mode::Audio && entry) // 2.2 audio
-            zone = audioZoneAt(*entry, m_media->overlay(hit.key), styleFor(browser), hit.rect.size().toSize(), viewportPos - hit.rect.topLeft());
+            zone = audioZoneAt(*entry, m_media->overlay(hit.key), styleFor(browser), hit.duSize, hit.duAt(viewportPos));
         else
             zone = VideoZone::Body;
     }
@@ -2073,7 +2468,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
                 const qint64 now = QDateTime::currentMSecsSinceEpoch();
                 if (now - m_lastSeekMs >= 60) {
                     m_lastSeekMs           = now;
-                    const double fraction  = seekFraction(browser, m_pressedKey, m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft());
+                    const double fraction  = seekFraction(browser, m_pressedKey, m_pressDuSize, m_pressScale.toDu(me->localPos() - m_pressRect.topLeft()));
                     m_media->click(m_pressedKey, VideoZone::Seek, fraction);
                     // The time being sought to follows the pointer (hidden again by the release).
                     const qint64 duration = m_media->overlay(m_pressedKey).durationMs;
@@ -2097,12 +2492,12 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             if (!drags) {
                 // stays a click: the release reveals it
             } else if (m_pressControlsVisible && pressMode == InlineMediaController::Mode::Video) {
-                const VideoZone zone = videoZoneAt(m_pressRect.size().toSize(), QPointF(m_pressPos) - m_pressRect.topLeft(), !m_media->overlay(key).playing);
+                const VideoZone zone = videoZoneAt(m_pressDuSize, m_pressScale.toDu(QPointF(m_pressPos) - m_pressRect.topLeft()), !m_media->overlay(key).playing);
                 drags                = zone == VideoZone::Body || zone == VideoZone::None;
             } else if (pressMode == InlineMediaController::Mode::Audio) { // 2.2 audio
                 const MediaEntry* pressed = m_core->entry(key);
-                const VideoZone   zone    = pressed ? audioZoneAt(*pressed, m_media->overlay(key), styleFor(browser), m_pressRect.size().toSize(),
-                                                                  QPointF(m_pressPos) - m_pressRect.topLeft())
+                const VideoZone   zone    = pressed ? audioZoneAt(*pressed, m_media->overlay(key), styleFor(browser), m_pressDuSize,
+                                                                  m_pressScale.toDu(QPointF(m_pressPos) - m_pressRect.topLeft()))
                                                     : VideoZone::None;
                 drags                     = zone == VideoZone::Body || zone == VideoZone::None;
             }
@@ -2198,12 +2593,14 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         m_pressedKey           = hit.key;
         m_pressBrowser         = browser;
         m_pressRect            = hit.rect;
+        m_pressDuSize          = hit.duSize; // 2.5 zoom
+        m_pressScale           = hit.scale;
         m_pressPos             = me->pos(); // 2.2 drag-out
         m_lastBrowser          = browser;
         m_pressControlsVisible = audio || (video && m_media && m_media->overlay(hit.key).controlsVisible);
         if (audio) { // 2.2 audio: the card's seek bar is always there; a press on it seeks (and drags)
-            const QSize           size  = hit.rect.size().toSize();
-            const QPointF         local = me->localPos() - hit.rect.topLeft();
+            const QSize           size  = hit.duSize; // 2.5 zoom: du
+            const QPointF         local = hit.duAt(me->localPos());
             const PlaybackOverlay o     = m_media->overlay(hit.key);
             const PreviewStyle    style = styleFor(browser);
             if (audioZoneAt(*e, o, style, size, local) == VideoZone::Seek) {
@@ -2212,8 +2609,8 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
                 m_media->click(hit.key, VideoZone::Seek, audioSeekFractionAt(*e, o, style, size, local));
             }
         } else if (video && m_media) {
-            const QSize   size  = hit.rect.size().toSize();
-            const QPointF local = me->localPos() - hit.rect.topLeft();
+            const QSize   size  = hit.duSize; // 2.5 zoom: du
+            const QPointF local = hit.duAt(me->localPos());
             if (videoZoneAt(size, local, !m_media->overlay(hit.key).playing) == VideoZone::Seek && m_pressControlsVisible) {
                 m_seeking    = true;
                 m_lastSeekMs = QDateTime::currentMSecsSinceEpoch();
@@ -2248,7 +2645,7 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
         if (m_seeking) {
             m_seeking = false;
             if (m_media)
-                m_media->click(pressed, VideoZone::Seek, seekFraction(browser, pressed, m_pressRect.size().toSize(), me->localPos() - m_pressRect.topLeft()));
+                m_media->click(pressed, VideoZone::Seek, seekFraction(browser, pressed, m_pressDuSize, m_pressScale.toDu(me->localPos() - m_pressRect.topLeft())));
             return true;
         }
         if (m_pressBrowser == browser) {
@@ -2296,6 +2693,13 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             QToolTip::showText(he->globalPos(), text, browser->viewport(), area);
         return true;
     }
+
+    // 2.5 zoom: the scale's cached inputs (TeamSpeak may set the document font directly, without a widget event):
+    // cheap comparisons, a pass only when one of them changed.
+    case QEvent::Paint:
+        if (QTextBrowser* browser = browserForViewport(watched))
+            checkScale(browser, false);
+        break;
 
     // A new chat width re-lays the previews out; a theme switch (palette / style sheet) re-renders
     // them in the new colours.
@@ -3137,6 +3541,113 @@ void ChatIntegration::replyToLatest()
 // 2.3.4: links in TS Media's own lines that the plugin handles (the newer-version hint)
 // ============================================================================================
 
+// ---- 2.5 GIFs --------------------------------------------------------------------------------------------------------
+
+void ChatIntegration::setGifs(GifLibrary* gifs)
+{
+    m_gifs = gifs;
+    EmojiInput* input = m_emoji ? m_emoji->input() : nullptr;
+    if (!input)
+        return;
+    if (!gifs) {
+        input->setGifHostFactory(nullptr);
+        return;
+    }
+    const QPointer<ChatIntegration> self(this);
+    input->setGifHostFactory([self](QTextEdit* edit) -> gifs::Host {
+        if (!self || !self->m_gifs || !edit)
+            return {};
+        const QPointer<QTextEdit> guard(edit);
+        gifs::HostEnv             env;
+        // The input's chat now (the global current connection, the input's chat tab): resolved at opening and again at
+        // each click, and compared (design_gifs 6.1).
+        env.resolve = [self, guard](ChatTarget* target) {
+            if (!self || !guard)
+                return false;
+            return self->resolveTarget(guard.data(), target);
+        };
+        env.describe = [self](const ChatTarget& target) { return self ? self->describeTarget(target) : QString(); };
+        env.replyLead = [self](const ChatTarget& target) { return self && self->m_replies ? self->m_replies->leadFor(target) : QString(); };
+        env.replySent = [self](const ChatTarget& target) {
+            if (self && self->m_replies)
+                self->m_replies->sentWithFiles(target);
+        };
+        env.chatTabs = self->chatTabBarFor(edit);
+        return self->m_gifs->makeHost(env);
+    });
+}
+
+void ChatIntegration::closeGifPicker()
+{
+    if (EmojiInput* input = m_emoji ? m_emoji->input() : nullptr)
+        input->closeGifPicker();
+}
+
+// Save to GIFs / Remove from GIFs for a GIF the chat shows (design_gifs 7): only what is already on this PC.
+void ChatIntegration::addGifMenu(QMenu* menu, const QString& key, const QUrl& webUrl, const linkpreview::Target& webTarget,
+                                 const std::function<QWidget*()>& viewport)
+{
+    const MediaEntry* e = m_core->entry(key);
+    if (!m_gifs || !e || m_gifs->state() != GifLibrary::State::Ok)
+        return;
+    gifs::ChatGifFacts facts;
+    facts.web           = webUrl.isValid() && webTarget.isValid();
+    facts.kind          = e->kind;
+    facts.ready         = e->state == MediaState::Ready;
+    facts.gone          = !isPreviewActionable(*e);
+    facts.size          = static_cast<qint64>(e->link.size);
+    facts.webpName      = e->link.fileName.endsWith(QLatin1String(".webp"), Qt::CaseInsensitive);
+    facts.animates      = m_media && facts.ready && m_media->animates(key);
+    facts.loop          = e->link.loop;
+    facts.spoilerHidden = m_core->isSpoilerHidden(key);
+    const gifs::ChatGifVerdict verdict = gifs::chatGifOf(facts);
+    if (verdict.type == gifs::ChatGif::None || verdict.type == gifs::ChatGif::TooBig)
+        return;
+    QPointer<GifLibrary> lib(m_gifs);
+    // Already in the list: the item removes it.
+    const gifs::Item* existing = verdict.type == gifs::ChatGif::Link ? m_gifs->findLink(webTarget.key, gifs::pidOf(webTarget))
+                                                                      : m_gifs->findFile(e->link.sha256);
+    if (existing) {
+        const QString id = existing->id;
+        menu->addAction(i18n::t("Remove from &GIFs"), this, [this, lib, id, viewport] {
+            if (lib && lib->remove(id))
+                showFeedback(viewport(), i18n::t("Removed from GIFs"), false);
+        });
+        return;
+    }
+    if (verdict.type == gifs::ChatGif::FileNotReady) {
+        menu->addAction(i18n::t("Save to &GIFs (download it first)"))->setEnabled(false); // the menu's Download is right there
+        return;
+    }
+    if (verdict.type == gifs::ChatGif::Link) {
+        const QString             href   = webUrl.toString(QUrl::FullyEncoded);
+        const linkpreview::Target target = webTarget;
+        const bool                spoiler = e->link.spoiler; // a spoiler, or a page marked for adults: kept covered
+        const gifs::Kind          kind    = verdict.kind;
+        menu->addAction(i18n::t("Save to &GIFs"), this, [this, lib, href, target, key, spoiler, kind, viewport] {
+            QString    message;
+            const bool ok = lib && lib->saveLink(href, target, key, spoiler, kind, &message);
+            showFeedback(viewport(), message, !ok);
+        });
+        return;
+    }
+    menu->addAction(i18n::t("Save to &GIFs"), this, [this, lib, key, viewport] {
+        if (!lib)
+            return;
+        QString message;
+        if (!lib->saveFile(key, &message)) {
+            showFeedback(viewport(), message, message != i18n::t("Already in your GIFs"));
+            return;
+        }
+        // The copy runs on the library's worker: its outcome at the pointer when it is done.
+        auto* once = new QObject(this);
+        connect(lib.data(), &GifLibrary::saveFinished, once, [this, once, viewport](const QString&, bool ok, const QString& text) {
+            showFeedback(viewport(), text, !ok);
+            once->deleteLater();
+        });
+    });
+}
+
 void ChatIntegration::setOwnLinkHandler(std::function<bool(const QString& href, bool activate)> handler)
 {
     m_ownLinkHandler = std::move(handler);
@@ -3208,10 +3719,13 @@ QSizeF ChatIntegration::linkPreviewObject(QTextBrowser* browser, const QString& 
     const QImage img = renderFor(browser, key, &size);
     if (img.isNull())
         return {};
-    browser->document()->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img));
+    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
+        scaler->putPicture(kScheme + key, paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media);
+    else
+        browser->document()->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img, scaleOf(browser).displayRatio()));
     if (View* view = viewFor(browser))
         view->resourced.insert(key);
-    return QSizeF(size.width(), size.height() + kGapTop + kGapBottom);
+    return QSizeF(size.width(), size.height() + kGapTop + kGapBottom); // 2.5 zoom: du (linkdoc makes it du x s)
 }
 
 QString ChatIntegration::reactableKeyIn(QTextBrowser* browser, int block)

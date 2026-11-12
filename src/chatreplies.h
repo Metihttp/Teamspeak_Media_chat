@@ -68,6 +68,10 @@ class ChatReplies : public QObject
     void replyToLatest();
     // 2.2 emoji: ChatEmoji changed browser's document (HD emoji came or went): read it again soon.
     void documentEdited(QTextBrowser* browser);
+    // 2.5 zoom: ChatScale's pass (inside its edit block): every reply line at the chat's new chrome scale.
+    void applyChromeScale(QTextBrowser* browser);
+    // 2.5 zoom (1.12): the chat's picture budget swapped name for its blank stand-in: drawn again before it is seen.
+    void pictureSwapped(QTextBrowser* browser, const QString& name);
 
     // ---- the send window and file drops -------------------------------------------------------------
     // "Replying to Alice" for the send window, while a reply to that chat is being written (else nullptr).
@@ -117,6 +121,7 @@ class ChatReplies : public QObject
         QFont  font;
         qreal  dpr      = 1.0;
         int    maxWidth = 400;
+        int    scale    = 20; // 2.5 zoom: the chat's chrome scale x 20 (c20): sizes are du, the picture du x c
     };
     struct Anchor {
         int   block  = -1;
@@ -159,7 +164,8 @@ class ChatReplies : public QObject
     static QString        signatureOf(const Line& line);
     // Works out what every reply line (or only the ones in `only`) shows and how big it is, resizes the
     // ones that changed size (one edit) and draws those on screen.
-    void                  refreshLines(QTextBrowser* browser, const QSet<QString>* only = nullptr);
+    // forceSizes (2.5 zoom): every line's object set again (a scale pass: the same du, a new chrome scale).
+    void                  refreshLines(QTextBrowser* browser, const QSet<QString>* only = nullptr, bool forceSizes = false);
     void                  renderVisible(QTextBrowser* browser, View& view); // pictures for the lines on screen
     void                  evict(QTextBrowser* browser, View& view);         // pictures far off screen go
     QPair<int, int>       blocksShown(QTextBrowser* browser, qreal margin) const;

@@ -3,6 +3,7 @@
 #include <QSettings>
 #include <QUrl>
 
+#include "previewscale.h" // 2.5 zoom: the Preview size presets
 #include "ts3api.h"
 
 namespace {
@@ -116,7 +117,13 @@ void Settings::load(const QString& file)
     videoAutoDownloadMB = readInt(s, "videoAutoDownloadMB", d.videoAutoDownloadMB, videoAutoDownloadMBRange);
     previewMaxWidth     = readInt(s, "previewMaxWidth", d.previewMaxWidth, previewMaxWidthRange);
     previewMaxHeight    = readInt(s, "previewMaxHeight", d.previewMaxHeight, previewMaxHeightRange);
-    dataSaver           = readBool(s, "dataSaver", d.dataSaver); // 2.2 data saver
+    {
+        // 2.5 zoom: one of the presets (the nearest; ties go down), the default for garbage.
+        bool      ok    = false;
+        const int value = s.value(key("previewScale")).toInt(&ok);
+        previewScale    = previewscale::nearestPreset(ok ? value : d.previewScale);
+    }
+    dataSaver          = readBool(s, "dataSaver", d.dataSaver); // 2.2 data saver
     revealSpoilers      = readBool(s, "revealSpoilers", d.revealSpoilers); // 2.2 spoiler
 
     // Playback
@@ -162,12 +169,18 @@ void Settings::load(const QString& file)
     showLinkPreviews     = readBool(s, "showLinkPreviews", d.showLinkPreviews);
     autoLoadLinkPreviews = readBool(s, "autoLoadLinkPreviews", d.autoLoadLinkPreviews); // a missing key: on
     makeLinkPreviews     = readBool(s, "makeLinkPreviews", d.makeLinkPreviews);
+    showWebCards         = readBool(s, "showWebCards", d.showWebCards); // 2.5; a missing key: on
+    // 2.5 YouTube player
+    playYouTubeInChat  = readBool(s, "playYouTubeInChat", d.playYouTubeInChat);
+    youTubeNoticeShown = readBool(s, "youTubeNoticeShown", d.youTubeNoticeShown);
+    youTubeWindowSize  = s.value(key("youTubeWindowSize")).toString().trimmed().left(16);
     // 2.2.1 voice: voiceMicrophone, voiceMuteTeamSpeakMic, voiceReview and voiceSounds (2.2.0) are ignored
 
     // 2.2 emoji
     hdEmoji     = readBool(s, "hdEmoji", d.hdEmoji);
     emojiButton = readBool(s, "emojiButton", d.emojiButton);
     jumboEmoji  = readBool(s, "jumboEmoji", d.jumboEmoji);
+    rememberGifs = readBool(s, "rememberGifs", d.rememberGifs); // 2.5 GIFs
 
     // chat redesign
     chatLayout           = readInt(s, "chatLayout", d.chatLayout, chatLayoutRange);
@@ -198,6 +211,7 @@ void Settings::save(const QString& file) const
     s.setValue(key("videoAutoDownloadMB"), videoAutoDownloadMB);
     s.setValue(key("previewMaxWidth"), previewMaxWidth);
     s.setValue(key("previewMaxHeight"), previewMaxHeight);
+    s.setValue(key("previewScale"), previewScale); // 2.5 zoom
     s.setValue(key("dataSaver"), dataSaver); // 2.2 data saver
     s.setValue(key("revealSpoilers"), revealSpoilers); // 2.2 spoiler
 
@@ -237,11 +251,16 @@ void Settings::save(const QString& file) const
     s.setValue(key("showLinkPreviews"), showLinkPreviews);
     s.setValue(key("autoLoadLinkPreviews"), autoLoadLinkPreviews);
     s.setValue(key("makeLinkPreviews"), makeLinkPreviews);
+    s.setValue(key("showWebCards"), showWebCards); // 2.5
+    s.setValue(key("playYouTubeInChat"), playYouTubeInChat); // 2.5 YouTube player
+    s.setValue(key("youTubeNoticeShown"), youTubeNoticeShown);
+    s.setValue(key("youTubeWindowSize"), ownedCopy(youTubeWindowSize));
 
     // 2.2 emoji
     s.setValue(key("hdEmoji"), hdEmoji);
     s.setValue(key("emojiButton"), emojiButton);
     s.setValue(key("jumboEmoji"), jumboEmoji);
+    s.setValue(key("rememberGifs"), rememberGifs); // 2.5 GIFs
     // chat redesign
     s.setValue(key("chatLayout"), qBound(chatLayoutRange.min, chatLayout, chatLayoutRange.max));
     s.setValue(key("chatGroupMessages"), chatGroupMessages);

@@ -7,6 +7,7 @@
 
 class Core;
 class QCheckBox;
+class QComboBox; // 2.5 zoom
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -82,6 +83,7 @@ class SettingsDialog : public QDialog
     QSpinBox*  m_videoAutoDownload;
     QSpinBox*  m_previewWidth;
     QSpinBox*  m_previewHeight;
+    QComboBox* m_previewScale; // 2.5 zoom: Preview size
     QCheckBox* m_dataSaver; // 2.2 data saver
 
     // Playback

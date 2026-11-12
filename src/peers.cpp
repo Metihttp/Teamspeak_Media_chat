@@ -168,6 +168,10 @@ QStringList PeerDirectory::caps() const
         list << QString::fromLatin1("r");
     if (m_local.linkPreviews)
         list << QString::fromLatin1("l"); // 2.4: "I make previews of the links I send"
+    if (m_local.linkPreviewsX)
+        list << QString::fromLatin1("lx"); // 2.5: "... of media pages and site cards"
+    if (m_local.linkPreviewsWeb)
+        list << QString::fromLatin1("lw"); // 2.5: "... and of other web pages"
     return list;
 }
 

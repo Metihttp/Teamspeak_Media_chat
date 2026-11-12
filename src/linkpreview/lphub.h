@@ -19,6 +19,11 @@
 //    of that message". The same checks as LP, in the same order, with LP's per-sender limit; matched to its
 //    message the same way (waiting for it too). Kept in memory only (at most kMaxSkips, kSkipTtlMs) unless the
 //    link's LP is stored already; skipped() tells the chat, which stops waiting and loads it itself.
+//  * 2.5: LPX and LPXNO (the new link classes) with the same gates in the same order, with a per-sender limit of
+//    their own (Limits::xPerSenderBurst; LP's stays as it was). An accepted LPX is stored like an LP, but its files
+//    are NOT asked of Core here: the chat asks for a card's picture when its slot is on screen, paced (6.10).
+//    LPXNO names 1 to 3 links with an optional reason (skipReason(): r=n nothing to show, r=x another website), kept
+//    like LPNO.
 
 #include <QHash>
 #include <QObject>
@@ -62,6 +67,8 @@ class Hub : public QObject
         // it arrives that much "younger". The message is the sender's own with that very text (its hash), and
         // the nearest one is taken, so a wider window than text reactions' kToleranceSec costs nothing.
         qint64 matchToleranceSec = 60;
+        // 2.5: LPX and LPXNO per person and connection per perSenderWindowMs (a bucket of their own).
+        int xPerSenderBurst = 20;
     };
 
     struct Counters {
@@ -72,6 +79,11 @@ class Hub : public QObject
         int unmatched   = 0; // no message of the invoker's for it (gave up waiting)
         int skipsReceived = 0; // 2.4 auto-load: LPNO messages
         int skipsAccepted = 0;
+        // 2.5
+        int lpxReceived      = 0;
+        int lpxAccepted      = 0;
+        int lpxSkipsReceived = 0; // LPXNO messages
+        int lpxSkipsAccepted = 0; // ... each accepted key
     };
 
     static constexpr int    kMaxSkips  = 256;
@@ -106,25 +118,34 @@ class Hub : public QObject
     // that link (an LPNO matched to it; the nearest time within textreact::kToleranceSec).
     bool isSkipped(const QString& messageKey, const QString& urlKey) const;
     int  skipCount() const { return m_skips.size(); }
+    // 2.5: the reason of an accepted LPXNO for that link (Unknown for an LPNO, an LPXNO without r, or none at all:
+    // isSkipped() says whether there is one).
+    SkipReason skipReason(const QString& messageKey, const QString& urlKey) const;
 
   signals:
-    void skipped(const QString& urlKey); // an LPNO was accepted (GUI thread)
+    void skipped(const QString& urlKey); // an LPNO or LPXNO was accepted (GUI thread)
 
   private:
     class FetcherPort;
+    enum class Type { Lp, Lpno, Lpx, Lpxno };
     struct Waiting {
         Announcement a; // messageKey still empty
         proto::Scope scope = proto::Scope::Channel;
         QString      hash;
         qint64       estimatedSec = 0;
         qint64       atMs         = 0;
-        bool         skip         = false; // 2.4: an LPNO (only a.urlKey, a.sch, a.senderUid, a.serverUid)
+        Type         type         = Type::Lp;
+        // LPNO / LPXNO: only a.sch, a.senderUid, a.serverUid and these keys (2.4: a.urlKey alone)
+        QStringList  keys;
+        SkipReason   reason = SkipReason::Unknown;
+        bool skip() const { return type == Type::Lpno || type == Type::Lpxno; }
     };
     struct SkipEntry {
-        QString hash;
-        qint64  timeSec = 0;
-        QString urlKey;
-        qint64  atMs = 0;
+        QString    hash;
+        qint64     timeSec = 0;
+        QString    urlKey;
+        qint64     atMs = 0;
+        SkipReason reason = SkipReason::Unknown; // 2.5
     };
     struct Bucket {
         double tokens = 0.0;
@@ -135,7 +156,7 @@ class Hub : public QObject
     void    accept(Announcement a);
     void    acceptSkip(const Waiting& w, const QString& messageKey);
     void    matchWaiting();
-    bool    takeToken(quint64 sch, const QString& uid, qint64 nowMs);
+    bool    takeToken(quint64 sch, const QString& uid, qint64 nowMs, bool extended = false);
     void    scheduleSave();
     void    save();
 
@@ -151,6 +172,7 @@ class Hub : public QObject
     QVector<Waiting>                m_waiting;
     QVector<SkipEntry>              m_skips; // 2.4 auto-load: accepted LPNOs, oldest first
     QHash<QString, Bucket>          m_rates; // "sch/uid" -> LP tokens
+    QHash<QString, Bucket>          m_xRates; // 2.5: "sch/uid" -> LPX / LPXNO tokens
     QTimer*                         m_waitTimer = nullptr;
     QTimer*                         m_saveTimer = nullptr;
     bool                            m_started      = false;

@@ -27,11 +27,19 @@ inline bool atBottom(QTextBrowser* browser)
     return bar->value() >= bar->maximum() - 4 - qCeil(layoutdoc::endGapExtra(browser->document()));
 }
 
+// 2.5 zoom: how often syncRange laid the whole chat out (the tests count it: a zoom gesture must not do it per notch).
+inline int& syncRangeCalls()
+{
+    static int calls = 0;
+    return calls;
+}
+
 // The scroll range for the document as it is now. QTextEdit takes a new range when the layout reports a new
 // size, and a layout finished outside an edit reports it on a 0 ms timer: a value set before then would be
 // clamped to the old range.
 inline void syncRange(QTextBrowser* browser)
 {
+    ++syncRangeCalls();
     QAbstractTextDocumentLayout* layout = browser->document()->documentLayout();
     const QSizeF                 size   = layout->documentSize(); // lays out what is left
     const int                    want   = qMax(0, qRound(size.height()) - browser->viewport()->height());
@@ -42,6 +50,10 @@ inline void syncRange(QTextBrowser* browser)
 struct Place {
     layoutdoc::Anchor anchor;
     bool              bottom = false;
+    // 2.5 (review fix): the anchor block's start as a cursor, which follows the edits made while the place is held
+    // (TeamSpeak's line limit trims blocks at the top and renumbers every block; a zoom gesture holds its place for
+    // its whole length). The anchor's block number is taken from it when it is restored.
+    QTextCursor cursor;
 };
 
 inline Place capture(QTextBrowser* browser)
@@ -49,7 +61,21 @@ inline Place capture(QTextBrowser* browser)
     Place p;
     p.bottom = atBottom(browser);
     p.anchor = layoutdoc::anchorAt(browser->document(), browser->verticalScrollBar()->value());
+    const QTextBlock block = browser->document()->findBlockByNumber(p.anchor.block);
+    if (block.isValid()) {
+        p.cursor = QTextCursor(browser->document());
+        p.cursor.setPosition(block.position());
+    }
     return p;
+}
+
+// The anchor as it is now: its block followed through the edits since capture (the cursor), its offset as captured.
+inline layoutdoc::Anchor anchorNow(QTextDocument* doc, const Place& p)
+{
+    layoutdoc::Anchor a = p.anchor;
+    if (!p.cursor.isNull() && p.cursor.document() == doc)
+        a.block = p.cursor.block().blockNumber();
+    return a;
 }
 
 // After edits: at the bottom again, or the anchor's block where it was (one that was folded away since: the
@@ -62,9 +88,21 @@ inline void restore(QTextBrowser* browser, const Place& p)
         bar->setValue(bar->maximum());
         return;
     }
-    const qreal y = layoutdoc::anchorY(browser->document(), p.anchor);
+    const qreal y = layoutdoc::anchorY(browser->document(), anchorNow(browser->document(), p));
     if (y >= 0)
         bar->setValue(qRound(y));
+}
+
+// 2.5 zoom: the anchor only, cheaply, during a zoom gesture (ChatScale's hold): the document is laid out down to the
+// anchor's block (blockBoundingRect), never the whole chat (no syncRange: documentSize() would lay out all of it). A
+// chat at the bottom is left alone here (its place comes back once, when the gesture settles).
+inline void restoreAnchor(QTextBrowser* browser, const Place& p)
+{
+    if (p.bottom)
+        return;
+    const qreal y = layoutdoc::anchorY(browser->document(), anchorNow(browser->document(), p));
+    if (y >= 0)
+        browser->verticalScrollBar()->setValue(qRound(y));
 }
 
 // 2.4 link previews: the reader's place as a character (its cursor follows the edits), for a picture of ours that

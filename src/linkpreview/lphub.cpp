@@ -6,12 +6,15 @@
 
 #include "core.h"
 #include "fetcher.h"
+#include "hostgate.h"
 #include "pluginlink.h"
 #include "previewstore.h"
 #include "reactions.h" // ReactionStore::isClientUid
 #include "senderpipeline.h"
 #include "settings.h"
 #include "textreact.h"
+#include "transport.h"
+#include "nettrace.h" // live-test builds: the driver's links.net
 #include "ts3api.h"
 
 namespace linkpreview {
@@ -57,10 +60,10 @@ class Hub::FetcherPort : public FetchPort
         : m_fetcher(fetcher)
     {
     }
-    void load(const Target& target, qint64 maxBytes, const QString& cacheDir) override
+    void load(const Target& target, const Caps& caps, const QString& cacheDir) override
     {
         if (m_fetcher)
-            m_fetcher->load(target, maxBytes, cacheDir);
+            m_fetcher->load(target, caps, cacheDir);
     }
     void cancel(const QString& key) override
     {
@@ -90,8 +93,14 @@ Hub::Hub(Core* core, PluginLink* link, const textreact::Index* index, FetchPort*
     m_store = new PreviewStore(this);
     if (!fetch) {
         // The sender's own Fetcher: its results are the pipeline's only (the chat's clicks and automatic loads have
-        // their own).
-        m_fetcher = new Fetcher(this);
+        // their own). 2.5: both share the plugin's one HostGate (spacing and cooldowns per site, hostgate.h).
+        Fetcher::Options options;
+        options.gate = sharedGate();
+#ifdef TSMEDIA_TESTHOOKS
+        m_fetcher = new Fetcher(nettrace::traced(http::winHttpTransport(), "send"), options, this);
+#else
+        m_fetcher    = new Fetcher(http::winHttpTransport(), options, this);
+#endif
         usePluginLog(m_fetcher, "send");
         m_ownPort = std::make_unique<FetcherPort>(m_fetcher);
         fetch     = m_ownPort.get();
@@ -185,6 +194,8 @@ void Hub::prepareShutdown()
     m_waitTimer->stop();
     m_waiting.clear();
     m_skips.clear();
+    m_rates.clear();
+    m_xRates.clear();
     m_saveTimer->stop();
     if (m_started)
         save();
@@ -229,26 +240,29 @@ void Hub::onTextMessage(quint64 sch, int targetMode, quint16 toId, quint16 fromI
 
 // ---- receiving ----------------------------------------------------------------------------------------
 
-bool Hub::takeToken(quint64 sch, const QString& uid, qint64 now)
+bool Hub::takeToken(quint64 sch, const QString& uid, qint64 now, bool extended)
 {
+    // 2.5: LPX and LPXNO have a bucket of their own (LP's stays 2.4.0's).
+    QHash<QString, Bucket>& rates = extended ? m_xRates : m_rates;
+    const int               burst = extended ? m_limits.xPerSenderBurst : m_limits.perSenderBurst;
     const QString who = QString::number(sch) + QLatin1Char('/') + uid;
-    if (!m_rates.contains(who) && m_rates.size() >= m_limits.maxRateEntries) {
+    if (!rates.contains(who) && rates.size() >= m_limits.maxRateEntries) {
         // Bounded: buckets that are full again are forgotten first (they would start full anyway).
-        for (auto it = m_rates.begin(); it != m_rates.end();) {
+        for (auto it = rates.begin(); it != rates.end();) {
             if (now - it->atMs >= m_limits.perSenderWindowMs || it->atMs > now)
-                it = m_rates.erase(it);
+                it = rates.erase(it);
             else
                 ++it;
         }
-        if (m_rates.size() >= m_limits.maxRateEntries)
+        if (rates.size() >= m_limits.maxRateEntries)
             return false;
     }
-    Bucket&      b    = m_rates[who];
-    const double rate = static_cast<double>(m_limits.perSenderBurst) / static_cast<double>(qMax<qint64>(1, m_limits.perSenderWindowMs));
+    Bucket&      b    = rates[who];
+    const double rate = static_cast<double>(burst) / static_cast<double>(qMax<qint64>(1, m_limits.perSenderWindowMs));
     if (b.atMs < 0 || now < b.atMs)
-        b.tokens = m_limits.perSenderBurst;
+        b.tokens = burst;
     else
-        b.tokens = qMin(static_cast<double>(m_limits.perSenderBurst), b.tokens + (now - b.atMs) * rate);
+        b.tokens = qMin(static_cast<double>(burst), b.tokens + (now - b.atMs) * rate);
     b.atMs = now;
     if (b.tokens < 1.0)
         return false;
@@ -259,54 +273,93 @@ bool Hub::takeToken(quint64 sch, const QString& uid, qint64 now)
 void Hub::received(quint64 sch, quint16 from, const QString& uid, const QString& name, const proto::Message& message)
 {
     Q_UNUSED(name);
-    const bool skip = message.type == "LPNO"; // 2.4 auto-load: the sender's plugin won't announce this one
-    if (m_shuttingDown || (message.type != "LP" && !skip))
-        return; // everything else is PeerHub's or TextReactHub's
-    if (skip)
-        ++m_counters.skipsReceived;
+    Type type = Type::Lp;
+    if (message.type == "LP")
+        type = Type::Lp;
+    else if (message.type == "LPNO")
+        type = Type::Lpno; // 2.4 auto-load: the sender's plugin won't announce this one
+    else if (message.type == "LPX")
+        type = Type::Lpx; // 2.5: a page link's preview
+    else if (message.type == "LPXNO")
+        type = Type::Lpxno;
     else
+        return; // everything else is PeerHub's or TextReactHub's
+    if (m_shuttingDown)
+        return;
+    const bool extended = type == Type::Lpx || type == Type::Lpxno;
+    switch (type) {
+    case Type::Lp:
         ++m_counters.received;
+        break;
+    case Type::Lpno:
+        ++m_counters.skipsReceived;
+        break;
+    case Type::Lpx:
+        ++m_counters.lpxReceived;
+        break;
+    case Type::Lpxno:
+        ++m_counters.lpxSkipsReceived;
+        break;
+    }
     if (!Settings::instance().showLinkPreviews)
         return; // off: nothing is accepted, stored or downloaded
     if (!ReactionStore::isClientUid(uid) || isQueryClient(sch, from)) {
         ++m_counters.rejected; // ServerQuery logins aren't people in a chat
         return;
     }
-    if (!takeToken(sch, uid, wallMs())) { // LP and LPNO share one limit per sender
+    if (!takeToken(sch, uid, wallMs(), extended)) { // LP and LPNO share one limit per sender; LPX and LPXNO another
         ++m_counters.rateLimited;
         return;
     }
     Waiting w;
-    if (skip) {
-        const std::optional<Skip> in = readSkip(message);
-        if (!in) {
-            ++m_counters.rejected;
-            return;
+    w.type = type;
+    if (type == Type::Lpno || type == Type::Lpxno) {
+        proto::Scope scope = proto::Scope::Channel;
+        if (type == Type::Lpno) {
+            const std::optional<Skip> in = readSkip(message);
+            if (!in) {
+                ++m_counters.rejected;
+                return;
+            }
+            scope          = in->scope;
+            w.keys         = QStringList{in->urlKey};
+            w.hash         = in->hash;
+            w.estimatedSec = wallSec() - in->ageSec;
+        } else {
+            const std::optional<SkipX> in = readLpxSkip(message);
+            if (!in) {
+                ++m_counters.rejected;
+                return;
+            }
+            scope          = in->scope;
+            w.keys         = in->urlKeys;
+            w.reason       = in->reason;
+            w.hash         = in->hash;
+            w.estimatedSec = wallSec() - in->ageSec;
         }
         // A channel notice only from someone in our channel right now (it names no files).
-        if (in->scope == proto::Scope::Channel) {
+        if (scope == proto::Scope::Channel) {
             const quint64 theirs = channelOf(sch, from);
             if (theirs == 0 || theirs != ts3::ownChannel(sch)) {
                 ++m_counters.rejected;
                 return;
             }
         }
-        w.skip         = true;
-        w.a.urlKey     = in->urlKey;
-        w.scope        = in->scope;
-        w.hash         = in->hash;
-        w.estimatedSec = wallSec() - in->ageSec;
+        w.scope    = scope;
+        w.a.urlKey = w.keys.value(0);
     } else {
-        const std::optional<Incoming> in = readMessage(message);
+        const std::optional<Incoming> in = type == Type::Lpx ? readLpx(message) : readMessage(message);
         if (!in) {
             ++m_counters.rejected;
             return;
         }
-        // A channel announcement only from someone in our channel right now, for files in our channel.
+        // A channel announcement only from someone in our channel right now, for files in our channel (an LPX card
+        // without a picture names no files).
         const quint64 own = ts3::ownChannel(sch);
         if (in->scope == proto::Scope::Channel) {
             const quint64 theirs = channelOf(sch, from);
-            if (theirs == 0 || theirs != own || in->announcement.channelId != own) {
+            const bool    files  = in->announcement.channelId != 0 || !in->announcement.previewPath.isEmpty();
+            if (theirs == 0 || theirs != own || (files && in->announcement.channelId != own)) {
                 ++m_counters.rejected;
                 return;
             }
@@ -326,7 +379,7 @@ void Hub::received(quint64 sch, quint16 from, const QString& uid, const QString&
     }
     const QString key = resolve(w);
     if (!key.isEmpty()) {
-        if (w.skip) {
+        if (w.skip()) {
             acceptSkip(w, key);
         } else {
             w.a.messageKey = key;
@@ -337,7 +390,7 @@ void Hub::received(quint64 sch, quint16 from, const QString& uid, const QString&
     // Not in a chat (yet): a newer LP of the same sender for the same link of the same message replaces it.
     for (int i = 0; i < m_waiting.size(); ++i) {
         const Waiting& o = m_waiting.at(i);
-        if (o.skip == w.skip && o.a.senderUid == uid && o.a.sch == sch && o.hash == w.hash && o.a.urlKey == w.a.urlKey
+        if (o.type == w.type && o.a.senderUid == uid && o.a.sch == sch && o.hash == w.hash && o.a.urlKey == w.a.urlKey && o.keys.join(QLatin1Char(',')) == w.keys.join(QLatin1Char(',')) /* joined: no QList == (MSVC) */
             && qAbs(o.estimatedSec - w.estimatedSec) <= textreact::kToleranceSec) {
             m_waiting.removeAt(i);
             break;
@@ -377,8 +430,14 @@ void Hub::accept(Announcement a)
     }
     if (result == PreviewStore::Add::Unchanged)
         return;
-    ++m_counters.accepted;
-    requestFiles(m_core, a);    // Core knows the files before the chat hears of them ...
+    if (a.extended) {
+        // 2.5: an LPX's files are asked of Core by the chat when its slot is on screen (paced: a history full of
+        // cards never floods the connection).
+        ++m_counters.lpxAccepted;
+    } else {
+        ++m_counters.accepted;
+        requestFiles(m_core, a); // Core knows the files before the chat hears of them ...
+    }
     m_store->add(a, wallSec()); // ... from announced()
 }
 
@@ -388,19 +447,24 @@ void Hub::acceptSkip(const Waiting& w, const QString& messageKey)
     qint64  timeSec = 0;
     if (!textreact::parseLocalKey(messageKey, &hash, &timeSec))
         return;
-    if (m_store->find(messageKey, w.a.urlKey))
-        return; // its LP is here already: that wins
     const qint64 now = wallMs();
-    for (int i = m_skips.size() - 1; i >= 0; --i) {
-        const SkipEntry& e = m_skips.at(i);
-        if (now - e.atMs > kSkipTtlMs || now < e.atMs || (e.hash == hash && e.urlKey == w.a.urlKey && e.timeSec == timeSec))
-            m_skips.removeAt(i); // old, or the same notice again (kept once, as the newest)
+    for (const QString& urlKey : w.keys) {
+        if (m_store->find(messageKey, urlKey))
+            continue; // its LP / LPX is here already: that wins
+        for (int i = m_skips.size() - 1; i >= 0; --i) {
+            const SkipEntry& e = m_skips.at(i);
+            if (now - e.atMs > kSkipTtlMs || now < e.atMs || (e.hash == hash && e.urlKey == urlKey && e.timeSec == timeSec))
+                m_skips.removeAt(i); // old, or the same notice again (kept once, as the newest)
+        }
+        while (m_skips.size() >= kMaxSkips)
+            m_skips.removeFirst();
+        m_skips.append({hash, timeSec, urlKey, now, w.reason});
+        if (w.type == Type::Lpxno)
+            ++m_counters.lpxSkipsAccepted;
+        else
+            ++m_counters.skipsAccepted;
+        emit skipped(urlKey);
     }
-    while (m_skips.size() >= kMaxSkips)
-        m_skips.removeFirst();
-    m_skips.append({hash, timeSec, w.a.urlKey, now});
-    ++m_counters.skipsAccepted;
-    emit skipped(w.a.urlKey);
 }
 
 bool Hub::isSkipped(const QString& messageKey, const QString& urlKey) const
@@ -415,6 +479,22 @@ bool Hub::isSkipped(const QString& messageKey, const QString& urlKey) const
             return true;
     }
     return false;
+}
+
+SkipReason Hub::skipReason(const QString& messageKey, const QString& urlKey) const
+{
+    QString hash;
+    qint64  timeSec = 0;
+    if (m_skips.isEmpty() || urlKey.isEmpty() || !textreact::parseLocalKey(messageKey, &hash, &timeSec))
+        return SkipReason::Unknown;
+    const qint64 now = wallMs();
+    // The newest notice for that link wins.
+    for (int i = m_skips.size() - 1; i >= 0; --i) {
+        const SkipEntry& e = m_skips.at(i);
+        if (e.hash == hash && e.urlKey == urlKey && qAbs(e.timeSec - timeSec) <= textreact::kToleranceSec && now - e.atMs <= kSkipTtlMs && now >= e.atMs)
+            return e.reason;
+    }
+    return SkipReason::Unknown;
 }
 
 void Hub::indexChanged()
@@ -439,7 +519,7 @@ void Hub::matchWaiting()
             still.append(w);
             continue;
         }
-        if (w.skip) {
+        if (w.skip()) {
             acceptSkip(w, key);
             continue;
         }

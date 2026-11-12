@@ -31,10 +31,8 @@ QByteArray mediaType(const QByteArray& contentType);
 bool       contentTypeAllowed(Kind kind, const QByteArray& contentType);
 bool       isJsonType(const QByteArray& contentType);
 
-// Text from a website made safe to show and to send: C0/C1 controls, bidi marks, zero-width spaces, the
-// byte order mark, non-characters and lone surrogates removed (ZWJ/ZWNJ stay: emoji, Persian); every
-// white-space run one space; trimmed; at most maxChars UTF-16 units, never half a surrogate pair, "…"
-// at the end when cut.
+// Text from a website made safe to show: textclean::clean (one line, invisible and reordering characters
+// removed, ZWNJ/ZWJ kept between visible characters, "…" when cut). A 2.4 name kept for its callers.
 QString cleanText(const QString& text, int maxChars);
 
 struct OEmbed {
@@ -45,5 +43,56 @@ struct OEmbed {
 
 // false with *error = "badJson" / "noTitle" / "tooLarge" / "wrongType".
 bool parseOEmbed(const QByteArray& body, const QString& videoId, OEmbed* out, QString* error);
+
+// ---- 2.5: official oEmbed answers and keyless JSON APIs of other sites ------------------------------------------
+//
+// At most net::kMaxJsonBytes, one JSON object at the top (first non-white byte '{'). Only the named keys are read,
+// each only with its expected JSON type; strings longer than 4096 characters are ignored. "html", "author_url",
+// "provider_url" and "iframe_url" are never read. Texts are returned as sent (the Fetcher cleans them); addresses
+// as written (the Fetcher resolves and checks them like a link).
+
+struct OEmbedData {
+    QString type; // photo | video | link | rich, else empty
+    QString title, authorName, providerName, description;
+    QString thumbnailUrl, url; // url: photo only
+    int     thumbnailWidth = 0, thumbnailHeight = 0, width = 0, height = 0; // 0..16384
+    qint64  durationMs = 0;                                                 // "duration" in seconds, 0..86400
+};
+// false with *error = "badJson" / "tooLarge" / "wrongType" (not an object).
+bool parseOEmbedData(const QByteArray& body, OEmbedData* out, QString* error);
+
+// Wikipedia's REST page summary (title, extract, thumbnail.source/width/height). Never displaytitle or extract_html.
+struct WikiSummary {
+    QString title, extract, thumbnail;
+    int     thumbnailWidth = 0, thumbnailHeight = 0;
+};
+bool parseWikiSummary(const QByteArray& body, WikiSummary* out, QString* error);
+
+// Discord's invite API (with_counts=true): the guild's id, name, description, splash and icon hashes, NSFW
+// flags and the approximate counts.
+struct DiscordInvite {
+    QString guildId, name, description, splash, icon; // id: 15-22 digits; splash/icon: (a_)?32 hex digits, else empty
+    bool    nsfw = false;                              // guild.nsfw or guild.nsfw_level == 3
+    qint64  members = -1, online = -1;                 // approximate_member_count / approximate_presence_count
+};
+bool parseDiscordInvite(const QByteArray& body, DiscordInvite* out, QString* error);
+
+// Pixeldrain's file info: mime_type and size.
+struct PixeldrainInfo {
+    QString mimeType;
+    qint64  size = -1;
+};
+bool parsePixeldrainInfo(const QByteArray& body, PixeldrainInfo* out, QString* error);
+
+// An HTML fragment as plain text (SoundCloud's oEmbed description): entities decoded once, then every <...> removed.
+QString stripTags(const QString& html);
+
+// ---- 2.5: lossless WebP (CVE-2023-4863 in the libwebp of TeamSpeak's Qt) -----------------------------------------
+
+// Ok: a lossy WebP; Lossless: a VP8L chunk anywhere, or an ALPH chunk with lossless compression (also inside an
+// animation frame); Malformed: anything inconsistent (sizes outside the file, not a WebP). Both of the last two are
+// refused before any decoder sees the file.
+enum class WebpVerdict { Ok, Lossless, Malformed };
+WebpVerdict webpVerdict(const QByteArray& file);
 
 } // namespace linkpreview::content

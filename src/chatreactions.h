@@ -44,6 +44,8 @@ class ChatReactions : public QObject
     QImage compose(QTextBrowser* browser, const QString& key, const QImage& picture, const PreviewStyle& style, QSize* size);
     // The picture's part of a preview object's rect (video zones, clicks and drags use only that).
     QRectF pictureRect(QTextBrowser* browser, const QString& key, const QRectF& objectRect) const;
+    // 2.5 zoom: the picture's du size within an object of objectDu (without its reaction row).
+    QSize  pictureDuSize(QTextBrowser* browser, const QString& key, const QSize& objectDu) const;
     // Viewport events; true when one was for the reactions (ChatIntegration then stops).
     bool filterEvent(QObject* watched, QEvent* event);
     // "Add reaction" in the preview's context menu.

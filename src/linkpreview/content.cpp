@@ -4,10 +4,13 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QRegularExpression>
 
 #include <cstring>
 
 #include "netpolicy.h"
+#include "pagemeta.h"
+#include "textclean.h"
 
 namespace linkpreview::content {
 
@@ -16,18 +19,6 @@ namespace {
 bool startsWith(const QByteArray& data, const char* magic, int size, int offset = 0)
 {
     return data.size() >= offset + size && memcmp(data.constData() + offset, magic, static_cast<size_t>(size)) == 0;
-}
-
-// Removed outright (format characters that hide or reorder text). ZWNJ U+200C and ZWJ U+200D stay.
-bool isInvisible(uint u)
-{
-    return u == 0x00AD || u == 0x061C || u == 0x180E || u == 0x200B || u == 0x200E || u == 0x200F || (u >= 0x202A && u <= 0x202E)
-           || (u >= 0x2060 && u <= 0x2064) || (u >= 0x2066 && u <= 0x206F) || u == 0xFEFF || (u >= 0xFFF9 && u <= 0xFFFB);
-}
-
-bool isNonCharacter(uint u)
-{
-    return (u >= 0xFDD0 && u <= 0xFDEF) || (u & 0xFFFE) == 0xFFFE;
 }
 
 } // namespace
@@ -106,8 +97,10 @@ bool fits(Kind kind, Format format)
     case Kind::Image:
     case Kind::Gif:
     case Kind::YouTube: // its thumbnail
+    case Kind::Card:    // 2.5: its picture
         return format == Format::Png || format == Format::Jpeg || format == Format::Gif || format == Format::WebP;
     case Kind::Video:
+    case Kind::Loop: // 2.5: a silent looping video
         return format == Format::Mp4 || format == Format::Mov || format == Format::WebM;
     case Kind::None:
         break;
@@ -130,8 +123,10 @@ bool contentTypeAllowed(Kind kind, const QByteArray& contentType)
     case Kind::Image:
     case Kind::Gif:
     case Kind::YouTube:
+    case Kind::Card:
         return type.startsWith("image/") && !type.contains("svg");
     case Kind::Video:
+    case Kind::Loop:
         return type.startsWith("video/") || type == "application/mp4" || type == "application/x-matroska";
     case Kind::None:
         break;
@@ -147,53 +142,7 @@ bool isJsonType(const QByteArray& contentType)
 
 QString cleanText(const QString& text, int maxChars)
 {
-    QString out;
-    out.reserve(qMin(text.size(), maxChars + 2));
-    bool pendingSpace = false;
-    for (int i = 0; i < text.size(); ++i) {
-        const QChar ch = text.at(i);
-        uint        u  = ch.unicode();
-        int         units = 1;
-        if (ch.isHighSurrogate()) {
-            if (i + 1 >= text.size() || !text.at(i + 1).isLowSurrogate())
-                continue; // lone surrogate
-            u     = QChar::surrogateToUcs4(ch, text.at(i + 1));
-            units = 2;
-        } else if (ch.isLowSurrogate()) {
-            continue;
-        }
-        const QChar::Category category = QChar::category(u);
-        const bool            space    = QChar::isSpace(u) || u == 0x2028 || u == 0x2029 || u == '\t' || u == '\n' || u == '\r';
-        if (space) {
-            pendingSpace = !out.isEmpty();
-            i += units - 1;
-            continue;
-        }
-        if (category == QChar::Other_Control || isInvisible(u) || isNonCharacter(u)) {
-            i += units - 1;
-            continue;
-        }
-        const int needed = units + (pendingSpace ? 1 : 0);
-        if (out.size() + needed > maxChars) {
-            // Cut: room for the ellipsis, never half a pair.
-            while (out.size() > qMax(0, maxChars - 1)) {
-                out.chop(1);
-                if (!out.isEmpty() && out.at(out.size() - 1).isHighSurrogate())
-                    out.chop(1);
-            }
-            if (maxChars > 0)
-                out += QChar(0x2026);
-            return out.trimmed();
-        }
-        if (pendingSpace)
-            out += QLatin1Char(' ');
-        pendingSpace = false;
-        out += ch;
-        if (units == 2)
-            out += text.at(i + 1);
-        i += units - 1;
-    }
-    return out;
+    return textclean::clean(text, maxChars);
 }
 
 bool parseOEmbed(const QByteArray& body, const QString& videoId, OEmbed* out, QString* error)
@@ -238,6 +187,238 @@ bool parseOEmbed(const QByteArray& body, const QString& videoId, OEmbed* out, QS
     if (out)
         *out = parsed;
     return true;
+}
+
+// ---- 2.5 ----------------------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kMaxJsonString = 4096;
+
+// The top-level object of a JSON answer, or false with *error.
+bool jsonObject(const QByteArray& body, QJsonObject* out, QString* error)
+{
+    const auto fail = [error](const char* code) {
+        if (error)
+            *error = QString::fromLatin1(code);
+        return false;
+    };
+    if (body.size() > net::kMaxJsonBytes)
+        return fail("tooLarge");
+    const QByteArray trimmed = body.trimmed();
+    if (trimmed.isEmpty())
+        return fail("badJson");
+    if (trimmed.at(0) != '{')
+        return fail(trimmed.at(0) == '[' ? "wrongType" : "badJson");
+    QJsonParseError     parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(trimmed, &parseError);
+    if (parseError.error != QJsonParseError::NoError)
+        return fail("badJson");
+    if (!doc.isObject())
+        return fail("wrongType");
+    *out = doc.object();
+    return true;
+}
+
+QString stringOf(const QJsonObject& o, const char* key)
+{
+    const QJsonValue v = o.value(QLatin1String(key));
+    if (!v.isString())
+        return {};
+    const QString s = v.toString();
+    return s.size() > kMaxJsonString ? QString() : s;
+}
+
+// A whole number in [lo, hi] (JSON numbers, or digits in a string as some sites send them); fallback otherwise.
+qint64 numberOf(const QJsonObject& o, const char* key, qint64 lo, qint64 hi, qint64 fallback)
+{
+    const QJsonValue v = o.value(QLatin1String(key));
+    double           d = 0;
+    if (v.isDouble()) {
+        d = v.toDouble();
+    } else if (v.isString() && v.toString().size() <= 12) {
+        bool ok = false;
+        d       = v.toString().toDouble(&ok);
+        if (!ok)
+            return fallback;
+    } else {
+        return fallback;
+    }
+    if (!(d >= static_cast<double>(lo) && d <= static_cast<double>(hi)))
+        return fallback;
+    return static_cast<qint64>(d);
+}
+
+bool isHashOf(const QString& value)
+{
+    static const QRegularExpression re(QStringLiteral("^(a_)?[0-9a-f]{32}$"));
+    return re.match(value).hasMatch();
+}
+
+quint32 le32(const QByteArray& data, int at)
+{
+    const auto* d = reinterpret_cast<const unsigned char*>(data.constData()) + at;
+    return quint32(d[0]) | (quint32(d[1]) << 8) | (quint32(d[2]) << 16) | (quint32(d[3]) << 24);
+}
+
+// Walks chunks in [from, to): Lossless / Malformed as soon as one says so; nested: inside an ANMF frame.
+WebpVerdict walkChunks(const QByteArray& file, qint64 from, qint64 to, bool nested, int* budget)
+{
+    qint64 at        = from;
+    bool   anyChunks = false;
+    while (at < to) {
+        if (--*budget < 0 || at + 8 > to)
+            return WebpVerdict::Malformed;
+        const QByteArray fourcc = file.mid(static_cast<int>(at), 4);
+        const qint64     size   = le32(file, static_cast<int>(at + 4));
+        const qint64     start  = at + 8;
+        const qint64     end    = start + size;
+        if (end > to)
+            return WebpVerdict::Malformed;
+        anyChunks = true;
+        if (fourcc == "VP8L")
+            return WebpVerdict::Lossless;
+        if (fourcc == "ALPH") {
+            if (size < 1)
+                return WebpVerdict::Malformed;
+            if ((static_cast<unsigned char>(file.at(static_cast<int>(start))) & 0x03) == 1)
+                return WebpVerdict::Lossless;
+        }
+        if (fourcc == "ANMF" && !nested) {
+            if (size < 16)
+                return WebpVerdict::Malformed;
+            const WebpVerdict inner = walkChunks(file, start + 16, end, true, budget);
+            if (inner != WebpVerdict::Ok)
+                return inner;
+        }
+        at = end + (size & 1); // payloads are padded to an even size
+        if (at > to + 1)
+            return WebpVerdict::Malformed;
+    }
+    return anyChunks || nested ? WebpVerdict::Ok : WebpVerdict::Malformed;
+}
+
+} // namespace
+
+bool parseOEmbedData(const QByteArray& body, OEmbedData* out, QString* error)
+{
+    QJsonObject o;
+    if (!jsonObject(body, &o, error))
+        return false;
+    OEmbedData data;
+    const QString type = stringOf(o, "type");
+    if (type == QLatin1String("photo") || type == QLatin1String("video") || type == QLatin1String("link") || type == QLatin1String("rich"))
+        data.type = type;
+    data.title           = stringOf(o, "title");
+    data.authorName      = stringOf(o, "author_name");
+    data.providerName    = stringOf(o, "provider_name");
+    data.description     = stringOf(o, "description");
+    data.thumbnailUrl    = stringOf(o, "thumbnail_url");
+    data.url             = data.type == QLatin1String("photo") ? stringOf(o, "url") : QString();
+    data.thumbnailWidth  = static_cast<int>(numberOf(o, "thumbnail_width", 0, 16384, 0));
+    data.thumbnailHeight = static_cast<int>(numberOf(o, "thumbnail_height", 0, 16384, 0));
+    data.width           = static_cast<int>(numberOf(o, "width", 0, 16384, 0));
+    data.height          = static_cast<int>(numberOf(o, "height", 0, 16384, 0));
+    data.durationMs      = numberOf(o, "duration", 0, 86400, 0) * 1000;
+    if (out)
+        *out = data;
+    return true;
+}
+
+bool parseWikiSummary(const QByteArray& body, WikiSummary* out, QString* error)
+{
+    QJsonObject o;
+    if (!jsonObject(body, &o, error))
+        return false;
+    WikiSummary summary;
+    summary.title   = stringOf(o, "title");
+    summary.extract = stringOf(o, "extract");
+    const QJsonValue thumbnail = o.value(QLatin1String("thumbnail"));
+    if (thumbnail.isObject()) {
+        const QJsonObject t     = thumbnail.toObject();
+        summary.thumbnail       = stringOf(t, "source");
+        summary.thumbnailWidth  = static_cast<int>(numberOf(t, "width", 0, 16384, 0));
+        summary.thumbnailHeight = static_cast<int>(numberOf(t, "height", 0, 16384, 0));
+    }
+    if (out)
+        *out = summary;
+    return true;
+}
+
+bool parseDiscordInvite(const QByteArray& body, DiscordInvite* out, QString* error)
+{
+    QJsonObject o;
+    if (!jsonObject(body, &o, error))
+        return false;
+    DiscordInvite    invite;
+    const QJsonValue guildValue = o.value(QLatin1String("guild"));
+    if (guildValue.isObject()) {
+        const QJsonObject guild = guildValue.toObject();
+        static const QRegularExpression kId(QStringLiteral("^\\d{15,22}$"));
+        const QString id = stringOf(guild, "id");
+        if (kId.match(id).hasMatch())
+            invite.guildId = id;
+        invite.name        = stringOf(guild, "name");
+        invite.description = stringOf(guild, "description");
+        const QString splash = stringOf(guild, "splash");
+        const QString icon   = stringOf(guild, "icon");
+        invite.splash        = isHashOf(splash) ? splash : QString();
+        invite.icon          = isHashOf(icon) ? icon : QString();
+        invite.nsfw = (guild.value(QLatin1String("nsfw")).isBool() && guild.value(QLatin1String("nsfw")).toBool())
+                      || numberOf(guild, "nsfw_level", 0, 100, 0) == 3;
+    }
+    invite.members = numberOf(o, "approximate_member_count", 0, 1000000000LL, -1);
+    invite.online  = numberOf(o, "approximate_presence_count", 0, 1000000000LL, -1);
+    if (out)
+        *out = invite;
+    return true;
+}
+
+bool parsePixeldrainInfo(const QByteArray& body, PixeldrainInfo* out, QString* error)
+{
+    QJsonObject o;
+    if (!jsonObject(body, &o, error))
+        return false;
+    PixeldrainInfo info;
+    info.mimeType = stringOf(o, "mime_type").toLower().left(100);
+    info.size     = numberOf(o, "size", 0, 1LL << 50, -1);
+    if (out)
+        *out = info;
+    return true;
+}
+
+QString stripTags(const QString& html)
+{
+    const QString decoded = pagemeta::decodeEntities(html);
+    QString       out;
+    out.reserve(decoded.size());
+    bool inTag = false;
+    for (const QChar ch : decoded) {
+        if (inTag) {
+            if (ch == QLatin1Char('>')) {
+                inTag = false;
+                out += QLatin1Char(' ');
+            }
+            continue;
+        }
+        if (ch == QLatin1Char('<')) {
+            inTag = true;
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+
+WebpVerdict webpVerdict(const QByteArray& file)
+{
+    if (file.size() < 12 || !file.startsWith("RIFF") || file.mid(8, 4) != "WEBP")
+        return WebpVerdict::Malformed;
+    const qint64 riffEnd = qint64(le32(file, 4)) + 8;
+    if (riffEnd > file.size() || riffEnd < 12)
+        return WebpVerdict::Malformed;
+    int budget = 8192;
+    return walkChunks(file, 12, riffEnd, false, &budget);
 }
 
 } // namespace linkpreview::content

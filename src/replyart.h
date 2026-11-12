@@ -30,7 +30,8 @@ Palette paletteFor(bool dark, const QColor& base);
 // color made readable on base (at least minimum:1, moved towards black or white); fallback if invalid.
 QColor readable(const QColor& color, const QColor& base, const QColor& fallback, double minimum = 4.5);
 
-// A font of the chat font's family at factor times its pixel size (at least 10 px).
+// A font of the chat font's family at factor times the base size of 11 du (at least 10 du; 2.5 zoom: the picture's
+// ratio carries the chat's text size).
 QFont scaledFont(const QFont& chatFont, qreal factor);
 
 struct Header {

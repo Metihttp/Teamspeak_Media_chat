@@ -23,6 +23,7 @@
 
 #include <winhttp.h>
 
+#include <QDateTime>
 #include <QMutex>
 
 #include <climits>
@@ -36,7 +37,11 @@ namespace linkpreview::http {
 
 namespace {
 
-constexpr wchar_t kUserAgent[]      = L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+// 2.5: the honest user agent (net::userAgent()) unless HopOptions names one.
+std::wstring userAgentOf(const QByteArray& named)
+{
+    return QString::fromLatin1(named.isEmpty() ? net::userAgent() : named).toStdWString();
+}
 constexpr DWORD   kMaxHeaderBytes   = 16 * 1024;
 constexpr int     kReadChunk        = 64 * 1024;
 constexpr DWORD   kCloseWaitMs      = 15 * 1000; // for WinHTTP / Winsock to let go after a close or cancel
@@ -202,6 +207,7 @@ struct Context {
     QMutex             peerLock;
     net::Address       peer;                   // CONNECTED_TO_SERVER's address (a fallback for head())
     std::vector<char>  buffer;                 // WinHttpReadData writes here (owned here: alive until closed)
+    std::wstring       headers;                // 2.5: the additional request headers (Accept-Encoding), alive until closed
 
     ~Context()
     {
@@ -297,6 +303,21 @@ bool queryText(const WinHttpApi& api, HINTERNET request, DWORD info, QString* ou
     return true;
 }
 
+// A header by name (WINHTTP_QUERY_CUSTOM); false when absent or too long.
+bool queryCustom(const WinHttpApi& api, HINTERNET request, const wchar_t* name, QString* out)
+{
+    out->clear();
+    DWORD size = 0;
+    api.query(request, WINHTTP_QUERY_CUSTOM, name, WINHTTP_NO_OUTPUT_BUFFER, &size, WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0 || size > 512)
+        return false;
+    std::vector<wchar_t> buffer(size / sizeof(wchar_t) + 1);
+    if (!api.query(request, WINHTTP_QUERY_CUSTOM, name, buffer.data(), &size, WINHTTP_NO_HEADER_INDEX))
+        return false;
+    *out = QString::fromWCharArray(buffer.data(), static_cast<int>(size / sizeof(wchar_t)));
+    return true;
+}
+
 class WinHttpExchange : public Exchange
 {
   public:
@@ -339,7 +360,9 @@ class WinHttpExchange : public Exchange
         if (!request)
             return m_ctx->blocked ? Error::Blocked : Error::Canceled;
         ResetEvent(m_ctx->opEvent);
-        if (!m_ctx->api->send(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, reinterpret_cast<DWORD_PTR>(m_ctx))) {
+        const wchar_t* headers = m_ctx->headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : m_ctx->headers.c_str();
+        const DWORD    length  = m_ctx->headers.empty() ? 0 : static_cast<DWORD>(-1L);
+        if (!m_ctx->api->send(request, headers, length, WINHTTP_NO_REQUEST_DATA, 0, 0, reinterpret_cast<DWORD_PTR>(m_ctx))) {
             m_error = GetLastError();
             return m_ctx->blocked ? Error::Blocked : mapError(m_error);
         }
@@ -389,6 +412,26 @@ class WinHttpExchange : public Exchange
         }
         if (queryText(api, request, WINHTTP_QUERY_LOCATION, &text, 3 * 8192))
             head.location = text.left(8192);
+        // 2.5: what the response says about itself and about the site's limits.
+        if (queryText(api, request, WINHTTP_QUERY_CONTENT_ENCODING, &text, 256))
+            head.contentEncoding = text.trimmed().toLower().left(64).toLatin1();
+        const qint64 wallMs = QDateTime::currentMSecsSinceEpoch();
+        if (queryText(api, request, WINHTTP_QUERY_RETRY_AFTER, &text, 256))
+            head.retryAfterMs = net::parseRetryAfter(text.toLatin1(), wallMs);
+        if (queryCustom(api, request, L"cf-mitigated", &text))
+            head.challenge = text.trimmed().compare(QLatin1String("challenge"), Qt::CaseInsensitive) == 0;
+        if (queryCustom(api, request, L"x-ratelimit-remaining", &text)) {
+            bool         ok        = false;
+            const double remaining = text.trimmed().toDouble(&ok);
+            if (ok && remaining >= 0 && remaining < 1e12)
+                head.rateRemaining = remaining;
+        }
+        QString reset, resetAfter;
+        queryCustom(api, request, L"x-ratelimit-reset", &reset);
+        queryCustom(api, request, L"x-ratelimit-reset-after", &resetAfter);
+        head.rateResetMs = net::parseRateReset(resetAfter.toLatin1(), reset.toLatin1(), wallMs);
+        if (head.status == 429 && head.retryAfterMs < 0 && head.rateResetMs > 0)
+            head.retryAfterMs = head.rateResetMs;
         head.peer = connectionPeer(api, request);
         if (head.peer.isNull()) {
             QMutexLocker lock(&m_ctx->peerLock);
@@ -507,7 +550,8 @@ bool autoProxy(const WinHttpApi& api, const QUrl& url, LPCWSTR configUrl, bool d
     if (options.dwFlags == 0 || !api.proxyForUrl || !query.isValid())
         return false;
     options.fAutoLogonIfChallenged = FALSE; // never the Windows account's credentials
-    HINTERNET session = api.open(kUserAgent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    const std::wstring userAgent = userAgentOf(QByteArray());
+    HINTERNET          session   = api.open(userAgent.c_str(), WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session)
         return false;
     const int wait = qBound(1000, qMin(kAutoProxyMaxMs, msUntil(deadline)), kAutoProxyMaxMs);
@@ -698,13 +742,17 @@ std::unique_ptr<Exchange> WinHttpTransport::open(const HopOptions& options, cons
     if (!ctx->opEvent || !ctx->requestClosed)
         return fail(Error::Unavailable);
 
+    const std::wstring userAgent = userAgentOf(options.userAgent);
     if (ctx->viaProxy) {
         // The user's proxy (the https request is tunneled through it; the certificate is still the website's).
         const std::wstring proxy = options.route.proxy.left(net::kMaxProxyChars).toStdWString();
-        ctx->session = api.open(kUserAgent, WINHTTP_ACCESS_TYPE_NAMED_PROXY, proxy.c_str(), WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+        ctx->session = api.open(userAgent.c_str(), WINHTTP_ACCESS_TYPE_NAMED_PROXY, proxy.c_str(), WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
     } else {
-        ctx->session = api.open(kUserAgent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+        ctx->session = api.open(userAgent.c_str(), WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
     }
+    // 2.5: never compressed (WinHTTP's own decompression stays off too).
+    const QByteArray encoding = options.acceptEncoding.isEmpty() ? QByteArray("identity") : options.acceptEncoding;
+    ctx->headers = (QLatin1String("Accept-Encoding: ") + QString::fromLatin1(encoding.left(64)) + QLatin1String("\r\n")).toStdWString();
     if (!ctx->session)
         return fail(Error::Unavailable);
     DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;

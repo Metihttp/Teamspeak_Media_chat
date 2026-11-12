@@ -7,6 +7,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QScreen> // 2.5 zoom: the start-up line
 #include <QTextBrowser> // chatpolls.h keeps QPointers to the chats
 #include <QThread>
 #include <QTimer>
@@ -31,6 +32,8 @@
 #include "emojirender.h"        // 2.2 emoji
 #include "emojisection.h"       // 2.2 emoji
 #include "fileverify.h"         // 2.2 sha: its diagnostics section
+#include "giflibrary.h"         // 2.5 GIFs: the emoji picker's GIFs tab
+#include "linkpreview/senderpipeline.h" // 2.5 GIFs: our own links' local results
 #include "i18n.h"
 #include "inlinemedia.h"
 #include "chatlinkpreviews.h"   // 2.4 link previews: the chat's cards get the hub's store
@@ -84,6 +87,7 @@ QPointer<AccessGroup>       g_access;                  // 2.2 servergroup
 QPointer<DiagnosticsDialog> g_diagnostics;             // 2.2 diagnostics
 QPointer<PeerHub>           g_peers;                   // 2.2 protocol: presence and reactions
 QPointer<MusicController>   g_music;                   // 2.3 live music
+QPointer<GifLibrary>        g_gifs;                    // 2.5 GIFs: the emoji picker's GIFs tab
 bool                        g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
 // Explicit values: each feature owns its ids, and existing ones stay stable.
@@ -531,6 +535,11 @@ TS3_EXPORT int ts3plugin_init()
             VoiceController* voice = g_chat ? g_chat->voice() : nullptr;
             return voice ? diag::Section{VoiceController::diagnosticsTitle(), voice->diagnosticLines()} : diag::Section();
         });
+        // 2.5 link previews: the switches, the LPX cap, what came and went, why slots are held (counts only).
+        diag::addSectionProvider([]() -> diag::Section {
+            ChatLinkPreviews* links = g_chat ? g_chat->linkPreviews() : nullptr;
+            return links ? diag::Section{i18n::t("Link previews"), links->diagnosticLines()} : diag::Section();
+        });
         // 2.2 emoji: the picker's recently used emoji and skin tone; the renderer in the diagnostic info.
         emoji::prefs::setFile(ts3::dataDir() + QLatin1String("/emoji.ini"));
         diag::addSectionProvider([]() -> diag::Section {
@@ -548,6 +557,21 @@ TS3_EXPORT int ts3plugin_init()
         // for them (the peers' capability, the senders' LPNO) and show our own links from our pipeline's download.
         if (chat->linkPreviews() && peers->linkPreviews())
             chat->linkPreviews()->setHub(peers->linkPreviews(), peers->directory());
+        // 2.5 GIFs: the list behind the picker's GIFs tab (<data>/gifs; outside the cache, so Clear cache keeps it). It
+        // hears our own GIF links and uploads, and the local results of links (ours and the chat's loads); deleted after
+        // PeerHub and before Core.
+        g_gifs = new GifLibrary(core, ts3::dataDir() + QLatin1String("/gifs"));
+        g_gifs->start();
+        if (peers->linkPreviews() && peers->linkPreviews()->pipeline())
+            g_gifs->watch(QObject::connect(peers->linkPreviews()->pipeline(), &linkpreview::SenderPipeline::ownLinkChanged, g_gifs.data(),
+                                           &GifLibrary::onLinkLoaded, Qt::DirectConnection));
+        if (chat->linkPreviews())
+            g_gifs->watch(QObject::connect(chat->linkPreviews(), &ChatLinkPreviews::linkLoaded, g_gifs.data(), &GifLibrary::onLinkLoaded,
+                                           Qt::DirectConnection));
+        chat->setGifs(g_gifs);
+        diag::addSectionProvider([]() -> diag::Section {
+            return g_gifs ? diag::Section{i18n::t("GIFs"), g_gifs->diagnosticLines()} : diag::Section();
+        });
         // 2.3 live music: the paperclip menu's "Live music", the bar above the chat input (after the chat).
         // Deleted early in ts3plugin_shutdown.
         g_music = new MusicController(MusicController::pluginHost());
@@ -572,7 +596,11 @@ TS3_EXPORT int ts3plugin_init()
                                  g_updater->notePeerVersion(sch, version, inOwnChannel);
                          });
         chat->setOwnLinkHandler([](const QString& href, bool activate) { return g_updater && g_updater->handleHintLink(href, activate); });
-        ts3::log(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded");
+        // 2.5 zoom: the display's scaling as TeamSpeak's Qt sees it (dpr 1 at every Windows scale unless Qt scales).
+        const QScreen* screen = QGuiApplication::primaryScreen();
+        ts3::log(QString::fromLatin1(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded (dpr %1, logicalDpi %2)")
+                     .arg(screen ? screen->devicePixelRatio() : 1.0)
+                     .arg(screen ? screen->logicalDotsPerInchY() : 96.0));
     }, Qt::QueuedConnection);
     return 0;
 }
@@ -601,6 +629,9 @@ TS3_EXPORT void ts3plugin_shutdown()
         // 2.4 link previews: the chat's website fetches canceled and joined (the cards go with the chat below).
         if (g_chat && g_chat->linkPreviews())
             g_chat->linkPreviews()->prepareShutdown();
+        // 2.5 GIFs: copies and decodes canceled and joined, the list written, every source let go.
+        if (g_gifs)
+            g_gifs->prepareShutdown();
 #ifdef TSMEDIA_TESTHOOKS
         ts3::log(QStringLiteral("[test] shutdown: link previews stopped (sender and chat fetchers joined) at %1 ms").arg(shutdownClock.elapsed()));
 #endif
@@ -707,6 +738,7 @@ TS3_EXPORT void ts3plugin_shutdown()
 #endif
         delete g_access.data(); // 2.2 servergroup: stops its timers and a running icon upload
         delete g_peers.data(); // 2.2 protocol: the store, the presence directory, the transport
+        delete g_gifs.data();  // 2.5 GIFs: before Core (it holds Core and its connections)
 #ifdef TSMEDIA_TESTHOOKS
         ts3::log(QStringLiteral("[test] shutdown: peers and link-preview hub gone at %1 ms").arg(shutdownClock.elapsed()));
 #endif
@@ -1055,6 +1087,8 @@ TS3_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 serverConnection
     // strip (a hold ends, kept in the window) and the music bar belong to their own tab.
     const uint64 sch = serverConnectionHandlerID;
     onGuiThread([sch] {
+        if (g_chat) // 2.5 GIFs: a picker with the GIFs tab closes (a click would go to another server's chat)
+            g_chat->closeGifPicker();
         if (g_chat && g_chat->voice())
             g_chat->voice()->serverTabChanged(sch);
         if (g_music)
@@ -1129,6 +1163,8 @@ TS3_EXPORT int ts3plugin_onTextMessageEvent(uint64 serverConnectionHandlerID, an
         onGuiThread([lpSch, mode, toID, fromID, lpUid, text] {
             if (linkpreview::Hub* hub = linkpreview::Hub::instance())
                 hub->onTextMessage(lpSch, mode, toID, fromID, lpUid, text);
+            if (g_gifs) // 2.5 GIFs: our own GIF links, in every chat (the server chat too)
+                g_gifs->onTextMessage(lpSch, mode, toID, fromID, lpUid, text);
         });
     }
     if (!text.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))

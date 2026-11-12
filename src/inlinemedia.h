@@ -11,6 +11,8 @@
 #include <QPointer>
 #include <QSet>
 #include <QSize>
+#include <QStringList>
+#include <QVector>
 
 #include "previewrenderer.h"
 
@@ -31,11 +33,18 @@ class InlineMediaController : public QObject
 
     // 2.2 audio: Audio = the audio player card (audiocard.h), for every Audio-kind entry while Windows
     // can play media (mf::available()); otherwise audio files stay plain file cards (Still).
-    enum class Mode { Still, Animated, Video, Audio };
+    // 2.5: Loop: a silent looping video of a link preview (MediaLink::loop), drawn and played like an animated GIF:
+    // muted, looping, playing while visible (when autoplayGifs and Windows animations are on, else while hovered),
+    // several at once from a pool of its own (kMaxLoopPlayers, never taking a video's player); a loop without a
+    // player shows its poster. A click opens it in the viewer (openRequested from ChatIntegration, like a GIF).
+    enum class Mode { Still, Animated, Video, Audio, Loop };
+    static constexpr int kMaxLoopPlayers = 4;
 
     // What ChatIntegration should draw for key right now.
-    Mode            mode(const QString& key) const;  // Video for every Video-kind entry, Animated while a movie exists
+    Mode            mode(const QString& key) const;  // Video for every Video-kind entry (Loop for a loop), Animated while a movie exists
     QImage          frame(const QString& key) const; // current animation/video frame (device pixels), may be null
+    // 2.5 GIFs: the entry's file is an animation the chat plays (a GIF or animated WebP within the pixel cap; Ready).
+    bool            animates(const QString& key) { return isAnimatable(key); }
     PlaybackOverlay overlay(const QString& key) const;
 
     // Keys whose previews are currently on screen in a visible chat tab. Animations run only while
@@ -47,7 +56,9 @@ class InlineMediaController : public QObject
     // nothing would be left to pause it with.
     void setPresentKeys(const QSet<QString>& keys);
     // Device-pixel size the preview of key is drawn at (frames are produced at this size).
-    void setFrameSize(const QString& key, const QSize& devicePixels);
+    // 2.5 zoom: ratio is the preview's canvas ratio R (devicePixels = the box in du x R): videos are made at the box,
+    // GIF frames at most at ratio 2 and never above the GIF's own size.
+    void setFrameSize(const QString& key, const QSize& devicePixels, qreal ratio = 1.0);
 
     // Input on a preview. For videos: Body/PlayPause toggle playback (downloading the file first if
     // needed), Seek jumps to seekFraction, Mute toggles mute, Expand emits openRequested.
@@ -99,12 +110,16 @@ class InlineMediaController : public QObject
     void   repaintAudioProgress(Video* video);      // 2.2 audio: redraw when the played pixel or second moves
     bool   isAnimatable(const QString& key);
     QSize  videoFrameSize(const Video* video) const;
+    QSize  animationFrameSize(const QString& key, const QSize& natural) const; // 2.5 zoom
     void   updateTimer();
+    bool   isLoop(const QString& key) const; // 2.5: a Video-kind entry whose link loops
+    void   updateLoops();                    // 2.5: the loop pool after a visibility or hover change
 
     Core*                          m_core;
     QHash<QString, Video*>         m_videos;
     QHash<QString, Animation*>     m_animations;
     QHash<QString, QSize>          m_frameSizes;
+    QHash<QString, qreal>          m_frameRatios; // 2.5 zoom: the canvas ratio each box was given for
     QSet<QString>                  m_visible;
     QString                        m_hoverKey;
     VideoZone                      m_hoverZone = VideoZone::None;

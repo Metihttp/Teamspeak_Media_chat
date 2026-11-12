@@ -5,6 +5,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.5.0] - 2026-11-12
+
+### Added
+- **Page links like Discord.** Links to GIF and media sites show the media itself: Tenor, Giphy, Imgur (also `.gifv` and albums), Klipy (clips, stickers, memes, emoji, AI GIFs; for its GIF pages, which are behind Klipy's own bot check, Klipy's public oEmbed is asked for the GIF: its answer doesn't name it yet, and they start working by themselves once Klipy fixes that), Reddit videos and post links, Streamable, Imgflip, Pinterest, 9GAG, Coub, Gyazo, Lightshot, ImgBB, Postimages, Gifer, Makeagif, Pixeldrain, Tumblr posts and Steam screenshots. GIF-like videos play silently in a loop, like GIFs.
+- **Cards for well-known sites:** Vimeo, SoundCloud, Spotify, Apple Music, Dailymotion, Medal, X, Bluesky, Twitch, Kick, Steam, GitHub, Wikipedia, Telegram, Discord invites and Reddit posts, with the site's colour, author, title, a short text and a picture; a click opens the link in your browser.
+- **Cards for other web pages** (*Show cards for other web pages*, on by default): site name, title, a short text, the picture and the page's colour, read from the start of the page (never shown or run).
+- Made by the sender like every other preview: the sender's plugin reads the page once and shares the card through the TeamSpeak server, and people with TS Media 2.5 use that card instead of contacting the site. When the sender has no TS Media 2.5 (or turned previews off), their PC loads it when it scrolls into view, within the automatic limits. Older versions ignore the new previews.
+- **Load link previews** in a message's menu loads (or retries) the previews of that message's links by hand.
+- **Nextcloud and ownCloud share links** show the shared picture, GIF or video inline, and a card for other files and folders. From a link to a share page, password-protected, upload-only and download-limited shares, and shares whose owner turned downloads off, are never downloaded (a link straight to the file loads like any file link); servers on a LAN, VPN or private address are never contacted.
+- Cards and media from pages that declare themselves for adults (their rating, or an age of 18 or more) show their picture covered like a spoiler: a click shows it, and *Show spoilers without blurring* shows it at once. A page without that flag may still be for adults.
+- **Previews follow zoom and high-DPI screens.** Every preview (pictures, GIFs, videos, albums, file, audio and voice cards, link cards, polls, reactions) is drawn in proportion to the chat's text and sharp: it grows with Windows display scaling (150%, 200% on 4K screens), with Ctrl + mouse wheel over the chat and with TeamSpeak's chat font. The line you are reading stays in place while you zoom, and a chat at its end stays at its end. Reply lines and the reaction rows under messages follow the text too.
+- **Preview size** (*Settings → Receiving & playback*): Small, Normal, Large or Larger, for previews larger or smaller than the text.
+- **A GIFs tab in the emoji picker**, like Telegram: the GIFs you send (GIF site links, GIF links, GIF files you upload) are kept, newest first, and one click sends one again; *Save to GIFs* in a GIF's menu keeps any other. Only the GIF under the pointer moves; opening the tab contacts no website. *Remember GIFs I send* and *Remove all GIFs…* are in *Settings → General → Emoji*; *Clear cache* keeps your GIFs. There is no GIF search.
+- **YouTube videos play in a window of their own over TeamSpeak** with YouTube's own player in its privacy-enhanced mode (`youtube-nocookie.com`, in Microsoft Edge WebView2, the web view built into Windows), after you press Play on a YouTube card; nothing of the player loads before that. The first time, the card asks once (*Play this video in a window?*) with links to YouTube's Terms of Service and Google's Privacy Policy. The window closes with its close box, **Esc** or the card's (x), and its size is remembered; the video pauses when TeamSpeak is minimized or a TS Media video or voice message starts, and only one plays at a time. Videos whose owner doesn't allow embedding show *This video can only be watched on YouTube* with **Watch on YouTube**. *Play YouTube videos in the chat* (*Settings → Privacy & updates*, on by default) turns it off: Play then opens the browser as before. 64-bit TeamSpeak only (in 32-bit TeamSpeak, Play opens the browser); without the WebView2 Runtime, videos open in the browser.
+
+### Changed
+- Links written as `http://` (TeamSpeak links addresses typed without `https://` that way) get previews too, always loaded over https.
+- Website requests say who they are (`TSMediaChat/2.5` with the project's address) and ask for no compression.
+- Card and title text keeps Persian and emoji joiners and loses more invisible characters.
+- Links with Persian (or other) joiners in their address, and links that end in a bracket such as Wikipedia's `Foo_(bar)`, are read the same way by the sender's plugin and by everyone else.
+- In 32-bit TeamSpeak, pictures larger than about 16.7 megapixels get no preview (they could exhaust its memory).
+- YouTube cards use the large thumbnail (1280 × 720) when the video has one, so they stay sharp on high-DPI screens; sender-made YouTube previews are up to 960 px wide.
+- GIFs are decoded at most at twice their box and never above their own size, which saves work while many play at once on a high-DPI screen.
+- A long chat keeps the memory of its preview pictures bounded (128 MB, 48 MB in 32-bit TeamSpeak): pictures far from the view are drawn again when they come near.
+- The diagnostic info shows the chat's preview scale.
+
+### Fixed
+- A site that answers "too many requests" (HTTP 429) no longer turns previews into error cards: requests to one site are spaced out (also when the site says its allowance is used up), and its cards wait as long as the site asks, then load by themselves.
+- Links a sender's plugin skipped because of its per-minute limit no longer keep people waiting for minutes.
+- Cards above the automatic download limit load by themselves once the limit is raised.
+
+### Security
+- Pictures from other people and from websites are decoded only as PNG, JPEG, GIF, WebP or BMP, by their content (no SVG or other formats), and lossless WebP pictures are refused (a bug in the image library TeamSpeak ships). A received file that isn't a picture by its content (such as an SVG named `.jpg`) shows as a file card.
+- Through a proxy, names under your own network's DNS suffixes are never loaded.
+- Links and picture addresses that look like sign-in, confirmation, unsubscribe, download or token links are never loaded for a preview.
+
 ## [2.4.0] - 2026-11-09
 
 2.4.0 includes everything prepared for 2.3.4, which was never released on its own.
@@ -310,6 +346,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.5.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.4.0...HEAD
 [2.4.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.1...v2.3.2

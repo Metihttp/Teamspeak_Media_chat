@@ -275,7 +275,19 @@ QRectF ChatReactions::pictureRect(QTextBrowser* browser, const QString& key, con
     const auto geometry = perBrowser->constFind(key);
     if (geometry == perBrowser->constEnd() || !geometry->picture.isValid() || geometry->row.isEmpty())
         return objectRect;
-    return QRectF(objectRect.topLeft(), QSizeF(geometry->picture).boundedTo(objectRect.size()));
+    // 2.5 zoom: the picture's du size as logical px.
+    return QRectF(objectRect.topLeft(), m_chat->scaleOf(browser).toLogical(QSizeF(geometry->picture)).boundedTo(objectRect.size()));
+}
+
+QSize ChatReactions::pictureDuSize(QTextBrowser* browser, const QString& key, const QSize& objectDu) const
+{
+    const auto perBrowser = m_geometry.constFind(browser);
+    if (perBrowser == m_geometry.constEnd())
+        return objectDu;
+    const auto geometry = perBrowser->constFind(key);
+    if (geometry == perBrowser->constEnd() || !geometry->picture.isValid() || geometry->row.isEmpty())
+        return objectDu;
+    return geometry->picture.boundedTo(objectDu);
 }
 
 // ---- pointer ------------------------------------------------------------------------------------------
@@ -313,9 +325,12 @@ ChatReactions::Hit ChatReactions::hitAt(QTextBrowser* browser, const QPoint& pos
         result.object = rect;
         const auto perBrowser = m_geometry.constFind(browser);
         const Geometry geometry = perBrowser == m_geometry.constEnd() ? Geometry() : perBrowser->value(key);
-        if (geometry.picture.isValid())
-            result.zone = rx::zoneAt(QSizeF(geometry.picture), geometry.row, geometry.button, QPointF(pos) - rect.topLeft());
-        else
+        if (geometry.picture.isValid()) {
+            // 2.5 zoom: the row is laid out in du; its zone rect comes back as logical px (tool tips, the picker).
+            const PreviewScale scale = m_chat->scaleOf(browser);
+            result.zone              = rx::zoneAt(QSizeF(geometry.picture), geometry.row, geometry.button, scale.toDu(QPointF(pos) - rect.topLeft()));
+            result.zone.rect         = scale.toLogical(result.zone.rect);
+        } else
             result.zone.zone = rx::Zone::Picture;
         if (result.zone.zone == rx::Zone::None)
             result.zone.zone = rx::Zone::Row; // beside a narrow picture, inside the object: not the chat text

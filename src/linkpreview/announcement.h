@@ -36,12 +36,47 @@
 //      ended without one). Receivers waiting for the sender's preview load the link themselves. The same s, m
 //      and u rules as LP, the same checks on the receiving side (the message's own sender only, never
 //      ServerQuery, s=c only from our channel, LP's per-sender limit); unknown fields ignored.
+//
+// 2.5: the new link classes (media sites, site cards, web cards: linkurl.h) are announced with types of their own,
+// which 2.4.0 and 2.3.x drop unread (unknown types), so they never show a preview they can't place. LP and LPNO
+// stay exactly 2.4.0's, for the 2.4 classes only.
+//
+//   LPX s=c|p m=<hash>-<age> u=<url key> k=i|g|v|a|c
+//       [c=<channel id> p=<preview path> h=<preview sha> ps=<preview bytes>]
+//       [f=<media path> fh=<media sha> fs=<media bytes>]
+//       [w=<width> ht=<height>] [d=<duration ms>]
+//       [t=<title>] [a=<author>] [n=<site name>] [x=<description>]
+//       [cl=<rrggbb>] [ly=l|t] [pg=1] [sn=1]
+//
+//  * s, m, u as LP; k: i a picture, g a GIF (animated GIF or WebP), v a video, a a silent looping video (a GIF-like
+//    MP4 or WebM), c a card.
+//  * c, p, h, ps come together or not at all: required for i g v a, optional for c (a card without a picture). The
+//    same path, sha and size rules as LP. f, fh, fs together or not at all, only for i g v a; the media file's
+//    extension by k (i: png jpg jpeg webp, g: gif webp, v: mp4 webm mov m4v, a: mp4 webm).
+//  * w / ht both or none (1..16384), only with p or f (the media's size, for a card its picture's); d (1 ms..24 h)
+//    only for v, a and c.
+//  * t, a, n, x: only for c, base64url of UTF-8 (at most 256, 96, 64 and 384 bytes), cleaned again on receipt
+//    (textclean); t is required. A card needs x or p. cl: only for c, the page's theme colour (6 hex digits); one
+//    that isn't a theme colour a card may wear is ignored (no rejection). ly: only for c with p (l Large, t Thumb).
+//    pg=1: only for c, a play glyph on the picture. sn=1: any k, the page says it is for adults (a spoiler cover).
+// Any field that breaks its rule rejects the whole LPX; unknown fields are ignored. Its ceiling is
+// proto::maxSendBytes("LPX") (1400); a sender uses lpxSendCap() of its connection (900 until live check L1) and
+// shortens the description, then the title, then leaves out the author, the site name and the description to fit.
+//
+//   LPXNO s=c|p m=<hash>-<age> u=<url key>[,<url key>[,<url key>]] [r=n|x]
+//      The sender's plugin won't announce (an LPX of) those links of that message: 1 to 3 distinct keys. r (with
+//      one key only): n = it found nothing to show (no card, a wall, an expired link), x = the page redirected to
+//      another website. 2.5 receivers then don't load it by themselves; without r (a failure, too large, the
+//      intake limit) they may (as after LPNO). Any other r is read as none. The intake notice: one LPXNO without r
+//      for every link of one message the sender's plugin refused at intake (its per-minute limit, its queue).
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 
+#include "carddata.h"
 #include "linkurl.h"
 #include "peerprotocol.h"
 
@@ -76,6 +111,12 @@ struct Announcement {
     quint64 channelId   = 0; // ... and the channel
     qint64  previewSize = 0;
     bool    privateChat = false; // announced in a private chat (s=p)
+    // 2.5: an LPX (a link of the new classes); false: an LP. title / author stay YouTube's (LP); an LPX card's text is
+    // in card (site, author, title, description, layout, colour, play). Its picture size and duration are width /
+    // height / durationMs above (card.pictureWidth/Height and card.durationMs mirror them when read).
+    bool     extended  = false;
+    CardData card;
+    bool     sensitive = false; // sn=1 (any kind)
 };
 
 // An LP as read from the wire: the announcement (messageKey still empty: the receiver resolves m) and m.
@@ -98,8 +139,8 @@ bool       isUrlKey(const QString& key);         // 8..64 lower-case hex digits
 bool       isRemotePath(const QString& path);
 bool       isPreviewPath(const QString& path);   // ... a picture (.jpg .jpeg .png)
 bool       isMediaPath(Kind kind, const QString& path);
-// Text from a website made safe to show and send: C0/C1 controls, bidi marks and invisible characters
-// removed, whitespace runs become one space, trimmed, at most maxBytes of UTF-8 (whole characters).
+// Text from a website made safe to show and send: textclean::cleanToBytes (one line, invisible and reordering
+// characters removed, ZWNJ/ZWJ kept between visible characters, at most maxBytes of UTF-8, whole graphemes).
 QString    cleanText(const QString& text, int maxBytes);
 char       kindCode(Kind kind); // 'y' 'i' 'g' 'v'; 0 for None
 Kind       kindOf(char code);
@@ -128,6 +169,50 @@ struct Skip {
 proto::Message      makeSkip(proto::Scope scope, const QByteArray& wireRef, const QString& urlKey);
 // LPNO checked field by field (s c|p, m a wire ref, u a url key); nullopt for anything else.
 std::optional<Skip> readSkip(const proto::Message& message);
+
+// ---- LPX, LPXNO (2.5) ---------------------------------------------------------------------------------------
+
+// The cap an LPX may use on a connection: 1400 on TeamSpeak's own server once live check L1 showed that such plugin
+// commands pass and cost what short ones cost (longChecked); 900 everywhere else (TeaSpeak, unknown servers).
+constexpr bool kLpxLongCommandsChecked = false;
+constexpr int  kLpxShortCap            = 900;
+int            lpxSendCap(bool teamSpeakOwn, bool longChecked = kLpxLongCommandsChecked);
+
+char kindCodeX(Kind kind); // Image 'i', Gif 'g', Video 'v', Loop 'a', Card 'c'; 0 otherwise
+Kind kindOfX(char code);
+// The media file's extension fits an LPX of that kind (see above).
+bool isMediaPathX(Kind kind, const QString& path);
+// Everything of a (stored or received) LPX within the rules above, messageKey a local key.
+bool isValidX(const Announcement& a);
+// 2.5 (review fix): whether an LPX k=a is played like a GIF (downloaded by the picture rule, autoplayed, muted and
+// looping). Only when it says what an honest sender's loop is: a length of 1 ms to 60 s (d) and, with its file, a file
+// of at most kMaxLoopBytes (the GIF cap the sender's maker uses). Anything else a client calls a loop is a video (the
+// video rule: click to play), never an automatic download and decode of any file.
+constexpr qint64 kMaxLoopBytes    = 8LL * 1024 * 1024;
+constexpr qint64 kMaxLoopDuration = 60LL * 1000;
+bool loopTrusted(const Announcement& a);
+// isValid() of an LP, isValidX() of an LPX.
+bool isValidAny(const Announcement& a);
+
+// The LPX for a, in that chat, for the message with this wire ref, shortened to fit maxBytes (see above). An empty
+// message (no type) when a breaks a rule or doesn't fit even shortened.
+proto::Message makeLpx(const Announcement& a, proto::Scope scope, const QByteArray& wireRef, int maxBytes);
+// LPX checked field by field; nullopt for anything else. The text is cleaned (card limits of carddata.h).
+std::optional<Incoming> readLpx(const proto::Message& message);
+
+enum class SkipReason { Unknown, Nothing, CrossSite }; // r absent (or unknown) / r=n / r=x
+struct SkipX {
+    proto::Scope scope = proto::Scope::Channel;
+    QString      hash;
+    qint64       ageSec = 0;
+    QStringList  urlKeys; // 1..3, distinct
+    SkipReason   reason = SkipReason::Unknown;
+};
+constexpr int kMaxSkipKeys = 3;
+// The LPXNO for those links (1..3 distinct keys; a reason only with one key); an empty message on bad input.
+proto::Message       makeLpxSkip(proto::Scope scope, const QByteArray& wireRef, const QStringList& urlKeys, SkipReason reason = SkipReason::Unknown);
+std::optional<SkipX> readLpxSkip(const proto::Message& message);
+const char*          skipReasonName(SkipReason reason); // "-", "nothing", "cross-site"
 
 } // namespace linkpreview
 

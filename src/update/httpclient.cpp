@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+#include <QDateTime>
+
+#include "linkpreview/netpolicy.h"
 #include "updatepolicy.h"
 
 namespace upd::http {
@@ -139,15 +142,14 @@ bool queryString(const WinHttp& api, HINTERNET request, DWORD info, std::wstring
     return true;
 }
 
-// Retry-After as seconds (an HTTP date is ignored), clamped to 24 h.
+// Retry-After as seconds (delta seconds or an HTTP date, the link previews' one parser), clamped to 24 h.
 qint64 retryAfter(const WinHttp& api, HINTERNET request)
 {
     std::wstring value;
     if (!queryString(api, request, WINHTTP_QUERY_RETRY_AFTER, &value))
         return 0;
-    bool         ok      = false;
-    const qint64 seconds = QString::fromStdWString(value).trimmed().toLongLong(&ok);
-    return ok ? qBound<qint64>(0, seconds, kMaxRetryAfterSec) : 0;
+    const qint64 ms = linkpreview::net::parseRetryAfter(QString::fromStdWString(value).toLatin1(), QDateTime::currentMSecsSinceEpoch());
+    return ms < 0 ? 0 : qBound<qint64>(0, (ms + 999) / 1000, kMaxRetryAfterSec);
 }
 
 ULONGLONG nowMs()

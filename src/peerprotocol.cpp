@@ -393,6 +393,11 @@ std::optional<Message> parse(const QByteArray& raw, ParseResult* result)
     return m;
 }
 
+int maxSendBytes(const QByteArray& type)
+{
+    return type == "LPX" ? kMaxLpxSendBytes : kMaxSendBytes;
+}
+
 QByteArray serialize(const Message& message)
 {
     if (!isType(message.type))
@@ -410,7 +415,8 @@ QByteArray serialize(const Message& message)
         }
         out += ' ' + field.first + '=' + field.second;
     }
-    return out.size() <= kMaxSendBytes ? out : QByteArray();
+    // One ceiling per type, used by every sender (PluginLink::sendWith serializes again): an LPX may be longer.
+    return out.size() <= maxSendBytes(message.type) ? out : QByteArray();
 }
 
 // ---- typed messages -------------------------------------------------------------------------------

@@ -123,12 +123,12 @@ Palette paletteFor(bool dark, const QColor& base)
     return p;
 }
 
+// 2.5 zoom: the base is 11 du (the chat's family only); the reply line is drawn at the chat's chrome ratio, so it
+// follows the chat's text size (Ctrl + wheel, the chat font, Windows scaling) without a 96-DPI assumption or a clamp.
 QFont scaledFont(const QFont& chatFont, qreal factor)
 {
     QFont font(chatFont);
-    qreal px = chatFont.pixelSize() > 0 ? chatFont.pixelSize() : (chatFont.pointSizeF() > 0 ? chatFont.pointSizeF() * 96.0 / 72.0 : 12.0);
-    px       = qBound(11.0, px, 18.0);
-    font.setPixelSize(qMax(10, qRound(px * factor)));
+    font.setPixelSize(qMax(10, qRound(11.0 * factor)));
     return font;
 }
 

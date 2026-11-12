@@ -663,6 +663,13 @@ QString format(const Facts& f, bool includeNames, const QString& homeDir)
     if (f.theme > 0)
         display << i18n::t("TeamSpeak theme %1").arg(f.theme == 2 ? i18n::t("dark") : i18n::t("light"));
     item(i18n::t("Display: %1").arg(display.join(QLatin1String(", "))));
+    if (f.previewScalePercent > 0) { // 2.5 zoom
+        const QString preset = f.previewPreset == 85    ? i18n::t("Small")
+                               : f.previewPreset == 125 ? i18n::t("Large")
+                               : f.previewPreset == 150 ? i18n::t("Larger")
+                                                        : i18n::t("Normal");
+        item(i18n::t("Preview scale: %1% (chat text %2 px, Preview size %3)").arg(f.previewScalePercent).arg(f.chatTextPx).arg(preset));
+    }
 
     // Connections: versions only, never addresses or names
     add(i18n::t("Connections"));

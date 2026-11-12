@@ -35,6 +35,7 @@ struct State {
     QString                    ownUid;
     uint64                     ownChannel = kChannel;
     QList<PluginCommand>       pluginCommands;
+    bool                       channelPassword = false; // 2.5 GIFs
 };
 
 State& state()
@@ -142,9 +143,9 @@ unsigned int getChannelOfClient(uint64, anyID client, uint64* result)
     return ERROR_ok;
 }
 
-unsigned int getChannelVariableAsInt(uint64, uint64, size_t, int* result)
+unsigned int getChannelVariableAsInt(uint64, uint64, size_t flag, int* result)
 {
-    *result = 0; // no password
+    *result = flag == CHANNEL_FLAG_PASSWORD && state().channelPassword ? 1 : 0; // 2.5 GIFs: setChannelPassword
     return ERROR_ok;
 }
 
@@ -318,19 +319,19 @@ unsigned int requestSendChannelTextMsg(uint64 sch, const char* message, uint64 t
 {
     if (sch != kConnection)
         return ERROR_parameter_invalid;
-    state().messages.append({QByteArray(message), targetChannelID, QString::fromUtf8(returnCode)});
+    state().messages.append({QByteArray(message), targetChannelID, QString::fromUtf8(returnCode), TextMessageTarget_CHANNEL, 0});
     return ERROR_ok;
 }
 
-unsigned int requestSendPrivateTextMsg(uint64, const char* message, anyID, const char* returnCode)
+unsigned int requestSendPrivateTextMsg(uint64, const char* message, anyID client, const char* returnCode)
 {
-    state().messages.append({QByteArray(message), 0, QString::fromUtf8(returnCode)});
+    state().messages.append({QByteArray(message), 0, QString::fromUtf8(returnCode), TextMessageTarget_CLIENT, client});
     return ERROR_ok;
 }
 
 unsigned int requestSendServerTextMsg(uint64, const char* message, const char* returnCode)
 {
-    state().messages.append({QByteArray(message), 0, QString::fromUtf8(returnCode)});
+    state().messages.append({QByteArray(message), 0, QString::fromUtf8(returnCode), TextMessageTarget_SERVER, 0});
     return ERROR_ok;
 }
 
@@ -411,6 +412,11 @@ void moveClient(anyID id, uint64 channel)
         state().ownChannel = channel;
     else if (state().clients.contains(id))
         state().clients[id].channel = channel;
+}
+
+void setChannelPassword(bool password)
+{
+    state().channelPassword = password;
 }
 
 void setOwnUid(const QString& uid)

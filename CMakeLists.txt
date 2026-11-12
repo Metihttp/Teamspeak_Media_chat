@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.4.0 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.5.0 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -78,7 +78,9 @@ add_library(tsmedia SHARED
     src/previewpaint.h        src/audiocard.cpp     src/audiocard.h       # 2.2 audio
     src/audioplayback.cpp     src/audioplayback.h                         # 2.2 audio
     src/inlinemedia.cpp       src/inlinemedia.h
+                              src/loopplayers.h     # 2.5: the loop pool of GIF-like link videos
     src/chatintegration.cpp   src/chatintegration.h
+    src/previewscale.h        src/chatscale.cpp     src/chatscale.h       # 2.5 zoom: the preview scale, one coordinator per chat
     src/uploadtoast.cpp       src/uploadtoast.h
     src/mediaviewer.cpp       src/mediaviewer.h
     src/settingsdialog.cpp    src/settingsdialog.h
@@ -191,6 +193,11 @@ add_library(tsmedia SHARED
     src/chatemoji.cpp         src/chatemoji.h       src/emojiformat.h
     src/emojitext.cpp         src/emojitext.h
     src/emojisection.cpp      src/emojisection.h
+    # 2.5 GIFs: the emoji picker's GIFs tab (the list, the rules, the library, the tab's widget)
+    src/gifstore.cpp          src/gifstore.h
+    src/gifrules.cpp          src/gifrules.h
+    src/giflibrary.cpp        src/giflibrary.h
+    src/gifpanel.cpp          src/gifpanel.h        src/pickerstyle.h
     # chat redesign: the Cozy / Compact chat layout, the action bar, TeamSpeak's emoji button taken over
                               src/layoutformat.h
     src/layoutdoc.cpp         src/layoutdoc.h
@@ -228,6 +235,11 @@ add_library(tsmedia SHARED
     src/linkpreview/autoload.cpp      src/linkpreview/autoload.h
     src/chatlinkpreviews.cpp          src/chatlinkpreviews.h
     # end 2.4 link previews
+    # 2.5 YouTube player: the page, the state machine, the helper's loader (the helper itself: tsmedia_player below)
+    src/ytplayer/ytpage.cpp           src/ytplayer/ytpage.h
+    src/ytplayer/ytplayer.cpp         src/ytplayer/ytplayer.h
+    src/ytplayer/ytbackend.cpp        src/ytplayer/ytbackend.h
+    player/tsmp.h                     player/tsmpmsg.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
 )
 
@@ -240,12 +252,21 @@ set(TSMEDIA_LINKPREVIEW_NET_SOURCES
     src/linkpreview/fetcher.cpp           src/linkpreview/fetcher.h
                                           src/linkpreview/transport.h
     src/linkpreview/winhttptransport.cpp
+    # 2.5 link previews (engine): page links, site cards, web cards
+    src/linkpreview/textclean.cpp         src/linkpreview/textclean.h
+    src/linkpreview/providers.cpp         src/linkpreview/providers.h
+    src/linkpreview/pagemeta.cpp          src/linkpreview/pagemeta.h
+                                          src/linkpreview/carddata.h
+    src/linkpreview/hostgate.cpp          src/linkpreview/hostgate.h
+    src/linkpreview/shares.cpp            src/linkpreview/shares.h # 2.5 Nextcloud and ownCloud shares
+    src/safeimage.cpp                     src/safeimage.h
 )
 target_sources(tsmedia PRIVATE ${TSMEDIA_LINKPREVIEW_NET_SOURCES})
 # end 2.4 link previews (net-core)
 
 target_include_directories(tsmedia PRIVATE
     src
+    player # 2.5 YouTube player: the helper's C API (no WebView2 header is ever included by the plugin)
     third_party/ts3client-pluginsdk/include
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
@@ -313,6 +334,53 @@ set_target_properties(tsmedia PROPERTIES
     OUTPUT_NAME "tsmedia_${TSMEDIA_ARCH}"
     PREFIX ""
 )
+
+# ---- 2.5 YouTube player: the helper DLL (design2.md 3.2, 3.13, 3.15) ------------------------------------------------
+# tsmedia_player_<arch>.dll: pure Win32 + COM + the WebView2 SDK's static loader, static CRT, no Qt. The plugin DLL
+# embeds it as RCDATA "TSMP" and extracts it only inside Play. Without the SDK (TSMEDIA_WEBVIEW2_DIR empty) there is no
+# helper and no resource: Play opens the browser. 2.5.0 builds it for x64 only (TSMEDIA_PLAYER_WIN32 OFF).
+set(TSMEDIA_WEBVIEW2_DIR "" CACHE PATH "The unpacked Microsoft.Web.WebView2 NuGet package (empty: no YouTube player)")
+option(TSMEDIA_PLAYER_WIN32 "Build the YouTube player helper for 32-bit TeamSpeak too (off in 2.5.0)" OFF)
+set(TSMEDIA_PLAYER OFF)
+if(TSMEDIA_WEBVIEW2_DIR)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(TSMEDIA_PLAYER ON)
+        set(_wv2arch x64)
+    elseif(TSMEDIA_PLAYER_WIN32)
+        set(TSMEDIA_PLAYER ON)
+        set(_wv2arch x86)
+    endif()
+endif()
+if(TSMEDIA_PLAYER)
+    set(_wv2inc "${TSMEDIA_WEBVIEW2_DIR}/build/native/include")
+    set(_wv2lib "${TSMEDIA_WEBVIEW2_DIR}/build/native/${_wv2arch}/WebView2LoaderStatic.lib")
+    if(NOT EXISTS "${_wv2inc}/WebView2.h" OR NOT EXISTS "${_wv2lib}")
+        message(FATAL_ERROR "TSMEDIA_WEBVIEW2_DIR (${TSMEDIA_WEBVIEW2_DIR}) has no build/native/include/WebView2.h or ${_wv2arch}/WebView2LoaderStatic.lib")
+    endif()
+    add_library(tsmedia_player SHARED player/tsmp.cpp player/tsmp.h player/tsmpmsg.h)
+    set_target_properties(tsmedia_player PROPERTIES OUTPUT_NAME "tsmedia_player_${TSMEDIA_ARCH}" PREFIX ""
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_include_directories(tsmedia_player PRIVATE player "${_wv2inc}")
+    target_compile_definitions(tsmedia_player PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(tsmedia_player PRIVATE /W4 /utf-8 /permissive-)
+        # The DLLs it depends on come from System32 only.
+        target_link_options(tsmedia_player PRIVATE /DEPENDENTLOADFLAG:0x800)
+    endif()
+    target_link_libraries(tsmedia_player PRIVATE "${_wv2lib}" ole32 oleaut32 shlwapi user32 gdi32 advapi32 version shell32 uuid)
+    # Only system DLLs (its own allowlist): anything else fails the build.
+    get_filename_component(_tsmedia_linkdir "${CMAKE_LINKER}" DIRECTORY)
+    add_custom_command(TARGET tsmedia_player POST_BUILD
+        COMMAND ${CMAKE_COMMAND} "-DDUMPBIN=${_tsmedia_linkdir}/dumpbin.exe" "-DDLL=$<TARGET_FILE:tsmedia_player>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_player_imports.cmake"
+        VERBATIM)
+    # The plugin DLL carries it (an in-app update replaces only the plugin DLL, and brings its helper with it).
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/player.rc"
+        CONTENT "TSMP RCDATA \"$<TARGET_FILE:tsmedia_player>\"\n")
+    target_sources(tsmedia PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/player.rc")
+    add_dependencies(tsmedia tsmedia_player)
+    target_compile_definitions(tsmedia PRIVATE TSMEDIA_PLAYER_RESOURCE)
+endif()
 
 # ---- unit tests (pure logic: link format, chat message, blurhash, texts, UI helpers, settings checks) ---------------
 option(TSMEDIA_BUILD_TESTS "Build unit tests" ON)
@@ -404,6 +472,12 @@ if(TSMEDIA_BUILD_TESTS)
         src/micbutton.cpp         # 2.2.1 mic: in the input's right-edge slot (EmojiInput places it)
         src/emojipicker.cpp
         src/emojitext.cpp         # HD emoji in the reply line, bar and popup
+        # 2.5 GIFs: the list and its rules, the library (records, copies, sends through the real Core), the tab
+        tests/tst_gifs.cpp        tests/tst_gifpanel.cpp    tests/tst_gifsend.cpp
+        src/gifstore.cpp
+        src/gifrules.cpp
+        src/giflibrary.cpp
+        src/gifpanel.cpp          src/pickerstyle.h
         # 2.2.1: TeamSpeak's "Enter Chat Message..." placeholder: inserting into and reading the chat input
         tests/tst_chatinput.cpp
         src/chatinput.cpp
@@ -513,13 +587,28 @@ if(TSMEDIA_BUILD_TESTS)
         src/privacysection.cpp
         # 2.4 review (lifetime): copying, the reader's place and a long chat with the slots under links
         tests/tst_linklife.cpp
+        # 2.5 link previews (integration): what TS Media 2.4.0 does with every command 2.5 sends (a frozen copy)
+        tests/tst_compat24.cpp tests/compat24.cpp tests/compat24.h
+        # 2.5 link previews (integration): the chat's rules per link class, busy sites, the Embed card
+        tests/tst_linkui25.cpp
         # end 2.4 link previews
+        # 2.5 zoom: the scale formula, Preview size, the coordinator (one pass, the reader's place), the picture budget,
+        # the GIF frame rule, layouts in du at every scale
+        tests/tst_previewscale.cpp src/previewscale.h src/chatscale.cpp src/chatscale.h
+        # 2.5 YouTube player: the page, the state machine with a fake backend, the card states; the helper's extraction,
+        # loading and pinning with stub helpers (never WebView2), the runtime check
+        tests/tst_ytplayer.cpp tests/tst_playerload.cpp
+        src/ytplayer/ytpage.cpp src/ytplayer/ytplayer.cpp src/ytplayer/ytbackend.cpp
     )
     # 2.4 link previews (net-core): the classifier table, address ranges, redirects, hostile oEmbed JSON, caps,
     # cancel and shutdown, all through a scripted transport (never the internet)
     target_sources(tsmedia_tests PRIVATE tests/tst_linkpreview_net.cpp ${TSMEDIA_LINKPREVIEW_NET_SOURCES})
+    # 2.5 link previews (engine): the text cleaner, the provider table, the page reader, HostGate, the page plans
+    target_sources(tsmedia_tests PRIVATE tests/tst_textclean.cpp tests/tst_providers.cpp tests/tst_pagemeta.cpp tests/tst_hostgate.cpp
+        tests/tst_linkpage_net.cpp tests/tst_safeimage.cpp tests/linkfixtures.cpp tests/linkfixtures.h
+        tests/tst_shares.cpp) # 2.5 Nextcloud and ownCloud shares: classify, the page's markers, the decision, the card text
     # end 2.4 link previews (net-core)
-    target_include_directories(tsmedia_tests PRIVATE src tests third_party/ts3client-pluginsdk/include
+    target_include_directories(tsmedia_tests PRIVATE src tests player third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
         TSMEDIA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/update" # 2.2 updater: test manifests
@@ -531,6 +620,25 @@ if(TSMEDIA_BUILD_TESTS)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
     target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test bcrypt ${TSMEDIA_MF_LIBS})
+    # 2.5 YouTube player: stand-ins for the helper (tst_playerload): the C API without WebView2, and one with another
+    # API version. With the SDK, the real helper is loaded too (only tsmp_apiVersion, tsmp_init and tsmp_shutdown).
+    foreach(_stub IN ITEMS tsmedia_player_stub tsmedia_player_stub_v99)
+        add_library(${_stub} SHARED player/tsmp_stub.cpp player/tsmp.h)
+        set_target_properties(${_stub} PROPERTIES PREFIX "" MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        target_include_directories(${_stub} PRIVATE player)
+        target_compile_definitions(${_stub} PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(${_stub} PRIVATE /W4 /utf-8 /permissive-)
+        endif()
+        add_dependencies(tsmedia_tests ${_stub})
+    endforeach()
+    target_compile_definitions(tsmedia_player_stub_v99 PRIVATE TSMP_STUB_API_VERSION=99)
+    target_compile_definitions(tsmedia_tests PRIVATE TSMP_STUB_DLL="$<TARGET_FILE:tsmedia_player_stub>"
+        TSMP_STUB_V99_DLL="$<TARGET_FILE:tsmedia_player_stub_v99>")
+    if(TSMEDIA_PLAYER)
+        target_compile_definitions(tsmedia_tests PRIVATE TSMP_REAL_DLL="$<TARGET_FILE:tsmedia_player>")
+        add_dependencies(tsmedia_tests tsmedia_player)
+    endif()
     tsmedia_delay_load_media_foundation(tsmedia_tests) # Core probes media like the plugin does
     get_target_property(_qmake Qt5::qmake IMPORTED_LOCATION)
     get_filename_component(_qtbin "${_qmake}" DIRECTORY)
@@ -609,9 +717,13 @@ if(TSMEDIA_BUILD_TOOLS)
         # 2.4 link previews: every card state, and the cards in chats (Classic, Cozy with bubbles, Compact)
         src/layoutbubbles.cpp
         src/linkpreview/linkurl.cpp src/linkpreview/linkdoc.cpp src/linkpreview/linkcard.cpp
+        src/linkpreview/textclean.cpp src/linkpreview/providers.cpp src/linkpreview/netpolicy.cpp # 2.5
+        src/linkpreview/shares.cpp src/linkpreview/pagemeta.cpp # 2.5 the share rows (providers), their card text
         # end 2.4 link previews
+        src/pollart.cpp # 2.5 zoom: poll cards at every scale
+        src/ytplayer/ytpage.cpp # 2.5 YouTube player: the card's states (Consent, Starting, Popup, Hidden, notes)
     )
-    target_include_directories(render_gallery PRIVATE src tests third_party/ts3client-pluginsdk/include)
+    target_include_directories(render_gallery PRIVATE src player tests third_party/ts3client-pluginsdk/include ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_compile_definitions(render_gallery PRIVATE ${TSMEDIA_COMMON_OPTIONS})
     if(MSVC)
         target_compile_options(render_gallery PRIVATE /W4 /utf-8 /permissive- /wd4100)
@@ -630,7 +742,7 @@ if(TSMEDIA_BUILD_TOOLS)
         src/video/mfvideo.cpp
         src/video/mfcommon.cpp
     )
-    target_include_directories(linkfetch_smoke PRIVATE src)
+    target_include_directories(linkfetch_smoke PRIVATE src ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_compile_definitions(linkfetch_smoke PRIVATE ${TSMEDIA_COMMON_OPTIONS})
     if(MSVC)
         target_compile_options(linkfetch_smoke PRIVATE /W4 /utf-8 /permissive- /wd4100)
@@ -638,6 +750,20 @@ if(TSMEDIA_BUILD_TOOLS)
     target_link_libraries(linkfetch_smoke PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
     tsmedia_delay_load_media_foundation(linkfetch_smoke)
     # end 2.4 link previews (net-core)
+
+    # 2.5 YouTube player: player_smoke [--youtube <id>] loads the helper like the plugin does and drives it (a fake IFrame
+    # API from memory, the Referer recorded, commands, clipping, owner minimize/restore/destroy, Esc, release). Muted.
+    # Never run by the unit tests, never during a live test (it is CPU-heavy for a few seconds).
+    if(TSMEDIA_PLAYER)
+        add_executable(player_smoke tools/player_smoke.cpp player/tsmp.h src/ytplayer/ytpage.cpp src/i18n.cpp)
+        target_include_directories(player_smoke PRIVATE src player)
+        target_compile_definitions(player_smoke PRIVATE ${TSMEDIA_COMMON_OPTIONS} TSMP_HELPER_FILE="tsmedia_player_${TSMEDIA_ARCH}.dll")
+        if(MSVC)
+            target_compile_options(player_smoke PRIVATE /W4 /utf-8 /permissive- /wd4100)
+        endif()
+        target_link_libraries(player_smoke PRIVATE Qt5::Core ole32 user32 gdi32) # Qt only for ytpage (the real page)
+        add_dependencies(player_smoke tsmedia_player)
+    endif()
 
     # 2.2 emoji: emoji_probe <candidates> <probe> asks DirectWrite which emoji Segoe UI Emoji draws in colour
     # (tools/emoji/gen_emoji.py builds src/emojitable.inc from the answer); --sheet draws them all.

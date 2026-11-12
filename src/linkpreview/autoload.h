@@ -17,9 +17,11 @@
 
 #include <QHash>
 #include <QString>
+#include <QVector>
 
 #include <functional>
 
+#include "linkpreview/fetcher.h" // Caps
 #include "linkpreview/linkurl.h"
 
 struct Settings;
@@ -54,6 +56,11 @@ struct Input {
 
 // What the slot waits for (None: the normal rules: an automatic load when it may, else the click card).
 Wait waitFor(const Input& in);
+// 2.4.0's "ask the partner again" (a private chat partner whose caps say no, heard more than a minute ago: they may
+// have switched it on outside our channel): whether their preview of target could still come for this message if
+// they made it. The wait is the one the link would have from a sender who makes it (at least waitSec(target)): a
+// link of a sender whose caps say no has no wait in the queue model (budgetSec 0), which must not end the question.
+bool worthAsking(Input in, const Target& target);
 
 // The sender of a message as the waits read it: one of their clients (0: not on the server now), and whether a client
 // of theirs is in our channel (connected twice with one identity: either one counts).
@@ -91,6 +98,18 @@ int waitSec(Kind kind);
 // The longest a link of this kind waits from its message's time: the sender's queue (kSenderQueueSec), then its own
 // waitSec (YouTube 150 s, pictures and GIFs 165 s, videos 240 s).
 int maxWaitSec(Kind kind);
+// 2.5, per link: YouTube 30 s, a file 45 s (a video 120 s), a media page 60 s (a video 120 s: page or derive, the
+// media and its upload), a site or web card 40 s (page, picture, a small upload).
+int waitSec(const Target& target);
+int maxWaitSec(const Target& target);
+// 2.5: the capability a sender announces when it makes previews of links of this class: "l" (YouTube, files),
+// "lx" (media pages, site cards), "lw" (other web pages); nullptr for None.
+const char* capFor(LinkClass cls);
+// 2.5 (the intake model): how many links a sender's plugin takes in a minute (SenderPipeline's maxJobsPerMinute),
+// and the window a receiver counts them in (3 s less than the sender's, so receive-time jitter never turns an
+// accepted link into a refused one).
+constexpr int kSenderIntakePerMinute = 6;
+constexpr int kIntakeWindowSec       = 57;
 
 // The sender's pipeline makes one preview at a time across all its messages, in the order it sent them, and drops a
 // job that couldn't start within kSenderQueueSec (it sends LPNO for it then). SenderQueue follows that over a chat's
@@ -103,10 +122,23 @@ class SenderQueue
     // The wait of this link of sender's message at timeSec, counted from timeSec: from waitSec(kind) up to
     // maxWaitSec(kind). 0 (and nothing counted) for a message without a key (timeSec < 0) or Kind::None.
     int  add(const QString& sender, qint64 timeSec, Kind kind);
-    void clear() { m_busyUntil.clear(); }
+    // 2.5: the same per link (waitSec(target)), with the intake model: a link whose class the sender doesn't make
+    // (senderMakesIt false: their cap doesn't cover it) waits 0 and isn't counted; a link that comes when the sender's
+    // plugin already took kSenderIntakePerMinute links within the last kIntakeWindowSec seconds was refused there:
+    // it waits 0 and isn't counted either. It never makes a wait longer, only ends hopeless ones at once. The 2.4
+    // classes and the new ones are counted apart (a sender's plugin has an allowance for each).
+    int  add(const QString& sender, qint64 timeSec, const Target& target, bool senderMakesIt);
+    void clear()
+    {
+        m_busyUntil.clear();
+        m_intake.clear();
+    }
 
   private:
-    QHash<QString, qint64> m_busyUntil; // sender -> when their pipeline is through their links so far (seconds)
+    int addWait(const QString& sender, qint64 timeSec, int own);
+
+    QHash<QString, qint64>          m_busyUntil; // sender -> when their pipeline is through their links so far (seconds)
+    QHash<QString, QVector<qint64>> m_intake;    // sender -> the times of the links recorded (the intake model)
 };
 
 // The most a click loads: YouTube 2 MB (its thumbnail), pictures and GIFs 25 MB, videos 50 MB.
@@ -117,6 +149,30 @@ qint64 clickCap(Kind kind);
 // (a website's video has no poster without its file); never above clickCap; 0 with data saver (the server's
 // own, serverUid empty: the setting for all servers).
 qint64 autoCap(Kind kind, const Settings& s, const QString& serverUid);
+
+// 2.5: what a load of t may download (fetcher.h Caps). A click: media YouTube 2 MB, pictures, GIFs and loops 25 MB,
+// videos 50 MB (a card's page that turns out to be media: 25 MB); a card's picture 2 MB; a page read 512 KB;
+// userAsked. An automatic load: media by the automatic limits above (a loop like a GIF, a card target like a
+// picture: 0 with data saver or automatic picture downloads off); a card's picture 2 MB and its page 512 KB, with
+// data saver 512 KB and 128 KB; nothing at all for a web page while Settings::showWebCards is off. A Nextcloud share
+// (design2 2.11) may turn out to be a video: Caps::video is a video's cap then (a click 50 MB, automatic by
+// videoAutoDownloadMB as for other link videos); its page loads whatever Settings::showWebCards says.
+Caps clickCaps(const Target& t);
+Caps autoCaps(const Target& t, const Settings& s, const QString& serverUid);
+// The media cap of caps for a load that turned out to be found: Caps::video for a video or loop when it is set, else
+// Caps::media.
+qint64 mediaCapOf(const Caps& caps, Kind found);
+// The cap that decides whether t loads by itself (and the "over" size of a click strip): a card's picture cap for a
+// card target, its media cap otherwise. 0: never automatic.
+qint64 autoCap(const Target& t, const Settings& s, const QString& serverUid);
+// 2.5: the automatic cap an OverAutoLimit entry of t is judged against: the one that refused it. A card target's
+// load that turned out to be media (found: Image, Gif, Video, Loop) was refused by the media cap, never by the card's
+// picture cap (a share's video: by the video cap, mediaCapOf); anything else as autoCap.
+qint64 overLimitCap(const Target& t, Kind found, const Settings& s, const QString& serverUid);
+// Image, Gif, Video or Loop.
+bool isMediaKind(Kind kind);
+// Data saver for that server (its own setting, else the global one).
+bool dataSaverOn(const Settings& s, const QString& serverUid);
 
 // Per sender ("<server uid>/<sender uid>"): how many automatic website loads their links may start, a token
 // bucket (burst at once, then one per refillMs). Bounded: at most maxSenders, full buckets forgotten first.
@@ -131,8 +187,9 @@ class SenderBudget
     SenderBudget();
     explicit SenderBudget(const Limits& limits);
 
-    bool has(const QString& sender, qint64 nowMs) const; // a token is there (nothing taken)
-    bool take(const QString& sender, qint64 nowMs);      // takes one; false: none
+    bool has(const QString& sender, qint64 nowMs, int n = 1) const; // n tokens are there (nothing taken)
+    // Takes n (2.5: a load of a page link costs its Target::expectedRequests); false: not that many.
+    bool take(const QString& sender, qint64 nowMs, int n = 1);
     void clear();
     int  size() const { return m_buckets.size(); }
 

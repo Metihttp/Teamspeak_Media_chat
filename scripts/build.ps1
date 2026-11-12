@@ -57,10 +57,14 @@ param(
     [int]$ImportantDays = 30,
     [string]$CaptureReference = "",
     [switch]$VerifyPublished,
-    [string]$VerifyFrom = ""
+    [string]$VerifyFrom = "",
+    # 2.5 YouTube player: the unpacked Microsoft.Web.WebView2 NuGet package (docs\BUILDING.md). A 64-bit release build
+    # requires it (a release must never ship without the player by accident); the 32-bit build never gets it in 2.5.0.
+    [string]$WebView2 = ""
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $WebView2) { $WebView2 = if ($env:TSMEDIA_WEBVIEW2_DIR) { $env:TSMEDIA_WEBVIEW2_DIR } elseif (Test-Path "C:\dev\sdk\webview2\1.0.4314.35\build\native\include\WebView2.h") { "C:\dev\sdk\webview2\1.0.4314.35" } else { "" } }
 $ProgressPreference = "SilentlyContinue" # Invoke-WebRequest is many times slower with its progress bar
 if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -480,6 +484,10 @@ if ($Release) {
     # The release notes link to CHANGELOG.md at the tag: it must have the release date by then.
     $changelogHeading = '(?m)^## \[' + [regex]::Escape($version) + '\] - \d{4}-\d{2}-\d{2}\s*$'
     if ((Get-Content -Raw -Encoding UTF8 (Join-Path $root "CHANGELOG.md")) -notmatch $changelogHeading) { throw "CHANGELOG.md has no '## [$version] - <YYYY-MM-DD>' heading (still 'unreleased'?): put in the release date before a release build." }
+    # 2.5 YouTube player: the docs list exactly the hosts and folders the live run recorded (design2 3.11), never a
+    # guess: the placeholders (<!-- Y-L3 ... -->, <!-- Y-L17 ... -->) must be filled in before a release build.
+    $privacyDoc = Join-Path $root "docs\PRIVACY-SECURITY.md"
+    if ((Get-Content -Raw -Encoding UTF8 $privacyDoc) -match '<!--\s*Y-L') { throw "docs\PRIVACY-SECURITY.md still has a live-run placeholder (<!-- Y-L...): fill in the recorded hosts and folders before a release build." }
     $signNow = $Sign -or ([version]$version -le $bridgeVersion)
     # A signed tsmedia-update.json is what 2.2.0 users get (for 2.2.1, for good): it needs both architectures,
     # or 2.2.0 users on 32-bit TeamSpeak are never updated.
@@ -548,6 +556,9 @@ function Build-Plugin([string]$arch, [string]$qtDir, [string]$buildDir, [string]
     if (-not (Test-Path "$qtDir\lib\cmake\Qt5")) { throw "Qt 5.15.2 for $arch not found at $qtDir" }
     $platform = if ($arch -eq "win64") { "x64" } else { "Win32" }
     $extra = if ($withTests) { @() } else { @("-DTSMEDIA_BUILD_TESTS=OFF", "-DTSMEDIA_BUILD_TOOLS=OFF") }
+    # 2.5 YouTube player: 64-bit only (TSMEDIA_PLAYER_WIN32 stays OFF in 2.5.0).
+    $player = if ($arch -eq "win64") { $WebView2 } else { "" }
+    $extra += @("-DTSMEDIA_WEBVIEW2_DIR=$player", "-DTSMEDIA_PLAYER_WIN32=OFF")
     # Test hooks are forced off: the CMake cache of this folder may still have them from a test build.
     & $cmake -S $root -B $buildDir -G "Visual Studio 17 2022" -A $platform "-DCMAKE_PREFIX_PATH=$qtDir" -DTSMEDIA_TESTHOOKS=OFF "-DTSMEDIA_VERSION_OVERRIDE=" "-DTSMEDIA_UPDATER=$updater" @extra | Out-Host
     if ($LASTEXITCODE) { throw "CMake configure failed ($arch)" }
@@ -557,6 +568,11 @@ function Build-Plugin([string]$arch, [string]$qtDir, [string]$buildDir, [string]
     if (-not (Test-Path $dll)) { throw "Missing $dll" }
     return $dll
 }
+
+if ($Release -and -not ($WebView2 -and (Test-Path (Join-Path $WebView2 "build\native\include\WebView2.h")))) {
+    throw "A release build needs the WebView2 SDK for the YouTube player: -WebView2 <unpacked Microsoft.Web.WebView2 1.0.4314.35> (docs\BUILDING.md)."
+}
+if (-not $WebView2) { Write-Warning "No WebView2 SDK (-WebView2): this build has no YouTube player (Play opens the browser)." }
 
 $dlls = @{}
 $buildDirs = @{ "win64" = (Join-Path $root "build"); "win32" = (Join-Path $root "build-x86") }
@@ -569,6 +585,25 @@ $platforms = (@("win32", "win64") | Where-Object { $dlls.ContainsKey($_) }) -joi
 # Every DLL must load on users' PCs: only allowlisted DLLs, and only Qt symbols TeamSpeak's Qt exports.
 $dumpbin = Get-Dumpbin
 foreach ($arch in $dlls.Keys) { Test-Imports $dumpbin $dlls[$arch] $arch }
+
+# 2.5 YouTube player: the 64-bit DLL carries the helper (resource TSMP: its window class name is inside), the 32-bit
+# one doesn't (TSMEDIA_PLAYER_WIN32 OFF), and the helper imports only system DLLs.
+$playerMark = [Text.Encoding]::Unicode.GetBytes("TSMediaPlayer_")
+function Test-Contains([string]$file, [byte[]]$needle) {
+    $bytes = [IO.File]::ReadAllBytes($file)
+    $text = [BitConverter]::ToString($bytes)
+    return $text.Contains([BitConverter]::ToString($needle))
+}
+if ($dlls.ContainsKey("win32") -and (Test-Contains $dlls["win32"] $playerMark)) { throw "$($dlls["win32"]) carries a YouTube player helper (TSMEDIA_PLAYER_WIN32 must stay OFF in 2.5.0)." }
+if ($WebView2) {
+    if (-not (Test-Contains $dlls["win64"] $playerMark)) { throw "$($dlls["win64"]) has no YouTube player helper (resource TSMP)." }
+    $helper = Join-Path $buildDirs["win64"] "$Config\tsmedia_player_win64.dll"
+    $helperAllowed = @("KERNEL32.dll", "USER32.dll", "GDI32.dll", "ole32.dll", "OLEAUT32.dll", "ADVAPI32.dll", "SHLWAPI.dll", "VERSION.dll", "SHELL32.dll")
+    foreach ($m in (Get-Imports $dumpbin $helper).Keys) {
+        if (-not ($m -like "api-ms-win-*" -or ($helperAllowed | Where-Object { $_ -ieq $m }))) { throw "$helper imports $m, which is not on the player helper's allowlist." }
+    }
+    Write-Host "YouTube player helper: embedded in the 64-bit DLL, imports only system DLLs."
+}
 
 # Package: a .ts3_plugin is a zip with package.ini + plugins\<name>_<platform>.dll
 $stage = Join-Path $root "build\package"

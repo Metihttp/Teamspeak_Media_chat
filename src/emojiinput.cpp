@@ -23,7 +23,9 @@
 #include "chatinput.h"
 #include "emojidata.h"
 #include "emojipicker.h"
+#include "emojiprefs.h" // 2.5 GIFs: the page used last
 #include "emojirender.h"
+#include "giflibrary.h" // 2.5 GIFs: gifs::Host
 #include "i18n.h"
 #include "micbutton.h" // 2.2.1 mic
 #include "attachbutton.h" // 2.3 attach
@@ -858,7 +860,23 @@ void EmojiInput::insertEmoji(int id)
     m_text->insert(target, emoji::text(id));
 }
 
-void EmojiInput::openPicker(QTextEdit* edit)
+void EmojiInput::setGifHostFactory(std::function<gifs::Host(QTextEdit*)> factory)
+{
+    m_gifHostFactory = std::move(factory);
+}
+
+void EmojiInput::closeGifPicker()
+{
+    if (m_picker && m_picker->isVisible() && m_picker->hasGifHost())
+        m_picker->close();
+}
+
+EmojiPicker* EmojiInput::picker() const
+{
+    return m_picker && m_picker->isVisible() ? m_picker.data() : nullptr;
+}
+
+void EmojiInput::openPicker(QTextEdit* edit, Opener opener)
 {
     if (!edit)
         return;
@@ -872,6 +890,15 @@ void EmojiInput::openPicker(QTextEdit* edit)
     const bool dark = isDark(edit);
     auto*      picker = new EmojiPicker(EmojiPicker::Mode::Insert, dark, edit->palette().color(QPalette::Base), edit);
     m_picker          = picker;
+    // 2.5 GIFs: the chat input's picker gets the GIFs tab (React mode and the send window's picker never do).
+    if (m_gifHostFactory) {
+        const gifs::Host host = m_gifHostFactory(edit);
+        if (host.library) {
+            picker->setGifHost(host);
+            if (opener == Opener::Mouse && emoji::prefs::lastTabGifs())
+                picker->showPage(EmojiPicker::Page::Gifs);
+        }
+    }
     QPointer<QTextEdit> guard(edit);
     // 2.2.1: the picker has the focus, so an empty input holds TeamSpeak's placeholder: ChatInputs gives
     // the input the focus first (and the keyboard back to the picker when it stays open for more).
@@ -943,7 +970,7 @@ bool EmojiInput::eventFilter(QObject* watched, QEvent* event)
                 ke->accept();
                 return true;
             }
-            openPicker(input->edit.data());
+            openPicker(input->edit.data(), Opener::Keyboard); // 2.5 GIFs: always on the emoji
             return true;
         }
         break;

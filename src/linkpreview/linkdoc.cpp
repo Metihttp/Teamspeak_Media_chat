@@ -1,7 +1,9 @@
 #include "linkpreview/linkdoc.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QSet>
 #include <QTextBlock>
+#include <QTextLayout>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
@@ -129,9 +131,13 @@ QVector<Link> linksIn(const QTextBlock& block, const QStringList& excluded)
     const layoutdoc::Row row = layoutdoc::read(block);
     if (row.type != layoutdoc::RowType::Message)
         return out; // system rows, TS Media's own lines, day lines
+    // 2.5: the first kMaxScannedLinks web anchors of the message, read like the sender reads its own (trimLinkEnd,
+    // classify(QString) behind its cache), then selectLinks: at most 3, the 2.4 classes first, in message order.
+    QVector<Link> found;
     QSet<QString> seen;
     QString       lastHref;
     int           lastEnd = -1;
+    int           scanned = 0;
     for (auto it = block.begin(); !it.atEnd(); ++it) {
         const QTextFragment f = it.fragment();
         if (!f.isValid())
@@ -146,26 +152,29 @@ QVector<Link> linksIn(const QTextBlock& block, const QStringList& excluded)
         const int     end   = start + f.length();
         if (isFileHref(href))
             break; // a TS Media file link: what follows in this message is its note (and its link)
-        if (href == lastHref && start == lastEnd && !out.isEmpty() && out.last().end == start) {
-            out.last().end = end; // one address over several fragments
-            lastEnd        = end;
+        if (href == lastHref && start == lastEnd && lastEnd >= 0 && !found.isEmpty() && found.last().end == start) {
+            found.last().end = end; // one address over several fragments
+            lastEnd          = end;
             continue;
         }
-        lastHref = href;
-        lastEnd  = end;
-        // Web links only (classify() takes http for YouTube alone, https for everything else).
+        const bool continued = href == lastHref && start == lastEnd; // the rest of a link that wasn't taken
+        lastHref             = href;
+        lastEnd              = end;
+        if (continued)
+            continue;
+        // Web links only.
         if (href.size() > kMaxHrefChars || !href.startsWith(QLatin1String("http"), Qt::CaseInsensitive) || isPluginHref(href))
             continue;
+        if (++scanned > linkpreview::kMaxScannedLinks)
+            break; // the rest of the message is never looked at (on the sender's side neither)
         bool skip = false;
         for (const QString& x : excluded)
             skip = skip || (!x.isEmpty() && sameAddress(href, x));
         if (skip)
             continue;
-        const linkpreview::Target target = linkpreview::classify(href);
+        const linkpreview::Target target = linkpreview::classifyCached(linkpreview::trimLinkEnd(href));
         if (target.kind == linkpreview::Kind::None || target.key.isEmpty() || seen.contains(target.key))
             continue;
-        if (out.size() >= kMaxPerMessage)
-            break;
         seen.insert(target.key);
         Link link;
         link.block    = block.blockNumber();
@@ -174,9 +183,43 @@ QVector<Link> linksIn(const QTextBlock& block, const QStringList& excluded)
         link.href     = href;
         link.target   = target;
         link.outgoing = row.outgoing;
+        found.append(link);
+    }
+    if (found.isEmpty())
+        return out;
+    QVector<linkpreview::Target> targets;
+    targets.reserve(found.size());
+    for (const Link& l : qAsConst(found))
+        targets.append(l.target);
+    const QVector<linkpreview::Target> chosen = linkpreview::selectLinks(targets);
+    int                                index  = 0;
+    for (const Link& l : qAsConst(found)) {
+        bool take = false;
+        for (const linkpreview::Target& t : chosen)
+            take = take || t.key == l.target.key;
+        if (!take)
+            continue;
+        Link link  = l;
+        link.index = index++;
         out.append(link);
+        if (out.size() >= kMaxPerMessage)
+            break;
     }
     return out;
+}
+
+QRectF lineRect(QTextDocument* doc, int position)
+{
+    if (!doc)
+        return {};
+    const QTextBlock block = doc->findBlock(position);
+    if (!block.isValid() || !block.layout())
+        return {};
+    const QRectF    r    = doc->documentLayout()->blockBoundingRect(block); // lays the block out when it isn't yet
+    const QTextLine line = block.layout()->lineForTextPosition(position - block.position());
+    if (!line.isValid())
+        return {};
+    return QRectF(r.left(), r.top() + line.y(), r.width(), line.height());
 }
 
 QVector<Link> findLinks(QTextDocument* doc, const QStringList& excluded, int maxBlocks)
@@ -212,7 +255,7 @@ QVector<Slot> slotsIn(const QTextBlock& block)
             s.name      = image.name();
             s.urlKey    = cf.stringProperty(kSlotUrl);
             s.href      = cf.stringProperty(kSlotHref);
-            s.size      = QSizeF(image.width(), image.height());
+            s.size      = previewscale::duSizeOf(image); // 2.5 zoom: du
             out.append(s);
         }
     }
@@ -240,7 +283,7 @@ Slot slotAfter(const QTextBlock& block, const Link& link)
 
 // ---- edits ------------------------------------------------------------------------------------------------
 
-bool insertSlot(QTextDocument* doc, const Link& link, const QString& name, const QSizeF& size)
+bool insertSlot(QTextDocument* doc, const Link& link, const QString& name, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc || link.start < 0 || link.end <= link.start || link.end >= doc->characterCount())
         return false;
@@ -261,8 +304,7 @@ bool insertSlot(QTextDocument* doc, const Link& link, const QString& name, const
     c.insertText(QString(QChar::LineSeparator), separator);
     QTextImageFormat image;
     image.setName(name);
-    image.setWidth(size.width());
-    image.setHeight(size.height());
+    previewscale::setObjectSize(image, size, scale); // 2.5 zoom
     image.setProperty(kSlotObject, true);
     image.setProperty(kSlotUrl, link.target.key);
     image.setProperty(kSlotHref, link.href);
@@ -278,16 +320,17 @@ bool insertSlot(QTextDocument* doc, const Link& link, const QString& name, const
     return true;
 }
 
-bool replaceObject(QTextDocument* doc, int object, const QString& name, const QSizeF& size)
+bool replaceObject(QTextDocument* doc, int object, const QString& name, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc || !isObjectAt(doc, object))
         return false;
-    QTextImageFormat image = formatAt(doc, object).toImageFormat();
-    if (image.name() == name && qFuzzyCompare(image.width(), size.width()) && qFuzzyCompare(image.height(), size.height()))
+    QTextImageFormat image   = formatAt(doc, object).toImageFormat();
+    const QSizeF     logical = scale.toLogical(size); // 2.5 zoom: du x s; the du size compared too
+    if (image.name() == name && previewscale::duSizeOf(image) == size && qFuzzyCompare(image.width(), logical.width())
+        && qFuzzyCompare(image.height(), logical.height()))
         return false;
     image.setName(name);
-    image.setWidth(size.width());
-    image.setHeight(size.height());
+    previewscale::setObjectSize(image, size, scale);
     QTextCursor c(doc);
     c.setPosition(object);
     c.setPosition(object + 1, QTextCursor::KeepAnchor);
@@ -295,12 +338,12 @@ bool replaceObject(QTextDocument* doc, int object, const QString& name, const QS
     return true;
 }
 
-bool resizeObject(QTextDocument* doc, int object, const QSizeF& size)
+bool resizeObject(QTextDocument* doc, int object, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc || !isObjectAt(doc, object))
         return false;
     const QTextImageFormat image = formatAt(doc, object).toImageFormat();
-    return replaceObject(doc, object, image.name(), size);
+    return replaceObject(doc, object, image.name(), size, scale);
 }
 
 bool removeSlot(QTextDocument* doc, int object)

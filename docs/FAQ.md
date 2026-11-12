@@ -23,7 +23,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.4.0 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.5.0 loaded`.
 
 ### How do I update?
 
@@ -138,6 +138,10 @@ Data saver is probably on, for all servers (**Settings → Receiving & playback*
 
 Either *Play GIFs automatically* is off in **Settings → Receiving & playback**, or Windows animations are turned off (**Settings → Accessibility → Visual effects → Animation effects**). The plugin follows that Windows setting: GIFs then play only while the pointer is over them, and loading indicators stand still.
 
+### Previews look small on my 4K screen
+
+Since 2.5, previews follow the chat's text: at 150% or 200% display scaling they are drawn larger and sharp, in proportion to TeamSpeak's own text (before, cards and their text stayed at their 100% size). Zooming the chat with Ctrl + mouse wheel, or a larger chat font in TeamSpeak (**Options → Chat**), makes them grow too. If they are still too small or too large for you, change **Preview size** under **Settings → Receiving & playback** (Small, Normal, Large, Larger). *Maximum preview size* is the largest picture at Normal size and 100% scaling.
+
 ### Pictures look smaller at 100% in the viewer
 
 Since 2.1.0, 100% in the gallery viewer shows one image pixel per screen pixel. On a display scaled to 125%, 150% or more, that is smaller than in apps that scale pictures up. *Fit* still fits the picture into the window, but never enlarges it.
@@ -185,11 +189,11 @@ Deleted files and files in password-protected channels can't be retried: their p
 
 ### I came from BetterChat: does TS Media show YouTube and GIF links?
 
-Yes, since 2.4. YouTube links get a card with the title, channel and thumbnail (a click opens the video in your browser), and links to pictures, GIFs and videos show and play right in the chat, like files sent with TS Media. The difference to BetterChat: when the sender has TS Media, their plugin makes the preview once and shares it through your TeamSpeak server, so your PC never contacts that website. Links from people without TS Media load from the website by themselves (like BetterChat); turn off **Load link previews automatically** to load them only when you click. GIF sites' pages (for example `klipy.com/gifs/…` or `tenor.com/view/…`) get no preview: copy the GIF's own address instead (ending in `.gif`, `.webp` or `.mp4`). See [link previews](USAGE.md#link-previews).
+Yes, since 2.4. YouTube links get a card with the title, channel and thumbnail (since 2.5 Play plays the video with YouTube's own player in a small window over TeamSpeak; the title opens it in your browser), and links to pictures, GIFs and videos show and play right in the chat, like files sent with TS Media. The difference to BetterChat: when the sender has TS Media, their plugin makes the preview once and shares it through your TeamSpeak server, so your PC never contacts that website. Links from people without TS Media load from the website by themselves (like BetterChat); turn off **Load link previews automatically** to load them only when you click. Since 2.5, GIF sites' pages (Tenor, Giphy, Imgur, Klipy and others) show the GIF itself, and other pages get a card, like in Discord. Klipy's GIF pages (`klipy.com/gifs/…`) are behind Klipy's own bot check for every app that doesn't run a browser; TS Media then asks Klipy's public oEmbed for the GIF, whose answer doesn't name it yet, so they get no preview for now and start working by themselves once Klipy fixes that answer. Klipy's clips, stickers and memes work, and so does the GIF's own address. See [link previews](USAGE.md#link-previews).
 
 ### How do I turn link previews off?
 
-**Settings → Privacy & updates → Show previews for links to other websites**: no card, no preview and no website request any more. To stop sharing previews of the links you send, turn off **Make previews for links I send**. To keep them but load other people's links only when you click, turn off **Load link previews automatically**. To hide just one, right-click it → **Hide preview**.
+**Settings → Privacy & updates → Show previews for links to other websites**: no card, no preview and no website request any more. To stop sharing previews of the links you send, turn off **Make previews for links I send**. To keep them but load other people's links only when you click, turn off **Load link previews automatically**. To keep media and site cards but drop cards for other web pages, turn off **Show cards for other web pages**; links shaped like a Nextcloud or ownCloud share (`…/s/…`) are still loaded, to learn whether they hold a picture, GIF or video. To hide just one, right-click it → **Hide preview**.
 
 ### Link previews say "Couldn't load the preview" (VPN, proxy, filtered internet)
 
@@ -202,6 +206,45 @@ Either **Load link previews automatically** is off, or the file is larger than y
 ### A link says "Waiting for the sender's preview…"
 
 The sender has TS Media and shares a preview through your TeamSpeak server, so your PC doesn't contact the website. It usually takes a few seconds. Their plugin makes one preview at a time, so it can take up to two minutes for a video, or up to four minutes when they posted several links in a row. *Checking for the sender's preview…* means your PC is still asking whether they make previews (a few seconds). If their plugin can't make it, or they leave, your PC loads the link itself (with **Load link previews automatically** on).
+
+### A link has no card
+
+Cards need a page that tells its title and a short text or picture. Pages behind a bot check, a cookie or sign-in page, or that only work with scripts (TikTok, many shops) give none, and some links are never loaded on purpose (sign-in and download links, documents, TikTok, IMDb, Amazon, Google Maps, and Deezer, whose pictures can't be loaded). Other web pages also need **Show cards for other web pages**. A card that failed, or a page the sender's plugin found nothing on, can be tried by hand: right-click the message, **Load link previews**.
+
+### My Nextcloud link shows no preview
+
+Only shares on servers on the public internet get one: links to a server on a LAN, a VPN or a private address are never loaded. Password-protected and upload-only shares get no preview, and from a link to the share page, shares whose owner turned downloads off or set a download limit are never downloaded (a folder or another file then gets a card, a picture with downloads off its server's preview); a link straight to the file (`…/download/<name>`, `…/dav/…`, a preview address) loads like any other file link and counts as a download. A card for a folder or another file needs **Show cards for other web pages**. A video over your automatic limit shows **Load preview**. Share links with a custom name longer than the usual 15 letters and digits are read as ordinary web pages, and very old Nextcloud versions whose share page is larger than 512 KB get an ordinary web card. Links to one-time download pages (transfer.sh-like tools) can be used up when a preview loads them.
+
+### A card says "Site busy"
+
+The website asked TS Media to wait (HTTP 429). The plugin leaves it alone for as long as it asks and then loads the card by itself. Imgur often answers like this to VPN and datacenter addresses.
+
+### Why does a YouTube video open in my browser?
+
+Since 2.5, Play on a YouTube card plays the video with YouTube's own player, in a small window of its own over TeamSpeak. It opens your browser instead when:
+
+- *Play YouTube videos in the chat* is off (*Settings → Privacy & updates*), or you chose **Open in browser** when the card asked the first time;
+- this PC doesn't have the Microsoft Edge WebView2 Runtime (part of Windows 11 and of current Windows 10; the setting's hint says so);
+- the video's owner doesn't allow it to be played outside YouTube (the card says *This video can only be watched on YouTube*), or it was removed;
+- you use 32-bit TeamSpeak (2.5.0's player needs 64-bit TeamSpeak);
+- an antivirus blocked TS Media's player helper (`tsmedia_player_win64_<number>.dll` in TS Media's plugin folder); TS Media then opens the browser for the rest of the session and writes it to its log;
+- the player failed to start three times in a session.
+
+### Does playing a YouTube video tell others?
+
+No. Nothing about it is sent to the chat or the TeamSpeak server; only YouTube and Google see that your PC plays it ([details](PRIVACY-SECURITY.md#playing-youtube-videos)).
+
+### YouTube plays on my speakers, not on my TeamSpeak headset
+
+YouTube's player plays on Windows' default output device, not on TeamSpeak's playback device. Change the default device in Windows, or play the video in your browser.
+
+### What does the YouTube player store on my PC?
+
+WebView2's own data, in `%LOCALAPPDATA%\TSMedia\webview2` (`webview2-elevated` while TeamSpeak runs as administrator; no cookies or history: the player is private). Delete that folder to remove it (close TeamSpeak first, or wait a minute after the last video); turning *Play YouTube videos in the chat* off deletes both. The player helper itself is in TS Media's plugin folder (`player`).
+
+### Which websites does a link preview contact?
+
+Only what that kind of link needs: a file link: that file's address; YouTube: `www.youtube.com` and `i.ytimg.com`; GIF and media sites: the site's media address, and for some of them first the page, its official oEmbed address or a short link; a Klipy GIF page behind its bot check: Klipy's public oEmbed at `api.klipy.com`, then the GIF only from Klipy's own `static…klipy.com` servers; well-known sites: the page or the site's official oEmbed or public API address, then the picture on that site's own servers; Nextcloud and ownCloud share links (`…/s/…`): the share page on that server, then the file or the server's own preview of a picture on the same server; other web pages (with *Show cards for other web pages* on): the beginning of the page itself (at most 512 KB, never shown or run), then the picture the page names, which can be on another website. No scripts, cookies, logins or `Referer`. When the sender's TS Media made the preview, nobody else contacts the website. Details: [link previews](PRIVACY-SECURITY.md#link-previews).
 
 ## Reactions and presence
 
@@ -226,6 +269,14 @@ With TS Media, TeamSpeak's own emoticon button next to the chat input shows an H
 ### The chat looks different from my friends' TeamSpeak
 
 That is the chat layout (**Settings → General → Chat layout**): *Cozy* and *Compact* change only your own view, and your messages reach everyone as before. Choose *TeamSpeak classic* for TeamSpeak's own look.
+
+### Where are my GIFs kept, and how do I clear them?
+
+The emoji picker's GIFs tab keeps its list, small pictures and copies of GIF files in `%APPDATA%\TS3Client\plugins\tsmedia\gifs` on your PC (nothing of it is sent anywhere). *Clear cache* doesn't touch it. Remove one GIF with a right-click on it in the GIFs tab → **Remove**, or all of them with **Remove all GIFs…** in the tab's ⋯ menu or in **Settings → General → Emoji**. To stop keeping the GIFs you send, turn off **Remember GIFs I send** there. Uninstalling the plugin leaves the folder like the rest of the plugin's data.
+
+### Why does resending a GIF file upload it again?
+
+A GIF *file* (one you uploaded, or saved from someone else's upload) is sent again like any file: TS Media uploads it to your current channel's file browser again, with the usual progress, limits and checks, and posts its link. TeamSpeak has no way to re-share a file that is already on the server without asking the server about it, which TS Media never does on servers where that is unsafe. So every resend is a new file on the server and counts against its space. GIF *links* (Giphy, Tenor, …) are only sent as their link.
 
 ### A smiley like `:)` shows as text in a reply line
 

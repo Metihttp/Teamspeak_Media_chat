@@ -6,11 +6,13 @@
 // file from a TeamSpeak server; the two settings. Nothing here touches the network.
 
 #include <QAbstractTextDocumentLayout>
+#include <QBuffer>
 #include <QCheckBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTextBlock>
@@ -37,6 +39,7 @@
 #include "linkpreview/lpmessage.h"
 #include "linkpreview/previewstore.h"
 #include "linkpreview/senderpipeline.h"
+#include "previewrenderer.h"
 #include "privacysection.h"
 #include "serversettings.h"
 #include "settings.h"
@@ -198,8 +201,8 @@ void fillLinks(QTextDocument& doc)
     msg("20:01:00", 17, kAlice, QStringLiteral("Alice"), QStringLiteral("watch this ") + link(s, kYouTube));                        // 1: YouTube at the end
     msg("20:01:30", 18, kBob, QStringLiteral("Bob"), link(s, kPng) + QStringLiteral(" nice lake"));                                 // 2: text after the link
     msg("20:02:00", 3, kMe, QStringLiteral("Sam"), link(s, kGif), true);                                                             // 3: own
-    msg("20:02:30", 18, kBob, QStringLiteral("Bob"), QStringLiteral("http only: ") + link(s, QStringLiteral("http://example.com/a.png"))); // 4: none
-    msg("20:03:00", 18, kBob, QStringLiteral("Bob"), QStringLiteral("a page ") + link(s, QStringLiteral("https://example.com/article"))); // 5: none
+    msg("20:02:30", 18, kBob, QStringLiteral("Bob"), QStringLiteral("http only: ") + link(s, QStringLiteral("http://example.com/a.png"))); // 4: 2.5 media-file
+    msg("20:03:00", 18, kBob, QStringLiteral("Bob"), QStringLiteral("a page ") + link(s, QStringLiteral("https://example.com/article"))); // 5: 2.5 web card
     msg("20:03:30", 17, kAlice, QStringLiteral("Alice"),
         link(s, kMp4) + QStringLiteral(" and ") + link(s, kShort) + QStringLiteral(" and again ") + link(s, kMp4) + QStringLiteral(" ") + link(s, kGif)
             + QStringLiteral(" ") + link(s, kPng)); // 6: three at most, one per address
@@ -307,7 +310,7 @@ class TestLinkUi : public QObject
         for (const char* no : {"http://example.com/a.png", "https://example.com/article", "https://user@example.com/a.png", "https://example.com:8443/a.png",
                                "https://www.youtube.com/watch?v=short", "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ", "https://127.0.0.1/a.png",
                                "ts3file://127.0.0.1?filename=a.png", "https://www.youtube.com/channel/abc", "https://cdn.example/a.png"})
-            QVERIFY2(linkpreview::classify(QString::fromLatin1(no)).kind == Kind::None, no);
+            QVERIFY2(!linkpreview::classify(QString::fromLatin1(no)).isLegacy(), no); // 2.5: maybe a page link, never an LP one
         // The key: stable and the same for the same video however it is written (http or https).
         QCOMPARE(linkpreview::classify(kShort).key, linkpreview::classify(QStringLiteral("https://www.youtube.com/watch?v=aBcDeFgHiJk")).key);
         QCOMPARE(plain.key, linkpreview::classify(kShort).key);
@@ -324,10 +327,15 @@ class TestLinkUi : public QObject
         tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("20:01:30"), 17, kAlice, QStringLiteral("Alice"),
                                                  QStringLiteral("plain picture ") + link(s, QStringLiteral("http://cdn.example.org/a.png"))));
         const QVector<linkdoc::Link> links = linkdoc::findLinks(&doc);
-        QCOMPARE(links.size(), 1);
+        // 2.5: the http picture is a media-file link (LPX class), always fetched over https.
+        QCOMPARE(links.size(), 2);
         QCOMPARE(links.first().block, 0);
         QCOMPARE(links.first().target.kind, Kind::YouTube);
         QCOMPARE(links.first().target.key, linkpreview::classify(kShort).key);
+        QCOMPARE(links.at(1).block, 1);
+        QCOMPARE(links.at(1).target.cls, linkpreview::LinkClass::MediaPage);
+        QCOMPARE(links.at(1).target.kind, Kind::Image);
+        QCOMPARE(links.at(1).target.fetchUrl.scheme(), QStringLiteral("https"));
     }
 
     void linksInTeamSpeakChat()
@@ -336,12 +344,14 @@ class TestLinkUi : public QObject
         fillLinks(doc);
         const QVector<linkdoc::Link> links = linkdoc::findLinks(&doc);
         // 1 YouTube, 2 picture, 3 own GIF, 6: video, YouTube, GIF (the repeated video once, the fourth address left
-        // out), 10 the labelled picture. Never: http, a page, after a TS Media file link, TS Media's own line, a
-        // system row.
+        // out), 10 the labelled picture; 2.5: 4 the http picture (media-file), 5 the page (a web card). Never: after
+        // a TS Media file link, TS Media's own line, a system row.
         // The host shown is the link's own (net-core's Target::host).
         QCOMPARE(describe(links), QStringList({QStringLiteral("1:1:www.youtube.com"), QStringLiteral("2:2:cdn.example.org"), QStringLiteral("3:3:media.example.net"),
-                                               QStringLiteral("6:4:files.example.com"), QStringLiteral("6:1:youtu.be"), QStringLiteral("6:3:media.example.net"),
-                                               QStringLiteral("10:2:cdn.example.org")}));
+                                               QStringLiteral("4:2:example.com"), QStringLiteral("5:6:example.com"), QStringLiteral("6:4:files.example.com"),
+                                               QStringLiteral("6:1:youtu.be"), QStringLiteral("6:3:media.example.net"), QStringLiteral("10:2:cdn.example.org")}));
+        QCOMPARE(links.at(3).target.cls, linkpreview::LinkClass::MediaPage);
+        QCOMPARE(links.at(4).target.cls, linkpreview::LinkClass::Web);
         QVERIFY(links.at(2).outgoing);
         QVERIFY(!links.at(0).outgoing);
         // The anchor is exactly the link's text.
@@ -364,12 +374,12 @@ class TestLinkUi : public QObject
         fillLinks(doc);
         const QMap<int, QString> keys = keysOf(doc);
         QVERIFY(keys.contains(1) && keys.contains(2) && keys.contains(6));
-        QCOMPARE(insertAll(doc, true), 7);
+        QCOMPARE(insertAll(doc, true), 9);
         // The message keys and the "text message" judgement don't change with a slot (card or media).
         QCOMPARE(keysOf(doc), keys);
         // Slots are found again by property, each right after its link; nothing is found twice.
         const QVector<linkdoc::Link> links = linkdoc::findLinks(&doc);
-        QCOMPARE(links.size(), 7);
+        QCOMPARE(links.size(), 9);
         for (const linkdoc::Link& l : links) {
             const linkdoc::Slot s = linkdoc::slotAfter(doc.findBlockByNumber(l.block), l);
             QVERIFY2(s.exists(), qPrintable(l.href));
@@ -377,7 +387,7 @@ class TestLinkUi : public QObject
             QCOMPARE(s.href, l.href);
             QVERIFY(!linkdoc::insertSlot(&doc, l, QStringLiteral("tsmedia-link:again"), QSizeF(10, 10)));
         }
-        QCOMPARE(linkdoc::allSlots(&doc).size(), 7);
+        QCOMPARE(linkdoc::allSlots(&doc).size(), 9);
         // Text after the link starts on a line of its own (our line break after the picture), and the block's
         // text otherwise is TeamSpeak's.
         const QTextBlock two = doc.findBlockByNumber(2);
@@ -421,7 +431,7 @@ class TestLinkUi : public QObject
         const QMap<int, QString> keys = keysOf(doc);
         if (m != Mode::Classic)
             layoutdoc::styleAll(&doc, env);
-        QCOMPARE(insertAll(doc, true), 7);
+        QCOMPARE(insertAll(doc, true), 9);
         if (rows) {
             for (auto it = keys.constBegin(); it != keys.constEnd(); ++it)
                 textreactdoc::insertRow(&doc, it.key(), textreactdoc::objectPrefix() + QStringLiteral("r%1").arg(it.key()), it.value(), QSizeF(96, 26));
@@ -447,7 +457,7 @@ class TestLinkUi : public QObject
         if (m != Mode::Classic)
             layoutNewLine(doc, env, doc.blockCount() - 2);
         // The new message gets its slot too; the typed line is no message.
-        QCOMPARE(linkdoc::findLinks(&doc).size(), 8);
+        QCOMPARE(linkdoc::findLinks(&doc).size(), 10);
         const linkdoc::Link last = linkdoc::findLinks(&doc).last();
         QVERIFY(linkdoc::insertSlot(&doc, last, QStringLiteral("tsmedia-link:last"), QSizeF(340, 64)));
         QVERIFY(linkdoc::slotsIn(doc.lastBlock()).isEmpty());
@@ -455,7 +465,7 @@ class TestLinkUi : public QObject
         if (m != Mode::Classic) {
             layoutdoc::restoreAll(&doc);
             layoutdoc::styleAll(&doc, envFor(m == Mode::Cozy ? Mode::Compact : Mode::Cozy, false));
-            QCOMPARE(linkdoc::allSlots(&doc).size(), 8);
+            QCOMPARE(linkdoc::allSlots(&doc).size(), 10);
             layoutdoc::restoreAll(&doc);
             layoutdoc::styleAll(&doc, env);
         }
@@ -463,13 +473,13 @@ class TestLinkUi : public QObject
         if (rows)
             textreactdoc::removeAll(&doc);
         if (slotsFirst) {
-            QCOMPARE(linkdoc::removeAll(&doc), 8);
+            QCOMPARE(linkdoc::removeAll(&doc), 10);
             if (m != Mode::Classic)
                 layoutdoc::restoreAll(&doc);
         } else {
             if (m != Mode::Classic)
                 layoutdoc::restoreAll(&doc);
-            QCOMPARE(linkdoc::removeAll(&doc), 8);
+            QCOMPARE(linkdoc::removeAll(&doc), 10);
         }
         QVERIFY(!hasSlotFormat(doc));
         const QString diff = compare(snapshot(plain), snapshot(doc));
@@ -483,7 +493,7 @@ class TestLinkUi : public QObject
         fillLinks(doc);
         const layoutdoc::Env env = envFor(Mode::Cozy, true, true);
         layoutdoc::styleAll(&doc, env);
-        QCOMPARE(insertAll(doc), 7);
+        QCOMPARE(insertAll(doc), 9);
         QSet<int> own;
         for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
             if (layoutformat::isOwnRight(b))
@@ -492,7 +502,7 @@ class TestLinkUi : public QObject
         QVERIFY(own.contains(3));
         layoutdoc::settle(&doc, {}, env, own);
         doc.documentLayout()->documentSize();
-        for (const int n : {1, 2, 3, 6}) {
+        for (const int n : {1, 2, 3, 4, 5, 6}) {
             const QTextBlock          b    = doc.findBlockByNumber(n);
             const layoutbubbles::Item item = layoutbubbles::itemOf(b, env);
             QCOMPARE(item.kind, layoutbubbles::Kind::Bubble);
@@ -623,7 +633,7 @@ class TestLinkUi : public QObject
         const QString hostile = QStringLiteral("  Rick") + QChar(0x202e) + QChar(0x200f) + QStringLiteral("  Astley") + QChar(QChar::LineFeed) + QChar(QChar::Tabulation)
                                 + QStringLiteral("- Never") + QChar(7) + QStringLiteral(" ");
         QCOMPARE(linkcard::cleanText(hostile), QStringLiteral("Rick Astley - Never"));
-        QCOMPARE(linkcard::cleanText(QStringLiteral("abc\U0001F600def"), 4), QStringLiteral("abc"));
+        QCOMPARE(linkcard::cleanText(QStringLiteral("abc\U0001F600def"), 4), QStringLiteral("abc") + QChar(0x2026)); // 2.5 textclean: an ellipsis when cut
         QCOMPARE(linkcard::cleanText(QString(500, QLatin1Char('x'))).size(), 200);
         for (const PreviewColorPair& pair : linkcard::colorPairs(false) + linkcard::colorPairs(true))
             QVERIFY2(ui::contrastRatio(pair.foreground, pair.background) >= pair.minimum, qPrintable(pair.name));
@@ -1045,8 +1055,10 @@ class TestLinkUi : public QObject
     {
         namespace errors = linkpreview::errors;
         for (const char* code : {errors::kBlocked, errors::kOffline, errors::kTimeout, errors::kTls, errors::kRedirect, errors::kNoNetwork, errors::kForbidden,
-                                 errors::kRateLimited, errors::kServerError, errors::kBadResponse, errors::kBusy, errors::kDisk, errors::kInternal, "anything"})
+                                 errors::kServerError, errors::kBadResponse, errors::kBusy, errors::kDisk, errors::kInternal, "anything"})
             QVERIFY2(linkstate::errorText(QString::fromLatin1(code)).isEmpty(), code);
+        // 2.5: a site that asks to wait (HTTP 429) is something the user can act on: it says so, without details.
+        QCOMPARE(linkstate::errorText(QString::fromLatin1(errors::kRateLimited)), QStringLiteral("The site is busy right now. Try again later."));
         linkcard::Card c;
         c.look = linkcard::Look::Error;
         c.host = QStringLiteral("cdn.example.org");
@@ -1178,6 +1190,90 @@ class TestLinkUi : public QObject
             QVERIFY(!core->isLocalFile(server.key()));
             // A real link's key is never taken over by a website's file.
             QVERIFY(core->adoptLocalFile(server, file).isEmpty());
+        }
+        ts3::funcs           = savedFuncs;
+        Settings::instance() = saved;
+    }
+
+    // Live test fix: a received "picture" whose bytes are SVG (named .jpg, with a size and a blurhash) was drawn as its
+    // blurhash with "Click to open". It is the plain file card now ("Can't preview · Click to open"); a real picture that
+    // fails to decode (damaged) keeps its picture box and blurhash, and a good one is drawn as itself.
+    void notAPictureIsAFileCard()
+    {
+        const TS3Functions savedFuncs = ts3::funcs;
+        const Settings     saved      = Settings::instance();
+        QTemporaryDir      dir;
+        QVERIFY(dir.isValid());
+        fakets3::install(dir.path());
+        Settings::instance() = Settings();
+        {
+            auto core = std::make_unique<Core>();
+            core->start();
+            const QString links = core->cacheDir() + QStringLiteral("/links");
+            QVERIFY(QDir().mkpath(links));
+            const auto adopt = [&](const char* name, const QByteArray& bytes) {
+                const QString path = links + QLatin1Char('/') + QString::fromLatin1(name);
+                QFile         f(path);
+                if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size())
+                    return QString();
+                f.close();
+                const linkpreview::Target t = linkpreview::classify(QStringLiteral("https://example.com/") + QString::fromLatin1(name));
+                MediaLink link = linkstate::webLink(t, QStringLiteral("image/jpeg"), bytes.size(), 640, 480, 0);
+                link.blurHash  = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj");
+                return core->adoptLocalFile(link, path);
+            };
+            PreviewStyle style;
+            style.animate = false;
+            MediaEntry asFile;
+            asFile.kind            = MediaKind::Document;
+            const QSize cardSize   = previewLogicalSize(asFile, style);
+            const QSize pixels(320, 240);
+
+            // SVG bytes named .jpg: the file card.
+            const QString svg = adopt("drawing.jpg", QByteArray("<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"640\" height=\"480\">"
+                                                                "<rect width=\"640\" height=\"480\" fill=\"red\"/></svg>"));
+            QVERIFY(!svg.isEmpty());
+            const MediaEntry* e = core->entry(svg);
+            QVERIFY(e);
+            QCOMPARE(e->kind, MediaKind::Image);
+            QCOMPARE(e->state, MediaState::Ready);
+            MediaStill still = core->still(svg, pixels);
+            QCOMPARE(still.source, MediaStill::BlurHash); // the blurhash still decodes...
+            QVERIFY(still.notAPicture);                    // ...but the file is no picture
+            QVERIFY(core->still(svg, pixels).notAPicture); // remembered with the failure (no second read)
+            QSize size;
+            QVERIFY(!renderPreview(*e, still, style, &size).isNull());
+            QCOMPARE(size, cardSize);
+            QVERIFY(previewLogicalSize(*e, style) != cardSize); // what it was drawn as before: the picture box
+
+            // A real picture that is never decoded (a PNG of 30000 x 30000, over the decode cap): the picture box with
+            // the blurhash, as before.
+            const QByteArray huge("\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x75\x30\x00\x00\x75\x30\x08\x02\x00\x00\x00\xe9\x45\x6f"
+                                  "\xed\x00\x00\x00\x08\x49\x44\x41\x54\x78\x9c\x03\x00\x00\x00\x00\x01\x48\x06\x89\xd2\x00\x00\x00\x00\x49\x45\x4e\x44\xae"
+                                  "\x42\x60\x82",
+                                  65); // IHDR, an empty IDAT, IEND
+            const QString    broken = adopt("huge.png", huge);
+            QVERIFY(!broken.isEmpty());
+            still = core->still(broken, pixels);
+            QVERIFY(!still.notAPicture);
+            QCOMPARE(still.source, MediaStill::BlurHash);
+            renderPreview(*core->entry(broken), still, style, &size);
+            QCOMPARE(size, previewLogicalSize(*core->entry(broken), style));
+            QVERIFY(size != cardSize);
+
+            // A good picture: itself.
+            QImage img(64, 48, QImage::Format_RGB32);
+            img.fill(Qt::darkCyan);
+            QByteArray png;
+            {
+                QBuffer buffer(&png);
+                QVERIFY(buffer.open(QIODevice::WriteOnly));
+                QVERIFY(img.save(&buffer, "PNG"));
+            }
+            const QString good = adopt("good.png", png);
+            still              = core->still(good, pixels);
+            QCOMPARE(still.source, MediaStill::Full);
+            QVERIFY(!still.notAPicture);
         }
         ts3::funcs           = savedFuncs;
         Settings::instance() = saved;
@@ -1625,6 +1721,89 @@ class TestLinkUi : public QObject
         QVERIFY(boxes.at(0)->isChecked());
         QVERIFY(!boxes.at(1)->isChecked());
         QVERIFY(boxes.at(2)->isChecked());
+    }
+
+    // 2.5: "Show cards for other web pages", on by default, its own ini key, the second of four boxes.
+    void webCardsSettingUi()
+    {
+        const Settings d;
+        QVERIFY(d.showWebCards);
+        QTemporaryDir dir;
+        const QString file = dir.path() + QStringLiteral("/settings.ini");
+        Settings      s;
+        s.showWebCards = false;
+        s.save(file);
+        Settings back;
+        back.load(file);
+        QVERIFY(!back.showWebCards);
+        QVERIFY(back.showLinkPreviews && back.autoLoadLinkPreviews && back.makeLinkPreviews);
+        // A 2.4.0 ini has no key: on.
+        const QString older = dir.path() + QStringLiteral("/older.ini");
+        {
+            QSettings ini(older, QSettings::IniFormat);
+            ini.setValue(QStringLiteral("showLinkPreviews"), true);
+        }
+        Settings fromOlder;
+        fromOlder.showWebCards = false;
+        fromOlder.load(older);
+        QVERIFY(fromOlder.showWebCards);
+
+        PrivacySection section;
+        section.load(d);
+        QList<QCheckBox*> boxes;
+        for (QCheckBox* box : section.findChildren<QCheckBox*>()) {
+            if (box->text().contains(QStringLiteral("other websites")) || box->text().contains(QStringLiteral("web pages"))
+                || box->text().contains(QStringLiteral("automatically")) || box->text().contains(QStringLiteral("links I send")))
+                boxes << box;
+        }
+        QCOMPARE(boxes.size(), 4);
+        section.resize(600, 900);
+        section.show();
+        QTest::qWaitForWindowExposed(&section);
+        std::sort(boxes.begin(), boxes.end(), [](QCheckBox* a, QCheckBox* b) { return a->mapTo(a->window(), QPoint()).y() < b->mapTo(b->window(), QPoint()).y(); });
+        QCOMPARE(boxes.at(0)->text(), QStringLiteral("Show previews for links to &other websites"));
+        QCOMPARE(boxes.at(1)->text(), QStringLiteral("Show cards for other &web pages"));
+        QCOMPARE(boxes.at(2)->text(), QStringLiteral("&Load link previews automatically"));
+        QCOMPARE(boxes.at(3)->text(), QStringLiteral("&Make previews for links I send"));
+        // Every access key of the group is its own.
+        QSet<QChar> keys;
+        for (QCheckBox* box : qAsConst(boxes)) {
+            const int amp = box->text().indexOf(QLatin1Char('&'));
+            QVERIFY(amp >= 0);
+            QVERIFY(!keys.contains(box->text().at(amp + 1).toLower()));
+            keys.insert(box->text().at(amp + 1).toLower());
+        }
+        // The lower three are greyed out while the first is off, their ticks kept.
+        boxes.at(0)->setChecked(false);
+        for (int i : {1, 2, 3}) {
+            QVERIFY(!boxes.at(i)->isEnabled());
+            QVERIFY(boxes.at(i)->isChecked());
+        }
+        boxes.at(0)->setChecked(true);
+        for (int i : {1, 2, 3})
+            QVERIFY(boxes.at(i)->isEnabled());
+        // Accessible descriptions are the hints.
+        QVERIFY(boxes.at(1)->accessibleDescription().contains(QStringLiteral("doesn't load those pages")));
+        // design2 2.12: the share-shaped exception is said where the switch is (review finding: no promise it breaks).
+        QVERIFY(boxes.at(1)->accessibleDescription().contains(QStringLiteral("Nextcloud or ownCloud share")));
+        QVERIFY(!boxes.at(1)->accessibleDescription().contains(QStringLiteral("never loads")));
+        QVERIFY(boxes.at(0)->accessibleDescription().contains(QStringLiteral("well-known sites")));
+        QVERIFY(boxes.at(2)->accessibleDescription().contains(QStringLiteral("Load link previews")));
+        // Hints are plain text (nothing a translation could turn into a link or a picture).
+        for (QLabel* label : section.findChildren<QLabel*>())
+            QCOMPARE(label->textFormat(), Qt::PlainText);
+        // store() writes all four.
+        boxes.at(1)->setChecked(false);
+        Settings stored = d;
+        section.store(stored, d);
+        QVERIFY(!stored.showWebCards);
+        QVERIFY(stored.showLinkPreviews && stored.autoLoadLinkPreviews && stored.makeLinkPreviews);
+        Settings webOff = d;
+        webOff.showWebCards = false;
+        section.load(webOff);
+        QVERIFY(!boxes.at(1)->isChecked());
+        section.load(d);
+        QVERIFY(boxes.at(1)->isChecked());
     }
 };
 

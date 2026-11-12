@@ -69,6 +69,12 @@ struct Head {
     qint64       contentLength = -1; // -1: not sent
     QString      location;           // redirects (at most 8 KB)
     net::Address peer;               // the address the response came from; null: unknown
+    // 2.5
+    QByteArray contentEncoding;    // as sent, lower case (at most 64 bytes); empty: none
+    qint64     retryAfterMs  = -1; // Retry-After (delta seconds or an HTTP date), else on a 429 the rate reset below; -1: none
+    double     rateRemaining = -1; // x-ratelimit-remaining (a decimal >= 0, "0.0" allowed); -1: absent or unreadable
+    qint64     rateResetMs   = -1; // net::parseRateReset of x-ratelimit-reset-after / x-ratelimit-reset; -1: absent or unreadable
+    bool       challenge     = false; // "cf-mitigated: challenge" (a Cloudflare bot challenge)
 };
 
 // How one request reaches its website.
@@ -84,6 +90,8 @@ struct HopOptions {
     quint64    deadline = 0;     // nowMs() value: no wait goes past it
     int        connectTimeoutMs = 10 * 1000;
     int        receiveTimeoutMs = 15 * 1000;
+    QByteArray userAgent;                   // 2.5: net::userAgent() (the Fetcher fills it); empty: the transport's own
+    QByteArray acceptEncoding = "identity"; // 2.5: never compressed (no decompression code, no bomb)
     // Called (on any thread) with each address before connecting and after connecting; false drops the
     // connection before the request is sent (Error::Blocked).
     std::function<bool(const net::Address&)> allowPeer;

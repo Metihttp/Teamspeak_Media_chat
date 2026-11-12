@@ -128,6 +128,7 @@ QTextCharFormat plainCopy(QTextCharFormat format)
     format.clearProperty(kObjectProperty);
     format.clearProperty(kRunsProperty);
     format.clearProperty(kOffsetProperty);
+    format.clearProperty(previewscale::kDuSizeProperty); // 2.5 zoom
     return format;
 }
 
@@ -245,7 +246,7 @@ Message parseBlock(const QTextBlock& block)
                     const QTextImageFormat image = p.format.toImageFormat();
                     m.restyled                   = true;
                     m.object                     = image.name();
-                    m.objectSize                 = QSizeF(image.width(), image.height());
+                    m.objectSize                 = previewscale::duSizeOf(image); // 2.5 zoom: du
                     m.quote                      = quoteFromRuns(image.property(kRunsProperty).toList());
                     m.hasQuote                   = m.quote.valid();
                     break;
@@ -258,7 +259,7 @@ Message parseBlock(const QTextBlock& block)
         const QTextImageFormat image = pieces.first().format.toImageFormat();
         m.restyled                   = true;
         m.object                     = image.name();
-        m.objectSize                 = QSizeF(image.width(), image.height());
+        m.objectSize                 = previewscale::duSizeOf(image); // 2.5 zoom: du
         m.quote                      = quoteFromRuns(image.property(kRunsProperty).toList());
         m.hasQuote                   = m.quote.valid();
         offset                       = 1;
@@ -439,7 +440,7 @@ QVector<Message> scanFrom(QTextDocument* doc, int firstBlock)
     return out;
 }
 
-bool collapse(QTextDocument* doc, const Message& m, const QString& name, const QSizeF& size)
+bool collapse(QTextDocument* doc, const Message& m, const QString& name, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc || m.restyled || !m.hasQuote || m.quoteStart < 0 || m.quoteEnd <= m.quoteStart)
         return false;
@@ -475,8 +476,7 @@ bool collapse(QTextDocument* doc, const Message& m, const QString& name, const Q
     QTextImageFormat image;
     image.setFont(m.baseFormat.font(), QTextCharFormat::FontPropertiesSpecifiedOnly);
     image.setName(name);
-    image.setWidth(size.width());
-    image.setHeight(size.height());
+    previewscale::setObjectSize(image, size, scale); // 2.5 zoom
     image.setProperty(kObjectProperty, 1);
     image.setProperty(kRunsProperty, runs);
     image.setProperty(kOffsetProperty, m.quoteStart - m.position);
@@ -593,7 +593,7 @@ int giveBack(QTextDocument* doc)
     return done;
 }
 
-void resizeObject(QTextDocument* doc, int position, const QSizeF& size)
+void resizeObject(QTextDocument* doc, int position, const QSizeF& size, const PreviewScale& scale)
 {
     if (!doc || position < 0 || position >= doc->characterCount() - 1)
         return;
@@ -603,11 +603,11 @@ void resizeObject(QTextDocument* doc, int position, const QSizeF& size)
     QTextCharFormat format = c.charFormat();
     if (!isObject(format))
         return;
-    QTextImageFormat image = format.toImageFormat();
-    if (qFuzzyCompare(image.width(), size.width()) && qFuzzyCompare(image.height(), size.height()))
+    QTextImageFormat image   = format.toImageFormat();
+    const QSizeF     logical = scale.toLogical(size); // 2.5 zoom: du x scale; the du size compared too
+    if (previewscale::duSizeOf(image) == size && qFuzzyCompare(image.width(), logical.width()) && qFuzzyCompare(image.height(), logical.height()))
         return;
-    image.setWidth(size.width());
-    image.setHeight(size.height());
+    previewscale::setObjectSize(image, size, scale);
     c.setCharFormat(image);
 }
 

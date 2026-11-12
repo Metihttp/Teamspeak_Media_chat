@@ -25,6 +25,8 @@
 #include <QTextFormat>
 #include <QVector>
 
+#include "previewscale.h" // 2.5 zoom: rows carry their du size
+
 class QTextBlock;
 class QTextDocument;
 
@@ -83,9 +85,10 @@ QRectF rowRect(const QTextBlock& block);
 
 // Edits (the caller keeps layoutformat's mutating flag set; several may share one edit block).
 // Puts a row (picture name, logical size, the message's key) at the end of block n. False if one is there.
-bool insertRow(QTextDocument* doc, int n, const QString& name, const QString& key, const QSizeF& size);
+// 2.5 zoom: size in du; the row is du x scale (the chat's chrome scale, PreviewScale::chrome()) with its du size kept.
+bool insertRow(QTextDocument* doc, int n, const QString& name, const QString& key, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 // A new size for block n's row. False without a row.
-bool resizeRow(QTextDocument* doc, int n, const QSizeF& size);
+bool resizeRow(QTextDocument* doc, int n, const QSizeF& size, const PreviewScale& scale = PreviewScale());
 // Takes block n's row out (and a line break of ours left without one), and scrubs block n + 1. False if
 // nothing was there.
 bool removeRow(QTextDocument* doc, int n);

@@ -280,14 +280,12 @@ void drawFire(QPainter& p)
     p.drawPath(core);
 }
 
+// 2.5 zoom: 11 du like every preview (previewrenderer's basePixelSize): the row is drawn at the preview's ratio, so
+// it grows with the chat's text size without a 96-DPI assumption or a 15 px cap.
 qreal basePixelSize(const QFont& font)
 {
-    qreal px = 12.0;
-    if (font.pixelSize() > 0)
-        px = font.pixelSize();
-    else if (font.pointSizeF() > 0)
-        px = font.pointSizeF() * 4.0 / 3.0;
-    return qBound(11.0, px, 15.0);
+    Q_UNUSED(font);
+    return 11.0;
 }
 
 qreal pillWidth(const ReactionView::Entry& entry, const MeasureText& measure)
