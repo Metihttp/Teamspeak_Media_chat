@@ -58,6 +58,22 @@
 //   settings.combo {text, value}    a combo box of Settings by accessible name: reported, or value picked
 //   settings.button {name}          ok, restore or cancel clicked
 //   fontdlg {pt, family}            the open QFontDialog (Options > Chat > Change Font): that font, then OK
+// 2.6 chat proxy (design 9.5; the live run's test proxy only, never the author's real settings):
+//   proxy.state                     mode, generation, health, the Windows status, the bridge's counters and the diagnostic
+//                                   info's lines
+//   proxy.set {on, whenOff: system|direct, type: socks5|http, host, port, user, password}
+//                                   changes the saved chat proxy as the window's OK does (Control::save): the fields given
+//                                   replace the saved ones; a password is sealed for the resulting endpoint (empty: none);
+//                                   another type, host, port or user without a password drops the saved one (S7). The
+//                                   echo of the line shows the password as *** (selftestecho.h, S18)
+//   proxy.toggle {to: on|off, origin: hotkey|menu|command|settings}   turnOn / turnOff, or toggle (default: the hotkey)
+//   proxy.test                      the window's Test with the saved values (the script waits for it); logs the result
+//   proxy.find                      Find my VPN app (the script waits for it); logs the ports that answered
+//   proxy.records {client: f|u|p|t, n}  the session bridge's records (host names: test builds only; no secrets)
+//   ytplayer.netlog {path}          the next YouTube player environment gets --log-net-log=<path> (S16; through
+//                                   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, so a path naming "proxy" is refused; empty
+//                                   path: off). It takes effect when the engine is made again (after a chat proxy on/off,
+//                                   or 60 s after the last player closed)
 //   where {widest}                  also the horizontal scroll range, the view and the document width; widest: the
 //                                   blocks reaching farthest right (and their widest picture)
 
@@ -163,6 +179,14 @@ Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int 
 #include "settings.h"
 #include "ts3api.h"
 #include "update/updater.h" // 2.3.4: hint.inject
+#include "proxy/bridge.h"     // 2.6 chat proxy: the proxy.* commands
+#include "proxy/control.h"
+#include "proxy/findrun.h"
+#include "proxy/protect.h"
+#include "proxy/proxydiag.h"
+#include "proxy/router.h"
+#include "proxy/testrun.h"
+#include "selftestecho.h"     // 2.6: the echo shows a password as ***
 
 // plugin.cpp's entry points, called the way TeamSpeak calls them (same DLL).
 extern "C" int  ts3plugin_processCommand(uint64 serverConnectionHandlerID, const char* command);
@@ -710,7 +734,7 @@ void SelfTest::runOne()
         next(0);
         return;
     }
-    say(QString::fromLatin1("> ") + line.left(400));
+    say(QString::fromLatin1("> ") + selftest::echoLine(line).left(400)); // 2.6: a password shows as *** (S18)
     if (run(doc.object()))
         next(0);
 }
@@ -1600,6 +1624,267 @@ bool SelfTest::run(const QJsonObject& c)
     }
     if (selfTestMusic(cmd, c, sch, this, [](const QString& text) { say(text); })) // 2.3 live music (selftestmusic.cpp)
         return true;
+    // 2.6 chat proxy: proxy.state, proxy.set, proxy.toggle, proxy.test, proxy.find, proxy.records, ytplayer.netlog.
+    if (cmd.startsWith(QLatin1String("proxy.")) || cmd == QLatin1String("ytplayer.netlog"))
+        return runProxy(cmd, c);
+    say(QString::fromLatin1("unknown command ") + cmd);
+    return true;
+}
+
+namespace {
+
+const char* modeText(proxy::Mode mode)
+{
+    switch (mode) {
+    case proxy::Mode::Unset:
+        return "unset";
+    case proxy::Mode::System:
+        return "windows";
+    case proxy::Mode::Direct:
+        return "direct";
+    case proxy::Mode::Custom:
+        return "custom";
+    }
+    return "unset";
+}
+
+const char* healthText(proxy::Health::State state)
+{
+    switch (state) {
+    case proxy::Health::State::Unknown:
+        return "unknown";
+    case proxy::Health::State::Working:
+        return "working";
+    case proxy::Health::State::Down:
+        return "down";
+    case proxy::Health::State::Probation:
+        return "probation";
+    }
+    return "unknown";
+}
+
+const char* toggleText(proxy::Toggle toggle)
+{
+    switch (toggle) {
+    case proxy::Toggle::TurnedOn:
+        return "turned on";
+    case proxy::Toggle::TurnedOff:
+        return "turned off";
+    case proxy::Toggle::AlreadyOn:
+        return "already on";
+    case proxy::Toggle::AlreadyOff:
+        return "already off";
+    case proxy::Toggle::NotSetUp:
+        break;
+    }
+    return "not set up";
+}
+
+} // namespace
+
+// 2.6 chat proxy: the live run's commands (design 9.5). False when the command goes on by itself (test, find).
+bool SelfTest::runProxy(const QString& cmd, const QJsonObject& c)
+{
+    const auto text = [&c](const char* key) { return c.value(QString::fromLatin1(key)).toString(); };
+    const auto has  = [&c](const char* key) { return c.contains(QString::fromLatin1(key)); };
+    if (cmd == QLatin1String("ytplayer.netlog")) {
+        const QString path = text("path");
+        if (path.contains(QLatin1String("proxy"), Qt::CaseInsensitive)) {
+            say(QString::fromLatin1("ytplayer.netlog: refused (a path naming proxy reads as a proxy override in custom mode)"));
+            return true;
+        }
+        const QString native = QDir::toNativeSeparators(path);
+        QString       value;
+        if (!path.isEmpty())
+            value = QString::fromLatin1("--log-net-log=") + (native.contains(QLatin1Char(' ')) ? QLatin1Char('"') + native + QLatin1Char('"') : native);
+        SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", value.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(value.utf16()));
+        say(QString::fromLatin1("ytplayer.netlog: ") + (value.isEmpty() ? QString::fromLatin1("off") : value)
+            + QString::fromLatin1(" (from the next player environment)"));
+        return true;
+    }
+    proxy::Control* control = proxy::Control::current();
+    if (!control) {
+        say(cmd + QString::fromLatin1(": no proxy::Control"));
+        return true;
+    }
+    if (cmd == QLatin1String("proxy.state")) {
+        const std::shared_ptr<const proxy::Snapshot> s = proxy::snapshot();
+        const proxy::WindowsStatus                   w = control->windowsStatus();
+        QString line = QString::fromLatin1("proxy.state: mode %1 gen %2 (snapshot %3 gen %4 refused %5) health %6 last %7 paused %8 windows-failure %9")
+                           .arg(QString::fromLatin1(modeText(control->mode())))
+                           .arg(control->generation())
+                           .arg(QString::fromLatin1(modeText(s->mode)))
+                           .arg(s->generation)
+                           .arg(QString::fromLatin1(proxy::failureName(s->refused)))
+                           .arg(QString::fromLatin1(healthText(control->state())))
+                           .arg(QString::fromLatin1(proxy::failureName(control->lastFailure())))
+                           .arg(control->pausedLoads())
+                           .arg(QString::fromLatin1(proxy::failureName(w.lastFailure)));
+        if (const std::shared_ptr<proxy::Bridge> bridge = control->bridge()) {
+            const proxy::Bridge::Counters k = bridge->counters();
+            line += QString::fromLatin1(" bridge %1 upstream %2 threads %3 open %4 accepted %5 refused %6 busy %7 unauth %8")
+                        .arg(QString::fromLatin1(bridge->isRunning() ? "running" : "stopped"))
+                        .arg(QString::fromLatin1(bridge->hasUpstream() ? "set" : "none"))
+                        .arg(bridge->liveThreads())
+                        .arg(k.tunnelsOpen)
+                        .arg(k.accepted)
+                        .arg(k.refused)
+                        .arg(k.busy)
+                        .arg(k.unauthenticated);
+        } else {
+            line += QString::fromLatin1(control->bridgeFailed() ? " bridge failed" : " bridge none");
+        }
+        say(line);
+        for (const QString& l : proxy::currentDiagnosticLines())
+            say(QString::fromLatin1("proxy.state:   ") + l);
+        return true;
+    }
+    if (cmd == QLatin1String("proxy.set")) {
+        proxy::Config         next   = control->config();
+        const proxy::Endpoint before = next.endpoint();
+        if (has("on"))
+            next.on = c.value(QString::fromLatin1("on")).toBool();
+        if (has("whenOff"))
+            next.whenOff = text("whenOff") == QLatin1String("direct") ? proxy::WhenOff::Direct : proxy::WhenOff::System;
+        if (has("type"))
+            next.type = text("type") == QLatin1String("http") ? proxy::Type::Http : proxy::Type::Socks5;
+        if (has("host")) {
+            if (!text("host").isEmpty() && proxy::hostError(text("host")) != proxy::HostError::None) {
+                say(QString::fromLatin1("proxy.set: refused (not a proxy address)"));
+                return true;
+            }
+            next.host = proxy::normalizeHost(text("host"));
+        }
+        if (has("port"))
+            next.port = static_cast<quint16>(qBound(0, c.value(QString::fromLatin1("port")).toInt(), 65535));
+        if (has("user"))
+            next.user = text("user");
+        if (!proxy::userValid(next.type, next.user)) {
+            say(QString::fromLatin1("proxy.set: refused (the user name)"));
+            return true;
+        }
+        if (has("password")) {
+            QByteArray blob;
+            if (!proxy::protect::seal(text("password"), next.endpoint(), &blob)) {
+                say(QString::fromLatin1("proxy.set: Windows couldn't protect the password"));
+                return true;
+            }
+            next.passwordBlob = blob;
+        } else if (next.endpoint() != before) {
+            next.passwordBlob.clear(); // the password follows its endpoint (S7)
+        }
+        const bool ok = control->save(next);
+        say(QString::fromLatin1("proxy.set: %1, mode %2, gen %3, login %4, password %5")
+                .arg(QString::fromLatin1(ok ? "saved" : "not saved"), QString::fromLatin1(modeText(control->mode())))
+                .arg(control->generation())
+                .arg(QString::fromLatin1(control->config().user.isEmpty() ? "no" : "yes"),
+                     QString::fromLatin1(control->config().passwordBlob.isEmpty() ? "none" : "saved")));
+        return true;
+    }
+    if (cmd == QLatin1String("proxy.toggle")) {
+        const QString                origin = text("origin");
+        const proxy::Control::Origin o      = origin == QLatin1String("menu")       ? proxy::Control::Origin::Menu
+                                              : origin == QLatin1String("command")  ? proxy::Control::Origin::Command
+                                              : origin == QLatin1String("settings") ? proxy::Control::Origin::Settings
+                                                                                    : proxy::Control::Origin::Hotkey;
+        const QString       to  = text("to");
+        const quint64       sch = ts3::currentConnection();
+        const proxy::Toggle t   = to == QLatin1String("on")    ? control->turnOn(o, sch)
+                                  : to == QLatin1String("off") ? control->turnOff(o, sch)
+                                                               : control->toggle(o, sch);
+        say(QString::fromLatin1("proxy.toggle: %1, mode %2, gen %3")
+                .arg(QString::fromLatin1(toggleText(t)), QString::fromLatin1(modeText(control->mode())))
+                .arg(control->generation()));
+        return true;
+    }
+    if (cmd == QLatin1String("proxy.test")) {
+        const proxy::Config saved = control->config();
+        if (!saved.saved()) {
+            say(QString::fromLatin1("proxy.test: no chat proxy is saved"));
+            return true;
+        }
+        auto* job = new proxy::TestRun(this); // a child: gone with the driver (its worker is pinned and joined at unload)
+        QElapsedTimer clock;
+        clock.start();
+        connect(job, &proxy::TestRun::finished, this, [this, job, clock] {
+            const proxy::TestResult r  = job->result();
+            const bool              ok = proxy::testResultOk(r);
+            if (proxy::Control* now = proxy::Control::current())
+                now->noteTest(ok, r.failure, r.ms, true);
+            say(QString::fromLatin1("proxy.test: %1 failure %2 step %3 status %4 %5 ms%6 (took %7 ms)")
+                    .arg(QString::fromLatin1(ok ? "works" : "failed"), QString::fromLatin1(proxy::failureName(r.failure)),
+                         QString::fromLatin1(proxy::stepName(r.step)))
+                    .arg(r.status)
+                    .arg(r.ms)
+                    .arg(QString::fromLatin1(r.loginUnused ? " (login unused)" : ""))
+                    .arg(clock.elapsed()));
+            job->deleteLater();
+            next(0);
+        });
+        if (!job->start(saved, proxy::protect::SecretBytes(), saved.passwordBlob)) {
+            delete job;
+            say(QString::fromLatin1("proxy.test: couldn't start"));
+            return true;
+        }
+        say(QString::fromLatin1("proxy.test: running"));
+        return false;
+    }
+    if (cmd == QLatin1String("proxy.find")) {
+        proxy::FindRun::Options options;
+        if (const std::shared_ptr<proxy::Bridge> bridge = control->bridge())
+            options.bridgePort = bridge->port();
+        auto* job = new proxy::FindRun(options, this);
+        connect(job, &proxy::FindRun::finished, this, [this, job] {
+            QStringList ports;
+            for (quint16 port : job->found())
+                ports << QString::number(port);
+            say(QString::fromLatin1("proxy.find: ") + (ports.isEmpty() ? QString::fromLatin1("none") : ports.join(QLatin1Char(' '))));
+            job->deleteLater();
+            next(0);
+        });
+        if (!job->start()) {
+            delete job;
+            say(QString::fromLatin1("proxy.find: couldn't start"));
+            return true;
+        }
+        return false;
+    }
+    if (cmd == QLatin1String("proxy.records")) {
+        const std::shared_ptr<proxy::Bridge> bridge = control->bridge();
+        if (!bridge) {
+            say(QString::fromLatin1("proxy.records: no bridge"));
+            return true;
+        }
+        const QString filter = text("client");
+        const int     n      = c.value(QString::fromLatin1("n")).toInt(40);
+        int           shown  = 0;
+        for (const char client : {'f', 'u', 'p', 't'}) {
+            if (!filter.isEmpty() && filter != QString(QLatin1Char(client)))
+                continue;
+            const QVector<proxy::Record> records = bridge->recent(client, 0);
+            for (int i = qMax(0, records.size() - n); i < records.size(); ++i) {
+                const proxy::Record& r = records.at(i);
+                say(QString::fromLatin1("proxy.records: %1%2 %3 step %4 failure %5 code %6%7 up %8 down %9 %10 ms")
+                        .arg(QLatin1Char(r.client))
+                        .arg(r.id)
+                        .arg(r.host, QString::fromLatin1(proxy::stepName(r.step)), QString::fromLatin1(proxy::failureName(r.failure)))
+                        .arg(r.code)
+                        .arg(QString::fromLatin1(r.loginUnused ? " loginUnused" : ""))
+                        .arg(r.up)
+                        .arg(r.down)
+                        .arg(r.endMs ? qint64(r.endMs - r.startMs) : qint64(-1)));
+                ++shown;
+            }
+        }
+        const proxy::Bridge::Counters k = bridge->counters();
+        QStringList                   failures;
+        for (auto it = k.failures.constBegin(); it != k.failures.constEnd(); ++it)
+            failures << QString::fromLatin1("%1 %2").arg(QString::fromLatin1(proxy::failureName(static_cast<proxy::Failure>(it.key())))).arg(it.value());
+        say(QString::fromLatin1("proxy.records: %1 shown; failures: %2")
+                .arg(shown)
+                .arg(failures.isEmpty() ? QString::fromLatin1("none") : failures.join(QLatin1String(", "))));
+        return true;
+    }
     say(QString::fromLatin1("unknown command ") + cmd);
     return true;
 }

@@ -5,7 +5,8 @@
 // web pages, loading the ones without a sender-made preview automatically, and making previews of your own: four
 // boxes, all on by default, each with a hint that says who contacts the website (also its accessible
 // description); the lower three are greyed out while the first is off (they need it), their ticks kept.
-// 2.5 YouTube player: "Play YouTube videos in the chat" below them, greyed out the same way.
+// 2.5 YouTube player: "Play YouTube videos in a TS Media window" (2.6: the window player's name; "in the chat" once the
+// anchored player ships) below them, greyed out the same way.
 
 #include "settingssection.h"
 
@@ -38,6 +39,9 @@ class PrivacySection : public SettingsSection
     QLabel*    m_playHint    = nullptr;
 
   public:
-    // The hint under "Play YouTube videos in the chat" (with the runtime line from the registry check; tests).
+    // The hint under the player switch (with the runtime line from the registry check; tests).
     static QString playYouTubeHint();
+    // 2.6 (design 8.2): the switch's text: "&Play YouTube videos in a TS Media window" while every Play is the window
+    // player (ytpage::kAnchoredPlayer false), "&Play YouTube videos in the chat" with the anchored player. Key p kept.
+    static QString playYouTubeLabel(bool anchored);
 };

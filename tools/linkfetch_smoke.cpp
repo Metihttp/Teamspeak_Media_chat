@@ -39,6 +39,7 @@
 #include "linkpreview/hostgate.h"
 #include "linkpreview/linkurl.h"
 #include "linkpreview/transport.h"
+#include "proxy/router.h"
 #include "video/mfvideo.h"
 
 namespace {
@@ -112,9 +113,21 @@ class TracingTransport : public http::Transport
     }
     http::Route route(const QUrl& url, const http::Cancel& cancel, quint64 deadline) override
     {
-        const http::Route r = m_direct ? http::Route() : m_inner->route(url, cancel, deadline);
-        if (m_verbose)
-            say(QStringLiteral("  route %1: %2").arg(url.host(), r.viaProxy ? QStringLiteral("through the Windows proxy %1").arg(r.proxy) : QStringLiteral("direct")));
+        http::Route r;
+        if (m_direct)
+            r.via = http::Route::Via::Direct; // 2.6: an explicit direct route (nothing defaults to it)
+        else
+            r = m_inner->route(url, cancel, deadline);
+        if (m_verbose) {
+            QString how = QStringLiteral("direct");
+            if (r.via == http::Route::Via::System)
+                how = QStringLiteral("through the Windows proxy %1").arg(r.proxy);
+            else if (r.via == http::Route::Via::Refused)
+                how = QStringLiteral("refused (%1)").arg(QString::fromLatin1(proxy::failureName(r.refused)));
+            else if (r.via == http::Route::Via::Unset)
+                how = QStringLiteral("undecided (refused)");
+            say(QStringLiteral("  route %1: %2").arg(url.host(), how));
+        }
         return r;
     }
     http::Error resolve(const QString& host, QVector<net::Address>* out, const http::Cancel& cancel, quint64 deadline) override
@@ -187,8 +200,12 @@ QString describe(const Result& r)
         parts << QStringLiteral("finalHost=") + r.finalHost;
     if (!r.hopRefused.isEmpty())
         parts << QStringLiteral("hop-refused=") + r.hopRefused;
-    if (r.viaProxy)
+    if (r.via == proxy::Via::Bridge)
+        parts << QStringLiteral("via-chat-proxy"); // never the bridge's port or token
+    else if (r.viaProxy)
         parts << QStringLiteral("via-windows-proxy");
+    if (r.proxyFailure != proxy::Failure::None)
+        parts << QStringLiteral("proxy-failure=%1/%2").arg(QString::fromLatin1(proxy::failureName(r.proxyFailure)), QString::fromLatin1(proxy::stepName(r.proxyStep)));
     return parts.join(QLatin1Char(' '));
 }
 
@@ -470,6 +487,14 @@ int runList(QGuiApplication& app, const QString& listPath, const QString& outDir
 
 int main(int argc, char* argv[])
 {
+    // 2.6: the Windows-settings route (2.5's behaviour); --direct rows answer route() with an explicit direct route.
+    {
+        auto snap        = std::make_shared<proxy::Snapshot>();
+        snap->mode       = proxy::Mode::System;
+        snap->generation = 1;
+        snap->refused    = proxy::Failure::None;
+        proxy::publish(snap);
+    }
     QGuiApplication   app(argc, argv); // picture formats come from Qt's image plugins
     const QStringList args = app.arguments();
     if (args.size() >= 2 && args.at(1) == QLatin1String("--classify"))

@@ -190,6 +190,11 @@ class SenderPipeline : public QObject
     // 2.4 auto-load: a record of our own links was added or changed state (GUI thread; never while closed).
     void ownLinkChanged(const QString& urlKey);
 
+  public:
+    // 2.6 chat proxy (design 6 step 5): the route changed: a running fetch starts again on the new route (an answer of
+    // the old one is dropped); queued jobs simply use the new route.
+    void followRoute();
+
   private:
     enum class Step { Queued, Fetching, Making, Uploading, Announcing };
     struct Job {
@@ -213,6 +218,7 @@ class SenderPipeline : public QObject
         maker::Made  made;
         quint64      uploadChannel = 0; // 2.5: the channel its files go up into (ours when the upload starts)
         bool         webCards = true;   // Fetching: the Caps::webCards its fetch holds (followWebCards)
+        quint64      routeGeneration = 0; // 2.6: Fetching again after a route change: an older route's result is dropped
     };
     struct Reuse {
         Announcement files; // what is on the server (messageKey, sch and senderUid are filled per use)

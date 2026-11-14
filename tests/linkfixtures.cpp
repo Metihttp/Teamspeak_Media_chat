@@ -704,9 +704,10 @@ linkpreview::http::Error FakeHttp::resolve(const QString& host, QVector<linkprev
 linkpreview::http::Route FakeHttp::route(const QUrl&, const linkpreview::http::Cancel&, quint64)
 {
     linkpreview::http::Route r;
+    r.via = linkpreview::http::Route::Via::Direct; // 2.6: an explicit route (nothing defaults to direct)
     if (m_viaProxy) {
-        r.viaProxy = true;
-        r.proxy    = QStringLiteral("127.0.0.1:10809");
+        r.via   = linkpreview::http::Route::Via::System;
+        r.proxy = QStringLiteral("127.0.0.1:10809");
     }
     return r;
 }
@@ -731,7 +732,7 @@ std::unique_ptr<linkpreview::http::Exchange> FakeHttp::open(const linkpreview::h
             reply.body        = "missing";
         }
         peer = reply.peer.isEmpty() ? m_dns.value(options.url.host(), QStringLiteral("93.184.216.34")) : reply.peer;
-        if (options.route.viaProxy)
+        if (options.route.viaProxy())
             peer = QStringLiteral("127.0.0.1");
     }
     const linkpreview::net::Address address = linkpreview::net::parseAddress(peer);
@@ -741,7 +742,7 @@ std::unique_ptr<linkpreview::http::Exchange> FakeHttp::open(const linkpreview::h
     }
     {
         QMutexLocker lock(&m_mutex);
-        m_requests.append({key, options.accept, options.userAgent, options.acceptEncoding, options.route.viaProxy});
+        m_requests.append({key, options.accept, options.userAgent, options.acceptEncoding, options.route.viaProxy()});
     }
     return std::unique_ptr<linkpreview::http::Exchange>(new FakeExchange(this, reply, address, cancel, options.deadline));
 }

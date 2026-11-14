@@ -5,6 +5,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.6.0] - 2026-11-14
+
+### Added
+- **Chat proxy**, for places where YouTube and other sites are filtered. Link previews (YouTube, Klipy and other GIF and media sites, cards for sites and pages, Nextcloud shares), the YouTube player and the update check and download can go through an HTTP or SOCKS5 proxy, such as your VPN app's local port, while TeamSpeak itself (the server connection, voice, chat, plugin commands and file transfers) never uses it. You can keep your VPN app's TUN or VPN mode off, stay connected to TeamSpeak servers in your country and still load previews through the VPN. Previews you send are shared through your TeamSpeak server as before, so friends without a VPN see them too. [How to use it with your VPN app](docs/FAQ.md#how-do-i-use-ts-media-with-my-vpn-app).
+  - Its own window, *Chat proxy*: *Use a chat proxy for link previews, the YouTube player and update checks* (on and off), SOCKS5 or HTTP, server and port, an optional user name and password, and what to use while it is off (*Use Windows proxy settings*, the default, or *No proxy (direct)*). Everything is kept while it is off, and the fields can be tested while it is off.
+  - **Find my VPN app** looks for v2rayN, Throne, Nekoray, Clash Verge Rev and Hiddify at their usual ports on this PC (nothing leaves the PC). **Paste from clipboard** fills the fields from a proxy link such as `socks5://127.0.0.1:10808`. **Test** sends one request to `www.youtube.com` through the proxy and says what is wrong (*Can't reach the proxy at …*, *The proxy refused the login…*, *The proxy can't reach the website…*).
+  - Website names are looked up by the proxy, never by your PC, so a filtered DNS doesn't matter.
+  - On and off at once, without retyping anything: **Plugins → TS Media chat → Turn on chat proxy** / **Turn off chat proxy**, a TeamSpeak hotkey (*Turn the chat proxy on or off*), `/tsmedia proxy on` / `off` (`/tsmedia proxy` says what is in use) and a button in **Settings → Privacy & updates → Chat proxy**. Each says in the chat what it did. Previews that are loading start again through the new route, and a YouTube video that is playing closes (*Closed: the chat proxy changed. Press Play again.*).
+  - When the proxy fails, automatic previews pause (*Paused · the proxy isn't working*, with **Load preview**) instead of turning into error cards, and one line in the chat says why, with **Turn off chat proxy**; they load by themselves once the proxy works again. A preview that failed through a proxy says so (*Couldn't load through the chat proxy*, *Couldn't load through your Windows proxy*), and its menu offers **Turn off chat proxy** and **Proxy settings…**. Previews that waited for the proxy load when you click them after you turn it off.
+- The diagnostic info has a *Chat proxy* section: the mode, where the proxy is (this PC, the local network or elsewhere), whether it works and the last Test. Never its address, port or login.
+
+### Changed
+- With *Use Windows proxy settings*, a Windows proxy setting or setup script that names only a SOCKS proxy no longer sends previews directly: they wait for a click. For a SOCKS proxy entered in the Windows proxy settings (not a setup script), the YouTube player doesn't play and the update check says it can't use that proxy instead of going directly, and the Chat proxy window offers **Use it as the chat proxy**. A setup script that doesn't answer in time no longer sends previews directly either.
+- A link whose site your network's DNS filters (an answer in 10.10.34.0/24) says *Your network blocks this site* and offers the chat proxy (**Use chat proxy**, or **Set up proxy…** while none is saved).
+- *Play YouTube videos in the chat* is now called *Play YouTube videos in a TS Media window*.
+- The update consent window names the YouTube player as a web connection too.
+- The GIFs bar's button says *Remove* instead of *Remove all* when there is only one GIF.
+
+### Fixed
+- Link previews with a fake-IP TUN VPN (Clash Verge Rev and other mihomo or sing-box TUN modes, whose DNS answers addresses in 198.18.0.0/15) no longer fail.
+- A proxy that fails or is slow no longer pauses a website for 10 minutes.
+- A chat at its end stays at its end when the plugin inserts a preview or a preview changes size. After **Tools → Options → Addons → Reload** at 100% scaling the chat now stays at its end; with higher Windows scaling it can still stop above its end, and a chat you scrolled up can move by a message or two.
+
+### Security
+- The proxy password is stored with Windows DPAPI for your Windows account and only for the proxy server it was saved with (another server needs it typed again). It is sent to a proxy on another computer only when that proxy asks for it, and never appears in logs or the diagnostic info.
+- TS Media never falls back to a direct connection when the chat proxy fails, and a proxy setting it can't use never means "direct".
+- TS Media's own local connection to your proxy listens on 127.0.0.1 only, with a random key per session, and passes only TS Media's own requests to public websites on port 443.
+- The YouTube player never sends WebRTC traffic outside your proxy settings.
+- `.alt` names are never loaded.
+
 ## [2.5.0] - 2026-11-12
 
 ### Added

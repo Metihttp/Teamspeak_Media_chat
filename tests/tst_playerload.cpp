@@ -4,6 +4,7 @@
 // session with one log line, Play then opening the browser. Nothing is extracted or loaded before the first Play. The
 // WebView2 Runtime check reads the registry only. Stand-in helpers (player/tsmp_stub.cpp) are loaded into this process;
 // with the SDK, the real helper too (only tsmp_apiVersion, tsmp_init and tsmp_shutdown: no WebView2 starts).
+// 2.6 (design 9.3 test 1): the helper's API is version 2 with tsmp_setNetwork; an older or newer one is refused.
 
 #include <QDir>
 #include <QDirIterator>
@@ -22,6 +23,7 @@
 #include <objbase.h>
 
 #include "privacysection.h"
+#include "proxy/control.h"
 #include "settings.h"
 #include "testmain.h"
 #include "tsmp.h"
@@ -39,6 +41,14 @@ QByteArray bytesOf(const QString& path)
 {
     QFile f(path);
     return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+proxy::PlayerNetwork systemNet()
+{
+    proxy::PlayerNetwork n;
+    n.kind      = proxy::PlayerNetwork::Kind::System;
+    n.blockedBy = proxy::Failure::None;
+    return n;
 }
 
 int filesIn(const QString& dir)
@@ -103,6 +113,10 @@ class TestPlayerLoad : public QObject
         const ytbackend::LoadResult r = ytbackend::extractAndLoad(o);
         QVERIFY2(r.ok, qPrintable(r.step + QLatin1Char(' ') + QString::number(r.error)));
         QVERIFY(writeRefused);
+        // 2.6: API version 2, with tsmp_setNetwork.
+        QCOMPARE(TSMP_API_VERSION, 2);
+        QVERIFY(GetProcAddress(static_cast<HMODULE>(r.module), "tsmp_setNetwork") != nullptr);
+        QCOMPARE(reinterpret_cast<tsmp_apiVersion_fn>(GetProcAddress(static_cast<HMODULE>(r.module), "tsmp_apiVersion"))(), 2);
         QVERIFY(r.module);
         QCOMPARE(QFileInfo(r.path).fileName(), ytbackend::helperFileName(stub, a("win64")));
         QCOMPARE(bytesOf(r.path), stub);
@@ -194,9 +208,28 @@ class TestPlayerLoad : public QObject
         o.page    = a("<!doctype html>");
         o.rect    = QRect(0, 0, 640, 360);
         o.clip    = o.rect;
+        // 2.6: no network after init: the open fails "network" (S9).
+        const int none = backend.open(o);
+        QVERIFY(none > 0);
+        QVector<PlayerEvent> events = backend.poll();
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events.first().kind, int(TSMP_EV_FAILED));
+        QCOMPARE(events.first().text, a("network"));
+        // A blocked network is never passed on as a usable one; a bad bridge is refused.
+        proxy::PlayerNetwork blocked;
+        QVERIFY(backend.setNetwork(blocked) < 0);
+        proxy::PlayerNetwork bridge;
+        bridge.kind       = proxy::PlayerNetwork::Kind::Bridge;
+        bridge.bridgePort = 80;
+        bridge.realm      = "tsmedia-0123456789abcdef";
+        bridge.token      = QByteArray(43, 'A');
+        QVERIFY(backend.setNetwork(bridge) < 0);
+        bridge.bridgePort = 47123;
+        QCOMPARE(backend.setNetwork(bridge), 0);
+        QCOMPARE(backend.setNetwork(systemNet()), 0);
         const int id = backend.open(o);
         QVERIFY(id > 0);
-        const QVector<PlayerEvent> events = backend.poll();
+        events = backend.poll();
         QCOMPARE(events.size(), 1);
         QCOMPARE(events.first().player, id);
         QCOMPARE(events.first().kind, int(TSMP_EV_CREATED));
@@ -251,6 +284,7 @@ class TestPlayerLoad : public QObject
             return true;
         };
         host.openUrl = [](const QUrl&) {};
+        host.network = [] { return systemNet(); };
         YouTubePlayer player(host, std::unique_ptr<PlayerBackend>(backend));
         player.setUserDataFolderForTests(dir + a("/webview2"));
         QVERIFY(player.playable());
@@ -302,6 +336,39 @@ class TestPlayerLoad : public QObject
             QCOMPARE(rc, 0);
         TsmpEvent events[4];
         QCOMPARE(poll(events, 4), 0);
+        // 2.6 (S9): the network is UNSET after init: an open fails "network" before any window or environment; a bad
+        // bridge network is refused (and leaves UNSET); a good one is taken.
+        const auto setNet = reinterpret_cast<tsmp_setNetwork_fn>(GetProcAddress(m, "tsmp_setNetwork"));
+        const auto open   = reinterpret_cast<tsmp_open_fn>(GetProcAddress(m, "tsmp_open"));
+        QVERIFY(setNet && open);
+        if (rc == 0) {
+            TsmpOpen to{};
+            to.pageHtml       = L"<!doctype html>";
+            to.rect           = RECT{0, 0, 640, 360};
+            to.clip           = to.rect;
+            to.cssScale       = 1.0;
+            const int refused = open(&to);
+            QVERIFY(refused > 0);
+            QCOMPARE(poll(events, 4), 1);
+            QCOMPARE(events[0].player, refused);
+            QCOMPARE(events[0].kind, int(TSMP_EV_FAILED));
+            QCOMPARE(QString::fromWCharArray(events[0].text), a("network"));
+            TsmpNetwork net{};
+            net.mode       = TSMP_NET_BRIDGE;
+            net.bridgePort = 47123;
+            net.realm      = L"tsmedia-0123456789abcdef";
+            net.user       = L"tsm-p";
+            net.token      = L"short";
+            QVERIFY(setNet(&net) < 0);
+            QCOMPARE(open(&to) > 0, true);
+            QCOMPARE(poll(events, 4), 1);
+            QCOMPARE(QString::fromWCharArray(events[0].text), a("network"));
+            net.token = L"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+            QCOMPARE(setNet(&net), 0);
+            net.mode = 7;
+            QVERIFY(setNet(&net) < 0);
+            QVERIFY(setNet(nullptr) < 0);
+        }
         // A release with no environment at all (it was never made, or its creation failed): answered at once, so the
         // plugin's poll and a switched-off folder's deletion never wait for the whole session (review fix).
         const auto release = reinterpret_cast<tsmp_releaseEngine_fn>(GetProcAddress(m, "tsmp_releaseEngine"));

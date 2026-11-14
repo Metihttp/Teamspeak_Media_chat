@@ -19,6 +19,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <vector>
 
@@ -28,6 +29,7 @@
 #include "providers.h"
 #include "safeimage.h"
 #include "shares.h"
+#include "proxy/router.h"
 #include "textclean.h"
 #include "transport.h"
 
@@ -51,6 +53,13 @@ constexpr qint64 kWalledFreshSec   = 30 * 60;
 constexpr int    kMaxPictureSide   = 16384;
 constexpr int    kSniffPageBytes   = 512;
 constexpr qint64 kLoopMaxMs        = 60 * 1000;
+// 2.6: WinHTTP errors that tell a Windows proxy's failures apart (winhttp.h is not included here)
+constexpr unsigned long kWinHttpNameNotResolved = 12007;
+constexpr unsigned long kWinHttpCannotConnect   = 12029;
+constexpr unsigned long kSecureFlagInvalidCa    = 0x00000010; // WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CA
+
+// The id of a bridge hop (tsm-f<id>): process-wide, never 0.
+std::atomic<quint64> g_bridgeHopId{0};
 
 QString latin(const char* text)
 {
@@ -88,6 +97,8 @@ const char* errorFor(http::Error error)
         return errors::kBlocked;
     case http::Error::Canceled:
         return errors::kCanceled;
+    case http::Error::Proxy:
+        return errors::kProxy;
     case http::Error::BadResponse:
         break;
     }
@@ -387,6 +398,10 @@ bool readMetaV2(const Target& target, const QString& cacheDir, qint64 nowSec, bo
         const qint64 fresh = error == QLatin1String(errors::kWalled) ? kWalledFreshSec : kNothingFreshSec;
         if (age > fresh)
             return false;
+        // 2.6: a wall seen before the route last became (or changed inside) the chat proxy may have been the old route's
+        // (design 6.4): asked again.
+        if (error == QLatin1String(errors::kWalled) && at * 1000 < proxy::lastProxyRouteChangeMs())
+            return false;
         Result none = failure(error);
         *out        = none;
         return true;
@@ -655,9 +670,19 @@ class FetchJob
             gate->unused(firstTicket); // a cache hit, or canceled before the first request
         if (cancel->isSet() && result.ok)
             result = failure(errors::kCanceled);
-        result.viaProxy   = m_viaProxy;
-        result.requests   = m_requests;
-        result.hopRefused = m_hopRefused;
+        result.viaProxy        = m_viaProxy;
+        result.requests        = m_requests;
+        result.hopRefused      = m_hopRefused;
+        result.via             = m_via;
+        result.routeGeneration = m_routeGeneration;
+        result.proxyFailure    = m_proxyFailure;
+        result.proxyStep       = m_proxyStep;
+        result.proxyDecisive   = m_proxyFailure != proxy::Failure::None && proxy::isDecisive(m_proxyFailure, m_proxyStep);
+        result.routeOk         = m_routeOk;
+        result.siteResponded   = m_siteResponded;
+        if (!result.ok && result.error != QLatin1String(errors::kProxy) && result.error != QLatin1String(errors::kRouteDown)
+            && m_proxyFailure != proxy::Failure::None && proxy::isRouteLevel(m_proxyFailure))
+            result.error = latin(errors::kProxy); // a later fallback request must not hide the route's failure
         const quint64 jobId = id;
         const QString key   = target.key;
         post([jobId, key, result](Fetcher* fetcher) { fetcher->onJobDone(jobId, key, result); });
@@ -823,6 +848,113 @@ class FetchJob
         }
     }
 
+    // ---- 2.6: proxy failures (design 3.3.4) ------------------------------------------------------------------------
+
+    struct HopFailure {
+        const char*       code;
+        HostGate::Outcome outcome;
+    };
+
+    void proxyFail(proxy::Failure failure, proxy::Step step)
+    {
+        if (m_proxyFailure == proxy::Failure::None) {
+            m_proxyFailure = failure;
+            m_proxyStep    = step;
+        }
+    }
+
+    std::shared_ptr<proxy::RecordSource> records() const { return options.records ? options.records : proxy::liveRecords(); }
+
+    // What the bridge's record of this hop says, when it says the hop failed before (or without) the site: a kProxy,
+    // kBlocked, kBusy or kOffline answer. Null code: the record says the tunnel was fine (the site's failure).
+    HopFailure fromRecord(const proxy::Record& rec)
+    {
+        if (proxy::isRouteLevel(rec.failure)) {
+            proxyFail(rec.failure, rec.step);
+            return {errors::kProxy, HostGate::Outcome::Other};
+        }
+        switch (rec.failure) {
+        case proxy::Failure::Refused:
+            return {errors::kBlocked, HostGate::Outcome::Other}; // the bridge's policy: a bug or a hostile request
+        case proxy::Failure::Busy:
+            return {errors::kBusy, HostGate::Outcome::Other};
+        case proxy::Failure::Off:
+        case proxy::Failure::Internal:
+        case proxy::Failure::NotReady:
+            proxyFail(rec.failure, rec.step); // Off: the route changed under it (an old generation: dropped)
+            return {errors::kProxy, HostGate::Outcome::Other};
+        case proxy::Failure::SiteRefused:
+            return {errors::kOffline, HostGate::Outcome::Offline}; // the site's (REP 5)
+        default:
+            return {nullptr, HostGate::Outcome::Other};
+        }
+    }
+
+    HopFailure classifyFailure(const http::Route& route, quint64 hopId, const http::Exchange* exchange, http::Error error)
+    {
+        if (error == http::Error::Canceled)
+            return {errors::kCanceled, HostGate::Outcome::Other};
+        if (error == http::Error::Proxy) {
+            proxyFail(route.refused == proxy::Failure::None ? proxy::Failure::Internal : route.refused, proxy::Step::None);
+            return {errors::kProxy, HostGate::Outcome::Other};
+        }
+        if (route.via == http::Route::Via::Bridge) {
+            proxy::Record rec;
+            if (records()->outcome('f', hopId, &rec)) {
+                const HopFailure f = fromRecord(rec);
+                if (f.code)
+                    return f;
+                if (error == http::Error::Timeout && !rec.established() && proxy::isHandshakeStep(rec.step)) {
+                    proxyFail(proxy::Failure::Slow, rec.step); // WinHTTP's step timed out while the proxy was still busy (F6)
+                    return {errors::kProxy, HostGate::Outcome::Other};
+                }
+                if (error == http::Error::Tls && exchange && (exchange->secureFailureFlags() & kSecureFlagInvalidCa) && rec.down > 0) {
+                    proxyFail(proxy::Failure::Intercepted, proxy::Step::Relay); // the site's bytes came with an untrusted CA (S15)
+                    return {errors::kProxy, HostGate::Outcome::Other};
+                }
+            } else if (error != http::Error::Blocked) {
+                proxyFail(proxy::Failure::Internal, proxy::Step::None); // never reached the bridge (logged by the line)
+                return {errors::kProxy, HostGate::Outcome::Other};
+            }
+            return {errorFor(error), error == http::Error::Timeout ? HostGate::Outcome::Other : outcomeFor(error)};
+        }
+        if (route.via == http::Route::Via::System) {
+            const bool          connected = exchange && exchange->connectedToServer();
+            const unsigned long system    = exchange ? exchange->systemError() : 0;
+            if (!connected && (system == kWinHttpCannotConnect || system == kWinHttpNameNotResolved || error == http::Error::Timeout)) {
+                proxyFail(system == kWinHttpCannotConnect ? proxy::Failure::Unreachable
+                          : system == kWinHttpNameNotResolved ? proxy::Failure::NameNotFound
+                                                               : proxy::Failure::Slow,
+                          proxy::Step::Connect);
+                return {errors::kProxy, HostGate::Outcome::Other};
+            }
+            return {errorFor(error), error == http::Error::Timeout ? HostGate::Outcome::Other : outcomeFor(error)};
+        }
+        return {errorFor(error), outcomeFor(error)};
+    }
+
+    // A response head the proxy itself sent (IS_PROXY_CONNECT_RESPONSE).
+    HopFailure classifyProxyAnswer(const http::Route& route, quint64 hopId, const http::Head& head)
+    {
+        if (route.via == http::Route::Via::Bridge) {
+            proxy::Record rec;
+            if (records()->outcome('f', hopId, &rec)) {
+                const HopFailure f = fromRecord(rec);
+                if (f.code)
+                    return f;
+            }
+            proxyFail(proxy::Failure::Internal, proxy::Step::None); // the bridge answered but its record says nothing
+            return {errors::kProxy, HostGate::Outcome::Other};
+        }
+        proxy::Failure failure = proxy::Failure::NotAllowed;
+        if (head.status == 407)
+            failure = proxy::Failure::NeedsLogin;
+        else if (head.status == 502 || head.status == 503 || head.status == 504)
+            failure = proxy::Failure::CantReachSite;
+        proxyFail(failure, proxy::Step::Request);
+        return {errors::kProxy, HostGate::Outcome::Other};
+    }
+
     // ---- one GET -----------------------------------------------------------------------------------------------
 
     // One GET with redirects, every hop checked (netpolicy.h, the hop list) and gated (HostGate), the body checked
@@ -854,11 +986,54 @@ class FetchJob
             if (isRemovedImgur(url))
                 return fail(errors::kNotFound); // Imgur's "this was removed" picture
 
-            // Direct, or through the user's Windows proxy (netpolicy.h).
-            const http::Route route = transport->route(url, *cancel, m_deadline);
+            // 2.6: the route, decided here from the route snapshot taken once for this hop (design 3.3.2): custom and
+            // direct never ask Windows; only Windows mode calls transport->route(). Nothing defaults to direct (F1).
+            const std::shared_ptr<const proxy::Snapshot> snap = proxy::snapshot();
+            http::Route                                  route;
+            quint64                                      hopId = 0;
+            switch (snap->mode) {
+            case proxy::Mode::Unset:
+                route.via     = http::Route::Via::Refused;
+                route.refused = proxy::Failure::NotReady;
+                break;
+            case proxy::Mode::Custom:
+                if (snap->refused != proxy::Failure::None) {
+                    route.via     = http::Route::Via::Refused;
+                    route.refused = snap->refused;
+                } else {
+                    hopId             = ++g_bridgeHopId;
+                    route.via         = http::Route::Via::Bridge;
+                    route.proxy       = QLatin1String("127.0.0.1:") + QString::number(snap->bridgePort);
+                    route.bridgeToken = snap->token;
+                    route.bridgeUser  = QByteArray("tsm-f") + QByteArray::number(hopId);
+                }
+                break;
+            case proxy::Mode::Direct:
+                route.via = http::Route::Via::Direct;
+                break;
+            case proxy::Mode::System:
+                route = transport->route(url, *cancel, m_deadline);
+                if (route.via == http::Route::Via::Bridge)
+                    route = http::Route(); // only the snapshot names the bridge
+                break;
+            }
+            route.generation = snap->generation;
+            if (!m_routeGenerationSet) {
+                m_routeGeneration    = snap->generation;
+                m_routeGenerationSet = true;
+            }
+            m_via = route.via;
             if (cancel->isSet())
                 return fail(errors::kCanceled);
-            if (route.viaProxy) {
+            if (route.via == http::Route::Via::Unset || (route.via == http::Route::Via::System && route.proxy.isEmpty())) {
+                proxyFail(proxy::Failure::Internal, proxy::Step::None); // Windows mode undecided (WinHTTP missing): never direct
+                return fail(errors::kProxy);
+            }
+            if (route.via == http::Route::Via::Refused) {
+                proxyFail(route.refused, proxy::Step::None); // NotReady: a start-order bug if ever seen (the log line says it)
+                return fail(errors::kProxy); // no ticket, no lookup, no request
+            }
+            if (route.viaProxy()) {
                 // The proxy may reach the intranet: never a host under the PC's own DNS suffixes.
                 const QStringList suffixes = options.localSuffixes ? options.localSuffixes() : net::localDnsSuffixes();
                 if (net::underLocalSuffix(publicHostName(url), suffixes))
@@ -874,13 +1049,16 @@ class FetchJob
                 started = hopStarted;
             else
                 started += hopStarted - beforeGate; // a later hop's wait for its site is not charged to the page clock
-            if (route.viaProxy)
+            if (route.viaProxy())
                 m_viaProxy = true;
+            if (route.via == http::Route::Via::Bridge)
+                m_viaChatProxy = true;
 
-            // Direct: every address of the host must be public, before anything connects. Through a proxy
-            // the proxy resolves the name (local DNS may be filtered) and connects.
-            http::Error error = http::Error::None;
-            if (!route.viaProxy) {
+            // Direct: every address of the host must be public (or, W2, public and fake-IP), before anything connects.
+            // Through a proxy the proxy resolves the name (local DNS may be filtered) and connects.
+            http::Error error  = http::Error::None;
+            net::Answer answer = net::Answer::Public;
+            if (route.via == http::Route::Via::Direct) {
                 QVector<net::Address> addresses;
                 error = transport->resolve(publicHostName(url), &addresses, *cancel, m_deadline);
                 if (error != http::Error::None) {
@@ -891,11 +1069,25 @@ class FetchJob
                     releaseHop(ticket, HostGate::Outcome::Offline);
                     return fail(errors::kOffline);
                 }
-                for (const net::Address& address : qAsConst(addresses)) {
-                    if (!net::isPublicAddress(address)) {
+                answer = net::classifyAnswer(addresses);
+                switch (answer) {
+                case net::Answer::Public:
+                    break;
+                case net::Answer::FakeIp: {
+                    // W2: a fake-IP TUN connects by name at its exit: the proxied routes' name rules (S5).
+                    const QStringList suffixes = options.localSuffixes ? options.localSuffixes() : net::localDnsSuffixes();
+                    if (net::underLocalSuffix(publicHostName(url), suffixes)) {
                         releaseHop(ticket, HostGate::Outcome::Other);
                         return fail(errors::kBlocked);
                     }
+                    break;
+                }
+                case net::Answer::Filtered:
+                    releaseHop(ticket, HostGate::Outcome::Other);
+                    return fail(errors::kFiltered); // W3: the network's DNS filters the site (only the sinkhole set, S6)
+                case net::Answer::Blocked:
+                    releaseHop(ticket, HostGate::Outcome::Other);
+                    return fail(errors::kBlocked);
                 }
             }
 
@@ -908,8 +1100,21 @@ class FetchJob
             hopOptions.receiveTimeoutMs = options.receiveTimeoutMs;
             hopOptions.userAgent        = net::userAgent();
             hopOptions.acceptEncoding   = "identity";
-            if (route.viaProxy)
-                hopOptions.allowPeer = [](const net::Address&) { return true; }; // the user's proxy (often on this PC)
+            const auto peerAllowed      = [&route, answer](const net::Address& address) {
+                if (route.via == http::Route::Via::System)
+                    return true; // the user's Windows proxy (often on this PC)
+                if (route.via == http::Route::Via::Bridge)
+                    return address == net::Address::fromIPv4(0x7F000001u); // the bridge only (S1)
+                if (answer == net::Answer::FakeIp)
+                    return net::isPublicAddress(address) || net::isFakeIpAddress(address);
+                return net::isPublicAddress(address);
+            };
+            if (route.via == http::Route::Via::System)
+                hopOptions.allowPeer = [](const net::Address&) { return true; };
+            else if (route.via == http::Route::Via::Bridge)
+                hopOptions.allowPeer = [](const net::Address& address) { return address == net::Address::fromIPv4(0x7F000001u); };
+            else if (answer == net::Answer::FakeIp)
+                hopOptions.allowPeer = [](const net::Address& address) { return net::isPublicAddress(address) || net::isFakeIpAddress(address); };
             else
                 hopOptions.allowPeer = [](const net::Address& address) { return net::isPublicAddress(address); };
             if (!counted) {
@@ -919,20 +1124,32 @@ class FetchJob
             std::unique_ptr<http::Exchange> exchange = transport->open(hopOptions, *cancel, &error);
             if (!exchange || error != http::Error::None) {
                 const http::Error e = error == http::Error::None ? http::Error::BadResponse : error;
-                releaseHop(ticket, outcomeFor(e));
-                return fail(errorFor(e));
+                const HopFailure  f = classifyFailure(route, hopId, exchange.get(), e);
+                releaseHop(ticket, f.outcome);
+                return fail(f.code);
             }
             http::Head head;
             error = exchange->head(&head);
             if (error != http::Error::None) {
-                releaseHop(ticket, outcomeFor(error));
-                return fail(errorFor(error));
+                const HopFailure f = classifyFailure(route, hopId, exchange.get(), error);
+                releaseHop(ticket, f.outcome);
+                return fail(f.code);
             }
-            // Direct: where the response really came from (DNS may have changed since the check above).
-            if (!route.viaProxy && (head.peer.isNull() || !net::isPublicAddress(head.peer))) {
+            const quint64 headAt = http::nowMs();
+            // 2.6: an answer of the proxy itself (only with IS_PROXY_CONNECT_RESPONSE, or the bridge's record; S3).
+            if (head.proxyConnectResponse && route.viaProxy()) {
+                const HopFailure f = classifyProxyAnswer(route, hopId, head);
+                releaseHop(ticket, f.outcome);
+                return fail(f.code);
+            }
+            // Where the response really came from: direct (DNS may have changed since the check above), the bridge.
+            if (route.via != http::Route::Via::System && (head.peer.isNull() || !peerAllowed(head.peer))) {
                 releaseHop(ticket, HostGate::Outcome::Other);
                 return fail(errors::kBlocked);
             }
+            m_siteResponded = true;
+            if (route.via == http::Route::Via::Bridge)
+                m_routeOk = true;
             got.status    = head.status;
             got.challenge = got.challenge || head.challenge;
             if (isRedirect(head.status) && !head.challenge) {
@@ -1058,10 +1275,13 @@ class FetchJob
                     const quint64 elapsed = now - started;
                     // A page (not a small JSON answer) that drips its bytes: less than 16 KiB 5 s after this hop
                     // started (its own wait for its site not counted).
-                    const bool drip = spec.truncateOk && now - hopStarted > static_cast<quint64>(options.pageMinBytesAfterMs)
+                    // 2.6 (F6): through a proxy the window starts when the head arrived (the CONNECT and TLS through a slow
+                    // VPN are not a dripping page), and a proxied time-out is no evidence against the site.
+                    const quint64 dripFrom = route.viaProxy() ? headAt : hopStarted;
+                    const bool drip = spec.truncateOk && now - dripFrom > static_cast<quint64>(options.pageMinBytesAfterMs)
                                       && got.received < options.pageMinBytes;
                     if (elapsed > static_cast<quint64>(qMax(1, options.pageTimeoutMs)) || drip) {
-                        releaseHop(ticket, HostGate::Outcome::Timeout);
+                        releaseHop(ticket, route.viaProxy() ? HostGate::Outcome::Other : HostGate::Outcome::Timeout);
                         return fail(errors::kTimeout); // a page that drips its bytes
                     }
                 }
@@ -1079,8 +1299,9 @@ class FetchJob
                 int count = 0;
                 error     = exchange->read(buffer.data(), want, &count);
                 if (error != http::Error::None) {
-                    releaseHop(ticket, outcomeFor(error), &head);
-                    return fail(errorFor(error));
+                    const HopFailure f = classifyFailure(route, hopId, exchange.get(), error);
+                    releaseHop(ticket, f.outcome, &head);
+                    return fail(f.code);
                 }
                 if (count <= 0)
                     break;
@@ -2887,7 +3108,16 @@ class FetchJob
 
     quint64 m_deadline         = 0;
     quint64 m_lastProgress     = 0;
-    bool    m_viaProxy         = false; // a request of this load went through the Windows proxy
+    bool    m_viaProxy         = false; // a request of this load went through a proxy
+    // 2.6 chat proxy
+    bool           m_viaChatProxy       = false;
+    proxy::Via     m_via                = proxy::Via::Unset;
+    quint64        m_routeGeneration    = 0;
+    bool           m_routeGenerationSet = false;
+    proxy::Failure m_proxyFailure       = proxy::Failure::None;
+    proxy::Step    m_proxyStep          = proxy::Step::None;
+    bool           m_routeOk            = false;
+    bool           m_siteResponded      = false;
     bool    m_firstUsed        = false;
     int     m_gateWaited       = 0;
     int     m_requests         = 0;
@@ -2963,6 +3193,8 @@ QString outcomeText(const Result& result, qint64 ms)
         return QStringLiteral("%1, wait %2 s").arg(latin(result.softCooling ? "site busy (soft)" : "rate limited")).arg((result.retryAfterMs + 999) / 1000);
     if (result.error == QLatin1String(errors::kGateBusy))
         return QStringLiteral("gate busy");
+    if (result.error == QLatin1String(errors::kProxy)) // 2.6: which step of the route failed, never the proxy's address
+        return QStringLiteral("proxy (%1, %2) after %3 ms").arg(latin(proxy::failureName(result.proxyFailure)), latin(proxy::stepName(result.proxyStep))).arg(ms);
     return QStringLiteral("%1 after %2 ms").arg(result.error).arg(ms);
 }
 
@@ -3061,8 +3293,21 @@ void Fetcher::load(const Target& target, const Caps& caps, const QString& cacheD
         m_gateTimer->start(static_cast<int>(qBound<qint64>(1, wake, 60000)));
 }
 
-bool Fetcher::admit(const Pending& pending, HostGate::Ticket* ticket, qint64* wakeMs)
+bool Fetcher::admit(Pending& pending, HostGate::Ticket* ticket, qint64* wakeMs)
 {
+    // 2.6 chat proxy (design 3.3.5): while the custom route is down an automatic load ends at once (no request, no
+    // ticket); cached answers are still served. Review fix: the gate is asked once per load. A load it let in that its
+    // site then made wait isn't asked again: in Probation it holds the one probe slot, and asking again would end the
+    // probe itself as routedown.
+    if (m_options.routeGate && !pending.routeAdmitted) {
+        if (m_options.routeGate(pending.caps.userAsked)) {
+            pending.routeAdmitted = true;
+        } else if (!answersFromCache(pending)) {
+            finishLater(pending.target.key, failure(errors::kRouteDown));
+            *wakeMs = -1;
+            return false;
+        }
+    }
     const providers::FirstRequest first = providers::firstRequestOf(pending.target);
     qint64                        ms    = 0;
     bool                          soft  = false;
@@ -3220,7 +3465,7 @@ void Fetcher::startQueued()
         return;
     qint64 wake = -1;
     for (int i = 0; i < m_queue.size() && m_running.size() < qMax(1, m_options.maxConcurrent);) {
-        const Pending    pending = m_queue.at(i);
+        Pending          pending = m_queue.at(i);
         HostGate::Ticket ticket;
         qint64           ms = 0;
         if (admit(pending, &ticket, &ms)) {
@@ -3232,6 +3477,7 @@ void Fetcher::startQueued()
             m_queue.removeAt(i); // finished (cooling, walled, broken)
             continue;
         }
+        m_queue[i].routeAdmitted = pending.routeAdmitted; // the route gate's yes stays with the waiting load
         wake = wake < 0 ? ms : qMin(wake, ms);
         ++i; // it waits for its site; the ones behind it may start
     }
@@ -3271,7 +3517,8 @@ void Fetcher::onJobDone(quint64 id, const QString& key, const Result& result)
         line.address  = logUrl(active.target.isNewClass() ? active.target.page : active.target.url);
         if (active.target.provider == QLatin1String("nextcloud"))
             line.address = QLatin1String("https://") + active.target.host + QLatin1Char('/') + QChar(0x2026); // a share's token opens it: never logged
-        line.viaProxy = result.viaProxy;
+        line.viaProxy     = result.viaProxy;
+        line.viaChatProxy = result.via == proxy::Via::Bridge || result.proxyFailure == proxy::Failure::BridgeUnavailable;
         if (active.target.isLegacy() && result.ok)
             line.outcome = QStringLiteral("loaded, %1 KB in %2 ms").arg((qMax<qint64>(0, result.size) + 1023) / 1024).arg(ms);
         else
@@ -3314,7 +3561,8 @@ QString LogLine::text() const
 {
     const QString what = cls == LinkClass::None || cls == LinkClass::YouTube || cls == LinkClass::Direct ? latin(kindName(kind))
                                                                                                          : latin(className(cls)) + QLatin1Char(' ') + latin(kindName(kind));
-    return QStringLiteral("Link preview (%1) %2: %3%4").arg(what, address, outcome, viaProxy ? QStringLiteral(" (via the Windows proxy)") : QString());
+    const QString via = viaChatProxy ? QStringLiteral(" (via the chat proxy)") : viaProxy ? QStringLiteral(" (via the Windows proxy)") : QString();
+    return QStringLiteral("Link preview (%1) %2: %3%4").arg(what, address, outcome, via);
 }
 
 bool Fetcher::cached(const Target& target, const QString& cacheDir, Result* out)

@@ -37,6 +37,10 @@ struct CheckOutcome {
     unsigned long winError      = 0;
     QString       host;
     QString       file; // the manifest that was read: kManifestName, or kLegacyManifestName after a 404
+    // 2.6 chat proxy: Error::Proxy's reason, the route and its generation (an older one's failure is quiet, F8)
+    proxy::Failure proxyFailure    = proxy::Failure::None;
+    proxy::Via     proxyVia        = proxy::Via::Unset;
+    quint64        routeGeneration = 0;
     ManifestError manifestError = ManifestError::None;
     QString       detail;
     Manifest      manifest; // valid only if ok()
@@ -72,6 +76,9 @@ struct PrepareOutcome {
     unsigned long       winError      = 0;
     quint64             neededBytes   = 0;
     QString             fileName;       // the file a failure is about (no paths)
+    proxy::Failure      proxyFailure    = proxy::Failure::None; // 2.6: with Network and Error::Proxy
+    proxy::Via          proxyVia        = proxy::Via::Unset;
+    quint64             routeGeneration = 0;
     QStringList         missingImports; // "Qt5Core.dll!symbol"
     QVector<StagedFile> plugins;        // own architecture first
     bool                hasHelper = false;

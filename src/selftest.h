@@ -81,6 +81,8 @@ class SelfTest : public QObject
     bool                      runPart8(const QString& cmd, const QJsonObject& c, bool* handled);
     // 2.5 GIFs: the emoji picker's GIFs tab (gifs.list, gifs.open, gifs.tab, gifs.hover, gifs.focus, gifs.key, gifs.send, ...).
     QString                   runGifs(const QString& cmd, const QJsonObject& c);
+    // 2.6 chat proxy: proxy.state, proxy.set, proxy.toggle, proxy.test, proxy.find, proxy.records, ytplayer.netlog.
+    bool                      runProxy(const QString& cmd, const QJsonObject& c);
     QTimer*                   m_stall      = nullptr; // stall.start .. stall.stop
     qint64                    m_stallStart = 0;
     qint64                    m_stallLast  = 0;

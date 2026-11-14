@@ -14,6 +14,12 @@
 // The Windows proxy (netpolicy.h): route() says whether a request goes through the proxy the user's
 // Windows settings name for its address. Then the proxy resolves the name and connects, so the Fetcher
 // asks for no resolve() and checks no peer (the peer is the proxy); open() sends the request through it.
+//
+// 2.6 chat proxy (design 3.3): the Fetcher decides the route from proxy::snapshot() (route() only in Windows mode).
+// Route::via has no direct default: Unset is refused, a proxied route without a proxy is refused, a bridge route must
+// be exactly 127.0.0.1:<1024..65535> and its peer is pinned to 127.0.0.1, and while the snapshot is custom (or not
+// ready) open() refuses every route but the bridge. The transport reports facts (Head::proxyConnectResponse,
+// Exchange::connectedToServer(), secureFailureFlags()); the Fetcher classifies proxy failures.
 
 #include <QByteArray>
 #include <QString>
@@ -25,6 +31,8 @@
 #include <memory>
 
 #include "netpolicy.h"
+#include "proxy/failure.h"
+#include "proxy/router.h"
 
 namespace linkpreview::http {
 
@@ -37,6 +45,7 @@ enum class Error {
     Blocked,     // an address that isn't public (before anything was sent)
     Canceled,
     BadResponse, // anything else unexpected
+    Proxy,       // 2.6: the route is refused (Route::refused says why); nothing was sent
 };
 
 QString errorName(Error error); // "offline", "timeout", ... (logs, tests)
@@ -75,12 +84,22 @@ struct Head {
     double     rateRemaining = -1; // x-ratelimit-remaining (a decimal >= 0, "0.0" allowed); -1: absent or unreadable
     qint64     rateResetMs   = -1; // net::parseRateReset of x-ratelimit-reset-after / x-ratelimit-reset; -1: absent or unreadable
     bool       challenge     = false; // "cf-mitigated: challenge" (a Cloudflare bot challenge)
+    // 2.6: the answer came from the proxy, not the website (WINHTTP_OPTION_IS_PROXY_CONNECT_RESPONSE): the proxy refused
+    // the CONNECT. Only then is a status the proxy's (S3).
+    bool    proxyConnectResponse = false;
+    QString proxyHeader; // X-TSMedia-Proxy (logs and proxy_smoke only; never trusted)
 };
 
-// How one request reaches its website.
+// How one request reaches its website (design 3.3.1). No field of it is ever logged.
 struct Route {
-    bool    viaProxy = false; // through the user's Windows proxy
-    QString proxy;            // for the transport only ("host:port[;host:port]"), never logged
+    using Via = proxy::Via; // Unset, Direct, System, Bridge, Refused
+    Via            via = Via::Unset;               // Unset: nobody decided: open() refuses it (Blocked). Never "direct by default"
+    QString        proxy;                          // System: "host:port[;...]" (HTTP entries only); Bridge: "127.0.0.1:<port>"
+    QByteArray     bridgeToken;                    // Bridge
+    QByteArray     bridgeUser;                     // Bridge: "tsm-f<id>" (also the record key)
+    proxy::Failure refused = proxy::Failure::None; // Refused: why
+    quint64        generation = 0;
+    bool viaProxy() const { return via == Via::System || via == Via::Bridge; }
 };
 
 struct HopOptions {
@@ -105,6 +124,10 @@ class Exchange
     // Up to capacity bytes of the body into buffer; *got = 0 when the body has ended.
     virtual Error read(char* buffer, int capacity, int* got) = 0;
     virtual unsigned long systemError() const { return 0; } // the last WinHTTP / Winsock error, for the log
+    // 2.6: a TCP connection to the server (or the proxy) was made (CONNECTED_TO_SERVER seen).
+    virtual bool          connectedToServer() const { return false; }
+    // 2.6: the SECURE_FAILURE callback's WINHTTP_CALLBACK_STATUS_FLAG_* (0: none), e.g. INVALID_CA.
+    virtual unsigned long secureFailureFlags() const { return 0; }
 };
 
 class Transport
@@ -115,9 +138,10 @@ class Transport
     virtual Error resolve(const QString& host, QVector<net::Address>* out, const Cancel& cancel, quint64 deadline) = 0;
     // Starts one GET (no redirects followed). Null with *error set when it can't.
     virtual std::unique_ptr<Exchange> open(const HopOptions& options, const Cancel& cancel, Error* error) = 0;
-    // The route of a request to url (an allowed https address): direct (the default), or through the
-    // proxy the user's Windows settings name for it. May block (auto-config); bounded by the deadline
-    // as far as the system allows.
+    // Windows mode only (the Fetcher decides custom and direct itself): the route of a request to url (an allowed
+    // https address) by the user's Windows settings: Direct, System (an HTTP proxy) or Refused (W1). May block
+    // (auto-config); bounded by the deadline as far as the system allows. The base answers Unset (refused): a
+    // transport that doesn't decide never sends anything direct (F1).
     virtual Route route(const QUrl& url, const Cancel& cancel, quint64 deadline)
     {
         Q_UNUSED(url);
@@ -138,5 +162,12 @@ std::shared_ptr<Transport> winHttpTransport();
 // threads check this before releasing their pin.
 bool mustStayLoaded();
 void setMustStayLoaded();
+
+// 2.6 tests: WinHttpOpen calls the transport made (sessions), and a bridge string other than 127.0.0.1 allowed through
+// open()'s guard (the peer check must still refuse it, bridgePeerPinned).
+quint64 sessionsOpened();
+void    setAnyLoopbackBridgeForTests(bool allow);
+// "127.0.0.1:<1024..65535>" exactly.
+bool    isBridgeProxyString(const QString& proxy);
 
 } // namespace linkpreview::http

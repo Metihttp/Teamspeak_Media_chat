@@ -323,6 +323,16 @@ void HostGate::clear()
     m_running.clear();
 }
 
+void HostGate::forgetFailures()
+{
+    QMutexLocker lock(&m_mutex);
+    for (auto it = m_health.begin(); it != m_health.end(); ++it) {
+        it->failures    = 0;
+        it->brokenUntil = 0;
+        it->walledUntil.clear();
+    }
+}
+
 QStringList HostGate::describe() const
 {
     QMutexLocker lock(&m_mutex);

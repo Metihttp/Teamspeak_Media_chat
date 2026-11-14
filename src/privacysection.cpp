@@ -65,7 +65,7 @@ PrivacySection::PrivacySection(QWidget* parent)
     // 2.5 YouTube player: YouTube's own player over the card (Microsoft Edge WebView2). Whether this PC has the WebView2
     // Runtime is read from the registry when the dialog opens (never by loading the player helper).
     ytbackend::refreshRuntime();
-    m_playYouTube = new QCheckBox(i18n::t("&Play YouTube videos in the chat"), links);
+    m_playYouTube = new QCheckBox(playYouTubeLabel(ytpage::kAnchoredPlayer), links);
     m_playYouTube->setObjectName(QString::fromLatin1("tsmediaPlayYouTube"));
     m_playHint    = hint(playYouTubeHint(), links);
     m_playYouTube->setAccessibleDescription(m_playHint->text());
@@ -115,6 +115,11 @@ void PrivacySection::updateEnabled()
     m_makeHint->setEnabled(show);
     m_playYouTube->setEnabled(show);
     m_playHint->setEnabled(show);
+}
+
+QString PrivacySection::playYouTubeLabel(bool anchored)
+{
+    return anchored ? i18n::t("&Play YouTube videos in the chat") : i18n::t("&Play YouTube videos in a TS Media window");
 }
 
 QString PrivacySection::playYouTubeHint()

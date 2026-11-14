@@ -103,11 +103,16 @@ have Y).* with a **Check for updates** link.
   none, and GitHub answers "not found"). Manual checks, including the newer-version hint's link, stay
   one request.
 - **GitHub sees your IP address.** Windows may also check GitHub's certificate with its issuer, and a
-  proxy configured in Windows sees the connection. No names, servers, chats, files or identifiers are
+  proxy configured in Windows sees the connection; with the
+  [chat proxy](PRIVACY-SECURITY.md#chat-proxy) on (2.6), every check and download goes through it
+  instead, and GitHub sees the proxy's address. Turning the chat proxy on or off doesn't interrupt an
+  update download that is running: it finishes the way it started, and the next request takes the
+  new route. No names, servers, chats, files or identifiers are
   sent; the User-Agent is `TSMedia-Updater/1` without a version; there are no cookies.
-- Apart from [link previews](PRIVACY-SECURITY.md#link-previews) (2.4) and the
-  [YouTube player](PRIVACY-SECURITY.md#playing-youtube-videos) (2.5, only after you press Play), nothing
-  else in the plugin uses the internet. The update check loads `winhttp.dll` only while a check or
+- Apart from [link previews](PRIVACY-SECURITY.md#link-previews) (2.4), the
+  [YouTube player](PRIVACY-SECURITY.md#playing-youtube-videos) (2.5, only after you press Play) and the
+  chat proxy's **Test** (2.6, one request when you press it), nothing else in the plugin uses the
+  internet. The update check loads `winhttp.dll` only while a check or
   download runs.
 
 ### If something goes wrong

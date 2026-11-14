@@ -65,11 +65,11 @@ cmake --build build --config Release
 | `TSMEDIA_BUILD_TESTS` | `ON` | the `tsmedia_tests` executable |
 | `TSMEDIA_BUILD_TOOLS` | `ON` | the developer tools below |
 | `TSMEDIA_WEBVIEW2_DIR` | empty | the unpacked WebView2 SDK: builds the YouTube player helper `tsmedia_player_win64.dll` (static CRT, only system DLLs: a post-build step checks its imports) and embeds it in the plugin DLL as the resource `TSMP`. `build.ps1` requires it for 64-bit release builds |
-| `TSMEDIA_PLAYER_WIN32` | `OFF` | also build the player for 32-bit TeamSpeak (off in 2.5.0: no 32-bit live test yet) |
+| `TSMEDIA_PLAYER_WIN32` | `OFF` | also build the player for 32-bit TeamSpeak (off: no 32-bit live test yet) |
 
 ## Unit tests
 
-The 64-bit build also builds `tsmedia_tests`, one executable with a test class per area: link format and chat messages, the send pipeline against a fake TeamSpeak (`tests/fakets3.*`), file checks, albums, spoilers, presence and reactions, replies, emoji (the table, the renderer, HD emoji in chat documents, together with reply lines), audio, drag-out and per-server settings, the server group, diagnostics and the updater, with important updates and the newer-version hint (test manifests in `tests/data/update`). Run them from a *Developer PowerShell for VS 2022*:
+The 64-bit build also builds `tsmedia_tests`, one executable with a test class per area: link format and chat messages, the send pipeline against a fake TeamSpeak (`tests/fakets3.*`), file checks, albums, spoilers, presence and reactions, replies, emoji (the table, the renderer, HD emoji in chat documents, together with reply lines), audio, drag-out and per-server settings, the server group, diagnostics and the updater, with important updates and the newer-version hint (test manifests in `tests/data/update`), and the chat proxy (its bridge against in-test fake SOCKS5 and HTTP proxies on 127.0.0.1; nothing leaves the PC). Run them from a *Developer PowerShell for VS 2022*:
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure
@@ -83,7 +83,8 @@ The 64-bit build also builds these in `build\Release`. Put Qt's `bin` folder on 
 
 - `mfvideo_smoketest <video> <outdir>` probes and plays a video headless through Media Foundation, checks pause, seek, loop and teardown, and saves frames. It is completely silent: players stay muted at volume 0.
 - `render_gallery <outdir> [<media dir>]` renders every preview, card, album, spoiler, reaction and player state, light and dark, to PNG files, and checks contrast and that nothing jumps while media loads.
-- `player_smoke` (with `TSMEDIA_WEBVIEW2_DIR`) drives the YouTube player helper outside TeamSpeak: a page and a fake player from memory (no network), the Referer YouTube would get, commands, clipping, owner minimize/restore/destroy, Esc, shutdown during creation and the engine's release. `player_smoke --youtube M7lc1UVf-VE` plays YouTube's documentation video for 10 s. Every web view is muted. It starts WebView2's processes: never run it during a live test.
+- `player_smoke` (with `TSMEDIA_WEBVIEW2_DIR`) drives the YouTube player helper outside TeamSpeak: a page and a fake player from memory (no network), the Referer YouTube would get, commands, clipping, owner minimize/restore/destroy, Esc, shutdown during creation and the engine's release. `player_smoke --youtube M7lc1UVf-VE` plays YouTube's documentation video for 10 s; add `--bridge socks5 127.0.0.1:2080` (or `http`) to play it through the plugin's own bridge to that proxy. Every web view is muted. It starts WebView2's processes: never run it during a live test.
+- `proxy_smoke --socks5|--http host:port [--user u --password p] [--test] [--find] [--fetch URL] [--verbose]` checks the chat proxy against a real proxy: the Test's request, Find my VPN app, or one link-preview load through the bridge, and prints the result and the bridge's records (never the password or the bridge's key).
 - `tsmedia_update_helper` is the small restart helper of the updater (`tools/update_helper`). It is published as a release asset, never embedded in the DLL.
 
 ## Test hooks

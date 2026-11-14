@@ -568,11 +568,17 @@ class GifBarButton : public QAbstractButton
         , m_colors(colors)
         , m_filled(filled)
     {
-        setText(text);
-        setAccessibleName(text);
         setFocusPolicy(Qt::StrongFocus);
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover);
+        setLabel(text);
+    }
+
+    // 2.6 (design 8.3): the text, its accessible name and the size that fits it ("Remove" for one GIF, "Remove all").
+    void setLabel(const QString& text)
+    {
+        setText(text);
+        setAccessibleName(text);
         const QFontMetrics fm(scaled(font(), 13, QFont::DemiBold));
         setFixedSize(fm.horizontalAdvance(text) + 24, 28);
     }
@@ -625,7 +631,7 @@ class GifConfirmBar : public QWidget
     {
         setObjectName(QString::fromLatin1("tsmediaGifConfirm"));
         m_cancel = new GifBarButton(panel->m_colors, i18n::t("Cancel"), false, this);
-        m_remove = new GifBarButton(panel->m_colors, i18n::t("Remove all"), true, this);
+        m_remove = new GifBarButton(panel->m_colors, GifPanel::removeButtonText(panel->m_lib ? panel->m_lib->count() : 0), true, this);
         m_cancel->setObjectName(QString::fromLatin1("tsmediaGifCancel"));
         m_remove->setObjectName(QString::fromLatin1("tsmediaGifRemoveAll"));
         QObject::connect(m_cancel, &QAbstractButton::clicked, panel, [panel] { panel->hideConfirm(); });
@@ -638,8 +644,17 @@ class GifConfirmBar : public QWidget
 
     QString text() const { return GifPanel::removeAllQuestion(m_panel->m_lib ? m_panel->m_lib->count() : 0); }
 
+    // 2.6 (design 8.3): the destructive button names what it removes now (the bar is built once, the list changes).
+    void updateLabel()
+    {
+        m_remove->setLabel(GifPanel::removeButtonText(m_panel->m_lib ? m_panel->m_lib->count() : 0));
+        placeButtons();
+    }
+
   protected:
-    void resizeEvent(QResizeEvent*) override
+    void resizeEvent(QResizeEvent*) override { placeButtons(); }
+
+    void placeButtons()
     {
         m_remove->move(width() - 8 - m_remove->width(), (height() - m_remove->height()) / 2);
         m_cancel->move(m_remove->x() - 6 - m_cancel->width(), (height() - m_cancel->height()) / 2);
@@ -762,6 +777,7 @@ void GifPanel::showConfirm()
 {
     if (!m_lib || m_lib->state() != GifLibrary::State::Ok)
         return;
+    m_bar->updateLabel(); // "Remove" for one GIF, "Remove all" for more (design 8.3)
     m_bar->show();
     layoutChildren();
     m_bar->cancel()->setFocus(Qt::OtherFocusReason); // never the destructive one first
@@ -810,6 +826,11 @@ void GifPanel::showEvent(QShowEvent* event)
 bool GifPanel::pressGuarded() const
 {
     return m_shownClock.isValid() && m_shownClock.elapsed() < kOpenGuardMs;
+}
+
+QString GifPanel::removeButtonText(int count)
+{
+    return count >= 2 ? i18n::t("Remove all") : i18n::t("Remove"); // one GIF, or only leftover copies: "Remove"
 }
 
 QString GifPanel::removeAllQuestion(int count)

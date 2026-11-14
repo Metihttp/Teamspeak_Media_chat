@@ -10,6 +10,8 @@
 //   "TSMedia-Updater/1" without a version.
 // - A cancel flag and an overall deadline are checked between reads. WinHttpCloseHandle is never
 //   called from another thread (not allowed for synchronous requests).
+// - 2.6 chat proxy (sessionplan.h): every request and redirect hop reads the current route snapshot; the chat proxy's
+//   bridge, no proxy, or the Windows settings (2.5.0's session); a refused route sends nothing (Error::Proxy).
 
 #include <QByteArray>
 #include <QString>
@@ -17,6 +19,10 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
+
+#include "proxy/failure.h"
+#include "proxy/router.h"
 
 namespace upd::http {
 
@@ -34,6 +40,7 @@ enum class Error {
     BadResponse, // anything else unexpected
     Canceled,
     Sink,        // the consumer refused the data (disk full, write error)
+    Proxy,       // 2.6: the route is refused, or the proxy (not the website) failed: Response::proxyFailure says why
 };
 
 QString errorCode(Error error); // "offline", "timeout", ... (state.ini, logs)
@@ -48,6 +55,8 @@ struct Request {
     std::function<bool(const char* data, qint64 size)> sink;
     // Bytes received so far (called at most every 100 ms and once at the end).
     std::function<void(qint64 received)> progress;
+    // 2.6: the route snapshot, read before the request and again before every redirect hop (default proxy::snapshot).
+    std::function<std::shared_ptr<const proxy::Snapshot>()> snapshotProvider;
 };
 
 struct Response {
@@ -58,6 +67,10 @@ struct Response {
     QString       finalHost;         // where the body came from (logged; no IP addresses)
     QByteArray    body;              // only without a sink
     qint64        received = 0;
+    // 2.6
+    proxy::Failure proxyFailure    = proxy::Failure::None; // Error::Proxy: why
+    proxy::Via     via             = proxy::Via::Unset;    // the route of the hop that ended it
+    quint64        routeGeneration = 0;                    // the generation of the request that failed
 };
 
 Response get(const Request& request);

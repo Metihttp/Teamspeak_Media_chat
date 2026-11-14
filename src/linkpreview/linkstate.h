@@ -32,7 +32,10 @@
 // back to 4-6; a failure that may pass (connection, quota, a hash that didn't match while the upload was still
 // arriving) keeps it, with Core's own retry.
 
+#include <QHash>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include "core.h"
 #include "linkpreview/announcement.h"
@@ -41,6 +44,8 @@
 #include "linkpreview/linkcard.h"
 #include "linkpreview/linkurl.h"
 #include "linkpreview/previewstore.h"
+#include "proxy/failure.h" // 2.6 chat proxy: why a load failed on its route
+#include "proxy/router.h"  // 2.6 chat proxy: proxy::Via
 
 namespace linkstate {
 
@@ -48,7 +53,14 @@ namespace linkstate {
 // website announced, -1 unknown); the click card says so and a click loads it with the click cap.
 // 2.5: Nothing: the page has nothing to show (kNothing, kWalled, kExpired); Cooling: the site asked to wait
 // (kRateLimited / kGateBusy on an automatic load): it loads again by itself after retryAtMs (6.4).
-enum class Local { Idle, Loading, Loaded, Failed, TooLarge, OverAutoLimit, Nothing, Cooling };
+// 2.6 chat proxy: Paused: an automatic load that waits for a click or for the route (Pause says which); it is never
+// loaded by the automatic pass.
+enum class Local { Idle, Loading, Loaded, Failed, TooLarge, OverAutoLimit, Nothing, Cooling, Paused };
+// 2.6 chat proxy (design 1.5, 5.3, 6): what a Paused link waits for. ChatProxy: the chat proxy is down ("Paused · the
+// proxy isn't working"; it loads again once the route works or is on probation). WindowsProxy: the Windows proxy failed
+// on an automatic load ("Couldn't load through your Windows proxy", Load preview). Click: a route change away from a
+// proxy the link waited for or failed through (S4): the plain "Load preview" strip; nothing loads it but a click.
+enum class Pause { None, ChatProxy, WindowsProxy, Click };
 
 // What a slot without anything to show waits for (2.4 auto-load): our own pipeline, the sender's preview, or an
 // automatic website load that is due (about to start; ChatLinkPreviews starts it). Checking: we are still asking
@@ -77,6 +89,13 @@ struct LocalState {
     qint64                capHit        = -1;              // ... and the automatic cap it hit
     bool                  heldCrossSite = false;           // Nothing: a card from another website held back (afterCard)
     bool                  webCards      = true;            // Loading: the Caps::webCards its load holds (restartForWebCards)
+    // 2.6 chat proxy
+    QString               code;                            // Failed / Nothing / Paused: the load's error code (fetcher.h errors)
+    Pause                 pause         = Pause::None;     // Paused: what it waits for
+    proxy::Via            via           = proxy::Via::Unset; // the route of the load that failed (or was paused)
+    proxy::Failure        proxyFailure  = proxy::Failure::None;
+    bool                  proxyDecisive = false;
+    quint64               routeGeneration = 0;             // Loading: the route generation it started on; Failed: its result's
 };
 
 // What Core says about the files of a sender's announcement (Core keys from serverLink(), the sender's linkFor()).
@@ -205,12 +224,76 @@ bool stillOverLimit(const LocalState& local, qint64 cap);
 
 // ---- 2.5: why a slot shows nothing or waits (3.12) ----------------------------------------------------------------
 
-enum class HoldReason { None, Hidden, Setting, Waiting, Offscreen, Turn, Budget, Gate, Cap, SenderNothing, Nothing, Failed };
+// 2.6: Paused (a load that waits for the route or for a click after a route change).
+enum class HoldReason { None, Hidden, Setting, Waiting, Offscreen, Turn, Budget, Gate, Cap, SenderNothing, Nothing, Failed, Paused };
 const char* holdReasonName(HoldReason reason); // "none", "hidden", "setting", ...
 // turnFree / budgetFree: a free automatic slot / a budget token for the sender; gate: the site's state for its first
 // request (Go: free to ask). Pure.
 HoldReason holdReason(const Decision& d, const LocalState& local, const Context& context, bool onScreen, bool turnFree, bool budgetFree,
                       linkpreview::HostGate::Verdict gate, bool capOk = true);
+
+// ---- 2.6 chat proxy (design 1.5, 5.3, 6) ---------------------------------------------------------------------------
+
+// The route of a proxy failure: the chat proxy (the bridge, or its refusal) or the Windows proxy (its failure, or Windows
+// naming a proxy TS Media can't use).
+bool viaChatProxy(proxy::Via via, proxy::Failure failure);
+// What a load that ended with kProxy / kFiltered / kRouteDown makes of its slot (local: Loading, its clicked flag kept):
+//  * routedown (the gate refused an automatic load while the chat proxy is down) -> Paused (ChatProxy);
+//  * proxy on the chat proxy: an automatic load with a decisive failure while the route is down -> Paused (ChatProxy);
+//    anything else (a click, an ambiguous failure, before Down) -> Failed with Retry;
+//  * proxy on the Windows proxy: automatic -> Paused (WindowsProxy, its own Load preview); a click -> Failed;
+//  * filtered -> Failed ("Your network blocks this site").
+LocalState afterRouteFailure(LocalState local, const QString& code, proxy::Via via, proxy::Failure failure, bool decisive, quint64 generation,
+                             bool chatProxyDown);
+// The strip a slot shows for its route (Click and Error looks), and the failure's short text for its tool tips.
+// proxySaved: a chat proxy is saved (filtered: "Use chat proxy", else "Set up proxy…").
+linkcard::ProxyStrip proxyStripOf(const LocalState& local, bool proxySaved);
+// Entering Down (5.3): an automatic load of this generation that failed decisively through the chat proxy shows Paused.
+bool pausesOnDown(const LocalState& local, quint64 generation);
+// The route works again or is on probation: a link paused for the chat proxy goes back to the normal rules (Idle).
+bool resumesOnHealth(const LocalState& local);
+// Live test fix (S4, design 5.3): a link on screen that the automatic pass would start while the chat proxy is down
+// waits as Paused at once (what its load's routedown answer would make of it: Pause::ChatProxy), without its sender's
+// turn or a budget token. Held for its turn instead, it was never counted as one that waited for the proxy and loaded by
+// itself outside it after Turn off chat proxy.
+LocalState pausedForChatProxy(quint64 generation);
+// When the automatic pass pauses a candidate that way: the chat proxy is down, the cache was looked at (cacheChecked: a
+// cached answer is still shown, by the Fetcher) and our own pipeline doesn't load that link (its download is its own).
+bool pausesForChatProxy(bool chatProxyDown, bool cacheChecked, bool ownPipeline);
+// A route change (design 6 step 3, S4). Links that waited for or failed through a proxy (Paused; Failed with proxy or
+// routedown) and walled "nothing" records: back to Idle when the new route is the chat proxy (filtered failures too);
+// otherwise those from an automatic load wait for a click (Pause::Click); clicked ones keep their error.
+enum class AfterRoute { Keep, Idle, Click };
+AfterRoute afterRouteChange(const LocalState& local, bool toChatProxy);
+// Live test fix (S4): a link that waited for the chat proxy and was let go by its probation or recovery (back to the
+// normal rules) but hasn't loaded yet still waited for it: away from the chat proxy it waits for a click (Click), like
+// the paused ones; a clicked or finished one, or a move to the chat proxy, keeps the normal rules (Keep). Review fix: a
+// busy site's wait (Cooling) hasn't loaded it either (Click); one that waits for a click already (Pause::Click) is kept.
+AfterRoute afterRouteChangeResumed(const LocalState& local, bool toChatProxy);
+// Review fix (S4): such a let-go link is remembered until it loads, ends or is clicked: it still waits while it is Idle,
+// Loading, Cooling (a site's 429, the gate's wait) or Paused, and wasn't clicked.
+bool resumedStillWaits(const LocalState& local);
+// A route change's pass over the links that waited for a proxy (design 6 step 3, S4), after the running loads went back
+// to the normal rules (ChatLinkPreviews cancels and restarts them first). local: the links' states by urlKey; resumed:
+// the links the chat proxy let go (its probation or recovery, or a move to it) that haven't loaded or been clicked;
+// pipelineWaits: the links our own pipeline loads (its download; never changed here, its end decides).
+//  * To the chat proxy: paused, proxy-failed, filtered and walled links go back to the normal rules (erased from local,
+//    added to idled) and are remembered in resumed (review fix: an on/off toggle before they load leaked them); resumed
+//    keeps those that still wait (resumedStillWaits).
+//  * Away from it: afterRouteChange's Click links, and every remembered one that hasn't loaded (afterRouteChangeResumed),
+//    wait for a click (Paused, Pause::Click); resumed then keeps only our pipeline's.
+// Returns how many links now wait for a click (the "turned off" line).
+int routeChangePass(QHash<QString, LocalState>* local, QSet<QString>* resumed, const QSet<QString>& pipelineWaits, bool toChatProxy,
+                    QStringList* idled);
+// The card menu's proxy items (design 1.5): Turn off chat proxy (failed or paused on the chat proxy, which is on), Turn
+// on chat proxy (filtered, or failed on the Windows proxy, while a saved proxy is off), Proxy settings… (any proxy
+// failure, filtered, or paused).
+struct ProxyMenu {
+    bool turnOff  = false;
+    bool turnOn   = false;
+    bool settings = false;
+};
+ProxyMenu proxyMenuOf(const LocalState& local, bool proxyOn, bool proxySaved);
 
 // ---- Core links ---------------------------------------------------------------------------------------
 

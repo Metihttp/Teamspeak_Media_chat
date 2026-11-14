@@ -88,6 +88,32 @@ int chatPxOf(QTextBrowser& b)
     return f.pixelSize() > 0 ? f.pixelSize() : qRound(f.pointSizeF() * 4.0 / 3.0);
 }
 
+// 2.6 R-DEF-1: a picture of ours as insertPreview puts it (a line break, then the object) after block n, or at the end.
+void insertPictureAfterBlock(QTextBrowser& b, int n, const QString& name, const QSizeF& size)
+{
+    QTextDocument*   doc   = b.document();
+    const QTextBlock block = doc->findBlockByNumber(n);
+    QTextCursor      c(doc);
+    if (block.isValid())
+        c.setPosition(block.position() + block.length() - 1);
+    else
+        c.movePosition(QTextCursor::End);
+    QImage img(size.toSize(), QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::darkCyan);
+    doc->addResource(QTextDocument::ImageResource, QUrl(name), QPixmap::fromImage(img));
+    QTextImageFormat f;
+    f.setName(name);
+    f.setWidth(size.width());
+    f.setHeight(size.height());
+    c.insertText(QString(QChar::LineSeparator));
+    c.insertImage(f);
+}
+
+void appendPicture(QTextBrowser& b, const QString& name, const QSizeF& size)
+{
+    insertPictureAfterBlock(b, -1, name, size);
+}
+
 QString source(const char* relative)
 {
     QFile f(QStringLiteral(TSMEDIA_SOURCE_DIR "/") + QString::fromLatin1(relative));
@@ -985,6 +1011,104 @@ class TestPreviewScale : public QObject
         chatscroll::restore(&b, place);
         at = doc->documentLayout()->hitTest(QPointF(doc->documentMargin() + 1, bar->value() + 1), Qt::FuzzyHit);
         QCOMPARE(doc->findBlock(at).text(), text);
+    }
+
+    // ---- 2.6 R-DEF-1 part 1 (design 8.1, 9.6) -------------------------------------------------------------------------
+
+    // Qt's stale range, documented: while Qt lays a long chat out again (after a resize, a zoom or a restyle: here a new
+    // text width) an edit leaves QTextEdit's scroll range off the document's real end, so a plain setValue(maximum())
+    // right after it lands far from the end (R-DEF-1); toBottom lays out what is left first and lands exactly there.
+    // (With the chat fully laid out, Qt 5.15 reports an edit's new size at once: there both land at the end.)
+    void toBottomSyncsRange()
+    {
+        Chat          chat(3000, 0);
+        QTextBrowser& b   = chat.browser;
+        QScrollBar*   bar = b.verticalScrollBar();
+        chatscroll::toBottom(&b);
+        QVERIFY(chatscroll::atBottom(&b));
+        const auto trueMax = [&b] { return qMax(0, qRound(b.document()->documentLayout()->documentSize().height()) - b.viewport()->height()); };
+
+        // Laid out: an appended 400 px picture, then the plain stick, lands at the end.
+        appendPicture(b, QStringLiteral("tsmedia:tall"), QSizeF(300, 400));
+        bar->setValue(bar->maximum());
+        QCOMPARE(bar->value(), trueMax());
+
+        // A relayout in progress, then a picture near the top: the plain stick lands at least 300 px off the end.
+        b.document()->setTextWidth(230);
+        insertPictureAfterBlock(b, 10, QStringLiteral("tsmedia:top"), QSizeF(300, 400));
+        bar->setValue(bar->maximum());
+        const int plain = bar->value();
+        const int end   = trueMax();
+        QVERIFY2(qAbs(end - plain) >= 300, qPrintable(QStringLiteral("off by %1 px only").arg(end - plain)));
+        const int calls = chatscroll::syncRangeCalls();
+        chatscroll::toBottom(&b);
+        QCOMPARE(chatscroll::syncRangeCalls(), calls + 1);
+        QCOMPARE(bar->maximum(), trueMax());
+        QCOMPARE(bar->value(), trueMax());
+        QVERIFY(chatscroll::atBottom(&b));
+    }
+
+    // ChatIntegration::scan's pattern (the chat layer itself isn't in the test build; its wiring is the source rule
+    // below): the reader's place captured before the edits, three previews inserted the way insertPreview does (a line
+    // break and the picture, no bottom stick of their own), the place restored once. A chat at its end stays at its
+    // very end with one syncRange per scan; a reader scrolled up keeps the line they read where it was.
+    void scanKeepsEnd()
+    {
+        Chat          chat(3000, 0);
+        QTextBrowser& b   = chat.browser;
+        QScrollBar*   bar = b.verticalScrollBar();
+        chatscroll::toBottom(&b);
+        const int calls = chatscroll::syncRangeCalls();
+        {
+            const chatscroll::TextPlace place = chatscroll::captureText(&b);
+            QVERIFY(place.bottom);
+            QTextDocument* doc = b.document();
+            for (int i = 0; i < 3; ++i)
+                insertPictureAfterBlock(b, doc->blockCount() - 3 + i, QStringLiteral("tsmedia:scan%1").arg(i), QSizeF(300, 200));
+            chatscroll::restoreText(&b, place);
+        }
+        QCOMPARE(chatscroll::syncRangeCalls(), calls + 1);
+        const int trueMax = qMax(0, qRound(b.document()->documentLayout()->documentSize().height()) - b.viewport()->height());
+        QCOMPARE(bar->value(), trueMax);
+        QVERIFY(chatscroll::atBottom(&b));
+
+        // Scrolled up: previews inserted above the view leave the reader's line where it was on screen.
+        bar->setValue(bar->maximum() / 2);
+        QTextDocument* doc  = b.document();
+        const int      hitY = bar->value() + 1;
+        const int      top  = doc->documentLayout()->hitTest(QPointF(doc->documentMargin() + 1, hitY), Qt::FuzzyHit);
+        const QString  text = doc->findBlock(top).text();
+        const qreal    offset = bar->value() - chatscroll::lineTopOf(doc, top);
+        const chatscroll::TextPlace place = chatscroll::captureText(&b);
+        QVERIFY(!place.bottom);
+        for (int i = 0; i < 3; ++i)
+            insertPictureAfterBlock(b, 100 + i * 10, QStringLiteral("tsmedia:above%1").arg(i), QSizeF(300, 200));
+        chatscroll::restoreText(&b, place);
+        const int at = doc->documentLayout()->hitTest(QPointF(doc->documentMargin() + 1, bar->value() + 1), Qt::FuzzyHit);
+        QCOMPARE(doc->findBlock(at).text(), text);
+        QVERIFY(qAbs(bar->value() - chatscroll::lineTopOf(doc, place.cursor.position()) - offset) <= 1);
+    }
+
+    // The wiring in ChatIntegration (not in the test build): the scan keeps the place once, insertPreview and
+    // refreshPreview stick to the end through toBottom; no raw setValue(maximum()) is left at those sites.
+    void rdef1SourceRule()
+    {
+        const QString src  = source("src/chatintegration.cpp");
+        const auto    body = [&src](const char* signature) {
+            const int at = src.indexOf(QLatin1String(signature));
+            return at < 0 ? QString() : src.mid(at, src.indexOf(QLatin1String("\n}\n"), at) - at);
+        };
+        const QString scan = body("void ChatIntegration::scan(QTextBrowser* browser)");
+        const QString insert = body("void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const QString& key, bool keepPlace)");
+        const QString refresh = body("void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly)");
+        QVERIFY(!scan.isEmpty() && !insert.isEmpty() && !refresh.isEmpty());
+        QVERIFY(scan.contains(QLatin1String("const chatscroll::TextPlace place = chatscroll::captureText(browser);")));
+        QVERIFY(scan.contains(QLatin1String("insertPreview(browser, op.position, op.key, false);")));
+        QVERIFY(scan.indexOf(QLatin1String("chatscroll::restoreText(browser, place);")) > scan.indexOf(QLatin1String("applyAlbums(browser, planAlbums(browser));")));
+        QVERIFY(insert.contains(QLatin1String("if (keepPlace && bottom)\n        chatscroll::toBottom(browser);")));
+        QVERIFY(refresh.contains(QLatin1String("chatscroll::toBottom(browser);")));
+        for (const QString& b : {scan, insert, refresh})
+            QVERIFY(!b.contains(QLatin1String("setValue(browser->verticalScrollBar()->maximum())")));
     }
 };
 

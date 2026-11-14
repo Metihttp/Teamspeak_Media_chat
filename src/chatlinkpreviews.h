@@ -57,6 +57,7 @@
 #include "linkpreview/linkcard.h"
 #include "linkpreview/linkdoc.h"
 #include "linkpreview/linkstate.h"
+#include "proxy/control.h" // 2.6 chat proxy
 
 class ChatIntegration;
 class YouTubePlayer; // 2.5 YouTube player (src/ytplayer)
@@ -356,6 +357,9 @@ class ChatLinkPreviews : public QObject
     QSet<QString>                          m_pipelineWaits;       // urlKeys waiting on our pipeline's fetch (no request of ours)
     QSet<QString>                          m_cacheMiss;           // urlKeys not in cache/links (looked once)
     QSet<QString>                          m_webOff;              // urlKeys that ended with kWebOff (cards for other web pages off)
+    QSet<QString>                          m_resumedFromPause;    // 2.6: urlKeys that waited for a proxy, let go by the chat proxy's
+                                                                  // probation or a move to it (live test fix, S4): until they load,
+                                                                  // end or are clicked (linkstate::routeChangePass)
     QHash<QString, qint64>                 m_sizeHints;           // urlKey -> bytes (our pipeline found it too large)
     linkpreview::autoload::PresenceMemo    m_present;             // the senders, for a second
     QHash<int, int>                        m_ownApplied;          // pipeline job id -> the record state applied
@@ -379,4 +383,17 @@ class ChatLinkPreviews : public QObject
     bool           locateYouTube(const QString& slotId, void* spot) const; // YouTubePlayer::Spot
     void           repaintSlot(const QString& slotId);
     void           scrollSlotIntoView(const QString& slotId);
+
+    // 2.6 chat proxy (design 1.5, 5.3, 6): the route's changes and health, the failure strips' actions.
+    void onRouteChanged();   // running loads restarted on the new route; waiting / failed links per linkstate::routeChangePass
+    void onHealthChanged();  // Down: automatic decisive failures Paused; Working / Probation: paused links resume
+    void forgetResumedIfDone(const QString& key); // m_resumedFromPause: a load's end (linkstate::resumedStillWaits)
+    bool chatProxyDown() const;                   // custom mode and its route is Down (automatic loads aren't admitted)
+    void pauseForChatProxy(const linkpreview::Target& target); // runAutoLoads while Down: Paused at once (S4 live test fix)
+    void reportRoute(const linkpreview::Result& result, const QString& host); // route health hears a load's result
+    bool proxySaved() const;
+    bool proxyOn() const;
+    void useChatProxy(QTextBrowser* browser, const linkpreview::Target& target); // "Use chat proxy": on, this card as a click
+    void openProxyWindow();
+    QPointer<proxy::Control> m_proxy; // the plugin's (its signals; never made anew after the unload)
 };

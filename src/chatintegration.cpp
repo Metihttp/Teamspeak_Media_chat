@@ -779,7 +779,10 @@ void ChatIntegration::scan(QTextBrowser* browser)
         return a.length > b.length;
     });
 
-    const bool bottom = isAtBottom(browser);
+    // 2.6 (R-DEF-1, design 8.1): the reader's place (a character, or the chat's end) is captured before the edits and
+    // restored once after them and the albums, with the range synced (one syncRange per scan): a plain
+    // setValue(maximum()) right after the edits landed short by their growth.
+    const chatscroll::TextPlace place = chatscroll::captureText(browser);
     for (const Op& op : qAsConst(ops)) {
         if (op.length > 0) {
             m_mutating = true;
@@ -789,13 +792,12 @@ void ChatIntegration::scan(QTextBrowser* browser)
             c.removeSelectedText();
             m_mutating = false;
         } else {
-            insertPreview(browser, op.position, op.key);
+            insertPreview(browser, op.position, op.key, false);
         }
     }
-    if (bottom)
-        browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
     if (albumPlan.active)
         applyAlbums(browser, planAlbums(browser)); // 2.2 album: planned again, the positions moved
+    chatscroll::restoreText(browser, place);
 
     if (hiddenNotes > 0) {
 #ifdef TSMEDIA_TESTHOOKS
@@ -1231,7 +1233,7 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     return img;
 }
 
-void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const QString& key)
+void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const QString& key, bool keepPlace)
 {
     QSize        size;
     const QImage img = renderFor(browser, key, &size);
@@ -1273,8 +1275,8 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
         c.insertText(QString(QChar::LineSeparator), separator);
     m_mutating = false;
 
-    if (bottom)
-        browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
+    if (keepPlace && bottom)
+        chatscroll::toBottom(browser); // 2.6 (R-DEF-1): the range synced first
 #ifdef TSMEDIA_TESTHOOKS
     ts3::log(QStringLiteral("[test] preview inserted for ") + key);
 #endif
@@ -1343,7 +1345,7 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         if (m_scaling) {
             // 2.5 zoom: inside a ChatScale pass the place comes back once, at its end.
         } else if (bottom) {
-            browser->verticalScrollBar()->setValue(browser->verticalScrollBar()->maximum());
+            chatscroll::toBottom(browser); // 2.6 (R-DEF-1): the range synced first
         } else if (above) { // 2.2 reactions: scroll anchoring
             doc->documentLayout()->documentSize(); // lays out the change, so the range is current
             QScrollBar*        bar   = browser->verticalScrollBar();

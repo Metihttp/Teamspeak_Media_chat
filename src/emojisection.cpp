@@ -11,6 +11,7 @@
 
 #include "emojirender.h"
 #include "giflibrary.h" // 2.5 GIFs
+#include "gifpanel.h"   // 2.6: the Remove button's text
 #include "i18n.h"
 
 EmojiSection::EmojiSection(QWidget* parent)
@@ -122,7 +123,7 @@ void EmojiSection::confirmRemoveAll()
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setLayoutDirection(Qt::LeftToRight);
     box->setInformativeText(i18n::t("This can't be undone."));
-    QPushButton* remove = box->addButton(i18n::t("Remove all"), QMessageBox::DestructiveRole);
+    QPushButton* remove = box->addButton(GifPanel::removeButtonText(gifs->count()), QMessageBox::DestructiveRole); // 2.6: "Remove" for one
     QPushButton* cancel = box->addButton(i18n::t("Cancel"), QMessageBox::RejectRole);
     box->setDefaultButton(cancel); // Enter must not delete anything
     box->setEscapeButton(cancel);

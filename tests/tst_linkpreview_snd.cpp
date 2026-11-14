@@ -317,7 +317,9 @@ class CountingWebsite : public http::Transport
         Q_UNUSED(deadline);
         QMutexLocker lock(&mutex);
         routed << url.toString(QUrl::FullyEncoded);
-        return {};
+        http::Route r;
+        r.via = http::Route::Via::Direct; // 2.6: an explicit route
+        return r;
     }
     std::unique_ptr<http::Exchange> open(const http::HopOptions& options, const http::Cancel& cancel, http::Error* error) override
     {
@@ -517,6 +519,8 @@ class TestLinkPreviewSnd : public QObject
     void senderLoopGifCap();
     void senderCrossSiteNoCard();
     void senderWalledNoCard();
+    void senderProxyFailuresPlain(); // 2.6 chat proxy (design 5.5)
+    void senderFollowsRoute();       // 2.6 chat proxy (design 6 step 5)
     void senderWebCardsOff();
     void senderFollowsWebCardsSwitch();
     void intakeNoticeOnePerMessage();
@@ -3596,6 +3600,89 @@ void TestLinkPreviewSnd::senderWalledNoCard()
     QCOMPARE(m_hub->pipeline()->counters().lpxSkipsNothing, 2);
     QCOMPARE(m_hub->pipeline()->counters().lpxSkips, 5);
     QCOMPARE(m_hub->pipeline()->counters().skipNotices, 0); // LPNO only for the 2.4 classes
+}
+
+// 2.6 chat proxy (design 5.5): a proxy failure, a filtered site or a paused load (the chat proxy down) ends our job with
+// ONE plain LPNO (2.4 classes) or LPXNO without r: receivers load the link through their own route at once.
+void TestLinkPreviewSnd::senderProxyFailuresPlain()
+{
+    const QStringList codes{QString::fromLatin1(errors::kProxy), QString::fromLatin1(errors::kFiltered), QString::fromLatin1(errors::kRouteDown)};
+    for (int i = 0; i < codes.size(); ++i) {
+        sendOwn(QStringLiteral("https://www.example.com/page-%1").arg(i));
+        QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), i + 1, 3000);
+        Result r;
+        r.error        = codes.at(i);
+        r.via          = proxy::Via::Bridge;
+        r.proxyFailure = proxy::Failure::Unreachable;
+        m_hub->pipeline()->fetched(m_fetch->loads.last().target.key, r);
+        QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), i + 1, 3000);
+    }
+    // A 2.4 class (a picture): LPNO.
+    sendOwn(QStringLiteral("[URL]https://example.com/p.png[/URL]"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 4, 3000);
+    Result proxyFailed;
+    proxyFailed.error        = QString::fromLatin1(errors::kProxy);
+    proxyFailed.via          = proxy::Via::System;
+    proxyFailed.proxyFailure = proxy::Failure::CantReachSite;
+    m_hub->pipeline()->fetched(m_fetch->loads.last().target.key, proxyFailed);
+    QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), 4, 3000);
+    const QList<proto::Message> sent = sentMessages();
+    QCOMPARE(sent.size(), 4);
+    for (int i = 0; i < 3; ++i) {
+        QCOMPARE(sent.at(i).type, QByteArray("LPXNO"));
+        QCOMPARE(readLpxSkip(sent.at(i))->reason, SkipReason::Unknown); // never r=n: a proxy failure says nothing about the page
+        QVERIFY(!sent.at(i).has("r"));
+    }
+    QCOMPARE(sent.at(3).type, QByteArray("LPNO"));
+    QCOMPARE(m_hub->pipeline()->counters().lpxSkipsNothing, 0);
+    // Our own chat shows the failure (with Retry): the record is Failed with the proxy's code.
+    const SenderPipeline::OwnLink* own = m_hub->pipeline()->latestOwnLink(m_fetch->loads.first().target.key);
+    QVERIFY(own && own->state == SenderPipeline::OwnLink::State::Failed);
+    QCOMPARE(own->result.error, QString::fromLatin1(errors::kProxy));
+}
+
+// 2.6 chat proxy (design 6 step 5): the route changed while our job loads: the fetch starts again on the new route, and an
+// answer of the old route that still comes is dropped (never an LPNO for it).
+void TestLinkPreviewSnd::senderFollowsRoute()
+{
+    sendOwn(QStringLiteral("https://www.example.com/route-page"));
+    QTRY_COMPARE_WITH_TIMEOUT(m_fetch->loads.size(), 1, 3000);
+    const QString key = m_fetch->loads.first().target.key;
+    const quint64 before = proxy::snapshot()->generation;
+    {
+        auto next        = std::make_shared<proxy::Snapshot>(*proxy::snapshot());
+        next->generation = before + 1;
+        proxy::publish(next);
+    }
+    m_hub->pipeline()->followRoute();
+    QCOMPARE(m_fetch->canceled, QStringList{key});
+    QCOMPARE(m_fetch->loads.size(), 2);
+    QCOMPARE(m_fetch->loads.last().target.key, key);
+    // The old route's answer: dropped.
+    Result old;
+    old.error           = QString::fromLatin1(errors::kProxy);
+    old.routeGeneration = before;
+    old.via             = proxy::Via::System;
+    old.proxyFailure    = proxy::Failure::Unreachable;
+    m_hub->pipeline()->fetched(key, old);
+    QTest::qWait(50);
+    QVERIFY(m_backend->sent.isEmpty());
+    QCOMPARE(m_hub->pipeline()->jobCount(), 1);
+    // The new one's answer ends the job.
+    Result fresh;
+    fresh.error           = QString::fromLatin1(errors::kProxy);
+    fresh.routeGeneration = before + 1;
+    m_hub->pipeline()->fetched(key, fresh);
+    QTRY_COMPARE_WITH_TIMEOUT(m_backend->sent.size(), 1, 3000);
+    // No fetch running: nothing to follow.
+    const int loads = m_fetch->loads.size();
+    m_hub->pipeline()->followRoute();
+    QCOMPARE(m_fetch->loads.size(), loads);
+    {
+        auto back        = std::make_shared<proxy::Snapshot>(*proxy::snapshot());
+        back->generation = before;
+        proxy::publish(back);
+    }
 }
 
 void TestLinkPreviewSnd::senderWebCardsOff()

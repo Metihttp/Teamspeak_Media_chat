@@ -266,6 +266,46 @@ bool isPublicAddress(const Address& address)
     return false;
 }
 
+bool isFakeIpAddress(const Address& address)
+{
+    if (address.family == Address::Family::IPv4)
+        return inRange(address.ipv4(), Range4{ip4(198, 18, 0, 0), 15});
+    if (address.family == Address::Family::IPv6)
+        return address.bytes[0] == 0xfc && address.bytes[1] == 0x00 && (address.bytes[2] & 0xc0) == 0x00; // fc00::/18
+    return false;
+}
+
+bool isSinkholeAddress(const Address& address)
+{
+    // research_users 1.1: Iranian DNS answers filtered names with addresses in 10.10.34.0/24 (10.10.34.34-36 seen).
+    return address.family == Address::Family::IPv4 && inRange(address.ipv4(), Range4{ip4(10, 10, 34, 0), 24});
+}
+
+Answer classifyAnswer(const QVector<Address>& addresses)
+{
+    if (addresses.isEmpty())
+        return Answer::Blocked;
+    bool allPublic = true, publicOrFake = true, anyFake = false, nonPublicAllSinkhole = true, anySinkhole = false;
+    for (const Address& a : addresses) {
+        const bool pub  = isPublicAddress(a);
+        const bool fake = isFakeIpAddress(a);
+        const bool sink = isSinkholeAddress(a);
+        allPublic       = allPublic && pub;
+        publicOrFake    = publicOrFake && (pub || fake);
+        anyFake         = anyFake || fake;
+        anySinkhole     = anySinkhole || sink;
+        if (!pub && !sink)
+            nonPublicAllSinkhole = false;
+    }
+    if (allPublic)
+        return Answer::Public;
+    if (publicOrFake && anyFake)
+        return Answer::FakeIp;
+    if (nonPublicAllSinkhole && anySinkhole)
+        return Answer::Filtered;
+    return Answer::Blocked;
+}
+
 Address parseAddress(const QString& text)
 {
     QString s = text.trimmed();
@@ -399,38 +439,63 @@ bool bypassesProxy(const QString& bypassList, const QString& host)
     return false;
 }
 
-QString proxyForHost(const QString& proxyList, const QString& bypassList, const QString& host)
+PickedProxy pickProxy(const QString& proxyList, const QString& bypassList, const QString& host)
 {
+    PickedProxy picked;
     if (host.isEmpty() || bypassesProxy(bypassList, host))
-        return {};
-    QStringList https, any;
+        return picked;
+    QStringList https, any, http, socks;
     for (const QString& entry : proxyEntries(proxyList)) {
         const int eq = entry.indexOf(QLatin1Char('='));
         QString   server;
+        QString   scheme; // of the "scheme=" form
         if (eq < 0) {
             server = entry;
         } else {
-            const QString scheme = entry.left(eq).trimmed().toLower();
-            if (scheme != QLatin1String("https"))
-                continue; // http=, ftp=, socks=: not for an https request
+            scheme = entry.left(eq).trimmed().toLower();
+            if (scheme != QLatin1String("https") && scheme != QLatin1String("http") && scheme != QLatin1String("socks"))
+                continue; // ftp=, ...: not for an https request
             server = entry.mid(eq + 1);
         }
         // "http://host:port" as some tools write it: WinHTTP takes "host:port".
-        const int s = server.indexOf(QLatin1String("://"));
+        bool      isSocks = scheme == QLatin1String("socks");
+        const int s       = server.indexOf(QLatin1String("://"));
         if (s >= 0) {
-            const QString scheme = server.left(s).toLower();
-            if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
-                continue; // socks5://...
+            const QString prefix = server.left(s).toLower();
+            if (prefix.startsWith(QLatin1String("socks")))
+                isSocks = true; // socks5://, socks://, socks4://
+            else if (prefix != QLatin1String("http") && prefix != QLatin1String("https"))
+                continue;
             server = server.mid(s + 3);
         }
         while (server.endsWith(QLatin1Char('/')))
             server.chop(1);
         if (server.isEmpty() || server.contains(QLatin1Char('/')) || server.contains(QLatin1Char('@')))
             continue;
-        (eq < 0 ? any : https) << server;
+        if (isSocks)
+            socks << server;
+        else if (scheme == QLatin1String("https"))
+            https << server;
+        else if (scheme == QLatin1String("http"))
+            http << server;
+        else
+            any << server;
     }
-    const QStringList use = https.isEmpty() ? any : https;
-    return use.join(QLatin1Char(';'));
+    // Review fix (design 3.3.2): for https, WinINet and Chromium take a "socks=" entry before an "http=" one (the http=
+    // proxy is for http:// only there), so "http=X;socks=Y" is SOCKS-only for an https request: refused, never X behind
+    // Windows' back. An "http=" entry alone still tunnels https with CONNECT.
+    const QStringList use = !https.isEmpty() ? https : !any.isEmpty() ? any : socks.isEmpty() ? http : QStringList();
+    picked.servers        = use.join(QLatin1Char(';'));
+    if (use.isEmpty() && !socks.isEmpty()) {
+        picked.socksOnly   = true;
+        picked.socksServer = socks.first();
+    }
+    return picked;
+}
+
+QString proxyForHost(const QString& proxyList, const QString& bypassList, const QString& host)
+{
+    return pickProxy(proxyList, bypassList, host).servers;
 }
 
 QUrl proxyQueryUrl(const QUrl& url)

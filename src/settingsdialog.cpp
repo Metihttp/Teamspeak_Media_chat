@@ -38,6 +38,8 @@
 #include "serverssection.h" // 2.2 per-server settings
 #include "uiutil.h"
 #include "update/updatesettingsgroup.h" // 2.2 updater
+#include "proxy/proxygroup.h" // 2.6 chat proxy
+#include "settingstheme.h"   // 2.6: the label roles shared with the Chat proxy window
 #include "version.h"
 
 namespace {
@@ -549,6 +551,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     }
     // 2.2 updater: a self-contained group with its own keys (apply() below; Restore defaults leaves them
     // alone). Added before the dirty tracking below, so its checkbox enables Apply.
+    // 2.6 chat proxy (design 1.3.10): its own keys too (the Settings dialog's OK, Apply and Restore defaults never touch
+    // them; its button acts at once). Between the Privacy section (added above everything later) and Updates.
+    addSection(Tab::PrivacyUpdates, new proxy::ui::ProxyGroup(this));
     addSection(Tab::PrivacyUpdates, new upd::UpdateSettingsGroup(this));
     // 2.2 per-server settings: loaded and saved with the form (load() / apply()).
     addSection(Tab::Servers, m_servers);
@@ -1085,7 +1090,8 @@ void SettingsDialog::applyTheme()
         const QString role = label->property("role").toString();
         if (role.isEmpty())
             continue;
-        const QColor color        = role == QLatin1String("error") ? error : muted;
+        // 2.6: "ok" (a passed check, with its painted mark) from the shared roles (settingstheme.h).
+        const QColor color        = role == QLatin1String("error") ? error : role == QLatin1String("ok") ? settingstheme::roleColors(pal).ok : muted;
         QPalette     labelPalette = label->palette();
         labelPalette.setColor(QPalette::Active, QPalette::WindowText, color);
         labelPalette.setColor(QPalette::Inactive, QPalette::WindowText, color);
@@ -1098,8 +1104,9 @@ void SettingsDialog::applyTheme()
         // never QStringLiteral: TeamSpeak's QStyleSheetStyle keeps the parsed text after the plugin is
         // unloaded (see settings.cpp). Every rule is scoped to this dialog and the boxes it opens.
         sheet = QString::fromLatin1("#tsmediaSettingsDialog QLabel[role=\"hint\"]{color:%1;}"
-                                    "#tsmediaSettingsDialog QLabel[role=\"error\"]{color:%2;}")
-                    .arg(muted.name(), error.name());
+                                    "#tsmediaSettingsDialog QLabel[role=\"error\"]{color:%2;}"
+                                    "#tsmediaSettingsDialog QLabel[role=\"ok\"]{color:%3;}")
+                    .arg(muted.name(), error.name(), settingstheme::roleColors(pal).ok.name());
         // The pages' scroll areas stay invisible: no background or frame from a skin's list views.
         sheet += QString::fromLatin1("#tsmediaSettingsDialog QScrollArea,#tsmediaSettingsDialog QScrollArea>QWidget#qt_scrollarea_viewport,"
                                      "#tsmediaSettingsPage{background:transparent;border:none;}");

@@ -61,6 +61,10 @@
 #include "ytplayer/ytbackend.h"     // ... the helper (embedded), the runtime check
 #include "ytplayer/ytpage.h"
 #include "ytplayer/ytplayer.h"
+#include "linkpreview/routereport.h" // 2.6 chat proxy: route health hears our loads
+#include "proxy/control.h"     // 2.6 chat proxy: the route, its health, the toggles
+#include "proxy/proxytexts.h"  // ... the failures' short texts
+#include "proxy/proxyui.h"     // ... "Proxy settings…", "Set up proxy…"
 
 namespace {
 
@@ -189,6 +193,12 @@ ChatLinkPreviews::ChatLinkPreviews(ChatIntegration* chat, Core* core)
     // plugin's one HostGate with the sender's Fetcher (spacing, cooldowns and walls per site).
     linkpreview::Fetcher::Options fetchOptions;
     fetchOptions.gate = linkpreview::sharedGate();
+    // 2.6 chat proxy (design 3.3.5, 5.2): automatic loads wait while the chat proxy is down (clicks always go); the bridge's
+    // records are read per hop (proxy::liveRecords).
+    fetchOptions.routeGate = &linkpreview::admitsRoute;
+    m_proxy = proxy::Control::instance();
+    connect(m_proxy.data(), &proxy::Control::routeChanged, this, &ChatLinkPreviews::onRouteChanged);
+    connect(m_proxy.data(), &proxy::Control::healthChanged, this, &ChatLinkPreviews::onHealthChanged);
 #ifdef TSMEDIA_TESTHOOKS
     m_fetcher = new linkpreview::Fetcher(linkpreview::nettrace::traced(linkpreview::http::winHttpTransport(), "chat"), fetchOptions, this);
 #else
@@ -288,6 +298,29 @@ void ChatLinkPreviews::setUpYouTube()
     };
     host.muted          = [this] { return m_chat && m_chat->m_media && m_chat->m_media->isMuted(); };
     host.scrollIntoView = [this](const QString& slotId) { scrollSlotIntoView(slotId); };
+    // 2.6 chat proxy (design 3.6.4, 3.6.5): the player's network, the bridge's records of it, route health, feedback.
+    host.network = [] {
+        proxy::Control* control = proxy::Control::current();
+        return control ? control->playerNetwork() : proxy::PlayerNetwork();
+    };
+    host.playerRecords = [](quint64 since) { return proxy::liveRecords()->recent('p', since); };
+    host.report        = [](const proxy::RouteReport& report) {
+        if (proxy::Control* control = proxy::Control::current())
+            control->report(report);
+    };
+    host.reportOk = [](quint64 generation) {
+        if (proxy::Control* control = proxy::Control::current())
+            control->reportOk(generation);
+    };
+    host.feedback = [this](const QString& slotId, const QString& text) {
+        for (auto it = m_views.constBegin(); it != m_views.constEnd(); ++it) {
+            SlotRef ref;
+            if (it->browser && it->browser->isVisible() && refOfSlot(it->browser, slotId, &ref)) {
+                m_chat->showFeedback(it->browser->viewport(), text, false);
+                return;
+            }
+        }
+    };
     // Nothing is loaded here: the helper is extracted and loaded inside the first Play (PlayerBackend::load).
     std::unique_ptr<PlayerBackend> backend;
     if (ytbackend::helperBuiltIn())
@@ -302,6 +335,150 @@ void ChatLinkPreviews::setUpYouTube()
     if (ytbackend::helperBuiltIn())
         ytbackend::deleteStaleHelpers(ytbackend::playerDir(), ytbackend::helperFileName(ytbackend::embeddedHelper(), ytbackend::archName()));
     m_yt->settingsChanged();
+}
+
+// ---- 2.6 chat proxy ----------------------------------------------------------------------------------------------
+
+bool ChatLinkPreviews::proxySaved() const
+{
+    return m_proxy && m_proxy->config().saved();
+}
+
+bool ChatLinkPreviews::proxyOn() const
+{
+    return m_proxy && m_proxy->config().on && m_proxy->config().saved();
+}
+
+void ChatLinkPreviews::reportRoute(const linkpreview::Result& result, const QString& host)
+{
+    // Route health (design 5.2): route-level failures, a site's answer through the bridge, any site's answer (Windows mode).
+    if (!m_down)
+        linkpreview::reportRoute(m_proxy, result, host);
+}
+
+void ChatLinkPreviews::onRouteChanged()
+{
+    if (m_down || m_stopped || !m_proxy)
+        return;
+    const bool toChatProxy = m_proxy->mode() == proxy::Mode::Custom;
+    // 1. Running loads start again on the new route (the restartWebCardsLoads precedent): a click at once, an automatic one
+    //    by the normal rules (the on-screen pass, its limits). Our pipeline's downloads are its own (SenderPipeline).
+    QStringList running;
+    for (auto it = m_local.constBegin(); it != m_local.constEnd(); ++it) {
+        if (it->state == linkstate::Local::Loading && !m_pipelineWaits.contains(it.key()))
+            running << it.key();
+    }
+    for (const QString& key : qAsConst(running)) {
+        const linkstate::LocalState before = m_local.value(key);
+        const linkpreview::Target   target = m_targets.value(key);
+        cancelFetch(key);
+        linkstate::LocalState idle; // a busy site's rounds stay with the link
+        idle.coolRetries = before.coolRetries;
+        idle.coolingMs   = before.coolingMs;
+        m_local.insert(key, idle);
+        if (before.clicked)
+            startFetch(target, Origin::Click);
+        if (m_local.value(key).state == linkstate::Local::Idle)
+            m_local.remove(key); // the normal rules
+    }
+    // 2. Links that waited for or failed through a proxy, and walled memos (S4): the chat proxy loads them again by
+    //    itself; any other route only after a click (nothing posted while the user relied on a proxy is fetched outside it
+    //    by itself). Live test fix (S4): links the chat proxy's probation let go (back to the normal rules) that haven't
+    //    loaded yet waited for it too: away from it they wait for a click as well (the live run saw two of them load by
+    //    themselves through the Windows proxy right after the notice's Turn off chat proxy). Review fix: so do the ones a
+    //    move to the chat proxy let go, and the ones a busy site keeps waiting (Cooling), until they load or are clicked;
+    //    our pipeline's downloads stay its own. Loop 1 left no automatic load of ours running, so nothing to cancel here.
+    QStringList idled;
+    const int   waiting = linkstate::routeChangePass(&m_local, &m_resumedFromPause, m_pipelineWaits, toChatProxy, &idled);
+    for (const QString& key : qAsConst(idled))
+        m_cacheMiss.remove(key);
+    if (waiting > 0)
+        m_proxy->noteWaitingForClick(waiting); // the "turned off" line says so
+    // 3. The YouTube player (design 3.6.4).
+    if (m_yt)
+        m_yt->networkChanged();
+    scheduleRefresh();
+    updateVisibleViewports();
+}
+
+bool ChatLinkPreviews::chatProxyDown() const
+{
+    return m_proxy && m_proxy->mode() == proxy::Mode::Custom && m_proxy->state() == proxy::Health::State::Down;
+}
+
+void ChatLinkPreviews::pauseForChatProxy(const linkpreview::Target& target)
+{
+    // What its load's routedown answer would make of it (applyFetched), with no request and no ticket.
+    m_targets.insert(target.key, target);
+    m_local.insert(target.key, linkstate::pausedForChatProxy(m_proxy->generation()));
+    m_proxy->notePausedLoad(); // the status row's "N automatic loads paused"
+    ts3::log(LogLevel_INFO, 0, "Link preview: %1 from %2 waits for the chat proxy (routedown)", {ts3::pub(kindText(target.kind)), ts3::name(target.host)});
+    scheduleRefresh();
+}
+
+void ChatLinkPreviews::forgetResumedIfDone(const QString& key)
+{
+    // Review fix (S4): a link the chat proxy let go is remembered until it loads, ends or is clicked; a busy site's wait
+    // (Cooling, a 429 or the gate's wait) or a pause again hasn't loaded it (linkstate::resumedStillWaits).
+    if (!linkstate::resumedStillWaits(m_local.value(key)))
+        m_resumedFromPause.remove(key);
+}
+
+void ChatLinkPreviews::onHealthChanged()
+{
+    if (m_down || m_stopped || !m_proxy)
+        return;
+    const proxy::Health::State state   = m_proxy->state();
+    bool                       changed = false;
+    if (m_proxy->mode() == proxy::Mode::Custom && state == proxy::Health::State::Down) {
+        // Entering Down (5.3): automatic loads of this generation that failed decisively wait as Paused; clicked and
+        // ambiguous ones keep their error card (F11).
+        for (auto it = m_local.begin(); it != m_local.end(); ++it) {
+            if (linkstate::pausesOnDown(it.value(), m_proxy->generation())) {
+                it->state = linkstate::Local::Paused;
+                it->pause = linkstate::Pause::ChatProxy;
+                changed   = true;
+            }
+        }
+        // Live test fix (S4): an on-screen pass now, so the links held for their turn wait as Paused at once (runAutoLoads).
+        updateVisibleViewports();
+    } else if (state == proxy::Health::State::Working || state == proxy::Health::State::Probation) {
+        // The route works (or is on probation): the paused links go back to the normal on-screen pass (its limits).
+        for (auto it = m_local.begin(); it != m_local.end();) {
+            if (linkstate::resumesOnHealth(it.value())) {
+                m_resumedFromPause.insert(it.key()); // still waiting for the chat proxy until it loads (S4)
+                it      = m_local.erase(it);
+                changed = true;
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (changed) {
+        scheduleRefresh();
+        updateVisibleViewports();
+    }
+}
+
+void ChatLinkPreviews::useChatProxy(QTextBrowser* browser, const linkpreview::Target& target)
+{
+    if (!m_proxy || m_down)
+        return;
+    const proxy::Toggle t = m_proxy->turnOn(proxy::Control::Origin::Card, ts3::currentConnection());
+    if (t != proxy::Toggle::TurnedOn && t != proxy::Toggle::AlreadyOn)
+        return; // nothing saved: the window opened
+    if (browser)
+        m_chat->showFeedback(browser->viewport(), i18n::t("Chat proxy on"), false);
+    // The route change put it back to the normal rules; this card loads at once, as a click.
+    m_local.remove(target.key);
+    startFetch(target, Origin::Click);
+}
+
+void ChatLinkPreviews::openProxyWindow()
+{
+    // Nothing saved yet (Set up proxy…, a card's Proxy settings…): the set-up form, the box ticked, so the OK of a Find
+    // and a Test turns it on (design 1.2; review fix: it opened unticked and saved the proxy off).
+    proxy::ui::showProxyWindow(m_chat ? m_chat->mainWindow() : nullptr, proxy::ui::settingsRequest(proxySaved()), m_proxy);
 }
 
 bool ChatLinkPreviews::locateYouTube(const QString& slotId, void* out) const
@@ -418,6 +595,8 @@ void ChatLinkPreviews::prepareShutdown()
         disconnect(m_pipeline.data(), nullptr, this, nullptr);
     if (m_peers)
         disconnect(m_peers.data(), nullptr, this, nullptr);
+    if (m_proxy)
+        disconnect(m_proxy.data(), nullptr, this, nullptr); // 2.6: the route's changes reach us no more
     m_hub      = nullptr;
     m_pipeline = nullptr;
     m_peers    = nullptr;
@@ -841,6 +1020,10 @@ linkcard::Card ChatLinkPreviews::cardFor(const SlotRef& ref, const linkstate::De
         }
         break;
     case linkcard::Look::Click:
+        // 2.6 chat proxy: an automatic load that waits for the route (design 1.5).
+        c.proxyStrip    = linkstate::proxyStripOf(l, proxySaved());
+        c.proxyReason   = l.via == proxy::Via::System || l.via == proxy::Via::Refused ? proxy::shortText(l.proxyFailure)
+                                                                                      : proxy::texts::chatShortText(l.proxyFailure, m_proxy ? m_proxy->config() : proxy::Config());
         c.size          = shownSize(ref, l); // above the automatic limit: "Video · 38 MB"
         c.overAutoLimit = l.state == linkstate::Local::OverAutoLimit || c.size > 0;
         if (c.overAutoLimit) // the site didn't say its size: "Video · over 15 MB"
@@ -850,6 +1033,17 @@ linkcard::Card ChatLinkPreviews::cardFor(const SlotRef& ref, const linkstate::De
     case linkcard::Look::Error:
         c.error   = linkcard::cleanText(l.error, 160);
         c.nothing = d.nothing;
+        // 2.6 chat proxy: a load that failed on its route says so, with what helps (design 1.5).
+        c.proxyStrip = d.nothing ? linkcard::ProxyStrip::None : linkstate::proxyStripOf(l, proxySaved());
+        if (c.proxyStrip != linkcard::ProxyStrip::None) {
+            c.error = linkcard::proxyErrorText(c.proxyStrip);
+            // Review fix: our own link that ended "routedown" made no request and has no failure of its own: the route's
+            // (while it is down). With none, the tool tip has no reason (linkcard), never "It didn't work: .".
+            const proxy::Failure failure =
+                l.proxyFailure == proxy::Failure::None && c.proxyStrip == linkcard::ProxyStrip::ChatProxy && m_proxy ? m_proxy->lastFailure() : l.proxyFailure;
+            c.proxyReason = linkstate::viaChatProxy(l.via, failure) ? proxy::texts::chatShortText(failure, m_proxy ? m_proxy->config() : proxy::Config())
+                                                                    : proxy::shortText(failure);
+        }
         break;
     case linkcard::Look::Embed: {
         // The card's text, from our own load or the sender's LPX, cleaned again (it is a website's, or another
@@ -1924,9 +2118,22 @@ void ChatLinkPreviews::activate(QTextBrowser* browser, const SlotRef& ref, linkc
     Q_UNUSED(browser);
     switch (zone) {
     case linkcard::Zone::Load:
-    case linkcard::Zone::Retry:
+    case linkcard::Zone::Retry: {
+        // 2.6 chat proxy (F10): a site the network filters: the strip's action is the chat proxy, not a Retry that can't work.
+        const linkcard::ProxyStrip strip = linkstate::proxyStripOf(m_local.value(ref.target.key), proxySaved());
+        if (zone == linkcard::Zone::Retry && strip == linkcard::ProxyStrip::FilteredUseProxy) {
+            useChatProxy(browser, ref.target);
+            break;
+        }
+        if (zone == linkcard::Zone::Retry && strip == linkcard::ProxyStrip::FilteredSetUp) {
+            openProxyWindow();
+            break;
+        }
+        if (m_local.value(ref.target.key).state == linkstate::Local::Paused)
+            m_local.remove(ref.target.key); // a paused load: the click loads it now
         startFetch(ref.target);
         break;
+    }
     case linkcard::Zone::Open:
         if (m_yt && ref.target.kind == linkpreview::Kind::YouTube) // 2.5: with the time a player stopped at
             openInBrowser(m_yt->watchUrlOf(ref.slotId, ref.target.videoId, linkstate::webAddress(ref.slot.href, ref.target)));
@@ -1990,8 +2197,11 @@ void ChatLinkPreviews::showCardMenu(QTextBrowser* browser, const SlotRef& ref, c
     switch (linkcard::menuDefault(card)) {
     case linkcard::Zone::Load:
         primary = menu->addAction(i18n::t("&Load preview"), this, [self, target] {
-            if (self)
-                self->startFetch(target);
+            if (!self)
+                return;
+            if (self->m_local.value(target.key).state == linkstate::Local::Paused)
+                self->m_local.remove(target.key); // 2.6: a paused load: the click loads it now
+            self->startFetch(target);
         });
         break;
     case linkcard::Zone::Retry:
@@ -2051,6 +2261,35 @@ void ChatLinkPreviews::showCardMenu(QTextBrowser* browser, const SlotRef& ref, c
         if (self && browser)
             self->m_chat->showFeedback(browser->viewport(), i18n::t("Link copied"), false);
     });
+    // 2.6 chat proxy (design 1.5): a card that failed or waits on a route offers to turn the chat proxy off or on, and its
+    // settings; the YouTube player's proxy note too. Keys o and x (free in this menu).
+    linkstate::ProxyMenu proxyItems = linkstate::proxyMenuOf(slotLocal(ref, m_local.value(target.key)), proxyOn(), proxySaved());
+    if (card.look == linkcard::Look::YouTube && card.player == linkcard::Player::Note && card.note == ytpage::noteText(ytpage::Note::Proxy)) {
+        proxyItems.turnOff  = proxyOn();
+        proxyItems.settings = true;
+    }
+    const QPointer<QTextBrowser> where(browser);
+    if (proxyItems.turnOff) {
+        menu->addAction(i18n::t("Turn &off chat proxy"), this, [self, where] {
+            if (!self || !self->m_proxy)
+                return;
+            self->m_proxy->turnOff(proxy::Control::Origin::Card, ts3::currentConnection());
+            if (where)
+                self->m_chat->showFeedback(where->viewport(), i18n::t("Chat proxy off"), false);
+        });
+    }
+    if (proxyItems.turnOn) {
+        menu->addAction(i18n::t("Turn &on chat proxy"), this, [self, where, target] {
+            if (self)
+                self->useChatProxy(where, target);
+        });
+    }
+    if (proxyItems.settings) {
+        menu->addAction(i18n::t("Pro&xy settings…"), this, [self] {
+            if (self)
+                self->openProxyWindow();
+        });
+    }
     if (card.look != linkcard::Look::Hidden) {
         menu->addSeparator();
         menu->addAction(i18n::t("&Hide preview"), this, [self, slotId, target] {
@@ -2153,6 +2392,8 @@ void ChatLinkPreviews::startFetch(const linkpreview::Target& target, Origin orig
         return;
     if (target.cls == linkpreview::LinkClass::Web && !Settings::instance().showWebCards)
         return; // never a class the user switched off
+    if (origin == Origin::Click)
+        m_resumedFromPause.remove(target.key); // the user's now (S4 live test fix)
     if (m_local.value(target.key).state == linkstate::Local::Loading) {
         // R26: a click on a link that loads by itself: that load is kept, now as the user's (its failure shows). It
         // still runs with the automatic caps and its sender's turn until it ends: a file over them becomes a click
@@ -2174,6 +2415,7 @@ void ChatLinkPreviews::startFetch(const linkpreview::Target& target, Origin orig
     l.coolRetries = before.coolRetries;
     l.coolingMs   = before.coolingMs;
     l.webCards    = Settings::instance().showWebCards; // what its Caps hold (restartWebCardsLoads)
+    l.routeGeneration = m_proxy ? m_proxy->generation() : 0; // 2.6: a result of an older route is dropped
     m_local.insert(target.key, l);
     m_targets.insert(target.key, target);
     if (m_pipeline && m_pipeline->pending(target.key)) {
@@ -2279,6 +2521,8 @@ void ChatLinkPreviews::onProgress(const QString& key, qint64 received, qint64 to
 
 void ChatLinkPreviews::onFetched(const QString& key, const linkpreview::Result& result)
 {
+    // 2.6 chat proxy (design 5.2): route health hears every load of ours (an older generation is ignored there).
+    reportRoute(result, m_targets.value(key).host);
     applyFetched(key, result, false);
     // 2.5 GIFs: a result in cache/links (media, a card, a "none" record); a busy site or a cancel leaves nothing there.
     if (!m_down && (result.ok || linkstate::isNothingError(result.error) || result.error == QLatin1String(linkpreview::errors::kNotFound)
@@ -2293,6 +2537,10 @@ void ChatLinkPreviews::applyFetched(const QString& key, const linkpreview::Resul
         return; // canceled meanwhile
     if (!result.ok && result.error == QLatin1String(linkpreview::errors::kCanceled))
         return; // the answer to a cancel of ours (a load of the link started again since): its own answer follows
+    // 2.6 chat proxy (design 6): a result of an older route than the load now running for this link (it was restarted
+    // on a route change): never shown, never counted; the new load's own answer follows.
+    if (!fromCache && result.routeGeneration && it->routeGeneration && result.routeGeneration < it->routeGeneration)
+        return;
     const AutoRun run     = m_autoRuns.value(key);
     const bool    wasAuto = m_autoRuns.remove(key) > 0;
     m_pipelineWaits.remove(key);
@@ -2313,10 +2561,16 @@ void ChatLinkPreviews::applyFetched(const QString& key, const linkpreview::Resul
             m_waitSeen   = true;
             if (!m_waitTimer->isActive() && !m_stopped)
                 m_waitTimer->start();
+        } else if (error == QLatin1String(linkpreview::errors::kProxy) || error == QLatin1String(linkpreview::errors::kFiltered)
+                   || error == QLatin1String(linkpreview::errors::kRouteDown)) {
+            // 2.6 chat proxy (design 1.5, 5.3): the route failed, the network filters the site, or the chat proxy is down
+            // (an automatic load waits). The strip says which and offers what helps.
+            *it = linkstate::afterRouteFailure(*it, error, result.via, result.proxyFailure, result.proxyDecisive, result.routeGeneration, chatProxyDown());
         } else if (linkstate::isNothingError(error)) {
             // 2.5: the page has nothing to show (no card, a wall, an expired link): no slot (after a click: "No preview").
             // A share link that is another web page while cards for other web pages are off: the same, until they are on.
             it->state = linkstate::Local::Nothing;
+            it->code  = error; // 2.6: a wall's memo goes when the route becomes the chat proxy
             if (error == QLatin1String(linkpreview::errors::kWebOff)) {
                 if (Settings::instance().showWebCards)
                     m_local.erase(it); // review fix: they went on meanwhile: the normal rules at once
@@ -2345,7 +2599,9 @@ void ChatLinkPreviews::applyFetched(const QString& key, const linkpreview::Resul
         } else {
             it->state = linkstate::Local::Failed;
             it->error = linkstate::errorText(error); // neutral: the reason is in the log only
+            it->code  = error;
         }
+        forgetResumedIfDone(key); // review fix (S4): a busy site's wait (Cooling) or a pause hasn't loaded it
         ts3::log(LogLevel_INFO, 0, "Link preview: %1 from %2 not shown (%3)", {ts3::pub(kindText(target.kind)), ts3::name(target.host), ts3::pub(error)});
         scheduleRefresh();
         return;
@@ -2402,6 +2658,7 @@ void ChatLinkPreviews::applyFetched(const QString& key, const linkpreview::Resul
         l.state = linkstate::Local::Failed;
         break;
     }
+    forgetResumedIfDone(key); // loaded (or ended): the normal rules from now on (S4)
     scheduleRefresh();
 }
 
@@ -2431,6 +2688,7 @@ void ChatLinkPreviews::adoptVideo(const linkpreview::Target& target, const linkp
             it->state    = linkstate::Local::Loaded;
             it->mediaKey = mk;
         }
+        self->forgetResumedIfDone(key); // its poster made: loaded now (S4)
         self->scheduleRefresh();
     };
     if (!result.thumbnailFile.isEmpty() && result.width > 0 && result.height > 0) {
@@ -2709,6 +2967,16 @@ void ChatLinkPreviews::runAutoLoads()
             changed = true; // it waits for their answer now
             continue;
         }
+        // 2.6 live test fix (S4, design 5.3): while the chat proxy is down its load would end at once (routedown) and wait
+        // as Paused: it waits so now, without its sender's turn or a budget token. Held for its turn instead, it stayed a
+        // plain click card that had never waited for the proxy, and loaded by itself through the Windows proxy after Turn
+        // off chat proxy (the L6 re-run). A cache entry not looked at yet and our own pipeline's link take the normal path.
+        if (linkstate::pausesForChatProxy(chatProxyDown(), m_cacheMiss.contains(ref.target.key), m_pipeline && m_pipeline->pending(ref.target.key))) {
+            m_autoHeld.remove(ref.slotId);
+            pauseForChatProxy(ref.target);
+            changed = true;
+            continue;
+        }
         // In its turn: one load per sender, kMaxRunning in all, the sender's budget. Otherwise it is held: a click card
         // (a click loads it at once) until a later pass starts it, newest first.
         const QString sender = senderKey(ctx, ref.senderUid);
@@ -2788,6 +3056,19 @@ void ChatLinkPreviews::applyOwnRecord(const QString& urlKey)
             linkstate::LocalState failed;
             failed.state = linkstate::isNothingError(rec->result.error) ? linkstate::Local::Nothing : linkstate::Local::Failed;
             failed.error = linkstate::errorText(rec->result.error);
+            failed.code  = rec->result.error;
+            const QString& code = rec->result.error;
+            if (code == QLatin1String(linkpreview::errors::kProxy) || code == QLatin1String(linkpreview::errors::kFiltered)
+                || code == QLatin1String(linkpreview::errors::kRouteDown)) {
+                // 2.6 (design 5.5): our own message's card says the route's text with Retry (never Paused: it is ours).
+                failed.clicked = true;
+                failed = linkstate::afterRouteFailure(failed, code, rec->result.via, rec->result.proxyFailure, rec->result.proxyDecisive,
+                                                      rec->result.routeGeneration, false);
+                if (code == QLatin1String(linkpreview::errors::kRouteDown)) {
+                    failed.state = linkstate::Local::Failed; // our own link: the chat proxy's error with Retry
+                    failed.pause = linkstate::Pause::None;
+                }
+            }
             m_targets.insert(urlKey, rec->target);
             m_local.insert(urlKey, failed);
             if (rec->result.error == QLatin1String(linkpreview::errors::kWebOff))
@@ -2965,9 +3246,10 @@ void ChatLinkPreviews::loadMessageLinks(QTextBrowser* browser, int block)
             m_targets.insert(r.target.key, r.target);
             continue;
         }
-        // A link loading by itself: kept, now the user's (R26); a cached "nothing" or an error: asked again.
+        // A link loading by itself: kept, now the user's (R26); a cached "nothing", an error or (2.6) a paused one: asked again.
         const linkstate::Local state = m_local.value(r.target.key).state;
-        if (state == linkstate::Local::Nothing || state == linkstate::Local::Failed || state == linkstate::Local::Cooling)
+        if (state == linkstate::Local::Nothing || state == linkstate::Local::Failed || state == linkstate::Local::Cooling
+            || state == linkstate::Local::Paused)
             m_local.remove(r.target.key);
         m_cacheMiss.insert(r.target.key); // the click fetches (a cached "nothing" is passed by)
         startFetch(r.target, Origin::Click);

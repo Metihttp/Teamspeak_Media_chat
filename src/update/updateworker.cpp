@@ -100,6 +100,9 @@ class CheckJob : public Job
         outcome.retryAfterSec = response.retryAfterSec;
         outcome.winError      = response.winError;
         outcome.host          = response.finalHost;
+        outcome.proxyFailure    = response.proxyFailure;
+        outcome.proxyVia        = response.via;
+        outcome.routeGeneration = response.routeGeneration;
         if (response.error == http::Error::None)
             outcome.manifestError = readManifest(response.body, m_keys, m_revoked, &outcome.manifest, &outcome.detail);
         // Is this newer release an important update? Its marker sits in that release only (the URL is
@@ -277,10 +280,13 @@ class PrepareJob : public Job
                     } else if (response.error == http::Error::TooLarge) {
                         outcome.failure = PrepareOutcome::Failure::Mismatch;
                     } else {
-                        outcome.failure       = PrepareOutcome::Failure::Network;
-                        outcome.httpError     = response.error;
-                        outcome.retryAfterSec = response.retryAfterSec;
-                        outcome.winError      = response.winError;
+                        outcome.failure         = PrepareOutcome::Failure::Network;
+                        outcome.httpError       = response.error;
+                        outcome.retryAfterSec   = response.retryAfterSec;
+                        outcome.winError        = response.winError;
+                        outcome.proxyFailure    = response.proxyFailure;
+                        outcome.proxyVia        = response.via;
+                        outcome.routeGeneration = response.routeGeneration;
                     }
                     return outcome;
                 }

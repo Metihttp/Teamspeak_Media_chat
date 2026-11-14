@@ -34,6 +34,7 @@ No cloud · No telemetry · Files stay on your TeamSpeak server
 - **Live music.** Play a song to your channel through your own voice and keep talking over it.
 - **See and play it inline.** Photos, GIFs, album grids, videos, audio and voice messages, right in the chat.
 - **Link previews.** YouTube links show their title, channel and thumbnail and play in a small player window over TeamSpeak; links to pictures, GIFs and videos, and to GIF and media sites like Tenor, Giphy, Imgur or Klipy (clips, stickers, memes), show and play inline; well-known sites (Vimeo, Spotify, X, GitHub, Wikipedia, …) and other web pages get a card like Discord's. Previews of links people with the plugin send come from your TeamSpeak server, so your PC never contacts that website. Other links load from their website by themselves; you can switch that to click-to-load.
+- **Chat proxy (new in 2.6).** Link previews, the YouTube player and update checks can go through an HTTP or SOCKS5 proxy, such as your VPN app's local port, while TeamSpeak itself stays direct. Turn it on and off from the Plugins menu, a hotkey or the settings ([below](#chat-proxy)).
 - **A modern chat.** Names, avatars and times above grouped messages, Telegram-like bubbles with yours on the right, and centred system lines, only in your own view.
 - **Reply and react.** Reply to any message, Discord-style, and react to any message or media with any emoji.
 - **HD emoji.** Sharp Windows 11 emoji in the chat, TeamSpeak's own emoji button opening an HD picker, and big emoji for messages of only emoji.
@@ -125,7 +126,26 @@ Clicking a photo opens the **gallery viewer**. Right-click a preview for Save as
 - **Made by the sender:** when someone with TS Media sends such a link in a channel or private chat, their plugin loads it once and puts the preview in the channel's files. You see it from your TeamSpeak server and never contact that website.
 - **Your own links** show their preview at once from your own download (*Making the preview…* until then).
 - **Other links** (from people without the plugin) load their preview from the website by themselves when they show on your screen, which shows that website your IP address: cards always, pictures, GIFs and videos within your automatic download limit (15 MB by default; videos use your video limit if you set one). Larger files get a **Load preview** card with their size. Cards for other web pages show nothing while they load or when they fail: right-click the message → **Load link previews** loads (or retries) them by hand. Turn off **Load link previews automatically** to load them only when you click (**Load preview**, or **Load link previews** in a message's menu).
-- On by default: turn them off in **Settings → Privacy & updates**, or right-click one → **Hide preview**. Previews use your Windows proxy if you have one ([more about link previews](docs/USAGE.md#link-previews)).
+- On by default: turn them off in **Settings → Privacy & updates**, or right-click one → **Hide preview**. Previews use your Windows proxy if you have one, or the [chat proxy](#chat-proxy) ([more about link previews](docs/USAGE.md#link-previews)).
+
+## Chat proxy
+
+Where YouTube, Klipy and other sites are filtered, a VPN app's TUN or VPN mode sends TeamSpeak's own traffic abroad too, and TeamSpeak servers in your country often can't be reached that way. The chat proxy (new in 2.6) does it the other way round: only TS Media's own web traffic goes through your VPN app's local proxy port, and TeamSpeak stays direct.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-proxy-dark.png">
+    <img src="docs/images/chat-proxy-light.png" width="441" alt="The Chat proxy window: Use a chat proxy for link previews, the YouTube player and update checks is on, with the type SOCKS5, the server 127.0.0.1, the port 2080 and an empty optional user name and password, a hint with the usual ports of VPN apps, the buttons Find my VPN app, Paste from clipboard and Test with the result Works · 612 ms, When the chat proxy is off: Use Windows proxy settings or No proxy (direct), and the status In use: SOCKS5 proxy 127.0.0.1:2080 · working">
+  </picture>
+</p>
+
+- **What uses it:** link previews (YouTube, Klipy and other GIF and media sites, cards for sites and pages, Nextcloud shares), the YouTube player and update checks. **Never** TeamSpeak's server connection, voice, chat or file transfers. Previews you send are still shared through your TeamSpeak server, so friends without a VPN see them too.
+- **Set it up:** the first time, **Plugins → TS Media chat → Turn on chat proxy** opens the *Chat proxy* window. **Find my VPN app** finds v2rayN, Throne, Nekoray, Clash Verge Rev or Hiddify at their usual ports on this PC; or choose SOCKS5 or HTTP, `127.0.0.1` and your app's port. Press **Test**, then **OK**. A login is optional; its password is stored with Windows DPAPI.
+- **Easy on and off:** **Turn on chat proxy** / **Turn off chat proxy** in the Plugins menu, a TeamSpeak hotkey (*Turn the chat proxy on or off*), `/tsmedia proxy on` / `off`, or the button in **Settings → Privacy & updates → Chat proxy**. Nothing is retyped, and it applies at once.
+- **Fails closed:** when the proxy doesn't work, TS Media never goes direct instead. Automatic previews wait (*Paused · the proxy isn't working*), and one line in the chat says why, with **Turn off chat proxy**.
+- While it is off (the default), TS Media uses your Windows proxy settings as before, or no proxy if you choose.
+
+[How to use it with your VPN app](docs/FAQ.md#how-do-i-use-ts-media-with-my-vpn-app) · [all of its settings](docs/SETTINGS.md#chat-proxy) · [privacy](docs/PRIVACY-SECURITY.md#chat-proxy)
 
 ## Voice messages
 
@@ -213,8 +233,9 @@ Password-protected channels are not supported, and clients must reach the file t
 ## Privacy & security
 
 - **Your files stay on your TeamSpeak server.** No cloud, no telemetry.
-- **Web requests: the update check, link previews and the YouTube player.** The update check goes to GitHub, automatically only after you turn it on. **Link previews** (on by default, switches in **Settings → Privacy & updates → Link previews**): when you send a YouTube link or a link to a picture, GIF or video (and since 2.5 any web page) in a channel or private chat, your PC loads it once from that website and puts the preview in the channel's files; people with TS Media then see it from your TeamSpeak server and never contact the website. With **Load link previews automatically** on (the default), a link from someone without the plugin is loaded from its website by your PC, which sees your IP address; turn it off to load such links only when you click **Load preview**. Previews go through your Windows proxy if one is set. Web pages are read only up to the end of their head (a Kick clip's page: its first 512 KB; a Nextcloud or ownCloud share page: until the part that says what the share is, at most 512 KB) and never shown or run. [Details](docs/PRIVACY-SECURITY.md#link-previews).
-- **The YouTube player connects only after you press Play.** Then your PC connects to YouTube and Google (and WebView2 to Microsoft), as in a browser; it plays in a private profile, and *Play YouTube videos in the chat* off opens videos in your browser instead. [Details](docs/PRIVACY-SECURITY.md#playing-youtube-videos).
+- **Web requests: the update check, link previews and the YouTube player.** The update check goes to GitHub, automatically only after you turn it on. **Link previews** (on by default, switches in **Settings → Privacy & updates → Link previews**): when you send a YouTube link or a link to a picture, GIF or video (and since 2.5 any web page) in a channel or private chat, your PC loads it once from that website and puts the preview in the channel's files; people with TS Media then see it from your TeamSpeak server and never contact the website. With **Load link previews automatically** on (the default), a link from someone without the plugin is loaded from its website by your PC, which sees your IP address; turn it off to load such links only when you click **Load preview**. Previews go through your Windows proxy if one is set, or through the chat proxy when you turn it on. Web pages are read only up to the end of their head (a Kick clip's page: its first 512 KB; a Nextcloud or ownCloud share page: until the part that says what the share is, at most 512 KB) and never shown or run. [Details](docs/PRIVACY-SECURITY.md#link-previews).
+- **The YouTube player connects only after you press Play.** Then your PC connects to YouTube and Google (and WebView2 to Microsoft), as in a browser; it plays in a private profile, and *Play YouTube videos in a TS Media window* off opens videos in your browser instead. [Details](docs/PRIVACY-SECURITY.md#playing-youtube-videos).
+- **The chat proxy is off by default.** When you turn it on, link previews, the YouTube player and update checks go through the proxy you chose (normally your VPN app on 127.0.0.1). That proxy sees which websites are contacted, but not the pages (unless you installed its own certificate). TeamSpeak's own connections never use it, and when it fails nothing goes direct instead. Its password is stored with Windows DPAPI for your Windows account. [Details](docs/PRIVACY-SECURITY.md#chat-proxy).
 - **Your channel sees that you have TS Media** (and its version), and your reactions. Both go through TeamSpeak only and can be turned off in **Settings → Privacy & updates**.
 - **A reply quotes the original:** its author's name and the start of the message, readable by everyone in that chat.
 - **The microphone is only on** while you hold the microphone button, or while the *Voice message* window shows *Recording*.
@@ -237,6 +258,13 @@ Windows considers the plugin DLL damaged, usually by an antivirus product or an 
 <summary><b>Dropping files opens a window instead of sending</b></summary>
 
 That is the send window, new in 2.2. Hold <kbd>Ctrl</kbd> while dropping to send right away, or choose *Send right away* in **Settings → Sending → When you drop files on the chat**.
+
+</details>
+
+<details>
+<summary><b>Link previews or YouTube don't load where websites are filtered</b></summary>
+
+Use the [chat proxy](#chat-proxy) with your VPN app's local port, and keep the app's TUN or VPN mode off so that TeamSpeak stays direct: [how to set it up](docs/FAQ.md#how-do-i-use-ts-media-with-my-vpn-app).
 
 </details>
 

@@ -25,7 +25,9 @@
 #include <functional>
 #include <memory>
 
+#include "proxy/control.h" // 2.6 chat proxy: PlayerNetwork, RouteReport
 #include "ytplayer/ytbackend.h"
+#include "ytplayer/ytpage.h"
 
 class QScrollBar;
 class QTimer;
@@ -58,6 +60,15 @@ class YouTubePlayer : public QObject
         std::function<void()>                                   pauseOthers; // TS Media's own players
         std::function<bool()>                                   muted;    // TS Media's session mute
         std::function<void(const QString& slotId)>              scrollIntoView; // anchored: the whole thumbnail
+        // 2.6 chat proxy (design 3.6.4, 3.6.5). network: what the next open uses (proxy::Control::playerNetwork; empty:
+        // blocked, nothing ever opens). playerRecords: the bridge's records of the player ('p') that started at or after
+        // a GetTickCount64 value. report / reportOk: route health. feedback: a short message at the chat (a player the
+        // route change closed).
+        std::function<proxy::PlayerNetwork()>                   network;
+        std::function<QVector<proxy::Record>(quint64 sinceMs)>  playerRecords;
+        std::function<void(const proxy::RouteReport& report)>   report;
+        std::function<void(quint64 generation)>                 reportOk;
+        std::function<void(const QString& slotId, const QString& text)> feedback;
     };
     // What a card shows (ChatLinkPreviews::cardFor).
     struct Card {
@@ -91,9 +102,14 @@ class YouTubePlayer : public QObject
     void forgetShownNotes();
     void settingsChanged();  // the switch or Show link previews off: close (and delete WebView2's folder)
     void playbackStarted();  // a TS Media video, audio or voice message started: pause
+    // 2.6 chat proxy (design 3.6.4): the route changed (proxy::Control::routeChanged). The chat proxy entered or left: an
+    // open or starting player closes (the card back to its thumbnail, a feedback line) and the engine is released now.
+    // Windows <-> direct: nothing now (the next open releases the engine first). Custom -> custom: nothing (the bridge
+    // closes its tunnels; the browser reconnects through the same port, realm and token).
+    void networkChanged();
     void shutdown();         // plugin unload: every timer, filter and connection gone; the backend shut down once
     bool isShutDown() const { return m_down; }
-    bool hasPlayer() const { return m_active.id > 0 || m_active.retrying; }
+    bool hasPlayer() const { return m_active.id > 0 || m_active.retrying || m_active.waiting; }
     QString activeSlot() const { return m_active.slotId; }
 
     // The Y4-spike (TESTHOOKS yt.spike): one popup with a page from memory (no YouTube, no network): creation, rendering,
@@ -112,6 +128,8 @@ class YouTubePlayer : public QObject
     bool   unavailableForTests() const { return m_unavailable; }
     int    engineFailuresForTests() const { return m_engineFailures; }
     QRect  lastClipForTests() const { return m_lastClip; }
+    bool   engineLiveForTests() const { return m_engineLive; }
+    bool   releasePendingForTests() const { return m_releasePending; }
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -134,6 +152,13 @@ class YouTubePlayer : public QObject
         bool    volumeHeld = false;   // Ready came while it may not play: the volume (which lifts the view's own mute)
                                       // waits until TeamSpeak is back, so an autoplay that ignores the pause stays silent
         PlayerOpen open;          // what open() got (the retry)
+        // 2.6 chat proxy
+        proxy::PlayerNetwork net;           // the network of the last open attempt
+        quint64 openTick        = 0;        // GetTickCount64() at the open (the bridge's records since then)
+        bool    waiting         = false;    // an open waits: for the engine's release (other network) or the "busy" retry
+        bool    waitingRelease  = false;    // ... for EngineExited
+        int     networkFailures = 0;        // "network" from the helper in a row
+        int     busyRetries     = 0;        // "busy" retries used (at most 3)
         QPointer<QWidget> viewport;
         QPointer<QWidget> window;
         QPointer<QWidget> browser;
@@ -147,7 +172,14 @@ class YouTubePlayer : public QObject
     void   onPoll();
     void   handle(const PlayerEvent& e);
     void   start(const QString& slotId, const QString& videoId, const QUrl& link, bool forcePopup);
-    bool   openActive();
+    // 2.6: the single open site. Opened; Waiting (the engine is released first: other browser arguments); Blocked (the
+    // route is refused or the helper refused the network: Note::Proxy, never an engine failure); Refused (open <= 0).
+    enum class OpenResult { Opened, Waiting, Blocked, Refused };
+    OpenResult openActive();
+    void   reopen();                          // an open that waited (release, busy): its result handled
+    void   noteActive(ytpage::Note note, const char* why); // the active slot gets a note (no engine failure)
+    void   releaseEngineNow(const char* why); // the engine goes now (the 2.5 release path)
+    proxy::PlayerNetwork currentNetwork() const;
     void   closeActive(const char* why, bool keepCard = false);
     void   engineFailure(const char* why);
     void   showNote(int error);
@@ -181,6 +213,9 @@ class YouTubePlayer : public QObject
     QTimer*                        m_settle   = nullptr; // 150 ms after the last scroll / window move (anchored)
     QTimer*                        m_retry    = nullptr; // 1 s: the engine retry
     QTimer*                        m_engine   = nullptr; // 60 s after the last player closed: release the engine
+    QTimer*                        m_busy     = nullptr; // 2.6: 3 s, the "busy" retry (at most 3)
+    bool                           m_engineLive = false;  // 2.6: an environment exists (an open made it; not released)
+    proxy::PlayerNetwork           m_engineNet;           // 2.6: the network the living engine was made with
     QVector<QPointer<QScrollBar>>  m_bars;
     bool                           m_engineStarted   = false; // load() succeeded this session
     bool                           m_releasePending  = false; // released, EngineExited not seen yet

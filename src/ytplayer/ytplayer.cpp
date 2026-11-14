@@ -7,9 +7,11 @@
 #include <QTimer>
 #include <QWidget>
 
+#include "i18n.h"
 #include "settings.h"
 #include "ts3api.h"
 #include "tsmp.h"
+#include "tsmpnet.h" // 2.6 chat proxy: the browser arguments per network
 #include "ytplayer/ytpage.h"
 
 namespace {
@@ -21,6 +23,8 @@ constexpr int kHiddenMs   = 60000; // anchored, hidden this long: closed
 constexpr int kSettleMs   = 150;   // anchored: shown again this long after the last scroll or window move
 constexpr int kRetryMs    = 1000;  // the one engine retry
 constexpr int kEngineMs   = 60000; // the engine released this long after the last player closed
+constexpr int kBusyMs     = 3000;  // 2.6: the "busy" retry (the old browser process still holds the folder)
+constexpr int kMaxBusy    = 3;
 constexpr int kMaxTimes   = 256;   // remembered positions (video ids)
 constexpr int kEscape     = 0x1B;  // VK_ESCAPE
 // The Y4-spike's decision (design2 3.6): true would make the player unavailable whenever TeamSpeak's token has
@@ -54,6 +58,29 @@ const char* stateName(YouTubePlayer::State s)
     return "none";
 }
 
+// 2.6 chat proxy: the browser arguments a network needs (tsmpnet.h); two networks with the same arguments share an engine.
+std::wstring argsOf(const proxy::PlayerNetwork& net)
+{
+    switch (net.kind) {
+    case proxy::PlayerNetwork::Kind::System:
+        return tsmpnet::argsFor(TSMP_NET_SYSTEM, 0);
+    case proxy::PlayerNetwork::Kind::Direct:
+        return tsmpnet::argsFor(TSMP_NET_DIRECT, 0);
+    case proxy::PlayerNetwork::Kind::Bridge:
+        return tsmpnet::argsFor(TSMP_NET_BRIDGE, net.bridgePort);
+    case proxy::PlayerNetwork::Kind::Blocked:
+        break;
+    }
+    return {};
+}
+
+// The chat proxy is the route (in use, or refused in custom mode).
+bool isCustom(const proxy::PlayerNetwork& net)
+{
+    return net.kind == proxy::PlayerNetwork::Kind::Bridge || net.blockedBy == proxy::Failure::BridgeUnavailable
+           || net.blockedBy == proxy::Failure::PasswordUnreadable;
+}
+
 bool uiAccessToken()
 {
     static int cached = -2;
@@ -80,6 +107,28 @@ YouTubePlayer::YouTubePlayer(Host host, std::unique_ptr<PlayerBackend> backend, 
     m_ready = makeTimer(kReadyMs, true, "ready");
     connect(m_ready, &QTimer::timeout, this, [this] {
         ts3::log(LogLevel_INFO, 0, "[ytplayer] no ready within 15 s", {});
+        // 2.6 chat proxy (design 3.6.5): through the bridge, a route-level failure the bridge recorded for the player since
+        // this open says why: "Can't play through the proxy", and route health hears it.
+        if (m_active.net.kind == proxy::PlayerNetwork::Kind::Bridge && m_host.playerRecords) {
+            const QVector<proxy::Record> records = m_host.playerRecords(m_active.openTick);
+            for (int i = records.size() - 1; i >= 0; --i) {
+                const proxy::Record& r = records.at(i);
+                if (!proxy::isRouteLevel(r.failure))
+                    continue;
+                if (m_host.report) {
+                    proxy::RouteReport report;
+                    report.failure    = r.failure;
+                    report.step       = r.step;
+                    report.decisive   = proxy::isDecisive(r.failure, r.step);
+                    report.host       = r.host;
+                    report.generation = m_active.net.generation;
+                    report.via        = proxy::Via::Bridge;
+                    m_host.report(report);
+                }
+                noteActive(ytpage::Note::Proxy, proxy::failureName(r.failure));
+                return;
+            }
+        }
         showNote(-1);
     });
     m_hidden = makeTimer(kHiddenMs, true, "hidden");
@@ -95,14 +144,23 @@ YouTubePlayer::YouTubePlayer(Host host, std::unique_ptr<PlayerBackend> backend, 
         if (m_active.slotId.isEmpty() || m_down)
             return;
         ts3::log(LogLevel_INFO, 0, "[ytplayer] retrying the engine", {});
-        if (!openActive())
-            engineFailure("open refused");
+        reopen();
+    });
+    // 2.6: the "busy" retry (an owned timer, F20): never counted toward the engine failures that disable the player.
+    m_busy = makeTimer(kBusyMs, true, "busy");
+    connect(m_busy, &QTimer::timeout, this, [this] {
+        m_active.waiting = false;
+        if (m_active.slotId.isEmpty() || m_down)
+            return;
+        ts3::log(LogLevel_INFO, 0, "[ytplayer] retrying the open (busy %1)", {ts3::pub(QString::number(m_active.busyRetries))});
+        reopen();
     });
     m_engine = makeTimer(kEngineMs, true, "engine");
     connect(m_engine, &QTimer::timeout, this, [this] {
-        if (hasPlayer() || m_down || !m_engineStarted)
+        if (hasPlayer() || m_down || !m_engineStarted || !m_engineLive)
             return;
         m_backend->releaseEngine();
+        m_engineLive     = false;
         m_releasePending = true;
         m_releaseClock.restart();
         ts3::log(LogLevel_INFO, 0, "[ytplayer] engine released", {});
@@ -126,7 +184,7 @@ QTimer* YouTubePlayer::makeTimer(int ms, bool single, const char* name)
 
 QTimer* YouTubePlayer::timerForTests(const char* name) const
 {
-    for (QTimer* t : {m_poll, m_creation, m_ready, m_hidden, m_settle, m_retry, m_engine}) {
+    for (QTimer* t : {m_poll, m_creation, m_ready, m_hidden, m_settle, m_retry, m_engine, m_busy}) {
         if (t && t->objectName() == latin(name))
             return t;
     }
@@ -365,7 +423,12 @@ void YouTubePlayer::start(const QString& slotId, const QString& videoId, const Q
     o.page  = ytpage::pageHtml(videoId, startSec, !anchored, QString(), m_host.muted && m_host.muted());
     o.title = spot.title.isEmpty() ? latin("YouTube") : QString::fromUtf8("YouTube \xC2\xB7 ") + spot.title;
     m_lastClip = o.clip;
-    if (!openActive()) {
+    const OpenResult opened = openActive();
+    if (opened == OpenResult::Blocked) {
+        noteActive(ytpage::Note::Proxy, "the route is refused"); // 2.6 (S9, S13): never an engine failure
+        return;
+    }
+    if (opened == OpenResult::Refused) {
         engineFailure("open refused");
         return;
     }
@@ -378,16 +441,137 @@ void YouTubePlayer::start(const QString& slotId, const QString& videoId, const Q
         m_host.changed(slotId);
 }
 
-bool YouTubePlayer::openActive()
+proxy::PlayerNetwork YouTubePlayer::currentNetwork() const
 {
+    if (m_host.network)
+        return m_host.network();
+    proxy::PlayerNetwork blocked; // nobody said: nothing opens (fail closed, S9)
+    blocked.kind      = proxy::PlayerNetwork::Kind::Blocked;
+    blocked.blockedBy = proxy::Failure::NotReady;
+    return blocked;
+}
+
+YouTubePlayer::OpenResult YouTubePlayer::openActive()
+{
+    // 2.6 chat proxy (design 3.6.3, 3.6.4): the single open site. The network first: a refused route opens nothing; an
+    // engine made for other browser arguments is released and the open follows its EngineExited (not an engine failure);
+    // the helper gets the network right before the open.
+    const proxy::PlayerNetwork net = currentNetwork();
+    m_active.net            = net;
+    m_active.waiting        = false;
+    m_active.waitingRelease = false;
+    if (net.kind == proxy::PlayerNetwork::Kind::Blocked) {
+        ts3::log(LogLevel_INFO, 0, "[ytplayer] not opened: the route is refused (%1)", {ts3::pub(latin(proxy::failureName(net.blockedBy)))});
+        return OpenResult::Blocked;
+    }
+    if (m_engineLive && argsOf(net) != argsOf(m_engineNet)) {
+        releaseEngineNow("another network");
+        m_active.waiting        = true;
+        m_active.waitingRelease = true;
+        updatePolling();
+        return OpenResult::Waiting;
+    }
+    if (m_backend->setNetwork(net) < 0) {
+        ts3::log(LogLevel_WARNING, 0, "[ytplayer] not opened: the helper refused the network", {});
+        return OpenResult::Blocked;
+    }
     const int id = m_backend->open(m_active.open);
     if (id <= 0)
-        return false;
-    m_active.id    = id;
-    m_active.shown = false;
+        return OpenResult::Refused;
+    m_engineLive      = true;
+    m_engineNet       = net;
+    m_active.id       = id;
+    m_active.shown    = false;
+    m_active.openTick = GetTickCount64();
     m_creation->start();
     updatePolling();
-    return true;
+    return OpenResult::Opened;
+}
+
+void YouTubePlayer::reopen()
+{
+    if (m_down || m_active.slotId.isEmpty())
+        return;
+    switch (openActive()) {
+    case OpenResult::Opened:
+    case OpenResult::Waiting:
+        break;
+    case OpenResult::Blocked:
+        noteActive(ytpage::Note::Proxy, "the route is refused");
+        break;
+    case OpenResult::Refused:
+        engineFailure("open refused");
+        break;
+    }
+}
+
+void YouTubePlayer::releaseEngineNow(const char* why)
+{
+    m_engine->stop();
+    if (!m_engineLive || m_down)
+        return;
+    m_backend->releaseEngine();
+    m_engineLive     = false;
+    m_releasePending = true;
+    m_releaseClock.restart();
+    ts3::log(LogLevel_INFO, 0, "[ytplayer] engine released (%1)", {ts3::pub(latin(why))});
+    updatePolling();
+}
+
+void YouTubePlayer::noteActive(ytpage::Note note, const char* why)
+{
+    // A note without an engine failure (2.6: the proxy; "busy" and "network" given up): the active slot shows it.
+    if (m_active.slotId.isEmpty())
+        return;
+    const QString slot  = m_active.slotId;
+    const QString video = m_active.videoId;
+    ts3::log(LogLevel_INFO, 0, "[ytplayer] note: %1 (%2)", {ts3::pub(latin(note == ytpage::Note::Proxy ? "proxy" : "can't play")), ts3::pub(latin(why))});
+    if (hasPlayer()) {
+        closeActive("note", true);
+    } else {
+        watch(false);
+        m_active = Active();
+        if (!m_down && m_engineStarted && m_engineLive)
+            m_engine->start(); // no player: a living engine goes in 60 s as after any close
+    }
+    NoteState n;
+    n.videoId = video;
+    n.text    = ytpage::noteText(note);
+    m_notes.insert(slot, n);
+    if (m_host.changed)
+        m_host.changed(slot);
+}
+
+void YouTubePlayer::networkChanged()
+{
+    if (m_down)
+        return;
+    const proxy::PlayerNetwork now    = currentNetwork();
+    const bool                 custom = isCustom(now);
+    // The chat proxy entered or left (F15): the video would stall anyway (leaving custom closes every bridge tunnel).
+    if (hasPlayer() && isCustom(m_active.net) != custom) {
+        const QString slot = m_active.slotId;
+        closeActive("network changed");
+        if (m_host.feedback)
+            m_host.feedback(slot, i18n::t("Closed: the chat proxy changed. Press Play again."));
+    }
+    if (!hasPlayer() && m_engineLive && isCustom(m_engineNet) != custom)
+        releaseEngineNow("the chat proxy changed");
+    // "Can't play through the proxy" said something about the route before: those cards can be played again.
+    const QString proxyText = ytpage::noteText(ytpage::Note::Proxy);
+    QStringList   cleared;
+    for (auto it = m_notes.begin(); it != m_notes.end();) {
+        if (it->text == proxyText) {
+            cleared << it.key();
+            it = m_notes.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const QString& slot : qAsConst(cleared)) {
+        if (m_host.changed)
+            m_host.changed(slot);
+    }
 }
 
 void YouTubePlayer::engineFailure(const char* why)
@@ -452,7 +636,7 @@ void YouTubePlayer::closeActive(const char* why, bool keepCard)
     const Active a = m_active;
     m_active       = Active();
     m_moving       = false;
-    for (QTimer* t : {m_creation, m_ready, m_hidden, m_settle, m_retry})
+    for (QTimer* t : {m_creation, m_ready, m_hidden, m_settle, m_retry, m_busy})
         t->stop();
     if (a.lastSec >= 0)
         rememberTime(a.videoId, a.lastSec);
@@ -513,6 +697,11 @@ void YouTubePlayer::onPoll()
         m_releasePending = false;
         ts3::log(LogLevel_WARNING, 0, "[ytplayer] no EngineExited after a release", {});
         folderAfterRelease(false);
+        if (m_active.waitingRelease) {
+            m_active.waitingRelease = false;
+            m_active.waiting        = false;
+            reopen(); // 2.6: the open that waited for it goes on (the helper refuses it if the old engine still lives)
+        }
     }
     updatePolling();
 }
@@ -532,6 +721,7 @@ void YouTubePlayer::folderAfterRelease(bool taken)
         // environment): that engine is released now, and the folder goes after its answer.
         m_engine->stop();
         m_backend->releaseEngine();
+        m_engineLive     = false;
         m_releasePending = true;
         m_releaseClock.restart();
         updatePolling();
@@ -546,7 +736,15 @@ void YouTubePlayer::handle(const PlayerEvent& e)
         m_releasePending = false;
         // 0 exited, 1 not heard in 10 s, 2 nothing to release, 3 a new Play took the environment (still in use).
         ts3::log(LogLevel_INFO, 0, "[ytplayer] engine exited (%1)", {ts3::pub(QString::number(e.value))});
+        if (e.value == 3)
+            m_engineLive = true;
         folderAfterRelease(e.value == 3);
+        if (m_active.waitingRelease && !m_down) {
+            // 2.6 (F7): the open that waited for the engine of another network goes on now.
+            m_active.waitingRelease = false;
+            m_active.waiting        = false;
+            reopen();
+        }
         return;
     }
     if (m_active.id <= 0 || e.player != m_active.id)
@@ -581,6 +779,9 @@ void YouTubePlayer::handle(const PlayerEvent& e)
         } else {
             applyVolume();
         }
+        // 2.6: through the bridge, a ready player says the route works (route health).
+        if (m_active.net.kind == proxy::PlayerNetwork::Kind::Bridge && m_host.reportOk)
+            m_host.reportOk(m_active.net.generation);
         if (m_active.popup)
             setState(State::Popup);
         else
@@ -618,10 +819,45 @@ void YouTubePlayer::handle(const PlayerEvent& e)
     case TSMP_EV_FAILED:
         ts3::log(LogLevel_WARNING, 0, "[ytplayer] failed: %1 0x%2",
                  {ts3::pub(e.text.left(16)), ts3::pub(QString::number(static_cast<quint32>(e.value), 16))});
-        if (e.text == QLatin1String("environment") || e.text == QLatin1String("controller"))
+        if (e.text == QLatin1String("network-override")) {
+            // 2.6 (S9): a WebView2 override would replace the bridge: the chat proxy doesn't play.
+            ts3::log(LogLevel_WARNING, 0, "[ytplayer] proxy arguments overridden by WEBVIEW2 settings", {});
+            noteActive(ytpage::Note::Proxy, "WebView2 override");
+        } else if (e.text == QLatin1String("network")) {
+            // 2.6 (F7): the helper's environment has other arguments (or no network reached it): released and opened
+            // once more; a second one in a row is a note (the proxy's in custom mode). Not an engine failure.
+            if (++m_active.networkFailures >= 2) {
+                noteActive(isCustom(m_active.net) ? ytpage::Note::Proxy : ytpage::Note::CantPlay, "network refused twice");
+            } else {
+                m_creation->stop();
+                m_backend->close(m_active.id);
+                m_active.id = 0;
+                m_engineLive = true; // whatever the helper holds goes
+                releaseEngineNow("the helper has another network");
+                m_active.waiting        = true;
+                m_active.waitingRelease = true;
+                updatePolling();
+            }
+        } else if (e.text == QLatin1String("busy")) {
+            // 2.6 (3.6.3): the old browser process still holds the folder: retried after 3 s, at most 3 times.
+            m_creation->stop();
+            m_ready->stop();
+            m_backend->close(m_active.id);
+            m_active.id = 0;
+            if (m_active.busyRetries < kMaxBusy) {
+                ++m_active.busyRetries;
+                m_active.waiting = true;
+                m_busy->start();
+                updatePolling();
+            } else {
+                m_active.waiting = true; // still the active slot for the note
+                noteActive(ytpage::Note::CantPlay, "still busy");
+            }
+        } else if (e.text == QLatin1String("environment") || e.text == QLatin1String("controller")) {
             engineFailure("environment or controller");
-        else
+        } else {
             showNote(-2); // the process or the navigation: "Can't play this video here", not remembered
+        }
         break;
     case TSMP_EV_CLOSEDBYUSER: {
         // The popup's close box: its size is remembered (du).
@@ -829,6 +1065,7 @@ void YouTubePlayer::settingsChanged()
     if (m_engineStarted && !m_releasePending && m_engine->isActive()) {
         m_engine->stop();
         m_backend->releaseEngine();
+        m_engineLive      = false;
         m_releasePending  = true;
         m_deleteAfterExit = true;
         m_releaseClock.restart();
@@ -885,7 +1122,7 @@ void YouTubePlayer::shutdown()
         return;
     // Every owned timer, filter and connection goes, then the helper closes everything synchronously.
     m_down = true;
-    for (QTimer* t : {m_poll, m_creation, m_ready, m_hidden, m_settle, m_retry, m_engine}) {
+    for (QTimer* t : {m_poll, m_creation, m_ready, m_hidden, m_settle, m_retry, m_engine, m_busy}) {
         if (t)
             t->stop();
     }
@@ -920,7 +1157,7 @@ QString YouTubePlayer::spike(void* owner, const QRect& ownerRect)
     o.cssScale      = 1.0;
     o.page          = ytpage::spikePage();
     o.title         = latin("TS Media player spike");
-    if (!openActive()) {
+    if (openActive() != OpenResult::Opened) {
         m_active = Active();
         return latin("open refused");
     }

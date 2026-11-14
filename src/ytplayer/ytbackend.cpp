@@ -17,6 +17,7 @@
 #include <shlobj.h>
 
 #include "pluginlog.h"
+#include "proxy/control.h" // 2.6 chat proxy: PlayerNetwork
 #include "ts3api.h"
 #include "tsmp.h"
 #include "ytplayer/ytpage.h"
@@ -358,7 +359,7 @@ LoadResult extractAndLoad(const LoadOptions& options)
     r.module = module;
     const auto version = reinterpret_cast<tsmp_apiVersion_fn>(GetProcAddress(module, "tsmp_apiVersion"));
     for (const char* symbol : {"tsmp_apiVersion", "tsmp_runtimeVersion", "tsmp_init", "tsmp_open", "tsmp_place", "tsmp_command", "tsmp_close", "tsmp_poll",
-                               "tsmp_releaseEngine", "tsmp_shutdown"}) {
+                               "tsmp_releaseEngine", "tsmp_shutdown", "tsmp_setNetwork"}) {
         if (!GetProcAddress(module, symbol))
             return fail("export", GetLastError());
     }
@@ -420,6 +421,7 @@ bool HelperBackend::load(QString* why)
         m_api.poll              = reinterpret_cast<void*>(GetProcAddress(m, "tsmp_poll"));
         m_api.releaseEngine     = reinterpret_cast<void*>(GetProcAddress(m, "tsmp_releaseEngine"));
         m_api.shutdown          = reinterpret_cast<void*>(GetProcAddress(m, "tsmp_shutdown"));
+        m_api.setNetwork        = reinterpret_cast<void*>(GetProcAddress(m, "tsmp_setNetwork"));
     }
     // %LOCALAPPDATA%\TSMedia\webview2: local, never roaming (WebView2's own data: 3.6).
     m_userData = QDir::toNativeSeparators(ytbackend::userDataFolder()).toStdWString();
@@ -518,6 +520,40 @@ void HelperBackend::shutdown()
     if (m_initialised)
         reinterpret_cast<tsmp_shutdown_fn>(m_api.shutdown)();
     m_initialised = false; // a later load() calls tsmp_init again on the same (pinned) image
+}
+
+int HelperBackend::setNetwork(const proxy::PlayerNetwork& net)
+{
+    if (!m_initialised || !m_api.setNetwork)
+        return -1;
+    // The helper copies the strings; ours are wiped after the call (the token is the bridge's, never a password).
+    TsmpNetwork  t{};
+    std::wstring realm, user, token;
+    switch (net.kind) {
+    case proxy::PlayerNetwork::Kind::System:
+        t.mode = TSMP_NET_SYSTEM;
+        break;
+    case proxy::PlayerNetwork::Kind::Direct:
+        t.mode = TSMP_NET_DIRECT;
+        break;
+    case proxy::PlayerNetwork::Kind::Bridge:
+        t.mode       = TSMP_NET_BRIDGE;
+        t.bridgePort = net.bridgePort;
+        realm        = QString::fromLatin1(net.realm).toStdWString();
+        user         = QString::fromLatin1(net.user).toStdWString();
+        token        = QString::fromLatin1(net.token).toStdWString();
+        t.realm      = realm.c_str();
+        t.user       = user.c_str();
+        t.token      = token.c_str();
+        break;
+    case proxy::PlayerNetwork::Kind::Blocked:
+        t.mode = TSMP_NET_UNSET; // nothing may open
+        break;
+    }
+    const int rc = reinterpret_cast<tsmp_setNetwork_fn>(m_api.setNetwork)(&t);
+    if (!token.empty())
+        SecureZeroMemory(&token[0], token.size() * sizeof(wchar_t));
+    return net.kind == proxy::PlayerNetwork::Kind::Blocked ? -1 : rc;
 }
 
 QString HelperBackend::runtimeVersion()

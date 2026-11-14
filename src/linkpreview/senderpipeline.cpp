@@ -492,6 +492,8 @@ void SenderPipeline::fetched(const QString& key, const Result& result)
         return; // someone else's fetch, or one we gave up on
     if (!result.ok && result.error == QLatin1String(errors::kCanceled))
         return; // the answer to a cancel of ours: a fetch started again (followWebCards) answers for itself
+    if (result.routeGeneration && job->routeGeneration && result.routeGeneration < job->routeGeneration)
+        return; // 2.6: an answer of the route before a change (followRoute): the new fetch answers for itself
     const bool page = job->target.isNewClass();
     if (!result.ok) {
         setOwn(job->id, OwnLink::State::Failed, &result); // our chat: the neutral error with Retry (or its size)
@@ -1029,6 +1031,18 @@ void SenderPipeline::followWebCards()
     const Caps   caps   = fetchCapsFor(target);
     job->webCards       = caps.webCards;
     m_fetch->load(target, caps, cacheDir()); // may answer at once (fetched)
+}
+
+void SenderPipeline::followRoute()
+{
+    Job* job = running();
+    if (m_closed || !m_fetch || !job || job->step != Step::Fetching)
+        return;
+    ts3::log(LogLevel_INFO, job->sch, "Making a link preview again (%1): the route changed", {ts3::name(job->target.host)});
+    m_fetch->cancel(job->target.key);
+    job->routeGeneration = proxy::snapshot()->generation;
+    const Target target  = job->target;
+    m_fetch->load(target, fetchCapsFor(target), cacheDir()); // may answer at once (fetched)
 }
 
 void SenderPipeline::applySettings()

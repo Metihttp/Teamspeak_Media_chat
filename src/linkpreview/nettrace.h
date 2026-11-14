@@ -70,6 +70,8 @@ class TracedExchange : public http::Exchange
     }
     http::Error   read(char* buffer, int capacity, int* got) override { return m_inner->read(buffer, capacity, got); }
     unsigned long systemError() const override { return m_inner->systemError(); }
+    bool          connectedToServer() const override { return m_inner->connectedToServer(); }
+    unsigned long secureFailureFlags() const override { return m_inner->secureFailureFlags(); }
 
   private:
     std::unique_ptr<http::Exchange> m_inner;
@@ -105,7 +107,11 @@ class TracedTransport : public http::Transport
             return ok;
         };
         const QString address = options.url.toString(QUrl::FullyEncoded);
-        note(m_who, QStringLiteral("GET %1%2").arg(address, options.route.viaProxy ? QStringLiteral(" (proxy)") : QString()));
+        // 2.6: "(proxy)" for the Windows proxy, "(chat proxy)" for the bridge (never its port or token)
+        const QString via = options.route.via == http::Route::Via::Bridge ? QStringLiteral(" (chat proxy)")
+                            : options.route.via == http::Route::Via::System ? QStringLiteral(" (proxy)")
+                                                                              : QString();
+        note(m_who, QStringLiteral("GET %1%2").arg(address, via));
         auto exchange = m_inner->open(traced, cancel, error);
         if (!exchange) {
             note(m_who, QStringLiteral("  -> %1 open failed: %2").arg(address, http::errorName(*error)));

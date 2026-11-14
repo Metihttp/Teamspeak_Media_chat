@@ -7,6 +7,7 @@ Answers to common questions, grouped by topic. Each question has its own link, s
 - [Install and updates](#install-and-updates)
 - [Sending](#sending)
 - [Viewing and playback](#viewing-and-playback)
+- [Chat proxy and VPN apps](#chat-proxy-and-vpn-apps)
 - [Reactions and presence](#reactions-and-presence)
 - [Replies and emoji](#replies-and-emoji)
 - [Voice messages](#voice-messages)
@@ -23,7 +24,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.5.0 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.6.0 loaded`.
 
 ### How do I update?
 
@@ -41,7 +42,7 @@ Someone in your channel has a newer TS Media chat than you (2.4.0 and later show
 
 ### Is the update check safe? What does it send?
 
-It asks the plugin's GitHub releases for one small file (two when automatic checks find a newer version: the second says whether it is an important update), and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. The exception is an important update with automatic checks on: it installs without a click, but only with the author's signature for exactly that release, and its files must match the signed SHA-256. GitHub sees your IP address; no names, servers, chats or files are sent. It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
+It asks the plugin's GitHub releases for one small file (two when automatic checks find a newer version: the second says whether it is an important update), and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. The exception is an important update with automatic checks on: it installs without a click, but only with the author's signature for exactly that release, and its files must match the signed SHA-256. GitHub sees your IP address (your proxy's, with the [chat proxy](#how-do-i-use-ts-media-with-my-vpn-app) on); no names, servers, chats or files are sent. Through a proxy whose own certificate you installed, a clicked update is only as safe as your trust in that proxy ([details](PRIVACY-SECURITY.md#chat-proxy)). It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
 
 ### An update went wrong
 
@@ -197,7 +198,9 @@ Yes, since 2.4. YouTube links get a card with the title, channel and thumbnail (
 
 ### Link previews say "Couldn't load the preview" (VPN, proxy, filtered internet)
 
-The plugin couldn't reach that website; its log (`%APPDATA%\TS3Client\plugins\tsmedia\logs\tsmedia.log`) has the reason. If you reach YouTube only through a VPN or proxy app, set it to use the **system proxy** (most proxy-based VPN apps have this option): link previews go through the proxy Windows is set to use, including a setup script or automatic detection. A VPN that works without a proxy setting needs nothing. Previews made by the sender come from your TeamSpeak server and don't need the website at all.
+The plugin couldn't load that website; its log (`%APPDATA%\TS3Client\plugins\tsmedia\logs\tsmedia.log`) has the reason. If YouTube or other sites are filtered where you are, use the **chat proxy** with your VPN app's local port ([how](#how-do-i-use-ts-media-with-my-vpn-app)): link previews, the YouTube player and update checks then go through the VPN app while TeamSpeak stays direct. Without the chat proxy, TS Media uses the proxy Windows is set to use (*Use Windows proxy settings*, the default), including a setup script or automatic detection; a VPN app's **system proxy** option sets one. A VPN in TUN or VPN mode needs nothing (since 2.6 also with fake-IP TUN modes such as Clash Verge Rev's), but that mode can cut you off from TeamSpeak servers in your country ([why](#will-the-chat-proxy-break-my-connection-to-my-teamspeak-server)).
+
+Since 2.6 a few failures say more: *Couldn't load through the chat proxy* and *Couldn't load through your Windows proxy* name the proxy that failed (point at **Retry** for the reason), *Paused · the proxy isn't working* means the chat proxy is down ([below](#link-previews-say-paused--the-proxy-isnt-working)), and *Your network blocks this site* means your network's DNS filters that site ([below](#a-link-says-your-network-blocks-this-site)). Previews made by the sender come from your TeamSpeak server and don't need the website at all.
 
 ### A link shows "Load preview" instead of the picture
 
@@ -223,10 +226,10 @@ The website asked TS Media to wait (HTTP 429). The plugin leaves it alone for as
 
 Since 2.5, Play on a YouTube card plays the video with YouTube's own player, in a small window of its own over TeamSpeak. It opens your browser instead when:
 
-- *Play YouTube videos in the chat* is off (*Settings → Privacy & updates*), or you chose **Open in browser** when the card asked the first time;
+- *Play YouTube videos in a TS Media window* is off (*Settings → Privacy & updates*), or you chose **Open in browser** when the card asked the first time;
 - this PC doesn't have the Microsoft Edge WebView2 Runtime (part of Windows 11 and of current Windows 10; the setting's hint says so);
 - the video's owner doesn't allow it to be played outside YouTube (the card says *This video can only be watched on YouTube*), or it was removed;
-- you use 32-bit TeamSpeak (2.5.0's player needs 64-bit TeamSpeak);
+- you use 32-bit TeamSpeak (the player needs 64-bit TeamSpeak);
 - an antivirus blocked TS Media's player helper (`tsmedia_player_win64_<number>.dll` in TS Media's plugin folder); TS Media then opens the browser for the rest of the session and writes it to its log;
 - the player failed to start three times in a session.
 
@@ -240,11 +243,54 @@ YouTube's player plays on Windows' default output device, not on TeamSpeak's pla
 
 ### What does the YouTube player store on my PC?
 
-WebView2's own data, in `%LOCALAPPDATA%\TSMedia\webview2` (`webview2-elevated` while TeamSpeak runs as administrator; no cookies or history: the player is private). Delete that folder to remove it (close TeamSpeak first, or wait a minute after the last video); turning *Play YouTube videos in the chat* off deletes both. The player helper itself is in TS Media's plugin folder (`player`).
+WebView2's own data, in `%LOCALAPPDATA%\TSMedia\webview2` (`webview2-elevated` while TeamSpeak runs as administrator; no cookies or history: the player is private). Delete that folder to remove it (close TeamSpeak first, or wait a minute after the last video); turning *Play YouTube videos in a TS Media window* off deletes both. The player helper itself is in TS Media's plugin folder (`player`).
 
 ### Which websites does a link preview contact?
 
-Only what that kind of link needs: a file link: that file's address; YouTube: `www.youtube.com` and `i.ytimg.com`; GIF and media sites: the site's media address, and for some of them first the page, its official oEmbed address or a short link; a Klipy GIF page behind its bot check: Klipy's public oEmbed at `api.klipy.com`, then the GIF only from Klipy's own `static…klipy.com` servers; well-known sites: the page or the site's official oEmbed or public API address, then the picture on that site's own servers; Nextcloud and ownCloud share links (`…/s/…`): the share page on that server, then the file or the server's own preview of a picture on the same server; other web pages (with *Show cards for other web pages* on): the beginning of the page itself (at most 512 KB, never shown or run), then the picture the page names, which can be on another website. No scripts, cookies, logins or `Referer`. When the sender's TS Media made the preview, nobody else contacts the website. Details: [link previews](PRIVACY-SECURITY.md#link-previews).
+Only what that kind of link needs: a file link: that file's address; YouTube: `www.youtube.com` and `i.ytimg.com`; GIF and media sites: the site's media address, and for some of them first the page, its official oEmbed address or a short link; a Klipy GIF page behind its bot check: Klipy's public oEmbed at `api.klipy.com`, then the GIF only from Klipy's own `static…klipy.com` servers; well-known sites: the page or the site's official oEmbed or public API address, then the picture on that site's own servers; Nextcloud and ownCloud share links (`…/s/…`): the share page on that server, then the file or the server's own preview of a picture on the same server; other web pages (with *Show cards for other web pages* on): the beginning of the page itself (at most 512 KB, never shown or run), then the picture the page names, which can be on another website. No scripts, cookies, logins or `Referer`. When the sender's TS Media made the preview, nobody else contacts the website. With the chat proxy on, all of it goes through your proxy, which looks up the names itself. Details: [link previews](PRIVACY-SECURITY.md#link-previews).
+
+## Chat proxy and VPN apps
+
+### How do I use TS Media with my VPN app?
+
+**Keep TeamSpeak out of the VPN:** turn the app's **TUN** or **VPN mode off** (it sends TeamSpeak's voice abroad, and servers in Iran often can't be reached that way). The Windows system proxy setting doesn't affect TeamSpeak. Then in TS Media: **Plugins → TS Media chat → Turn on chat proxy** (or **Settings → Privacy & updates → Chat proxy settings…**), press **Find my VPN app** (or choose **SOCKS5**, server `127.0.0.1` and the app's local port), press **Test**, then **OK**:
+
+- v2rayN: 10808 (one port for SOCKS5 and HTTP)
+- Throne and Nekoray: 2080 (SOCKS5 and HTTP)
+- Clash Verge Rev: 7897 (mixed port)
+- Hiddify: 12334; set its service mode to *Proxy service only* or *Set system proxy*, not *VPN*
+- Psiphon: its ports change each time unless you set fixed local proxy ports in its settings; then use its HTTP port
+- Outline has no local proxy port (it is always a full VPN), so it can't be used this way
+
+If you changed the port in your app, use yours. *Plugins → TS Media chat → Turn off chat proxy* (or a hotkey you set under *Turn the chat proxy on or off*) switches back without retyping anything. **Find my VPN app** tries the first four ports on this PC only; **Test** sends one request to `www.youtube.com` through the proxy and says what is wrong. More: [setting it up](USAGE.md#chat-proxy), [every field](SETTINGS.md#chat-proxy).
+
+### Will the chat proxy break my connection to my TeamSpeak server?
+
+No. TeamSpeak never uses it: the server connection, voice, chat, plugin commands and file transfers are TeamSpeak's own connections and stay direct. Only what TS Media itself loads from the web (link previews, the YouTube player, update checks) goes through the chat proxy. What breaks connections to servers in your country is a VPN app's **TUN** or **VPN mode**, which sends all of your PC's traffic, TeamSpeak's included, to the VPN's server abroad: turn that off and use the chat proxy instead. Previews you send are still shared through your TeamSpeak server, so friends without a VPN see them too.
+
+### Link previews say "Paused · the proxy isn't working"
+
+The chat proxy is on but doesn't work, for example because your VPN app was closed or isn't connected. TS Media never goes around it: automatic previews wait (*Paused*) instead of turning into error cards, and one line in the chat says why, with a **Turn off chat proxy** link. Start or connect your VPN app: TS Media tries again by itself after 30 seconds (60 for a proxy on another computer), and the paused previews then load. **Load preview** tries one at once. If you turn the chat proxy off instead, the paused previews load only when you click them. **Settings → Privacy & updates → Chat proxy** shows what is wrong; **Test** in the Chat proxy window tells more.
+
+### A link says "Your network blocks this site"
+
+Your network's DNS answered that site's name with a filtered address (10.10.34.x, what filtered networks in Iran answer), so TS Media didn't load it. **Use chat proxy** (when you have one saved) turns the chat proxy on and loads the card through your VPN app; **Set up proxy…** opens the Chat proxy window. With the chat proxy on, this never happens: the proxy looks up the names. Other addresses of a private network keep *Couldn't load the preview* and offer no proxy: they can be a device on your own network, which TS Media never lets a chat link reach.
+
+### The Test says "The proxy can't reach the website"
+
+TS Media reached your VPN app, but the app couldn't reach `www.youtube.com`: usually it isn't connected to a server, or its server is down or blocked. Connect the app (or choose another server), check that YouTube opens in your browser through it, then press **Test** again. Apps built on V2Ray or sing-box (v2rayN, Throne, Nekoray, Hiddify and others) say yes to every connection before they try the website, so this is also what you see when their server can't be reached.
+
+### Iranian sites don't load with the chat proxy on
+
+With the chat proxy on, every preview goes out through your VPN app's server abroad, and many Iranian sites refuse visitors from abroad. Use your VPN app's routing to send Iranian sites direct (a *bypass Iran* rule or an Iran region: `geoip:ir` and `geosite:ir` direct). TS Media has no bypass list of its own, on purpose: while the chat proxy is on, nothing goes direct, so a proxy problem can never quietly send your requests around it. You can also turn the chat proxy off for a moment (**Plugins → TS Media chat → Turn off chat proxy**).
+
+### The YouTube player says "Can't play through the proxy"
+
+The player can't use the proxy that is set: the chat proxy is on but can't be used (its saved password can't be read on this PC, or TS Media couldn't open its local connection), or nothing came back through it; or, with *Use Windows proxy settings*, Windows names only a SOCKS proxy; or a `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` setting on this PC names a proxy while the chat proxy is on. Right-click the card for **Turn off chat proxy** or **Proxy settings…**. A video that was playing when you turned the chat proxy on or off closes (*Closed: the chat proxy changed. Press Play again.*): press Play again.
+
+### Where is the proxy password kept?
+
+In `settings.ini`, protected with Windows DPAPI for your Windows account and for that proxy server only: another account or PC can't read it, and changing the server, port, type or user name without typing it again removes it. It is never written to the log or the diagnostic info. A proxy on another computer gets it (unencrypted) only when it asks for a login. [Details](PRIVACY-SECURITY.md#chat-proxy).
 
 ## Reactions and presence
 

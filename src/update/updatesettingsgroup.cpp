@@ -11,6 +11,7 @@
 #include <QVBoxLayout>
 
 #include "i18n.h"
+#include "uiutil.h"
 #include "updater.h"
 
 namespace upd {
@@ -30,18 +31,10 @@ QLabel* hintLabel(const QString& text, QWidget* parent)
     return label;
 }
 
-// "today at 10:15", "yesterday at 10:15", "Nov 2 at 10:15" (local time, English like the rest).
+// "today at 10:15", "yesterday at 10:15", "Nov 2 at 10:15": ui::whenText (2.6: shared with the Chat proxy's last test).
 QString whenText(const QDateTime& utc)
 {
-    const QDateTime local = utc.toLocalTime();
-    const QLocale   english(QLocale::English);
-    const QString   time  = english.toString(local.time(), QString::fromLatin1("HH:mm"));
-    const QDate     today = QDate::currentDate();
-    if (local.date() == today)
-        return i18n::t("today at %1").arg(time);
-    if (local.date() == today.addDays(-1))
-        return i18n::t("yesterday at %1").arg(time);
-    return i18n::t("%1 at %2").arg(english.toString(local.date(), QString::fromLatin1("MMM d")), time);
+    return ui::whenText(utc);
 }
 
 } // namespace

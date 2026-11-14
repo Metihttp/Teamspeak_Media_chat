@@ -47,6 +47,16 @@ inline void syncRange(QTextBrowser* browser)
         emit layout->documentSizeChanged(size); // QTextEdit adjusts its scroll bars now
 }
 
+// 2.6 (R-DEF-1, design 8.1): to the chat's very end after an edit. Right after a small edit QTextEdit still has the old
+// range (the layout reports the new size on its 0 ms timer), so a plain setValue(maximum()) lands short by the edit's
+// growth, and every later pass then treats the reader as reading above the end: syncRange first.
+inline void toBottom(QTextBrowser* browser)
+{
+    syncRange(browser);
+    QScrollBar* bar = browser->verticalScrollBar();
+    bar->setValue(bar->maximum());
+}
+
 struct Place {
     layoutdoc::Anchor anchor;
     bool              bottom = false;

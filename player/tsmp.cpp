@@ -12,10 +12,17 @@
 // Rules: every event handler added is removed by its token at close; every SetWindowPos carries SWP_NOZORDER (a move
 // never lifts the player above TeamSpeak's menus); no thread, no hook and no timer of ours; after tsmp_shutdown the
 // helper holds no object, window or class: an inert image.
+//
+// 2.6 chat proxy (design 3.6): the network of the next environment (tsmp_setNetwork; UNSET after tsmp_init: an open
+// fails "network" and nothing is made). The environment's browser arguments come from player/tsmpnet.h; an open whose
+// network needs other arguments than the living environment's fails "network" (the plugin releases it: the helper
+// never does on its own). With the bridge: an open fails "network-override" when a WebView2 override mentions a proxy,
+// and only the bridge's own login request is answered (its user and token; at most 3 answers per player in 10 s).
 
 #define TSMP_BUILDING_HELPER
 #include "tsmp.h"
 #include "tsmpmsg.h"
+#include "tsmpnet.h"
 
 #include <objbase.h>
 #include <shlwapi.h>
@@ -49,6 +56,8 @@ struct Player {
     bool                           navigated  = false; // our page's navigation started (the only main-frame one)
     bool                           created    = false;
     bool                           viewMuted  = true; // created muted until the plugin's volume (or an unmute) arrives
+    ULONGLONG                      authStart  = 0;    // 2.6: the bridge's login answers in the last 10 s (at most 3)
+    int                            authCount  = 0;
     RECT                           rect{};
     RECT                           clip{};
     double                         css = 1.0;
@@ -82,6 +91,26 @@ std::vector<int>                   g_waiting;              // players waiting fo
 ComPtr<ICoreWebView2Environment>   g_released;
 EventRegistrationToken             g_releasedToken{};
 ULONGLONG                          g_waitDeadline = 0;
+// 2.6: the network of the next environment (tsmp_setNetwork), and the one the environment made (or being made) has.
+tsmpnet::Net                       g_net;
+tsmpnet::Net                       g_envNet;
+std::wstring                       g_envArgs; // its browser arguments (empty: none made)
+
+void wipe(std::wstring* text)
+{
+    if (!text->empty())
+        SecureZeroMemory(&(*text)[0], text->size() * sizeof(wchar_t));
+    text->clear();
+}
+
+void clearNet(tsmpnet::Net* net)
+{
+    wipe(&net->token);
+    wipe(&net->user);
+    wipe(&net->realm);
+    net->mode       = TSMP_NET_UNSET;
+    net->bridgePort = 0;
+}
 
 constexpr size_t kMaxEvents = 128;
 constexpr int    kMinWidthDu = 356, kMinHeightDu = 200;
@@ -420,7 +449,9 @@ void addHandlers(Player* p)
             if (q && !ok && q->navigated) {
                 COREWEBVIEW2_WEB_ERROR_STATUS status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
                 args->get_WebErrorStatus(&status);
-                if (status != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)
+                // 2.6: with the bridge, a "proxy authentication required" step before the real result is ignored.
+                const bool proxyLogin = g_envNet.mode == TSMP_NET_BRIDGE && status == COREWEBVIEW2_WEB_ERROR_STATUS_VALID_PROXY_AUTHENTICATION_REQUIRED;
+                if (status != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED && !proxyLogin)
                     post(id, TSMP_EV_FAILED, static_cast<int>(status), L"navigation");
             }
             return S_OK;
@@ -550,9 +581,46 @@ void addHandlers(Player* p)
     }
     ComPtr<ICoreWebView2_10> w10;
     if (SUCCEEDED(p->webview.As(&w10)) && w10) {
+        // 2.6: the bridge's login (its exact address and realm) gets the bridge's user and token, at most 3 times per
+        // player in 10 s (a token the bridge keeps refusing never loops); everything else (websites' 401s, other
+        // proxies) is cancelled as in 2.5.
         w10->add_BasicAuthenticationRequested(
-            Callback<ICoreWebView2BasicAuthenticationRequestedEventHandler>([](ICoreWebView2*, ICoreWebView2BasicAuthenticationRequestedEventArgs* args) -> HRESULT {
-                args->put_Cancel(TRUE);
+            Callback<ICoreWebView2BasicAuthenticationRequestedEventHandler>([id, gen](ICoreWebView2*, ICoreWebView2BasicAuthenticationRequestedEventArgs* args) -> HRESULT {
+                Player* q         = gen == g_generation ? find(id) : nullptr;
+                LPWSTR  uri       = nullptr;
+                LPWSTR  challenge = nullptr;
+                args->get_Uri(&uri);
+                args->get_Challenge(&challenge);
+                bool answer = q && tsmpnet::answersChallenge(g_envNet, uri, challenge);
+                if (answer) {
+                    const ULONGLONG now = GetTickCount64();
+                    if (!q->authStart || now - q->authStart > 10000) {
+                        q->authStart = now;
+                        q->authCount = 0;
+                    }
+                    answer = q->authCount < 3;
+                    if (answer)
+                        ++q->authCount;
+                }
+                if (answer) {
+                    ComPtr<ICoreWebView2BasicAuthenticationResponse> response;
+                    answer = SUCCEEDED(args->get_Response(&response)) && response && SUCCEEDED(response->put_UserName(g_envNet.user.c_str()))
+                             && SUCCEEDED(response->put_Password(g_envNet.token.c_str()));
+                }
+                if (!answer)
+                    args->put_Cancel(TRUE);
+                if (q && g_testMode) {
+                    // player_smoke: what was asked (never the answer's password).
+                    std::wstring t = answer ? L"auth:answered " : L"auth:cancelled ";
+                    t += uri ? uri : L"-";
+                    t += L" ";
+                    t += challenge ? challenge : L"-";
+                    post(id, TSMP_EV_TEST, 0, t.c_str());
+                }
+                if (uri)
+                    CoTaskMemFree(uri);
+                if (challenge)
+                    CoTaskMemFree(challenge);
                 return S_OK;
             }).Get(),
             &p->tAuth);
@@ -682,14 +750,15 @@ void createController(Player* p)
                 return S_OK;
             }
             if (FAILED(result) || !controller) {
-                post(id, TSMP_EV_FAILED, static_cast<int>(result), L"controller");
+                // 2.6: the old browser process still holds the folder (after the 10 s give-up): "busy", retried later.
+                post(id, TSMP_EV_FAILED, static_cast<int>(result), result == HRESULT_FROM_WIN32(ERROR_INVALID_STATE) ? L"busy" : L"controller");
                 return S_OK;
             }
             controllerReady(q, controller);
             return S_OK;
         }).Get());
     if (FAILED(hr))
-        post(id, TSMP_EV_FAILED, static_cast<int>(hr), L"controller");
+        post(id, TSMP_EV_FAILED, static_cast<int>(hr), hr == HRESULT_FROM_WIN32(ERROR_INVALID_STATE) ? L"busy" : L"controller");
 }
 
 void onEnvironmentExited(ICoreWebView2Environment* sender);
@@ -765,7 +834,11 @@ void createEnvironment()
     }
     g_envCreating = true;
     auto options  = Make<CoreWebView2EnvironmentOptions>();
-    options->put_AdditionalBrowserArguments(L"--autoplay-policy=no-user-gesture-required");
+    // 2.6: the network's arguments (tsmpnet.h); the environment keeps them (an open with another network fails).
+    clearNet(&g_envNet);
+    g_envNet  = g_net;
+    g_envArgs = tsmpnet::argsFor(g_envNet);
+    options->put_AdditionalBrowserArguments(g_envArgs.c_str());
     options->put_AllowSingleSignOnUsingOSPrimaryAccount(FALSE);
     if (!g_language.empty())
         options->put_Language(g_language.c_str());
@@ -872,8 +945,48 @@ void shutdownAll()
     g_releaseOnCreate = false;
     g_envExited       = false;
     g_events.clear();
+    clearNet(&g_net); // 2.6: UNSET until the plugin sets a network again
+    clearNet(&g_envNet);
+    g_envArgs.clear();
     unregisterClass();
     g_ready = false;
+}
+
+// 2.6 (S9): the WebView2 overrides a non-elevated host honours: the environment variable and the
+// AdditionalBrowserArguments policy (HKCU and HKLM, the value named by the host exe's file name, and "*").
+std::vector<std::wstring> browserArgumentOverrides()
+{
+    std::vector<std::wstring> values;
+    wchar_t                   buffer[4096];
+    const DWORD               n = GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", buffer, 4096);
+    if (n > 0 && n < 4096)
+        values.emplace_back(buffer, n);
+    else if (n >= 4096)
+        values.emplace_back(L"proxy"); // too long to read here: treated as one that mentions a proxy (fail closed)
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const wchar_t*     base    = wcsrchr(exe, L'\\');
+    const std::wstring names[] = {base ? base + 1 : exe, L"*"};
+    for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        for (const std::wstring& name : names) {
+            DWORD         bytes = sizeof(buffer);
+            const LSTATUS rc    = RegGetValueW(root, L"Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments", name.c_str(),
+                                               RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, nullptr, buffer, &bytes);
+            if (rc == ERROR_SUCCESS)
+                values.emplace_back(buffer, wcsnlen(buffer, sizeof(buffer) / sizeof(wchar_t)));
+            else if (rc == ERROR_MORE_DATA)
+                values.emplace_back(L"proxy");
+        }
+    }
+    return values;
+}
+
+// An open refused before anything is made: an id and its Failed event (the plugin hears it like any other failure).
+int refuseOpen(const wchar_t* why)
+{
+    const int id = ++g_nextId;
+    post(id, TSMP_EV_FAILED, 0, why);
+    return id;
 }
 
 } // namespace
@@ -926,6 +1039,16 @@ int __cdecl tsmp_open(const TsmpOpen* open)
 {
     if (!g_ready || !open || !open->pageHtml || !*open->pageHtml)
         return 0;
+    // 2.6: no network, no environment (S9); the bridge never with an override that mentions a proxy.
+    if (!tsmpnet::openAllowed(g_net))
+        return refuseOpen(L"network");
+    if (g_net.mode == TSMP_NET_BRIDGE && tsmpnet::overrideMentionsProxy(browserArgumentOverrides()))
+        return refuseOpen(L"network-override");
+    if (g_env && g_envExited)
+        releaseEnvironment(false); // its browser process went by itself: a new one
+    // The living environment (or the one being made) has other arguments: the plugin releases it first (F7).
+    if ((g_env || g_envCreating) && g_envArgs != tsmpnet::argsFor(g_net))
+        return refuseOpen(L"network");
     auto* p    = new Player();
     p->id      = ++g_nextId;
     p->generation = g_generation;
@@ -968,8 +1091,6 @@ int __cdecl tsmp_open(const TsmpOpen* open)
     g_players[p->id] = p;
     SetWindowLongPtrW(p->hwnd, GWLP_USERDATA, p->id);
     applyRegion(p);
-    if (g_env && g_envExited)
-        releaseEnvironment(false); // its browser process went by itself: a new one
     if (g_env) {
         createController(p);
     } else {
@@ -1071,6 +1192,29 @@ void __cdecl tsmp_releaseEngine(void)
 void __cdecl tsmp_shutdown(void)
 {
     shutdownAll();
+}
+
+int __cdecl tsmp_setNetwork(const TsmpNetwork* net)
+{
+    // Copied; a refused network leaves UNSET (an open then fails "network").
+    clearNet(&g_net);
+    if (!net)
+        return -1;
+    tsmpnet::Net next;
+    next.mode       = net->mode;
+    next.bridgePort = net->bridgePort;
+    if (net->mode == TSMP_NET_BRIDGE) {
+        next.realm = net->realm ? net->realm : L"";
+        next.user  = net->user ? net->user : L"";
+        next.token = net->token ? net->token : L"";
+    }
+    if (!tsmpnet::validNetwork(next)) {
+        clearNet(&next);
+        return -2;
+    }
+    g_net = next;
+    clearNet(&next);
+    return 0;
 }
 
 } // extern "C"

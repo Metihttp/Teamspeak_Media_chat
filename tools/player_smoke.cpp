@@ -9,6 +9,14 @@
 //                                environment is still being created, init again on the pinned image, the engine
 //                                released (EngineExited, its processes gone) and an open right after a release.
 //   player_smoke --youtube <id>  YouTube's real player for 10 s in a visible window (network), muted: the event sequence.
+//   player_smoke --youtube <id> --bridge socks5|http host:port
+//                                2.6 chat proxy (design 3.6.5, the F3 check): the same through an in-process bridge to that
+//                                proxy (the plugin's own Bridge): every proxy login request the helper saw (address and
+//                                challenge, never the token), two players in one environment, the bridge's records of the
+//                                player and its counters.
+//
+// 2.6: the offline run also checks the helper's network rules (an open without a network fails "network", a bad bridge
+// network is refused, an open whose network needs other arguments than the living environment's fails "network").
 //
 // WebView2's user data folder is <this exe's folder>/player_smoke_data (never %LOCALAPPDATA%\TSMedia).
 // Exit code: 0 all passed, 1 a check failed, 2 the helper couldn't be loaded.
@@ -16,6 +24,9 @@
 #include <QCoreApplication>
 #include <QString>
 
+#include "proxy/bridge.h"
+#include "proxy/proxyconfig.h"
+#include "proxy/upstream.h"
 #include "tsmp.h"
 #include "ytplayer/ytpage.h"
 
@@ -45,6 +56,7 @@ struct Api {
     tsmp_poll_fn           poll           = nullptr;
     tsmp_releaseEngine_fn  releaseEngine  = nullptr;
     tsmp_shutdown_fn       shutdown       = nullptr;
+    tsmp_setNetwork_fn     setNetwork     = nullptr; // 2.6
 } api;
 
 std::vector<TsmpEvent> events; // everything polled so far
@@ -220,14 +232,27 @@ int openPlayer(HWND owner, bool popup, RECT rect, RECT clip, const QString& page
     return api.open(&o);
 }
 
-bool initHelper(int testMode)
+int setNetwork(int mode, int port = 0, const wchar_t* realm = nullptr, const wchar_t* user = nullptr, const wchar_t* token = nullptr)
+{
+    TsmpNetwork net{};
+    net.mode       = mode;
+    net.bridgePort = port;
+    net.realm      = realm;
+    net.user       = user;
+    net.token      = token;
+    return api.setNetwork(&net);
+}
+
+// tsmp_init, then (2.6) the Windows settings as the network: tsmp_init leaves it UNSET.
+bool initHelper(int testMode, bool withNetwork = true)
 {
     TsmpInit init{};
     init.userDataFolder = dataDir.c_str();
     init.appOrigin      = origin.c_str();
     init.language       = L"en-US";
     init.testMode       = testMode;
-    return api.init(&init) == 0;
+    const bool ok       = api.init(&init) == 0;
+    return ok && (!withNetwork || setNetwork(TSMP_NET_SYSTEM) == 0);
 }
 
 QString testPage(const char* id)
@@ -238,8 +263,21 @@ QString testPage(const char* id)
 int offlineRun()
 {
     const int baseline = countWebViewProcesses();
-    check(initHelper(TSMP_TEST_FAKE_API | TSMP_TEST_MUTED), "tsmp_init (STA, fake API, muted)");
+    check(initHelper(TSMP_TEST_FAKE_API | TSMP_TEST_MUTED, false), "tsmp_init (STA, fake API, muted)");
     HWND owner = makeOwner();
+
+    // 0. 2.6: no network after init: an open fails "network" and makes nothing; a bad bridge network is refused.
+    const RECT r0{140, 140, 140 + 640, 140 + 360};
+    const int  p0 = openPlayer(owner, true, r0, r0, testPage("M7lc1UVf-VE"));
+    check(p0 > 0 && waitFor(p0, TSMP_EV_FAILED, 2000, INT_MIN, L"network"), "no network: the open fails \"network\"");
+    check(playersOf(owner).empty(), "no network: no window");
+    check(setNetwork(TSMP_NET_BRIDGE, 80, L"tsmedia-0123456789abcdef", L"tsm-p", L"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") < 0,
+          "a bridge on port 80 is refused");
+    check(setNetwork(TSMP_NET_BRIDGE, 40000, L"realm", L"tsm-p", L"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") < 0, "a bridge with a bad realm is refused");
+    check(setNetwork(9) < 0, "an unknown mode is refused");
+    const int p00 = openPlayer(owner, true, r0, r0, testPage("M7lc1UVf-VE"));
+    check(waitFor(p00, TSMP_EV_FAILED, 2000, INT_MIN, L"network"), "a refused network leaves none: the open fails \"network\"");
+    check(setNetwork(TSMP_NET_SYSTEM) == 0, "the Windows settings as the network");
 
     // 1. A popup with the page from memory and the fake IFrame API.
     const RECT r1{140, 140, 140 + 640, 140 + 360};
@@ -287,6 +325,13 @@ int offlineRun()
             std::printf("SKIP  Esc: this console can't bring the popup to the foreground (Windows' foreground rule)\n");
         }
     }
+    // 2b. 2.6: the living environment (p1 still open) has the Windows settings' arguments: an open for direct fails
+    // "network" and makes no window (the plugin releases the engine first; the helper never does by itself).
+    check(setNetwork(TSMP_NET_DIRECT) == 0, "direct as the network");
+    const int pd = openPlayer(owner, true, r1, r1, testPage("M7lc1UVf-VE"));
+    check(waitFor(pd, TSMP_EV_FAILED, 2000, INT_MIN, L"network"), "another network than the living environment's: \"network\"");
+    check(playersOf(owner).size() == 1, "... and no window of its own");
+    check(setNetwork(TSMP_NET_SYSTEM) == 0, "the Windows settings again");
     api.close(p1);
     pump(300, nullptr);
     check(playersOf(owner).empty(), "tsmp_close: the window is gone");
@@ -373,14 +418,19 @@ int offlineRun()
     return failures ? 1 : 0;
 }
 
-int youtubeRun(const QString& id)
+int countOf(int player, int kind, const wchar_t* text)
 {
-    if (!ytpage::validId(id)) {
-        std::printf("not a video id\n");
-        return 1;
+    int n = 0;
+    for (const TsmpEvent& e : events) {
+        if (e.player == player && e.kind == kind && (!text || wcsstr(e.text, text)))
+            ++n;
     }
-    check(initHelper(TSMP_TEST_MUTED), "tsmp_init (muted)");
-    HWND       owner = makeOwner();
+    return n;
+}
+
+// One real player for ms, muted; its id.
+int playFor(HWND owner, const QString& id, DWORD ms)
+{
     const RECT r{140, 140, 140 + 640, 140 + 360};
     const int  p = openPlayer(owner, true, r, r, ytpage::pageHtml(id, 0, true), L"player_smoke: YouTube (muted)");
     check(waitFor(p, TSMP_EV_CREATED, 30000), "Created");
@@ -391,14 +441,84 @@ int youtubeRun(const QString& id)
         api.command(p, L"mute");
         api.command(p, L"volume:0");
     }
-    pump(10000, nullptr); // 10 s of the real player, muted
+    pump(ms, nullptr); // the real player, muted
     check(has(p, TSMP_EV_STATE, 1) || has(p, TSMP_EV_ERROR), "State(1) playing (or an Error)");
     check(has(p, TSMP_EV_TIME) || has(p, TSMP_EV_ERROR), "Time reported by the page");
     api.close(p);
+    return p;
+}
+
+QString recordLine(const proxy::Record& r)
+{
+    return QString::fromLatin1("  record %1%2 host=%3 step=%4 failure=%5 code=%6 up=%7 down=%8")
+        .arg(QChar::fromLatin1(r.client ? r.client : '-'))
+        .arg(r.id)
+        .arg(r.host.isEmpty() ? QString::fromLatin1("-") : r.host)
+        .arg(QString::fromLatin1(proxy::stepName(r.step)), QString::fromLatin1(proxy::failureName(r.failure)))
+        .arg(r.code)
+        .arg(r.up)
+        .arg(r.down);
+}
+
+int youtubeRun(const QString& id, const QString& bridgeType, const QString& bridgeTarget)
+{
+    if (!ytpage::validId(id)) {
+        std::printf("not a video id\n");
+        return 1;
+    }
+    check(initHelper(TSMP_TEST_MUTED, bridgeType.isEmpty()), "tsmp_init (muted)");
+    std::shared_ptr<proxy::Bridge> bridge;
+    if (!bridgeType.isEmpty()) {
+        // 2.6 (the F3 check): the plugin's own bridge to the given proxy, the helper told to use it.
+        const int colon = bridgeTarget.lastIndexOf(QLatin1Char(':'));
+        auto      spec  = std::make_unique<proxy::UpstreamSpec>();
+        spec->type       = bridgeType == QLatin1String("http") ? proxy::Type::Http : proxy::Type::Socks5;
+        spec->host       = proxy::normalizeHost(bridgeTarget.left(colon));
+        spec->port       = static_cast<quint16>(bridgeTarget.mid(colon + 1).toUInt());
+        spec->generation = 1;
+        int error        = 0;
+        bridge           = proxy::Bridge::create(proxy::Bridge::Options(), &error);
+        if (!bridge || spec->host.isEmpty() || !spec->port) {
+            std::printf("the bridge couldn't start (%d) or the proxy is wrong\n", error);
+            return 2;
+        }
+        bridge->setUpstream(std::move(spec));
+        const std::wstring realm = QString::fromLatin1(bridge->realm()).toStdWString();
+        const std::wstring token = QString::fromLatin1(bridge->token()).toStdWString();
+        check(setNetwork(TSMP_NET_BRIDGE, bridge->port(), realm.c_str(), L"tsm-p", token.c_str()) == 0, "the bridge as the network");
+        std::printf("      bridge on 127.0.0.1:%u, realm tsmedia-<16 hex>\n", unsigned(bridge->port()));
+    }
+    HWND      owner = makeOwner();
+    const int p1    = playFor(owner, id, 10000);
+    int       p2    = 0;
+    if (bridge) {
+        p2 = playFor(owner, id, 6000); // a second player in the same environment
+        std::printf("      login requests: player 1 %d (answered %d), player 2 %d (answered %d)\n", countOf(p1, TSMP_EV_TEST, L"auth:"),
+                    countOf(p1, TSMP_EV_TEST, L"auth:answered"), countOf(p2, TSMP_EV_TEST, L"auth:"), countOf(p2, TSMP_EV_TEST, L"auth:answered"));
+        for (const TsmpEvent& e : events) {
+            if (e.kind == TSMP_EV_TEST && wcsncmp(e.text, L"auth:", 5) == 0)
+                std::printf("      player %d %ls\n", e.player, e.text);
+        }
+        int hosts = 0, failed = 0;
+        for (const proxy::Record& r : bridge->recent('p', 0)) {
+            ++hosts;
+            failed += r.failure != proxy::Failure::None ? 1 : 0;
+            std::printf("%s\n", recordLine(r).toUtf8().constData());
+        }
+        for (const proxy::Record& r : bridge->recent(0, 0))
+            std::printf("%s (not authenticated)\n", recordLine(r).toUtf8().constData());
+        const proxy::Bridge::Counters c = bridge->counters();
+        std::printf("      bridge: accepted %llu, refused %llu, busy %llu, unauthenticated %llu; player tunnels %d, failed %d\n",
+                    static_cast<unsigned long long>(c.accepted), static_cast<unsigned long long>(c.refused), static_cast<unsigned long long>(c.busy),
+                    static_cast<unsigned long long>(c.unauthenticated), hosts, failed);
+        check(hosts > 0, "the player's requests went through the bridge");
+    }
     api.releaseEngine();
     waitFor(0, TSMP_EV_ENGINEEXITED, 15000);
     api.shutdown();
     DestroyWindow(owner);
+    if (bridge)
+        bridge->stop(2000);
     return failures ? 1 : 0;
 }
 
@@ -433,8 +553,9 @@ int main(int argc, char** argv)
     api.poll           = reinterpret_cast<tsmp_poll_fn>(GetProcAddress(module, "tsmp_poll"));
     api.releaseEngine  = reinterpret_cast<tsmp_releaseEngine_fn>(GetProcAddress(module, "tsmp_releaseEngine"));
     api.shutdown       = reinterpret_cast<tsmp_shutdown_fn>(GetProcAddress(module, "tsmp_shutdown"));
+    api.setNetwork     = reinterpret_cast<tsmp_setNetwork_fn>(GetProcAddress(module, "tsmp_setNetwork"));
     if (!api.apiVersion || !api.runtimeVersion || !api.init || !api.open || !api.place || !api.command || !api.close || !api.poll || !api.releaseEngine
-        || !api.shutdown) {
+        || !api.shutdown || !api.setNetwork) {
         std::printf("missing exports\n");
         return 2;
     }
@@ -444,8 +565,10 @@ int main(int argc, char** argv)
     std::printf("      WebView2 Runtime: %ls (%d)\n", version, rv);
     check(rv == 0, "tsmp_runtimeVersion");
     int rc = 0;
-    if (argc >= 3 && std::string(argv[1]) == "--youtube")
-        rc = youtubeRun(QString::fromLatin1(argv[2]));
+    if (argc >= 6 && std::string(argv[1]) == "--youtube" && std::string(argv[3]) == "--bridge")
+        rc = youtubeRun(QString::fromLatin1(argv[2]), QString::fromLatin1(argv[4]), QString::fromLatin1(argv[5]));
+    else if (argc >= 3 && std::string(argv[1]) == "--youtube")
+        rc = youtubeRun(QString::fromLatin1(argv[2]), QString(), QString());
     else
         rc = offlineRun();
     std::printf("%s (%d failed, %d skipped)\n", rc == 0 ? "ALL PASSED" : "FAILED", failures, skips);

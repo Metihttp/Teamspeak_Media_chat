@@ -45,6 +45,11 @@
 #include "pluginlog.h"
 #include "previewrenderer.h"
 #include "privacysection.h" // 2.2 protocol
+#include "proxy/control.h"  // 2.6 chat proxy
+#include "proxy/proxycommands.h" // 2.6 chat proxy: the Plugins menu pair, the hotkey, /tsmedia proxy
+#include "proxy/proxydiag.h"     // 2.6 chat proxy: its diagnostic info section
+#include "proxy/proxytexts.h"
+#include "proxy/proxyui.h"       // 2.6 chat proxy: the Chat proxy window
 #include "settings.h"
 #include "settingsdialog.h"
 #include "spoilersection.h" // 2.2 spoiler
@@ -99,6 +104,8 @@ enum MenuId {
     MenuPauseDownloads  = 5,  // 2.2 data saver
     MenuResumeDownloads = 6,  // 2.2 data saver
     MenuVoice           = 7,  // 2.2 voice: Record voice message… (enabled while connected)
+    MenuProxyOn         = proxy::commands::kMenuOn,  // 2.6 chat proxy: Turn on chat proxy (8, enabled while off)
+    MenuProxyOff        = proxy::commands::kMenuOff, // 2.6 chat proxy: Turn off chat proxy (9, enabled while on)
     MenuGiveAccess      = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
     MenuRemoveAccess    = 21, // 2.2 servergroup
 };
@@ -206,6 +213,7 @@ void printHelp(uint64 sch)
         "[b]/tsmedia cache[/b] — open the media cache folder",
         "[b]/tsmedia update[/b] — check for a new version", // 2.2 updater (official builds only)
         "[b]/tsmedia datasaver[/b] on | off | default — pause or resume automatic downloads on this server", // 2.2 data saver
+        "[b]/tsmedia proxy[/b] on | off — turn the chat proxy for link previews, the YouTube player and update checks on or off", // 2.6
         "[b]/tsmedia diag[/b] — copy diagnostic info for a bug report", // 2.2 diagnostics
         "[b]/tsmedia help[/b] — show this list",
     };
@@ -271,6 +279,7 @@ void updateMenus()
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuSend, ts3::isConnected(ts3::currentConnection()) ? 1 : 0);
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuVoice, ts3::isConnected(ts3::currentConnection()) ? 1 : 0); // 2.2 voice
     datasaver::updateMenu(MenuPauseDownloads, MenuResumeDownloads); // 2.2 data saver
+    proxy::commands::updateMenu();                                  // 2.6 chat proxy: which of the pair is enabled
 }
 
 // 2.2 per-server settings: after the Plugins menu or a command changed a server's data saver.
@@ -483,6 +492,9 @@ TS3_EXPORT int ts3plugin_init()
 #endif
 
     Settings::instance().load();
+    // 2.6 chat proxy: the refusing route snapshot (statics of an earlier load reset); Control publishes the real one
+    // below, before the first Fetcher or the updater exists.
+    proxy::init();
 
     auto* core = new Core;
     auto* chat = new ChatIntegration(core);
@@ -510,6 +522,15 @@ TS3_EXPORT int ts3plugin_init()
         g_mediaFoundation = mf::startup();
         if (!g_mediaFoundation)
             ts3::log("Media Foundation is not available: videos can't be played inside the chat", LogLevel_WARNING);
+        // 2.6 chat proxy: the saved route (the bridge when the chat proxy is on), published before any web request. Its
+        // window opens from a turn on with nothing saved (menu, command, card) and the notices' Proxy settings link; the
+        // Plugins menu pair follows every route change.
+        proxy::Control::instance()->start();
+        proxy::Control::instance()->setWindowOpener([](proxy::Control::WindowRequest request) {
+            proxy::ui::showProxyWindow(g_chat ? g_chat->mainWindow() : nullptr,
+                                       request == proxy::Control::WindowRequest::SetUp ? proxy::ui::Request::SetUp : proxy::ui::Request::Open);
+        });
+        QObject::connect(proxy::Control::instance(), &proxy::Control::routeChanged, core, [] { updateMenus(); });
         core->start();
         // 2.2 protocol: after Core (its flood governors), before the chat (reaction rows). start()
         // registers the send window's presence line (compose::setPresenceLineFactory); prepareShutdown
@@ -539,6 +560,11 @@ TS3_EXPORT int ts3plugin_init()
         diag::addSectionProvider([]() -> diag::Section {
             ChatLinkPreviews* links = g_chat ? g_chat->linkPreviews() : nullptr;
             return links ? diag::Section{i18n::t("Link previews"), links->diagnosticLines()} : diag::Section();
+        });
+        // 2.6 chat proxy: the mode, where the proxy is, route health, the last Test and the bridge's counters (categories
+        // only: never an address, a port, a login or the bridge's token; design 2.4). Nothing once proxy::shutdown() ran.
+        diag::addSectionProvider([]() -> diag::Section {
+            return proxy::Control::current() ? diag::Section{proxy::diagnosticsTitle(), proxy::currentDiagnosticLines()} : diag::Section();
         });
         // 2.2 emoji: the picker's recently used emoji and skin tone; the renderer in the diagnostic info.
         emoji::prefs::setFile(ts3::dataDir() + QLatin1String("/emoji.ini"));
@@ -595,7 +621,11 @@ TS3_EXPORT int ts3plugin_init()
                              if (g_updater)
                                  g_updater->notePeerVersion(sch, version, inOwnChannel);
                          });
-        chat->setOwnLinkHandler([](const QString& href, bool activate) { return g_updater && g_updater->handleHintLink(href, activate); });
+        // 2.6 chat proxy: the notices' links first (their own nonce), then the updater's (design 1.5).
+        chat->setOwnLinkHandler([](const QString& href, bool activate) {
+            proxy::Control* control = proxy::Control::current();
+            return (control && control->handleNoticeLink(href, activate)) || (g_updater && g_updater->handleHintLink(href, activate));
+        });
         // 2.5 zoom: the display's scaling as TeamSpeak's Qt sees it (dpr 1 at every Windows scale unless Qt scales).
         const QScreen* screen = QGuiApplication::primaryScreen();
         ts3::log(QString::fromLatin1(TSMEDIA_NAME " " TSMEDIA_VERSION " loaded (dpr %1, logicalDpi %2)")
@@ -670,6 +700,9 @@ TS3_EXPORT void ts3plugin_shutdown()
         }
         for (const QPointer<QWidget>& w : windows)
             delete w.data();
+        // 2.6 chat proxy: the Test and Find workers joined and the bridge stopped (listener first, then tunnels; bounded),
+        // after the Fetchers, the player and the updater are gone and before the chat.
+        proxy::shutdown();
 
 #ifdef TSMEDIA_TESTHOOKS
         // 2.3.1 live test: what TeamSpeak's chats hold once the chat layer is gone (nothing of ours, its own margins).
@@ -854,6 +887,10 @@ TS3_EXPORT int ts3plugin_processCommand(uint64 serverConnectionHandlerID, const 
             if (datasaver::runCommand(sch, arguments))
                 serverSettingsChanged();
         });
+    } else if (cmd == QLatin1String("proxy") || cmd.startsWith(QLatin1String("proxy "))) {
+        // 2.6 chat proxy: "/tsmedia proxy [on|off]" (anything else: the usage warning).
+        const QString arguments = cmd.mid(5).trimmed().left(40);
+        onGuiThread([sch, arguments] { proxy::commands::runCommand(sch, arguments); });
     } else if (cmd == QLatin1String("diag") || cmd == QLatin1String("diagnostics")) { // 2.2 diagnostics
         onGuiThread([] { showDiagnostics(nullptr); });
     } else if (cmd == QLatin1String("debug")) {
@@ -899,6 +936,9 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
         // 2.2 data saver: an enable/disable pair (the SDK can't change a menu item's text or check mark).
         {MenuPauseDownloads, i18n::t("Pause automatic downloads on this server")},
         {MenuResumeDownloads, i18n::t("Resume automatic downloads on this server")},
+        // 2.6 chat proxy: an enable/disable pair too (design 1.4): exactly one of them is enabled.
+        {MenuProxyOn, proxy::texts::menuOnText()},
+        {MenuProxyOff, proxy::texts::menuOffText()},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
         {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
@@ -938,6 +978,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
         {"tsmedia_send", i18n::t("Send files to the current chat")},
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
         {"tsmedia_reply", i18n::t("Reply to the last message in the current chat")}, // 2.2 reply
+        {proxy::commands::kHotkey, proxy::texts::hotkeyDescription()},               // 2.6 chat proxy: never opens a window
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
 
@@ -998,6 +1039,10 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
     case MenuVoice: // 2.2 voice
         onGuiThread([] { recordVoice(VoiceController::Origin::Menu); });
         break;
+    case MenuProxyOn: // 2.6 chat proxy: the line says what happened (nothing saved: the window opens)
+    case MenuProxyOff:
+        onGuiThread([sch, menuItemID] { proxy::commands::handleMenu(menuItemID, sch); });
+        break;
     default:
         break;
     }
@@ -1018,6 +1063,8 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
             if (g_chat)
                 g_chat->replyToLatest();
         });
+    } else if (key == QLatin1String(proxy::commands::kHotkey)) { // 2.6 chat proxy: on if off, else off (a line, never a window)
+        onGuiThread([key] { proxy::commands::handleHotkey(key, ts3::currentConnection()); });
     }
 }
 

@@ -143,11 +143,12 @@ class FakeTransport : public http::Transport
     {
         Q_UNUSED(cancel);
         http::Route r;
+        r.via = http::Route::Via::Direct; // 2.6: an explicit route (nothing defaults to direct)
         QMutexLocker lock(&mutex);
         routed << url.toString(QUrl::FullyEncoded);
         if (viaProxy) {
-            r.viaProxy = true;
-            r.proxy    = QStringLiteral("127.0.0.1:10809");
+            r.via   = http::Route::Via::System;
+            r.proxy = QStringLiteral("127.0.0.1:10809");
         }
         return r;
     }
@@ -167,7 +168,7 @@ class FakeTransport : public http::Transport
                 response.body   = "missing";
             }
             peer = response.peer.isNull() ? dns.value(options.url.host(), {ip("93.184.216.34")}).value(0) : response.peer;
-            if (options.route.viaProxy) {
+            if (options.route.viaProxy()) {
                 peer = ip("127.0.0.1"); // the connection goes to the proxy on this PC
                 proxied << key;
             }
@@ -1257,9 +1258,14 @@ class TestLinkPreviewNet : public QObject
         QCOMPARE(net::proxyForHost(QStringLiteral("https=a.example.net:1 b.example.net:2"), QString(), yt), QStringLiteral("a.example.net:1"));
         QCOMPARE(net::proxyForHost(QStringLiteral("a.example.net:1;b.example.net:2"), QString(), yt), QStringLiteral("a.example.net:1;b.example.net:2"));
         QCOMPARE(net::proxyForHost(QStringLiteral("http://proxy.example.com:8080/"), QString(), yt), QStringLiteral("proxy.example.com:8080"));
-        // Nothing an https request can use: direct.
-        for (const char* none : {"", "http=127.0.0.1:10809", "socks=127.0.0.1:10808", "ftp=a.example.net:21", "socks5://127.0.0.1:1080",
-                                 "user:pass@a.example.net:1", "127.0.0.1:10809\x01"})
+        // 2.6 (design 3.3.2, pickProxy): an "http=" entry is an HTTP proxy that tunnels https with CONNECT, used when no
+        // "https=", plain or "socks=" entry is set (2.5 went direct). With a "socks=" entry WinINet and Chromium use the
+        // SOCKS proxy for https, so "http=...;socks=..." is SOCKS-only (review fix). A SOCKS-only setting has no server
+        // here and is refused by the route (W1, tst_proxycore windowsProxyMapping), never direct.
+        QCOMPARE(net::proxyForHost(QStringLiteral("http=127.0.0.1:10809"), QString(), yt), QStringLiteral("127.0.0.1:10809"));
+        // Nothing an https request can use.
+        for (const char* none : {"", "socks=127.0.0.1:10808", "http=127.0.0.1:10809;socks=127.0.0.1:10808", "ftp=a.example.net:21",
+                                 "socks5://127.0.0.1:1080", "user:pass@a.example.net:1", "127.0.0.1:10809\x01"})
             QVERIFY2(net::proxyForHost(QString::fromLatin1(none), QString(), yt).isEmpty(), none);
         // What v2rayN and similar tools set as the bypass list: YouTube still goes through the proxy.
         const QString v2ray = QStringLiteral("localhost;127.*;10.*;172.16.*;172.17.*;192.168.*;*.local;<local>");

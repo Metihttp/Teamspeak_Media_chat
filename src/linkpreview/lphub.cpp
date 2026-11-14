@@ -10,6 +10,7 @@
 #include "pluginlink.h"
 #include "previewstore.h"
 #include "reactions.h" // ReactionStore::isClientUid
+#include "routereport.h" // 2.6 chat proxy
 #include "senderpipeline.h"
 #include "settings.h"
 #include "textreact.h"
@@ -95,7 +96,8 @@ Hub::Hub(Core* core, PluginLink* link, const textreact::Index* index, FetchPort*
         // The sender's own Fetcher: its results are the pipeline's only (the chat's clicks and automatic loads have
         // their own). 2.5: both share the plugin's one HostGate (spacing and cooldowns per site, hostgate.h).
         Fetcher::Options options;
-        options.gate = sharedGate();
+        options.gate      = sharedGate();
+        options.routeGate = &admitsRoute; // 2.6 chat proxy: our own links' loads are automatic (they wait while it is down)
 #ifdef TSMEDIA_TESTHOOKS
         m_fetcher = new Fetcher(nettrace::traced(http::winHttpTransport(), "send"), options, this);
 #else
@@ -106,8 +108,15 @@ Hub::Hub(Core* core, PluginLink* link, const textreact::Index* index, FetchPort*
         fetch     = m_ownPort.get();
     }
     m_pipeline = new SenderPipeline(core, link, m_store, index, fetch, this);
-    if (m_fetcher)
+    if (m_fetcher) {
+        // 2.6 chat proxy (design 5.2): route health hears our own links' loads too (before the pipeline acts on them).
+        connect(m_fetcher, &Fetcher::finished, this, [](const QString&, const Result& result) { reportRoute(proxy::Control::current(), result, QString()); },
+                Qt::DirectConnection);
         connect(m_fetcher, &Fetcher::finished, m_pipeline, &SenderPipeline::fetched, Qt::DirectConnection);
+    }
+    // 2.6 chat proxy (design 6 step 5): a running fetch of ours starts again on the new route; queued jobs simply use it.
+    if (proxy::Control* control = proxy::Control::current())
+        connect(control, &proxy::Control::routeChanged, m_pipeline, &SenderPipeline::followRoute);
 
     // Member timers only (children): nothing of ours can be pending once the hub is gone.
     m_waitTimer = new QTimer(this);
@@ -160,7 +169,9 @@ void usePluginLog(Fetcher* fetcher, const char* origin)
     fetcher->setLogSink([from](const LogLine& line) {
         ts3::log(LogLevel_INFO, 0, "Link preview (%1, %2) %3: %4%5",
                  {ts3::pub(from), ts3::pub(QString::fromLatin1(kindName(line.kind))), ts3::name(line.address), ts3::pub(line.outcome),
-                  ts3::pub(line.viaProxy ? QString::fromLatin1(" (via the Windows proxy)") : QString())});
+                  ts3::pub(line.viaChatProxy ? QString::fromLatin1(" (via the chat proxy)")
+                           : line.viaProxy   ? QString::fromLatin1(" (via the Windows proxy)")
+                                             : QString())});
     });
 }
 

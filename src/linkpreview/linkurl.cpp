@@ -118,7 +118,8 @@ bool isNumericLabel(const QString& label)
 bool isLocalSuffix(const QStringList& labels)
 {
     static const char* const kLocalTlds[] = {"localhost", "local", "lan",  "internal", "intranet", "home", "corp", "private",
-                                             "localdomain", "test", "invalid", "example", "onion", "arpa", "home-network"};
+                                             "localdomain", "test", "invalid", "example", "onion", "arpa", "home-network",
+                                             "alt"}; // 2.6: alt (RFC 9476, non-DNS names)
     const QString& tld = labels.last();
     for (const char* name : kLocalTlds) {
         if (tld == QLatin1String(name))

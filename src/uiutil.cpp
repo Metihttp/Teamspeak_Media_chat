@@ -1,7 +1,9 @@
 #include "uiutil.h"
 
+#include <QDate>
 #include <QDir>
 #include <QFileInfo>
+#include <QLocale>
 
 #include <cmath>
 
@@ -82,6 +84,19 @@ QString savedToText(const QString& savedPath)
     if (folder.isEmpty())
         folder = QDir::toNativeSeparators(info.absolutePath()); // a drive root: "C:\"
     return i18n::t("Saved to %1").arg(folder);
+}
+
+QString whenText(const QDateTime& utc)
+{
+    const QDateTime local = utc.toLocalTime();
+    const QLocale   english(QLocale::English);
+    const QString   time  = english.toString(local.time(), QString::fromLatin1("HH:mm"));
+    const QDate     today = QDate::currentDate();
+    if (local.date() == today)
+        return i18n::t("today at %1").arg(time);
+    if (local.date() == today.addDays(-1))
+        return i18n::t("yesterday at %1").arg(time);
+    return i18n::t("%1 at %2").arg(english.toString(local.date(), QString::fromLatin1("MMM d")), time);
 }
 
 } // namespace ui

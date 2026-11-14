@@ -98,7 +98,7 @@ struct Settings {
     bool autoLoadLinkPreviews = true;
     bool makeLinkPreviews     = true;
     bool showWebCards         = true;
-    // 2.5 YouTube player (global): "Play YouTube videos in the chat": Play on a YouTube card shows YouTube's own player
+    // 2.5 YouTube player (global): "Play YouTube videos in a TS Media window": Play on a YouTube card shows YouTube's own player
     // (Microsoft Edge WebView2, src/ytplayer); off: Play opens the video in the browser as in 2.4. Needs
     // showLinkPreviews. youTubeNoticeShown: the Consent state was answered with Play once (never reset by Restore
     // defaults, like chatLayoutIntroShown). youTubeWindowSize: the popup player's size, "WxH" in du (empty: 640x360).

@@ -69,13 +69,14 @@ QRect popupRect(const QSize& du, double s, double dpr, const QRect& owner);
 // A device-px "WxH" (ClosedByUser) back to du.
 QSize sizeDuFromDevice(const QString& wxh, double s, double dpr);
 
-// The note card (3.9).
-enum class Note { None, OnlyOnYouTube, Unavailable, CantPlay };
+// The note card (3.9). 2.6 chat proxy: Proxy (the route refused, or the player didn't get ready and the bridge recorded a
+// route-level failure; design 1.5): "Can't play through the proxy", never remembered.
+enum class Note { None, OnlyOnYouTube, Unavailable, CantPlay, Proxy };
 Note    noteFor(int error);       // 101, 150 OnlyOnYouTube; 100 Unavailable; everything else CantPlay
 bool    rememberedError(int error); // 100, 101, 150: facts about the video, kept for the session
 QString noteText(Note note);
 // A note's short form for a narrow card (one line above the pill): "Only on YouTube", "Can't play it here", "Video
-// unavailable"; empty for any other text.
+// unavailable", "Proxy not working"; empty for any other text.
 QString shortNoteText(const QString& note);
 // "1:05", "1:02:03" (a time pill).
 QString timeText(qint64 ms);

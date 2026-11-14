@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.5.0 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.6.0 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -239,8 +239,28 @@ add_library(tsmedia SHARED
     src/ytplayer/ytpage.cpp           src/ytplayer/ytpage.h
     src/ytplayer/ytplayer.cpp         src/ytplayer/ytplayer.h
     src/ytplayer/ytbackend.cpp        src/ytplayer/ytbackend.h
-    player/tsmp.h                     player/tsmpmsg.h
+    player/tsmp.h                     player/tsmpmsg.h      player/tsmpnet.h # 2.6: the player's network rules
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc
+)
+
+# 2.6 chat proxy: the route snapshot, the saved state and its DPAPI password, the wire protocols, route health, the
+# Windows settings, the loopback bridge and its upstream connections, the Test and Find jobs (ws2_32.dll, crypt32.dll
+# and winhttp.dll loaded at run time, never linked). proxy::Control (control.cpp) is the plugin's and the tests' only.
+set(TSMEDIA_PROXY_SOURCES
+    src/proxy/failure.cpp       src/proxy/failure.h
+    src/proxy/proxyconfig.cpp   src/proxy/proxyconfig.h
+    src/proxy/protect.cpp       src/proxy/protect.h
+    src/proxy/wire.cpp          src/proxy/wire.h
+                                src/proxy/records.h
+    src/proxy/router.cpp        src/proxy/router.h
+    src/proxy/health.cpp        src/proxy/health.h
+    src/proxy/windowsproxy.cpp  src/proxy/windowsproxy.h
+    src/proxy/linkparse.cpp     src/proxy/linkparse.h
+    src/proxy/winsock.cpp       src/proxy/winsock.h
+    src/proxy/upstream.cpp      src/proxy/upstream.h
+    src/proxy/bridge.cpp        src/proxy/bridge.h
+    src/proxy/testrun.cpp       src/proxy/testrun.h
+    src/proxy/findrun.cpp       src/proxy/findrun.h
 )
 
 # 2.4 link previews (net-core): which links get a preview (linkurl), the network rules (netpolicy), what a
@@ -260,8 +280,23 @@ set(TSMEDIA_LINKPREVIEW_NET_SOURCES
     src/linkpreview/hostgate.cpp          src/linkpreview/hostgate.h
     src/linkpreview/shares.cpp            src/linkpreview/shares.h # 2.5 Nextcloud and ownCloud shares
     src/safeimage.cpp                     src/safeimage.h
+    ${TSMEDIA_PROXY_SOURCES} # 2.6 chat proxy (the Fetcher decides its route from the snapshot)
 )
-target_sources(tsmedia PRIVATE ${TSMEDIA_LINKPREVIEW_NET_SOURCES})
+# 2.6 chat proxy, the plugin's and the tests' only (Qt widgets, ts3api): the one owner (GUI thread), its texts, the menu,
+# hotkey and command glue, the Chat proxy window and its Settings group, the label roles they share with Settings.
+set(TSMEDIA_PROXY_UI_SOURCES
+    src/proxy/control.cpp       src/proxy/control.h
+    src/proxy/proxytexts.cpp    src/proxy/proxytexts.h
+    src/proxy/proxycommands.cpp src/proxy/proxycommands.h
+    src/proxy/proxywindow.cpp   src/proxy/proxywindow.h   src/proxy/proxyui.h
+    src/proxy/proxygroup.cpp    src/proxy/proxygroup.h
+    src/proxy/proxydiag.cpp     src/proxy/proxydiag.h     # 2.6 I3: the diagnostic info's section
+    src/settingstheme.cpp       src/settingstheme.h
+                                src/linkpreview/routereport.h
+)
+target_sources(tsmedia PRIVATE ${TSMEDIA_LINKPREVIEW_NET_SOURCES} ${TSMEDIA_PROXY_UI_SOURCES}
+    src/update/sessionplan.cpp  src/update/sessionplan.h # 2.6 chat proxy: the updater's route (pure)
+)
 # end 2.4 link previews (net-core)
 
 target_include_directories(tsmedia PRIVATE
@@ -281,7 +316,7 @@ tsmedia_delay_load_media_foundation(tsmedia)
 option(TSMEDIA_TESTHOOKS "Build with test hooks" OFF)
 if(TSMEDIA_TESTHOOKS)
     target_compile_definitions(tsmedia PRIVATE TSMEDIA_TESTHOOKS)
-    target_sources(tsmedia PRIVATE src/selftest.cpp src/selftest.h) # the scripted live-test driver
+    target_sources(tsmedia PRIVATE src/selftest.cpp src/selftest.h src/selftestecho.h) # the scripted live-test driver
     target_sources(tsmedia PRIVATE src/selftestmusic.cpp) # 2.3 live music: its live-test commands
 endif()
 
@@ -357,7 +392,7 @@ if(TSMEDIA_PLAYER)
     if(NOT EXISTS "${_wv2inc}/WebView2.h" OR NOT EXISTS "${_wv2lib}")
         message(FATAL_ERROR "TSMEDIA_WEBVIEW2_DIR (${TSMEDIA_WEBVIEW2_DIR}) has no build/native/include/WebView2.h or ${_wv2arch}/WebView2LoaderStatic.lib")
     endif()
-    add_library(tsmedia_player SHARED player/tsmp.cpp player/tsmp.h player/tsmpmsg.h)
+    add_library(tsmedia_player SHARED player/tsmp.cpp player/tsmp.h player/tsmpmsg.h player/tsmpnet.h)
     set_target_properties(tsmedia_player PROPERTIES OUTPUT_NAME "tsmedia_player_${TSMEDIA_ARCH}" PREFIX ""
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_include_directories(tsmedia_player PRIVATE player "${_wv2inc}")
@@ -619,11 +654,16 @@ if(TSMEDIA_BUILD_TESTS)
     if(MSVC)
         target_compile_options(tsmedia_tests PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
-    target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test bcrypt ${TSMEDIA_MF_LIBS})
+    # 2.6 chat proxy: the proxy core and the bridge against in-test fake proxies (ws2_32 only for the tests' own sockets)
+    target_sources(tsmedia_tests PRIVATE tests/tst_proxycore.cpp tests/tst_proxybridge.cpp tests/proxyfakes.cpp tests/proxyfakes.h
+        ${TSMEDIA_PROXY_UI_SOURCES} src/update/sessionplan.cpp src/update/sessionplan.h
+        tests/tst_proxyui.cpp # 2.6 I2b: the Chat proxy window, the Settings group, the menu / hotkey / command, the notices
+        tests/tst_proxydiag.cpp src/selftestecho.h) # 2.6 I3: the diagnostic info's section, no secrets in it or the logs
+    target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test bcrypt ws2_32 ${TSMEDIA_MF_LIBS})
     # 2.5 YouTube player: stand-ins for the helper (tst_playerload): the C API without WebView2, and one with another
     # API version. With the SDK, the real helper is loaded too (only tsmp_apiVersion, tsmp_init and tsmp_shutdown).
     foreach(_stub IN ITEMS tsmedia_player_stub tsmedia_player_stub_v99)
-        add_library(${_stub} SHARED player/tsmp_stub.cpp player/tsmp.h)
+        add_library(${_stub} SHARED player/tsmp_stub.cpp player/tsmp.h player/tsmpnet.h)
         set_target_properties(${_stub} PROPERTIES PREFIX "" MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         target_include_directories(${_stub} PRIVATE player)
         target_compile_definitions(${_stub} PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -747,21 +787,46 @@ if(TSMEDIA_BUILD_TOOLS)
     if(MSVC)
         target_compile_options(linkfetch_smoke PRIVATE /W4 /utf-8 /permissive- /wd4100)
     endif()
-    target_link_libraries(linkfetch_smoke PRIVATE Qt5::Core Qt5::Gui ${TSMEDIA_MF_LIBS})
+    target_link_libraries(linkfetch_smoke PRIVATE Qt5::Core Qt5::Gui bcrypt ${TSMEDIA_MF_LIBS})
     tsmedia_delay_load_media_foundation(linkfetch_smoke)
     # end 2.4 link previews (net-core)
+
+    # 2.6 chat proxy: proxy_smoke --socks5|--http host:port [--user u --password p] [--test] [--find] [--fetch URL]
+    # [--verbose] runs a bridge to the given proxy and the Test, Find or one Fetcher load through it; prints the
+    # classification and the bridge's record, never a secret. Never run by the unit tests.
+    add_executable(proxy_smoke
+        tools/proxy_smoke.cpp
+        ${TSMEDIA_LINKPREVIEW_NET_SOURCES}
+        src/mediaprobe.cpp
+        src/medialink.cpp
+        src/blurhash.cpp
+        src/i18n.cpp
+        src/video/mfvideo.cpp
+        src/video/mfcommon.cpp
+    )
+    target_include_directories(proxy_smoke PRIVATE src ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_compile_definitions(proxy_smoke PRIVATE ${TSMEDIA_COMMON_OPTIONS})
+    if(MSVC)
+        target_compile_options(proxy_smoke PRIVATE /W4 /utf-8 /permissive- /wd4100)
+    endif()
+    target_link_libraries(proxy_smoke PRIVATE Qt5::Core Qt5::Gui bcrypt ${TSMEDIA_MF_LIBS})
+    tsmedia_delay_load_media_foundation(proxy_smoke)
 
     # 2.5 YouTube player: player_smoke [--youtube <id>] loads the helper like the plugin does and drives it (a fake IFrame
     # API from memory, the Referer recorded, commands, clipping, owner minimize/restore/destroy, Esc, release). Muted.
     # Never run by the unit tests, never during a live test (it is CPU-heavy for a few seconds).
+    # 2.6 chat proxy: --youtube <id> --bridge socks5|http host:port plays through the plugin's own bridge (the F3 check of
+    # design 3.6.5), so the bridge's sources (and the link-preview rules it applies) are linked in too.
     if(TSMEDIA_PLAYER)
-        add_executable(player_smoke tools/player_smoke.cpp player/tsmp.h src/ytplayer/ytpage.cpp src/i18n.cpp)
-        target_include_directories(player_smoke PRIVATE src player)
+        add_executable(player_smoke tools/player_smoke.cpp player/tsmp.h player/tsmpnet.h src/ytplayer/ytpage.cpp src/i18n.cpp
+            ${TSMEDIA_LINKPREVIEW_NET_SOURCES} src/mediaprobe.cpp src/medialink.cpp src/blurhash.cpp src/video/mfvideo.cpp src/video/mfcommon.cpp)
+        target_include_directories(player_smoke PRIVATE src player ${CMAKE_CURRENT_BINARY_DIR}/generated)
         target_compile_definitions(player_smoke PRIVATE ${TSMEDIA_COMMON_OPTIONS} TSMP_HELPER_FILE="tsmedia_player_${TSMEDIA_ARCH}.dll")
         if(MSVC)
             target_compile_options(player_smoke PRIVATE /W4 /utf-8 /permissive- /wd4100)
         endif()
-        target_link_libraries(player_smoke PRIVATE Qt5::Core ole32 user32 gdi32) # Qt only for ytpage (the real page)
+        target_link_libraries(player_smoke PRIVATE Qt5::Core Qt5::Gui ole32 user32 gdi32 bcrypt ${TSMEDIA_MF_LIBS})
+        tsmedia_delay_load_media_foundation(player_smoke)
         add_dependencies(player_smoke tsmedia_player)
     endif()
 

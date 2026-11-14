@@ -212,6 +212,8 @@ QString noteText(Note note)
         return i18n::t("Video unavailable");
     case Note::CantPlay:
         return i18n::t("Can't play this video here");
+    case Note::Proxy:
+        return i18n::t("Can't play through the proxy");
     case Note::None:
         break;
     }
@@ -226,6 +228,8 @@ QString shortNoteText(const QString& note)
         return i18n::t("Can't play it here");
     if (note == noteText(Note::Unavailable))
         return note;
+    if (note == noteText(Note::Proxy))
+        return i18n::t("Proxy not working");
     return {};
 }
 

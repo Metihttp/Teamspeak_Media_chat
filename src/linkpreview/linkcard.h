@@ -70,6 +70,11 @@ enum class Player { None, Consent, Starting, Open, Popup, Hidden, Note };
 // ("Loading preview…"). 2.5: Host: the site asked to wait (HTTP 429, its allowance used up): "Site busy" (a ring with
 // 60 s or less left, still above that).
 enum class Waiting { None, Own, Sender, Checking, Host };
+// 2.6 chat proxy (design 1.5): a strip about the route. Paused*: the Click look of an automatic load that waits (the
+// chat proxy is down: "Paused · the proxy isn't working"; the Windows proxy failed: "Couldn't load through your
+// Windows proxy"), Load preview. ChatProxy / Windows: the Error look with Retry. Filtered*: "Your network blocks this
+// site" with "Use chat proxy" (a proxy is saved) or "Set up proxy…" (none) instead of Retry.
+enum class ProxyStrip { None, PausedChatProxy, PausedWindows, ChatProxy, Windows, FilteredUseProxy, FilteredSetUp };
 
 struct Card {
     Look              look = Look::Click;
@@ -109,6 +114,9 @@ struct Card {
     bool              playable = false;
     QString           note;
     qint64            resumeMs = 0;
+    // 2.6 chat proxy: the route's strip (Click and Error only) and the failure's short text (the tool tips' %1).
+    ProxyStrip        proxyStrip = ProxyStrip::None;
+    QString           proxyReason;
 };
 
 struct Pointer {
@@ -192,6 +200,10 @@ NoteText noteTextFor(const Card& card, const Layout& l, const PreviewStyle& styl
 QString  popupPillText(const Layout& l, const PreviewStyle& style);
 // The status line of a strip as the card shows it (tests, the live-test log).
 QString statusText(const Card& card);
+// 2.6: the strip's action label ("Load preview", "Retry", "Use chat proxy", "Set up proxy…", "Open in browser").
+QString actionLabel(const Card& card);
+// 2.6 chat proxy: the strip line of a proxy failure (the Error look's error text), empty for None and the paused ones.
+QString proxyErrorText(ProxyStrip strip);
 // Everything render() draws a card from, as one string: the chat draws a card again only when it changes (a "Site
 // busy" countdown when its shown number changes, a picture when it arrives, a cover when it is revealed, ...). The
 // time of a turning ring is not in it (the chat adds it).

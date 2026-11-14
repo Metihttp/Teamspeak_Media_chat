@@ -19,6 +19,10 @@
 
 #include <functional>
 
+namespace proxy {
+struct PlayerNetwork; // proxy/control.h (2.6 chat proxy)
+} // namespace proxy
+
 namespace ytbackend {
 
 // ---- the WebView2 Runtime (3.2) ---------------------------------------------------------------------------------
@@ -69,7 +73,7 @@ struct LoadOptions {
     QByteArray bytes;         // the helper's bytes (embeddedHelper(), or a test DLL)
     QString    dir;           // where it goes
     QString    arch;          // the name's arch part
-    int        apiVersion = 1; // TSMP_API_VERSION
+    int        apiVersion = 2; // TSMP_API_VERSION (2.6: tsmp_setNetwork)
     // Tests: called while the verified file is open without write sharing, right before LoadLibraryExW.
     std::function<void(const QString& path)> beforeLoad;
 };
@@ -112,6 +116,8 @@ class PlayerBackend
     virtual void                 releaseEngine() = 0;
     virtual void                 shutdown() = 0;
     virtual QString              runtimeVersion() = 0; // after load(); empty: unknown
+    // 2.6 chat proxy (design 3.6.1): the network of the next open, right before it. < 0: refused (nothing may open).
+    virtual int                  setNetwork(const proxy::PlayerNetwork& net) = 0;
 };
 
 // The real backend: the embedded helper and its C API.
@@ -130,6 +136,7 @@ class HelperBackend : public PlayerBackend
     void                 releaseEngine() override;
     void                 shutdown() override;
     QString              runtimeVersion() override;
+    int                  setNetwork(const proxy::PlayerNetwork& net) override;
 
     // Tests: another helper (a stub DLL's bytes) and folder instead of the embedded one.
     void setSourceForTests(const QByteArray& bytes, const QString& dir);
@@ -147,6 +154,7 @@ class HelperBackend : public PlayerBackend
         void* poll = nullptr;
         void* releaseEngine = nullptr;
         void* shutdown = nullptr;
+        void* setNetwork = nullptr; // 2.6
     };
     Api        m_api;
     bool       m_failed      = false; // unavailable for the session

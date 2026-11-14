@@ -27,6 +27,18 @@ struct Registration {
     explicit Registration(Factory factory) { registry().push_back(factory); }
 };
 
+// 2.6: process-wide setups run once before the first test class (the chat proxy's route snapshot: the Windows settings,
+// as a fresh 2.6 starts, so every Fetcher test runs on 2.5's route).
+using Setup = void (*)();
+inline std::vector<Setup>& setups()
+{
+    static std::vector<Setup> list;
+    return list;
+}
+struct SetupRegistration {
+    explicit SetupRegistration(Setup setup) { setups().push_back(setup); }
+};
+
 inline bool takesValue(const QString& option)
 {
     return option == QLatin1String("-o") || option == QLatin1String("-maxwarnings") || option == QLatin1String("-eventdelay") || option == QLatin1String("-keydelay")
@@ -76,6 +88,8 @@ inline int run(QObject* first, int argc, char** argv)
     const QString path   = target.section(QLatin1Char(','), 0, 0);
     const QString format = target.contains(QLatin1Char(',')) ? QLatin1Char(',') + target.section(QLatin1Char(','), 1) : QString();
 
+    for (Setup setup : setups())
+        setup();
     std::vector<QObject*> tests{first};
     std::vector<std::unique_ptr<QObject>> owned;
     for (Factory factory : registry()) {
@@ -116,6 +130,7 @@ inline int run(QObject* first, int argc, char** argv)
 } // namespace testmain
 
 #define TSMEDIA_REGISTER_TEST(Class) static const testmain::Registration tsmediaRegister##Class([]() -> QObject* { return new Class; });
+#define TSMEDIA_TEST_SETUP(Name, Fn) static const testmain::SetupRegistration tsmediaSetup##Name(Fn);
 
 // 2.2 emoji: a QApplication (a QGuiApplication too), so tests can use TeamSpeak-like widgets (a chat
 // browser and its input).

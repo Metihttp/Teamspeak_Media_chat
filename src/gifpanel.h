@@ -84,6 +84,9 @@ class GifPanel : public QWidget
     static void setAnimationsEnabledForTests(int enabled); // 1 / 0; -1: Windows' setting
     // Remove all's question (none: the leftover copies; one: "the GIF"; else "all N GIFs").
     static QString removeAllQuestion(int count);
+    // 2.6 (design 8.3): its destructive button: "Remove all" for two or more GIFs, else "Remove" (one GIF, or only the
+    // leftover copies). The Settings box (EmojiSection) uses the same text.
+    static QString removeButtonText(int count);
     // A tool tip as QToolTip must get it: escaped (a file name may be someone else's and look like HTML), lines kept.
     static QString toolTipHtml(const QString& text, bool oneLinePerLine);
     QString        toolTipFor(int index) const; // the tile's tool tip text (plain; tests)

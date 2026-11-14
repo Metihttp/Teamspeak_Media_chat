@@ -193,6 +193,9 @@ Decision decide(linkpreview::Kind kind, bool hidden, const LocalState& local, co
     case Local::TooLarge:
         d.look = linkcard::Look::TooLarge;
         break;
+    case Local::Paused:
+        d.look = linkcard::Look::Click; // 2.6: waits for a click (or for the route); never an automatic load
+        break;
     case Local::Idle:
     case Local::Loaded:
     case Local::OverAutoLimit:
@@ -291,6 +294,9 @@ Decision decide(const linkpreview::Target& target, bool hidden, const LocalState
     case Local::Cooling:
         d.look = Look::Loading;
         d.wait = Wait::Host;
+        break;
+    case Local::Paused:
+        d.look = Look::Click; // 2.6: waits for a click (or for the route); never an automatic load
         break;
     case Local::Idle:
     case Local::Loaded:
@@ -459,6 +465,8 @@ const char* holdReasonName(HoldReason reason)
         return "nothing";
     case HoldReason::Failed:
         return "failed";
+    case HoldReason::Paused:
+        return "paused";
     }
     return "none";
 }
@@ -478,6 +486,8 @@ HoldReason holdReason(const Decision& d, const LocalState& local, const Context&
         return HoldReason::Nothing;
     if (local.state == Local::Failed || local.state == Local::TooLarge)
         return HoldReason::Failed;
+    if (local.state == Local::Paused)
+        return HoldReason::Paused;
     if (local.state == Local::Loading)
         return HoldReason::None; // loading now
     if (context.senderNothing && d.look == Look::Absent)
@@ -499,6 +509,190 @@ HoldReason holdReason(const Decision& d, const LocalState& local, const Context&
     if (!budgetFree)
         return HoldReason::Budget;
     return HoldReason::None;
+}
+
+// ---- 2.6 chat proxy ------------------------------------------------------------------------------------------------
+
+bool viaChatProxy(proxy::Via via, proxy::Failure failure)
+{
+    if (via == proxy::Via::Bridge)
+        return true;
+    // Refused: the Windows route's refusals (W1, and a setup script that didn't answer in time, which only Windows mode
+    // refuses with Slow) are the Windows proxy's; every other refusal is the chat proxy's (its password, its bridge).
+    if (via == proxy::Via::Refused)
+        return failure != proxy::Failure::SocksOnlyWindows && failure != proxy::Failure::UnsupportedWindowsProxy && failure != proxy::Failure::Slow;
+    return false;
+}
+
+LocalState afterRouteFailure(LocalState local, const QString& code, proxy::Via via, proxy::Failure failure, bool decisive, quint64 generation,
+                             bool chatProxyDown)
+{
+    local.code            = code;
+    local.via             = via;
+    local.proxyFailure    = failure;
+    local.proxyDecisive   = decisive;
+    local.routeGeneration = generation;
+    local.progress        = -1.0;
+    local.pause           = Pause::None;
+    local.error.clear();
+    const bool automatic = !local.clicked;
+    if (code == QLatin1String(linkpreview::errors::kRouteDown)) {
+        local.state = Local::Paused;
+        local.pause = Pause::ChatProxy;
+        local.via   = proxy::Via::Bridge;
+    } else if (code == QLatin1String(linkpreview::errors::kProxy) && viaChatProxy(via, failure)) {
+        if (automatic && decisive && chatProxyDown) {
+            local.state = Local::Paused;
+            local.pause = Pause::ChatProxy;
+        } else {
+            local.state = Local::Failed;
+        }
+    } else if (code == QLatin1String(linkpreview::errors::kProxy)) {
+        if (automatic) {
+            local.state = Local::Paused; // the quiet click look (F2): no error card for an automatic load
+            local.pause = Pause::WindowsProxy;
+        } else {
+            local.state = Local::Failed;
+        }
+    } else {
+        local.state = Local::Failed; // filtered (and anything else this is given)
+    }
+    return local;
+}
+
+linkcard::ProxyStrip proxyStripOf(const LocalState& local, bool proxySaved)
+{
+    using linkcard::ProxyStrip;
+    if (local.state == Local::Paused) {
+        if (local.pause == Pause::ChatProxy)
+            return ProxyStrip::PausedChatProxy;
+        if (local.pause == Pause::WindowsProxy)
+            return ProxyStrip::PausedWindows;
+        return ProxyStrip::None; // Click: the plain Load preview strip
+    }
+    if (local.state != Local::Failed)
+        return ProxyStrip::None;
+    if (local.code == QLatin1String(linkpreview::errors::kFiltered))
+        return proxySaved ? ProxyStrip::FilteredUseProxy : ProxyStrip::FilteredSetUp;
+    if (local.code == QLatin1String(linkpreview::errors::kProxy) || local.code == QLatin1String(linkpreview::errors::kRouteDown))
+        return viaChatProxy(local.via, local.proxyFailure) ? ProxyStrip::ChatProxy : ProxyStrip::Windows;
+    return ProxyStrip::None;
+}
+
+bool pausesOnDown(const LocalState& local, quint64 generation)
+{
+    return local.state == Local::Failed && !local.clicked && local.code == QLatin1String(linkpreview::errors::kProxy) && local.proxyDecisive
+           && viaChatProxy(local.via, local.proxyFailure) && local.routeGeneration == generation;
+}
+
+bool resumesOnHealth(const LocalState& local)
+{
+    return local.state == Local::Paused && local.pause == Pause::ChatProxy;
+}
+
+LocalState pausedForChatProxy(quint64 generation)
+{
+    LocalState loading;
+    loading.state = Local::Loading;
+    return afterRouteFailure(loading, QString::fromLatin1(linkpreview::errors::kRouteDown), proxy::Via::Unset, proxy::Failure::None, false, generation,
+                             true);
+}
+
+bool pausesForChatProxy(bool chatProxyDown, bool cacheChecked, bool ownPipeline)
+{
+    return chatProxyDown && cacheChecked && !ownPipeline;
+}
+
+AfterRoute afterRouteChange(const LocalState& local, bool toChatProxy)
+{
+    const bool proxyFailed = local.state == Local::Failed
+                             && (local.code == QLatin1String(linkpreview::errors::kProxy) || local.code == QLatin1String(linkpreview::errors::kRouteDown));
+    const bool filtered    = local.state == Local::Failed && local.code == QLatin1String(linkpreview::errors::kFiltered);
+    const bool walled      = local.state == Local::Nothing && local.code == QLatin1String(linkpreview::errors::kWalled);
+    const bool paused      = local.state == Local::Paused;
+    if (toChatProxy)
+        return paused || proxyFailed || filtered || walled ? AfterRoute::Idle : AfterRoute::Keep;
+    // Away from a proxy (custom -> Windows or direct, Windows <-> direct): nothing that was posted while the user relied on
+    // a proxy is fetched outside it without a click (S4).
+    if ((paused || proxyFailed || walled) && !local.clicked)
+        return AfterRoute::Click;
+    return AfterRoute::Keep;
+}
+
+AfterRoute afterRouteChangeResumed(const LocalState& local, bool toChatProxy)
+{
+    if (toChatProxy || !resumedStillWaits(local))
+        return AfterRoute::Keep;
+    // Review fix: Cooling (a site's 429, the gate's wait) hasn't loaded it: it would load by itself on the new route once
+    // its time comes. A link that waits for a click already stays as it is (counted once).
+    return local.state == Local::Paused && local.pause == Pause::Click ? AfterRoute::Keep : AfterRoute::Click;
+}
+
+bool resumedStillWaits(const LocalState& local)
+{
+    if (local.clicked)
+        return false; // the user's now
+    return local.state == Local::Idle || local.state == Local::Loading || local.state == Local::Cooling || local.state == Local::Paused;
+}
+
+int routeChangePass(QHash<QString, LocalState>* local, QSet<QString>* resumed, const QSet<QString>& pipelineWaits, bool toChatProxy,
+                    QStringList* idled)
+{
+    LocalState click;
+    click.state = Local::Paused;
+    click.pause = Pause::Click;
+    int waiting = 0;
+    for (auto it = local->begin(); it != local->end();) {
+        const AfterRoute next = afterRouteChange(it.value(), toChatProxy);
+        if (next == AfterRoute::Idle) {
+            // Back to the normal rules on the chat proxy; it still waited for a proxy until it loads (review fix).
+            resumed->insert(it.key());
+            if (idled)
+                idled->append(it.key());
+            it = local->erase(it);
+            continue;
+        }
+        if (next == AfterRoute::Click) {
+            it.value() = click;
+            ++waiting;
+        }
+        ++it;
+    }
+    for (auto it = resumed->begin(); it != resumed->end();) {
+        // Review fix: our own pipeline's download of the link is its own (as for the running loads): never canceled or
+        // turned into a click here; its end decides what the slot shows (our own message's error with Retry included).
+        if (pipelineWaits.contains(*it)) {
+            ++it;
+            continue;
+        }
+        const LocalState l = local->value(*it);
+        if (toChatProxy) {
+            if (resumedStillWaits(l))
+                ++it; // still remembered (review fix: custom -> custom kept them only until the next pass)
+            else
+                it = resumed->erase(it);
+            continue;
+        }
+        if (afterRouteChangeResumed(l, false) == AfterRoute::Click) {
+            local->insert(*it, click);
+            ++waiting;
+        }
+        it = resumed->erase(it); // a click, its end, or Paused: afterRouteChange's rules from now on
+    }
+    return waiting;
+}
+
+ProxyMenu proxyMenuOf(const LocalState& local, bool proxyOn, bool proxySaved)
+{
+    ProxyMenu        m;
+    const linkcard::ProxyStrip strip = proxyStripOf(local, proxySaved);
+    const bool onChat   = strip == linkcard::ProxyStrip::ChatProxy || strip == linkcard::ProxyStrip::PausedChatProxy;
+    const bool windows  = strip == linkcard::ProxyStrip::Windows || strip == linkcard::ProxyStrip::PausedWindows;
+    const bool filtered = strip == linkcard::ProxyStrip::FilteredUseProxy || strip == linkcard::ProxyStrip::FilteredSetUp;
+    m.turnOff  = onChat && proxyOn;
+    m.turnOn   = (filtered || windows) && proxySaved && !proxyOn;
+    m.settings = onChat || windows || filtered || local.state == Local::Paused;
+    return m;
 }
 
 // ---- Core links ---------------------------------------------------------------------------------------

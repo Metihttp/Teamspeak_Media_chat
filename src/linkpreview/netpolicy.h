@@ -21,6 +21,7 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+#include <QVector>
 
 #include <array>
 
@@ -54,6 +55,21 @@ struct Address {
 bool isPublicIPv4(quint32 address); // host byte order
 bool isPublicAddress(const Address& address); // false for a null address
 
+// 2.6: what a local DNS answer for a public name means on the direct route (design 4.3).
+//  * fake-IP: 198.18.0.0/15 and fc00::/18, the defaults of Clash / mihomo and sing-box fake-IP DNS (a TUN VPN connects
+//    by name at its exit);
+//  * the sinkhole: 10.10.34.0/24, the addresses a filtered name gets from Iranian DNS (research_users 1.1), and nothing
+//    else (S6: any other private answer stays a neutral "blocked" with no proxy offer).
+bool isFakeIpAddress(const Address& address);
+bool isSinkholeAddress(const Address& address);
+enum class Answer {
+    Public,   // every address public: load (2.5)
+    FakeIp,   // public or fake-IP and at least one fake (W2): load with the proxied routes' name rules
+    Filtered, // every non-public address in the sinkhole set (W3): "Your network blocks this site"
+    Blocked,  // anything else (a LAN or split-horizon answer, 127.0.0.1, empty): 2.5's neutral refusal
+};
+Answer classifyAnswer(const QVector<Address>& addresses);
+
 // An address as text: strict dotted IPv4 ("93.184.216.34") or IPv6 ("2606:2800::1", "::ffff:1.2.3.4"),
 // also as Windows may report one: "[::1]:443", "1.2.3.4:443", with a "%zone". Null if it is none.
 Address parseAddress(const QString& text);
@@ -83,7 +99,18 @@ QUrl redirectTarget(const QUrl& current, const QString& location);
 //    matches one is fetched directly.
 // At most kMaxProxyChars of either list are read; an entry with control characters is ignored.
 constexpr int kMaxProxyChars = 4096;
-QString proxyForHost(const QString& proxyList, const QString& bypassList, const QString& host);
+QString proxyForHost(const QString& proxyList, const QString& bypassList, const QString& host); // pickProxy().servers
+// 2.6 (rule W1): the manual setting for host. servers: the usable HTTP proxies ("https=" entries first, then entries
+// without a scheme, then "http=" ones when there is no SOCKS entry; an HTTP proxy tunnels https with CONNECT), joined
+// with ';', to be handed to WinHTTP bare. socksOnly: the host isn't bypassed, no "https=" or plain entry is set, but a
+// "socks=" entry or a socks5:// / socks:// server is (WinINet and Chromium use it for https before an "http=" entry):
+// refused (SocksOnlyWindows), never direct. Bypassed or nothing at all: direct (both empty).
+struct PickedProxy {
+    QString servers;
+    bool    socksOnly = false;
+    QString socksServer; // the first SOCKS entry ("host:port")
+};
+PickedProxy pickProxy(const QString& proxyList, const QString& bypassList, const QString& host);
 bool    bypassesProxy(const QString& bypassList, const QString& host);
 // What an auto-config script (a setup script, or one found by WPAD on the local network) is asked about:
 // "https://<host>/" only, as browsers do for https, never the path or query (they may hold tokens, and the

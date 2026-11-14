@@ -16,11 +16,11 @@ Open the settings with **Plugins → TS Media chat → Settings…**, by typing 
 | [Sending](#sending-tab) | Sending, Note for people without the plugin, Dropping files, Videos |
 | [Receiving & playback](#receiving--playback-tab) | Receiving (with data saver), Playback, Spoilers |
 | [Servers](#servers-tab) | Servers (settings for single servers), Server access (for server admins) |
-| [Privacy & updates](#privacy--updates-tab) | Privacy (reactions and presence), Link previews, Updates |
+| [Privacy & updates](#privacy--updates-tab) | Privacy (reactions and presence), Link previews, Chat proxy, Updates |
 
 - <kbd>Ctrl</kbd>+<kbd>Tab</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> switch tabs, and the dialog opens on the tab you used last. On a small screen the tabs scroll; the window keeps its size when you switch tabs.
 - **OK** saves and closes, **Apply** saves and keeps the dialog open, **Cancel** closes without saving.
-- **Restore defaults** only fills in the default of every option; nothing is saved until you click **OK** or **Apply**. It never touches your update choice, a skipped version, the settings of single servers or anything done in *Server access*.
+- **Restore defaults** only fills in the default of every option; nothing is saved until you click **OK** or **Apply**. It never touches your update choice, a skipped version, the settings of single servers, the [chat proxy](#chat-proxy) or anything done in *Server access*.
 - Only the options you changed are saved. The volume you set in the gallery viewer is kept, and the dialog follows it.
 - Options that only matter when another one is on are indented under it and greyed out while it is off.
 
@@ -208,9 +208,39 @@ Both travel through TeamSpeak's plugin commands only; nothing leaves TeamSpeak. 
 | Show cards for other web pages | on | Links to pages that aren't pictures, GIFs, videos, GIF or media sites or well-known sites get a card (site, title, a short text, a picture) read from the start of the page (at most 512 KB, never shown or run). The cards of Nextcloud and ownCloud shares that hold other files or folders follow this setting too. Off: those links get no card, your PC doesn't load those pages (except links shaped like a Nextcloud or ownCloud share, …/s/…, which are still loaded to learn whether they hold a picture, GIF or video), and your plugin makes no card for your own. Needs *Show previews for links to other websites* (greyed out while that is off). |
 | Load link previews automatically | on | Links without a preview made by their sender (people without TS Media 2.4, or 2.5 for pages and sites, the server chat) load their preview from the website by themselves while they are on your screen: cards (YouTube, well-known sites, other web pages) always when they scroll into view, also with data saver (then smaller: at most 128 KB of a page and a 512 KB picture), pictures and GIFs within *Download images, GIFs and voice messages automatically up to*, videos within *Download videos and audio automatically* (while that is *Off (download when played)*, within the image limit), and with data saver only cards. That connects your PC to the website, which sees your IP address. When the sender makes previews, the plugin waits for theirs instead (*Waiting for the sender's preview…*). A larger file shows **Load preview** with its size (or that it is over the limit, when the website doesn't say). Off: only on a click (**Load preview**, or **Load link previews** in a message's menu). Your own links show from your own download either way. Needs *Show previews for links to other websites* (greyed out while that is off). |
 | Make previews for links I send | on | When you send such a link, your PC loads it once from that website (the file, or the page and its picture) and shares the preview through the TeamSpeak server (the channel's files), so people with TS Media see it without contacting the website. Off: nothing is loaded or shared for your links. Needs *Show previews for links to other websites* (greyed out while that is off). |
-| Play YouTube videos in the chat | on | Play on a YouTube card shows YouTube's own player (Microsoft Edge WebView2), using YouTube's privacy-enhanced mode; in 2.5.0 in a window of its own over TeamSpeak. The player loads nothing before you press Play; the first time, the card asks once (*Play this video in a window?*). Off: Play opens the video in your browser, and WebView2's folders (`%LOCALAPPDATA%\TSMedia\webview2`, and `webview2-elevated` of a TeamSpeak that ran as administrator) are deleted once their processes have exited (or at the next start). Without the WebView2 Runtime, and in 32-bit TeamSpeak, videos always open in the browser (the hint says so). Needs *Show previews for links to other websites* (greyed out while that is off). |
+| Play YouTube videos in a TS Media window | on | Play on a YouTube card shows YouTube's own player (Microsoft Edge WebView2), using YouTube's privacy-enhanced mode, in a window of its own over TeamSpeak (before 2.6 this switch was called *Play YouTube videos in the chat*). With the [chat proxy](#chat-proxy) on, the player goes through it. The player loads nothing before you press Play; the first time, the card asks once (*Play this video in a window?*). Off: Play opens the video in your browser, and WebView2's folders (`%LOCALAPPDATA%\TSMedia\webview2`, and `webview2-elevated` of a TeamSpeak that ran as administrator) are deleted once their processes have exited (or at the next start). Without the WebView2 Runtime, and in 32-bit TeamSpeak, videos always open in the browser (the hint says so). Needs *Show previews for links to other websites* (greyed out while that is off). |
 
 Details: [privacy & security](PRIVACY-SECURITY.md#link-previews).
+
+### Chat proxy
+
+New in 2.6. Link previews, the YouTube player and update checks can go through an HTTP or SOCKS5 proxy, such as your VPN app's local port; TeamSpeak itself (the server connection, voice, chat, file transfers) never uses it. How to set it up with a VPN app: [FAQ](FAQ.md#how-do-i-use-ts-media-with-my-vpn-app); what it means for privacy: [privacy & security](PRIVACY-SECURITY.md#chat-proxy).
+
+The group in this tab has a status line and up to three buttons:
+
+- **The status** says what is in use now, for example *In use: SOCKS5 proxy 127.0.0.1:2080 · working*, *In use: … · not working: can't reach the proxy at 127.0.0.1:2080. Previews wait until it works.*, *TS Media uses the proxy in your Windows settings (127.0.0.1:10809).* or *TS Media connects directly. Sites your network blocks won't load.* While a proxy is saved and off, it ends with *Saved chat proxy: SOCKS5 proxy 127.0.0.1:2080 (off).*; without one it starts with *No chat proxy is set up.*
+- **Turn on chat proxy** / **Turn off chat proxy** (shown once a proxy is saved) acts at once, like **Check now**: not on **OK** or **Apply**, and **Cancel** doesn't undo it. It prints the same line in the chat as the Plugins menu.
+- **Chat proxy settings…** opens the *Chat proxy* window below.
+- **Use it as the chat proxy** shows only when your Windows settings name only a SOCKS proxy, which TS Media can't use through Windows: it opens the window filled in with that proxy (nothing is saved until you click **OK** there).
+
+The Settings dialog's **OK**, **Apply** and **Restore defaults** never change the chat proxy.
+
+**The *Chat proxy* window** (also opened by **Plugins → TS Media chat → Turn on chat proxy** and `/tsmedia proxy on` while none is set up, by a card's **Proxy settings…** or **Set up proxy…**, and by the link in a chat proxy notice):
+
+| Setting | Default | Range and notes |
+| --- | --- | --- |
+| Use a chat proxy for link previews, the YouTube player and update checks | off | On: everything TS Media itself loads from the web goes through the proxy below, never directly: when the proxy doesn't work, automatic previews wait and the chat says why once. The fields stay editable and can be tested while it is off. Turning it on with an empty server fills in `127.0.0.1`. |
+| Type | SOCKS5 | SOCKS5 or HTTP. An HTTP proxy is used with `CONNECT`, so the connection to the website stays encrypted end to end. Most VPN apps answer both on one port. Either way the proxy looks up the website's name, never your PC. |
+| Server | empty | An IPv4 or IPv6 address or a host name, without `http://` or a port: `127.0.0.1` for a VPN app on this PC. A proxy link or `host:port` typed here is split into the fields. |
+| Port | empty | 1 to 65535: your VPN app's local proxy port (v2rayN 10808, Throne and Nekoray 2080, Clash Verge Rev 7897, Hiddify 12334). Not TS Media's own local port. |
+| User name, Password | empty (optional) | Only when the proxy asks for a login (VPN apps on this PC usually don't). At most 255 bytes each; an HTTP proxy's user name can't contain `:`, and SOCKS5 needs a password with a user name. A saved password is never shown again (the field says *saved (type to replace)*). Changing the type, server, port or user name without typing the password again removes the saved password (the window says so; changing it back keeps it). It is stored with Windows DPAPI for your Windows account and this proxy server. It travels unencrypted to the proxy, and to a proxy on another computer only when that proxy asks for it (the window warns when a login is set for a proxy that isn't on this PC). |
+| When the chat proxy is off | Use Windows proxy settings | *Use Windows proxy settings*: the proxy Windows is set to use, if any (a proxy server, a setup script or automatic detection), as before 2.6; a VPN app's "system proxy" option sets one. A Windows setting that names only a SOCKS proxy is refused, not used directly. *No proxy (direct)*: no proxy at all; sites your network blocks won't load. |
+
+- **Find my VPN app** looks for a VPN app's proxy on this PC at ports 10808, 2080, 7897 and 12334 (one SOCKS5 greeting each; nothing leaves the PC) and fills in SOCKS5, `127.0.0.1` and the first port that answered (*Found a proxy on this PC at port 2080. Press Test, then OK.*).
+- **Paste from clipboard** fills the fields from a proxy link you copied: `socks5://`, `socks5h://`, `socks://` or `http://`, with an optional `user:password@`, or just `host:port`. Server links of VPN apps (`vless://`, `vmess://`, `ss://`, `trojan://` and the like), Telegram proxy links, `https://` and `socks4://` proxies are refused with a hint (add the server to your VPN app, then enter the app's local port here).
+- **Test** sends one request (`https://www.youtube.com/generate_204`) through the values in the form, saved or not, and says *Works · 612 ms* or what went wrong: *Can't reach the proxy at 127.0.0.1:2080. Is your VPN app running, and is 2080 its port?*, *This port doesn't answer as a SOCKS5 proxy. Try HTTP proxy.*, *The proxy asks for a user name and password.*, *The proxy refused the login. Check the user name and password.*, *The proxy can't reach the website. Is your VPN app connected to a server?*, *The proxy is too slow or isn't answering.*, *The connection was intercepted: the website's certificate isn't trusted.* and a few more. It saves nothing.
+- The status line at the bottom is the group's (see above), with **Use it as the chat proxy** when Windows names only a SOCKS proxy.
+- **OK** checks the fields (a problem shows under its field) and applies the change at once, without restarting TeamSpeak; **Cancel**, **Esc** or closing the window changes nothing.
 
 ### Updates
 
@@ -218,15 +248,16 @@ Details: [privacy & security](PRIVACY-SECURITY.md#link-previews).
 | --- | --- | --- |
 | Check for updates automatically | off until you agree | The plugin asks once (*Keep TS Media chat up to date?*). On: about once a day it asks GitHub whether there is a new version. Important fixes signed by the author install by themselves and start with the next TeamSpeak start (2.4.0 and later, [important updates](UPDATES.md#important-updates)); anything else waits for your click on **Update**. Off: nothing is checked or installed by itself. |
 
-- The status line shows your version and the last check (*Version 2.5.0 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**, also after an important update installed by itself) or a skipped version (**Undo**). Skipping a version doesn't hold back an important update; a version that rolled back is never installed by itself again, whatever **Undo** does.
+- The status line shows your version and the last check (*Version 2.6.0 · You have the latest version*), a version that is ready (**Update…**), an update waiting for a restart (**Restart now**, also after an important update installed by itself) or a skipped version (**Undo**). Skipping a version doesn't hold back an important update; a version that rolled back is never installed by itself again, whatever **Undo** does.
 - **Check now** checks once, also while automatic checks are off, and never installs anything without your click.
+- With the [chat proxy](#chat-proxy) on, every check and download goes through it; a failure there says *couldn't reach GitHub through the chat proxy*.
 - The newer-version hint (*Someone in this channel has TS Media chat X*) has no setting: it is only shown to you, and its **Check for updates** link checks once, like **Check now**. See [updates](UPDATES.md#someone-in-this-channel-has-a-newer-version).
 - Versions you build yourself show *Updates are turned off in versions you build yourself* instead.
 - What is sent and how updates are checked: [updates](UPDATES.md).
 
 ## Keys in settings.ini
 
-For reference, the keys 2.2 added. Values outside their range are corrected when the plugin starts.
+For reference, the keys 2.2 and later added. Values outside their range are corrected when the plugin starts.
 
 | Key | Setting |
 | --- | --- |
@@ -240,10 +271,16 @@ For reference, the keys 2.2 added. Values outside their range are corrected when
 | `dataSaver`, `revealSpoilers` | data saver, *Show spoilers without blurring* |
 | `showReactions`, `sharePresence` | Privacy |
 | `showLinkPreviews`, `showWebCards`, `autoLoadLinkPreviews`, `makeLinkPreviews` | Link previews (2.4; `showWebCards` 2.5) |
-| `playYouTubeInChat`, `youTubeNoticeShown`, `youTubeWindowSize` | 2.5: *Play YouTube videos in the chat*; the card's one-time question was answered with Play (never reset by Restore defaults); the player window's size (`WxH`) |
+| `playYouTubeInChat`, `youTubeNoticeShown`, `youTubeWindowSize` | 2.5: *Play YouTube videos in a TS Media window*; the card's one-time question was answered with Play (never reset by Restore defaults); the player window's size (`WxH`) |
+| `proxyOn` (`true`, `false`), `proxyWhenOff` (`system` or `direct`) | 2.6 chat proxy: *Use a chat proxy…* (on without a saved server and port reads as off) and *When the chat proxy is off* |
+| `proxyType` (`socks5` or `http`), `proxyHost`, `proxyPort` (1 to 65535), `proxyUser` | 2.6 chat proxy: its type, server, port and user name |
+| `proxyPassword` | 2.6 chat proxy: the password, Windows DPAPI-protected for your Windows account and this proxy server, never plain text (`dpapi1:` and base64; absent without a password). Copied to another PC or account, or with the server edited by hand, it can't be read: the window then asks for it again |
+| `proxyBridgePort` | 2.6 chat proxy: TS Media's local port for its proxy connection (127.0.0.1 only), kept so it stays the same across TeamSpeak starts |
 | (no keys) | Polls and live music have no settings. The music volume is remembered in `music.ini`, votes in `polls.json`, both next to `settings.ini`. |
 | `updateCheck` (0 = not asked, 1 = on, 2 = off), `updateConsentAsked`, `updateSkipVersion` | Updates |
 | `[server_<id>]` groups: `name`, `dataSaver`, `uploadDirectory`, `uploadMaxMB`, `addRequiredNotice` | Servers (`<id>` is 12 hex digits derived from the server's unique ID) |
 | `[accessGroups]` | the `tsmediachat` group id remembered per server (Server access) |
+
+The `proxy…` keys belong to the chat proxy alone: the Settings dialog's **OK**, **Apply** and **Restore defaults** never change them, and versions before 2.6 ignore them.
 
 2.2.0's `voiceMicrophone`, `voiceMuteTeamSpeakMic`, `voiceReview` and `voiceSounds` are ignored since 2.2.1 (voice messages have no settings any more).

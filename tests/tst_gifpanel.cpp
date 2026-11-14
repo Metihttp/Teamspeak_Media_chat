@@ -15,6 +15,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QPainter>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -175,6 +177,7 @@ class TestGifPanel : public QObject
     void openGuard();
     void footerReasonsFit();
     void removeAllLeftovers();
+    void removeButtonWording();
     void toolTips();
     void spoilerCovered();
     void animationBudget();
@@ -673,6 +676,86 @@ void TestGifPanel::removeAllLeftovers()
     QVERIFY(!m_lib->hasAnythingToRemove());
     QCOMPARE(m_lib->leftoverBytes(), qint64(0));
     QVERIFY(!QFileInfo::exists(gifs + a("/gifs.json.bad")));
+}
+
+// 2.6 (design 8.3): the destructive button says "Remove" for one GIF (or only leftover copies) and "Remove all" for more,
+// in the picker's bar (built once, its label follows the count at every showConfirm) and in the Settings box.
+void TestGifPanel::removeButtonWording()
+{
+    QCOMPARE(GifPanel::removeButtonText(0), a("Remove"));
+    QCOMPARE(GifPanel::removeButtonText(1), a("Remove"));
+    QCOMPARE(GifPanel::removeButtonText(2), a("Remove all"));
+    QCOMPARE(GifPanel::removeButtonText(37), a("Remove all"));
+
+    // The bar's button fits its text and the Cancel button stays left of it, inside the bar.
+    const auto checkBar = [](GifPanel* panel, const QString& expected) {
+        auto* remove = panel->findChild<QAbstractButton*>(a("tsmediaGifRemoveAll"));
+        auto* cancel = panel->findChild<QAbstractButton*>(a("tsmediaGifCancel"));
+        auto* bar    = panel->findChild<QWidget*>(a("tsmediaGifConfirm"));
+        QVERIFY(remove && cancel && bar);
+        QCOMPARE(remove->text(), expected);
+        QCOMPARE(remove->accessibleName(), expected);
+        QFont f = remove->font(); // the bar's buttons paint at 13 px DemiBold (gifpanel.cpp scaled())
+        f.setPixelSize(13);
+        f.setWeight(QFont::DemiBold);
+        QCOMPARE(remove->width(), QFontMetrics(f).horizontalAdvance(expected) + 24);
+        QVERIFY(remove->geometry().right() <= bar->width());
+        QVERIFY(cancel->geometry().right() < remove->x());
+        QVERIFY(cancel->x() > 0);
+    };
+
+    fill(3);
+    {
+        auto p = picker(false, true);
+        p->show();
+        GifPanel* panel = p->gifPanel();
+        panel->showConfirm();
+        QVERIFY(panel->confirmShown());
+        checkBar(panel, a("Remove all"));
+        const int wideRemove = panel->findChild<QAbstractButton*>(a("tsmediaGifRemoveAll"))->width();
+        panel->hideConfirm();
+        // Two removed through the menu: the same bar now asks about one GIF and its button says Remove (narrower).
+        panel->removeIndex(0);
+        panel->removeIndex(1);
+        QCOMPARE(m_lib->count(), 1);
+        panel->showConfirm();
+        checkBar(panel, a("Remove"));
+        QVERIFY(panel->findChild<QAbstractButton*>(a("tsmediaGifRemoveAll"))->width() < wideRemove);
+    }
+
+    fill(1);
+    {
+        auto p = picker(true, true);
+        p->show();
+        GifPanel* panel = p->gifPanel();
+        panel->showConfirm();
+        checkBar(panel, a("Remove"));
+    }
+
+    // Settings -> General -> Emoji: Remove all GIFs… asks with "Remove" for the one GIF. (QMessageBox::showEvent asks the
+    // platform for the window's system menu, which the offscreen platform doesn't have: its Show event is swallowed.)
+    QCOMPARE(GifLibrary::instance(), m_lib.get());
+    struct SwallowBoxShow : QObject {
+        bool eventFilter(QObject* watched, QEvent* event) override { return event->type() == QEvent::Show && qobject_cast<QMessageBox*>(watched); }
+    } swallow;
+    qApp->installEventFilter(&swallow);
+    {
+        QWidget window;
+        window.setWindowTitle(a("TS Media chat"));
+        auto* section = new EmojiSection(&window);
+        section->load(Settings::instance());
+        auto* button = window.findChild<QPushButton*>(a("tsmediaRemoveAllGifs"));
+        QVERIFY(button && button->isEnabled());
+        button->click();
+        QMessageBox* box = window.findChild<QMessageBox*>();
+        QVERIFY(box);
+        QStringList texts;
+        for (QAbstractButton* b : box->buttons())
+            texts << b->text();
+        QVERIFY2(texts.contains(a("Remove")) && !texts.contains(a("Remove all")), qPrintable(texts.join(a("|"))));
+        box->close();
+    }
+    qApp->removeEventFilter(&swallow);
 }
 
 void TestGifPanel::toolTips()

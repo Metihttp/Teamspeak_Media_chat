@@ -10,6 +10,12 @@
 //  * the helper never calls into the plugin: no callbacks, no window procedures of the plugin, no hooks. The plugin
 //    polls tsmp_poll with an owned timer while a player exists, is being created or an engine release is pending;
 //  * rect and clip are in screen device pixels.
+//
+// 2.6 (API version 2, design 3.6): tsmp_setNetwork tells the helper how the next environment's browser reaches the
+// web (the Windows settings, direct, or TS Media's loopback bridge for the chat proxy). tsmp_init sets it to UNSET:
+// an open without a network fails ("network") and no environment is made. The helper never releases an environment
+// by itself: an open whose network would need other browser arguments than the living environment's fails
+// ("network") and the plugin releases it (player/tsmpnet.h has the pure rules both sides use).
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -20,7 +26,7 @@
 extern "C" {
 #endif
 
-#define TSMP_API_VERSION 1
+#define TSMP_API_VERSION 2
 
 // Event kinds (TsmpEvent::kind).
 enum {
@@ -30,7 +36,10 @@ enum {
     TSMP_EV_ERROR         = 4,  // value: YouTube's error code (2, 5, 100, 101, 150, 153, ...)
     TSMP_EV_TIME          = 5,  // value: the current time in whole seconds (the page reports it by itself)
     TSMP_EV_OPENURL       = 6,  // text: an https address the user asked to open (a link in YouTube's player)
-    TSMP_EV_FAILED        = 7,  // value: HRESULT; text: "environment" | "controller" | "process" | "navigation"
+    TSMP_EV_FAILED        = 7,  // value: HRESULT; text: "environment" | "controller" | "process" | "navigation" |
+                                // 2.6: "network" (no network set, or the living environment has other arguments),
+                                // "network-override" (chat proxy: a WebView2 override mentions a proxy), "busy" (the
+                                // old browser process still holds the folder: 0x8007139F at the controller)
     TSMP_EV_CLOSEDBYUSER  = 8,  // text: "WxH", the window's last client size in device px (the popup's close box)
     TSMP_EV_LOST          = 9,  // the window was destroyed without tsmp_close (its owner went); the controller is closed
     TSMP_EV_KEY           = 10, // value: a virtual key (only VK_ESCAPE)
@@ -38,8 +47,12 @@ enum {
                                 // 1: not heard within 10 s (a new environment was made anyway); 2: there was nothing to
                                 // release (none was made, or its creation failed); 3: a new open took the environment
                                 // that was being made (no release happened)
-    TSMP_EV_TEST          = 100 // testMode only (tools/player_smoke): text "referer:<value>", "request:<url>", "page:<msg>"
+    TSMP_EV_TEST          = 100 // testMode only (tools/player_smoke): text "referer:<value>", "request:<url>", "page:<msg>",
+                                // 2.6 "auth:<answered|cancelled> <uri> <challenge>" (a proxy login request)
 };
+
+// 2.6: how the environment's browser reaches the web (TsmpNetwork::mode).
+enum { TSMP_NET_UNSET = 0, TSMP_NET_SYSTEM = 1, TSMP_NET_DIRECT = 2, TSMP_NET_BRIDGE = 3 };
 
 // testMode bits (TsmpInit::testMode; the plugin always passes 0).
 enum {
@@ -64,6 +77,14 @@ typedef struct TsmpOpen {
     const wchar_t* windowTitle; // the popup's title
 } TsmpOpen;
 
+typedef struct TsmpNetwork {
+    int            mode;       // TSMP_NET_*
+    int            bridgePort; // BRIDGE: 1024..65535
+    const wchar_t* realm;      // BRIDGE: "tsmedia-<16 hex>"
+    const wchar_t* user;       // BRIDGE: "tsm-p"
+    const wchar_t* token;      // BRIDGE: the bridge's token (never the user's password)
+} TsmpNetwork;
+
 typedef struct TsmpEvent {
     int     player; // the player id (0: the engine)
     int     kind;   // TSMP_EV_*
@@ -81,6 +102,7 @@ typedef void(__cdecl* tsmp_close_fn)(int id);
 typedef int(__cdecl* tsmp_poll_fn)(TsmpEvent* out, int max);
 typedef void(__cdecl* tsmp_releaseEngine_fn)(void);
 typedef void(__cdecl* tsmp_shutdown_fn)(void);
+typedef int(__cdecl* tsmp_setNetwork_fn)(const TsmpNetwork* net);
 
 #ifdef TSMP_BUILDING_HELPER
 #define TSMP_EXPORT __declspec(dllexport)
@@ -95,6 +117,8 @@ TSMP_EXPORT void __cdecl tsmp_close(int id);                            // synch
 TSMP_EXPORT int __cdecl  tsmp_poll(TsmpEvent* out, int max);            // events in order; never blocks
 TSMP_EXPORT void __cdecl tsmp_releaseEngine(void);                      // no player left: release the environment
 TSMP_EXPORT void __cdecl tsmp_shutdown(void);                           // synchronous: every player closed, everything released
+TSMP_EXPORT int __cdecl  tsmp_setNetwork(const TsmpNetwork* net);       // 0 ok; < 0 refused (unknown mode; BRIDGE without a
+                                                                         // valid port, realm, user or token): UNSET then
 #endif
 
 #ifdef __cplusplus

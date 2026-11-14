@@ -26,8 +26,10 @@
 #include "privacysection.h"
 #include "settings.h"
 #include "testmain.h"
+#include "proxy/records.h"
 #include "tsmp.h"
 #include "tsmpmsg.h"
+#include "tsmpnet.h"
 #include "ytplayer/ytbackend.h"
 #include "ytplayer/ytpage.h"
 #include "ytplayer/ytplayer.h"
@@ -48,6 +50,9 @@ struct FakeState {
     QStringList          commands; // "id:command"
     QVector<int>         closes;
     QVector<PlayerEvent> queue;
+    // 2.6 chat proxy: every setNetwork (its kind and port) in order with the opens ("net:<kind>" / "open")
+    QStringList          calls;
+    int                  refuseNetwork = 0; // > 0: setNetwork answers -1 that many times
     void push(int player, int kind, int value = 0, const QString& text = QString())
     {
         PlayerEvent e;
@@ -80,7 +85,18 @@ class FakeBackend : public PlayerBackend
     int open(const PlayerOpen& o) override
     {
         st->opens.append(o);
+        st->calls << a("open");
         return st->refuseOpen ? 0 : ++st->next;
+    }
+    int setNetwork(const proxy::PlayerNetwork& net) override
+    {
+        static const char* const kinds[] = {"blocked", "system", "direct", "bridge"};
+        st->calls << a("net:") + a(kinds[static_cast<int>(net.kind)]) + (net.bridgePort ? a(":") + QString::number(net.bridgePort) : QString());
+        if (st->refuseNetwork > 0) {
+            --st->refuseNetwork;
+            return -1;
+        }
+        return net.kind == proxy::PlayerNetwork::Kind::Blocked ? -1 : 0;
     }
     void place(int id, const QRect& rect, const QRect& clip, double, bool visible) override
     {
@@ -119,6 +135,20 @@ struct FakeHost {
     int                                 pauses = 0;
     bool                                muted  = false;
     QStringList                         scrolled;
+    // 2.6 chat proxy: the network the player is told (the Windows settings by default), the bridge's player records,
+    // what route health heard, the feedback lines.
+    proxy::PlayerNetwork                net = []() {
+        proxy::PlayerNetwork n;
+        n.kind       = proxy::PlayerNetwork::Kind::System;
+        n.blockedBy  = proxy::Failure::None;
+        n.generation = 1;
+        return n;
+    }();
+    QVector<proxy::Record>              records;
+    QVector<quint64>                    recordsAsked;
+    QVector<proxy::RouteReport>         reports;
+    QVector<quint64>                    oks;
+    QStringList                         feedback;
     QTextBrowser*                       browser = nullptr; // spot.shown follows its visibility when set
 
     YouTubePlayer::Host make()
@@ -143,6 +173,14 @@ struct FakeHost {
             if (it != spots.end())
                 it->thumb.moveTop(it->view.top() + 10); // scrolled so the whole thumbnail shows
         };
+        h.network       = [this] { return net; };
+        h.playerRecords = [this](quint64 since) {
+            recordsAsked << since;
+            return records;
+        };
+        h.report   = [this](const proxy::RouteReport& r) { reports << r; };
+        h.reportOk = [this](quint64 generation) { oks << generation; };
+        h.feedback = [this](const QString& slot, const QString& text) { feedback << slot + QLatin1Char(' ') + text; };
         return h;
     }
 };
@@ -197,14 +235,17 @@ class TestYouTubePlayer : public QObject
         for (int i = 0; i < 200 && !st->queue.isEmpty(); ++i)
             QTest::qWait(10);
     }
-    // An owned single-shot timer fires now (its interval kept for its next start).
+    // An owned single-shot timer fires now (its interval kept for its next start). 2.6: waited for by its own signal, not a
+    // fixed 30 ms: late in the whole suite Windows may serve a 1 ms timer with a 15.6 ms tick (USER timer fallback), and
+    // two ticks overran the fixed wait.
     void fire(const char* timer)
     {
         QTimer* t = player->timerForTests(timer);
         QVERIFY(t);
-        const int interval = t->interval();
+        const int  interval = t->interval();
+        QSignalSpy fired(t, &QTimer::timeout);
         t->start(1);
-        QTest::qWait(30);
+        QVERIFY(fired.count() > 0 || fired.wait(5000));
         if (!t->isActive())
             t->setInterval(interval);
         else
@@ -1348,6 +1389,364 @@ class TestYouTubePlayer : public QObject
         // The hint: this test build has no helper resource.
         QVERIFY(PrivacySection::playYouTubeHint().contains(a("privacy-enhanced mode")));
         QVERIFY(PrivacySection::playYouTubeHint().contains(a("has no YouTube player")));
+    }
+
+    // ---- 2.6 chat proxy (design 9.3 tests 2 and 3) ----
+    void tsmpNet()
+    {
+        const std::wstring common = L"--autoplay-policy=no-user-gesture-required --force-webrtc-ip-handling-policy=disable_non_proxied_udp";
+        QVERIFY(tsmpnet::argsFor(TSMP_NET_SYSTEM, 0) == common);
+        QVERIFY(tsmpnet::argsFor(TSMP_NET_DIRECT, 0) == common + L" --no-proxy-server");
+        QVERIFY(tsmpnet::argsFor(TSMP_NET_BRIDGE, 47123) == common + L" --proxy-server=http://127.0.0.1:47123");
+        QVERIFY(tsmpnet::argsFor(TSMP_NET_UNSET, 0).empty());
+        QVERIFY(tsmpnet::argsFor(7, 0).empty());
+        QVERIFY(tsmpnet::argsFor(TSMP_NET_BRIDGE, 80).empty()); // never a privileged port
+        // The WebRTC switch in every family (S10); never a bypass list or direct:// (fail closed).
+        for (const int mode : {TSMP_NET_SYSTEM, TSMP_NET_DIRECT, TSMP_NET_BRIDGE}) {
+            const QString args = QString::fromStdWString(tsmpnet::argsFor(mode, 47123));
+            QVERIFY(args.contains(a("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")));
+            QVERIFY(!args.contains(a("bypass")));
+            QVERIFY(!args.contains(a("direct://")));
+        }
+        // The bridge's argument has nothing but the port's digits after the fixed text.
+        const QString bridgeArgs = QString::fromStdWString(tsmpnet::argsFor(TSMP_NET_BRIDGE, 65535));
+        QVERIFY(bridgeArgs.endsWith(a(" --proxy-server=http://127.0.0.1:65535")));
+        tsmpnet::Net net;
+        QVERIFY(!tsmpnet::openAllowed(net)); // UNSET (S9)
+        QVERIFY(tsmpnet::validNetwork(net));
+        net.mode = TSMP_NET_SYSTEM;
+        QVERIFY(tsmpnet::openAllowed(net));
+        net.mode       = TSMP_NET_BRIDGE;
+        net.bridgePort = 47123;
+        net.realm      = L"tsmedia-0123456789abcdef";
+        net.user       = L"tsm-p";
+        net.token      = std::wstring(43, L'A');
+        QVERIFY(tsmpnet::validNetwork(net));
+        QVERIFY(tsmpnet::openAllowed(net));
+        for (const auto& bad : {std::make_pair(0, 0), std::make_pair(1, 0), std::make_pair(2, 0), std::make_pair(3, 0)}) {
+            tsmpnet::Net b = net;
+            if (bad.first == 0)
+                b.bridgePort = 1023;
+            if (bad.first == 1)
+                b.realm = L"tsmedia-0123456789ABCDEF"; // upper case
+            if (bad.first == 2)
+                b.user = L"tsm-f1";
+            if (bad.first == 3)
+                b.token = L"short";
+            QVERIFY(!tsmpnet::validNetwork(b));
+            QVERIFY(!tsmpnet::openAllowed(b));
+        }
+        tsmpnet::Net unknown;
+        unknown.mode = 9;
+        QVERIFY(!tsmpnet::validNetwork(unknown));
+        // The bridge's login only (I2a finding: get_Uri "http://127.0.0.1:<port>/", get_Challenge "Basic realm=...").
+        const wchar_t* challenge = L"Basic realm=\"tsmedia-0123456789abcdef\"";
+        QVERIFY(tsmpnet::answersChallenge(net, L"http://127.0.0.1:47123/", challenge));
+        QVERIFY(tsmpnet::answersChallenge(net, L"http://127.0.0.1:47123", challenge));
+        QVERIFY(!tsmpnet::answersChallenge(net, L"http://127.0.0.1:47124/", challenge));
+        QVERIFY(!tsmpnet::answersChallenge(net, L"https://127.0.0.1:47123/", challenge));
+        QVERIFY(!tsmpnet::answersChallenge(net, L"http://localhost:47123/", challenge));
+        QVERIFY(!tsmpnet::answersChallenge(net, L"http://127.0.0.1:47123/", L"Basic realm=\"tsmedia-ffffffffffffffff\""));
+        QVERIFY(!tsmpnet::answersChallenge(net, L"https://www.youtube.com/", L"Basic realm=\"site\"")); // a website's 401
+        QVERIFY(!tsmpnet::answersChallenge(net, nullptr, challenge));
+        tsmpnet::Net system = net;
+        system.mode         = TSMP_NET_SYSTEM;
+        QVERIFY(!tsmpnet::answersChallenge(system, L"http://127.0.0.1:47123/", challenge));
+        // Overrides (S9).
+        QVERIFY(!tsmpnet::overrideMentionsProxy({}));
+        QVERIFY(!tsmpnet::overrideMentionsProxy({L"", L"--disable-gpu"}));
+        QVERIFY(tsmpnet::overrideMentionsProxy({L"--proxy-server=x"}));
+        QVERIFY(tsmpnet::overrideMentionsProxy({L"--disable-gpu", L"--PROXY-bypass-list=*"})); // the second hive
+        QVERIFY(tsmpnet::overrideMentionsProxy({L"", L"", L"--no-Proxy-server"}));
+        // Notes.
+        QCOMPARE(ytpage::noteText(ytpage::Note::Proxy), a("Can't play through the proxy"));
+        QCOMPARE(ytpage::shortNoteText(ytpage::noteText(ytpage::Note::Proxy)), a("Proxy not working"));
+    }
+    proxy::PlayerNetwork bridgeNet(quint64 generation = 2, quint16 port = 47123)
+    {
+        proxy::PlayerNetwork n;
+        n.kind       = proxy::PlayerNetwork::Kind::Bridge;
+        n.blockedBy  = proxy::Failure::None;
+        n.bridgePort = port;
+        n.realm      = "tsmedia-0123456789abcdef";
+        n.token      = QByteArray(43, 'A');
+        n.generation = generation;
+        return n;
+    }
+    proxy::PlayerNetwork kindNet(proxy::PlayerNetwork::Kind kind, proxy::Failure blockedBy = proxy::Failure::None)
+    {
+        proxy::PlayerNetwork n;
+        n.kind       = kind;
+        n.blockedBy  = blockedBy;
+        n.generation = 3;
+        return n;
+    }
+    void networkBeforeEveryOpen()
+    {
+        // Play: the network right before the open (S9).
+        Settings::instance().youTubeNoticeShown = true;
+        player->play(a("s1"), kVideo, kLink);
+        QCOMPARE(st->calls, QStringList({a("net:system"), a("open")}));
+        // The 1 s engine retry.
+        st->push(st->next, TSMP_EV_FAILED, 0x05, a("environment"));
+        poll();
+        fire("retry");
+        QCOMPARE(st->calls.mid(2), QStringList({a("net:system"), a("open")}));
+        // The "busy" retry.
+        st->push(st->next, TSMP_EV_FAILED, int(0x8007139F), a("busy"));
+        poll();
+        fire("busy");
+        QCOMPARE(st->calls.mid(4), QStringList({a("net:system"), a("open")}));
+        // Try again after a note, through the bridge.
+        st->push(st->next, TSMP_EV_ERROR, 5);
+        poll();
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Note);
+        host.net = bridgeNet();
+        player->networkChanged(); // nothing open: the engine goes now (it was made for the Windows settings)
+        QCOMPARE(st->releases, 1);
+        player->tryAgain(a("s1"), kVideo, kLink);
+        QCOMPARE(st->calls.mid(6), QStringList({a("net:bridge:47123"), a("open")}));
+        // The popup (forced) takes the same open.
+        player->stop(a("s1"));
+        player->play(a("s2"), kVideo, kLink, true);
+        QCOMPARE(st->calls.mid(8), QStringList({a("net:bridge:47123"), a("open")}));
+        QCOMPARE(player->engineFailuresForTests(), 0);
+    }
+    void blockedRouteIsProxyNote()
+    {
+        Settings::instance().youTubeNoticeShown = true;
+        // The chat proxy is refused (its password can't be read): no open, the proxy note, no engine failure (S9).
+        host.net = kindNet(proxy::PlayerNetwork::Kind::Blocked, proxy::Failure::PasswordUnreadable);
+        player->play(a("s1"), kVideo, kLink);
+        QVERIFY(st->opens.isEmpty());
+        QVERIFY(st->calls.isEmpty());
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Note);
+        QCOMPARE(player->cardOf(a("s1"), kVideo).note, a("Can't play through the proxy"));
+        QVERIFY(host.opened.isEmpty()); // never the browser behind the user's back
+        QCOMPARE(player->engineFailuresForTests(), 0);
+        QVERIFY(!player->hasPlayer());
+        // Windows mode with a manual SOCKS-only setting (S13): the same.
+        host.net = kindNet(proxy::PlayerNetwork::Kind::Blocked, proxy::Failure::SocksOnlyWindows);
+        player->play(a("s2"), kVideo, kLink);
+        QVERIFY(st->opens.isEmpty());
+        QCOMPARE(player->cardOf(a("s2"), kVideo).note, a("Can't play through the proxy"));
+        // The helper refuses the network: the same, nothing opened.
+        host.net          = kindNet(proxy::PlayerNetwork::Kind::System);
+        st->refuseNetwork = 1;
+        player->tryAgain(a("s1"), kVideo, kLink);
+        QCOMPARE(st->calls, QStringList({a("net:system")}));
+        QVERIFY(st->opens.isEmpty());
+        QCOMPARE(player->cardOf(a("s1"), kVideo).note, a("Can't play through the proxy"));
+        QCOMPARE(player->engineFailuresForTests(), 0);
+        QVERIFY(player->playable());
+        // No network hook at all: fail closed.
+        YouTubePlayer::Host bare = host.make();
+        bare.network             = nullptr;
+        auto          st2        = std::make_shared<FakeState>();
+        YouTubePlayer other(bare, std::make_unique<FakeBackend>(st2));
+        other.setUserDataFolderForTests(tmp.path() + a("/webview2-bare"));
+        other.play(a("s1"), kVideo, kLink);
+        QVERIFY(st2->opens.isEmpty());
+        QCOMPARE(other.cardOf(a("s1"), kVideo).note, a("Can't play through the proxy"));
+        other.shutdown();
+    }
+    void customEnteredOrLeftClosesPlayer()
+    {
+        for (const bool entering : {true, false}) {
+            make();
+            host.net     = entering ? kindNet(proxy::PlayerNetwork::Kind::System) : bridgeNet();
+            const int id = playToReady();
+            QCOMPARE(stateOf("s1"), YouTubePlayer::State::Popup);
+            host.net = entering ? bridgeNet() : kindNet(proxy::PlayerNetwork::Kind::Direct);
+            player->networkChanged();
+            QVERIFY(st->closes.contains(id));
+            QCOMPARE(stateOf("s1"), YouTubePlayer::State::None); // back to its thumbnail
+            QCOMPARE(host.feedback, QStringList({a("s1 Closed: the chat proxy changed. Press Play again.")}));
+            QCOMPARE(st->releases, 1); // released now, not in 60 s
+            QVERIFY(!player->timerForTests("engine")->isActive());
+            QVERIFY(!player->engineLiveForTests());
+            // The next Play opens on the new route at once (a new environment: no waiting).
+            player->play(a("s1"), kVideo, kLink);
+            QCOMPARE(st->calls.last(), a("open"));
+            QCOMPARE(st->calls.at(st->calls.size() - 2), entering ? a("net:bridge:47123") : a("net:direct"));
+            QCOMPARE(player->engineFailuresForTests(), 0);
+        }
+    }
+    void windowsDirectAtNextOpen()
+    {
+        // Windows <-> direct with a player open: it stays (F15); the next open releases the engine first and opens after
+        // EngineExited, not counted as an engine failure (F7).
+        const int id = playToReady();
+        host.net     = kindNet(proxy::PlayerNetwork::Kind::Direct);
+        player->networkChanged();
+        QVERIFY(!st->closes.contains(id));
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Popup);
+        QCOMPARE(st->releases, 0);
+        QVERIFY(host.feedback.isEmpty());
+        player->stop(a("s1"));
+        QCOMPARE(st->opens.size(), 1);
+        player->play(a("s1"), kVideo, kLink);
+        QCOMPARE(st->releases, 1);
+        QCOMPARE(st->opens.size(), 1); // waits for EngineExited
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Starting);
+        QVERIFY(player->timerForTests("poll")->isActive());
+        st->push(0, TSMP_EV_ENGINEEXITED);
+        poll();
+        QCOMPARE(st->opens.size(), 2);
+        QCOMPARE(st->calls.mid(st->calls.size() - 2), QStringList({a("net:direct"), a("open")}));
+        st->push(st->next, TSMP_EV_CREATED);
+        st->push(st->next, TSMP_EV_READY);
+        poll();
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Popup);
+        QCOMPARE(player->engineFailuresForTests(), 0);
+        // Back to the Windows settings: the same once more (no answer in 20 s: the open goes on anyway).
+        player->stop(a("s1"));
+        host.net = kindNet(proxy::PlayerNetwork::Kind::System);
+        player->setReleaseWaitForTests(50);
+        player->play(a("s1"), kVideo, kLink);
+        QCOMPARE(st->releases, 2);
+        QTRY_COMPARE_WITH_TIMEOUT(st->opens.size(), 3, 3000);
+        QCOMPARE(st->calls.at(st->calls.size() - 2), a("net:system"));
+    }
+    void customToCustomKeepsPlaying()
+    {
+        host.net     = bridgeNet(2);
+        const int id = playToReady();
+        host.net     = bridgeNet(3); // another endpoint or login: the same bridge port, realm and token
+        player->networkChanged();
+        QVERIFY(!st->closes.contains(id));
+        QCOMPARE(st->releases, 0);
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Popup);
+        // A refused custom route is still "custom": the player closes only when custom is entered or left.
+        host.net = kindNet(proxy::PlayerNetwork::Kind::Blocked, proxy::Failure::BridgeUnavailable);
+        player->networkChanged();
+        QVERIFY(!st->closes.contains(id));
+    }
+    void networkFailedReopensOnce()
+    {
+        for (const bool custom : {false, true}) {
+            make();
+            Settings::instance().youTubeNoticeShown = true;
+            host.net                                = custom ? bridgeNet() : kindNet(proxy::PlayerNetwork::Kind::System);
+            player->play(a("s1"), kVideo, kLink);
+            st->push(st->next, TSMP_EV_FAILED, 0, a("network")); // the helper's environment has other arguments
+            poll();
+            QCOMPARE(st->releases, 1);
+            QCOMPARE(st->opens.size(), 1);
+            QCOMPARE(stateOf("s1"), YouTubePlayer::State::Starting);
+            st->push(0, TSMP_EV_ENGINEEXITED);
+            poll();
+            QCOMPARE(st->opens.size(), 2); // one re-open
+            st->push(st->next, TSMP_EV_FAILED, 0, a("network"));
+            poll();
+            QCOMPARE(st->opens.size(), 2);
+            QCOMPARE(stateOf("s1"), YouTubePlayer::State::Note);
+            QCOMPARE(player->cardOf(a("s1"), kVideo).note, custom ? a("Can't play through the proxy") : a("Can't play this video here"));
+            QCOMPARE(player->engineFailuresForTests(), 0);
+            QVERIFY(host.opened.isEmpty());
+        }
+        // An override that mentions a proxy (S9): the proxy note at once.
+        make();
+        Settings::instance().youTubeNoticeShown = true;
+        host.net                                = bridgeNet();
+        player->play(a("s1"), kVideo, kLink);
+        st->push(st->next, TSMP_EV_FAILED, 0, a("network-override"));
+        poll();
+        QCOMPARE(player->cardOf(a("s1"), kVideo).note, a("Can't play through the proxy"));
+        QCOMPARE(player->engineFailuresForTests(), 0);
+    }
+    void busyRetries()
+    {
+        Settings::instance().youTubeNoticeShown = true;
+        player->play(a("s1"), kVideo, kLink);
+        for (int round = 1; round <= 3; ++round) {
+            st->push(st->next, TSMP_EV_FAILED, int(0x8007139F), a("busy"));
+            poll();
+            QVERIFY(player->timerForTests("busy")->isActive());
+            QCOMPARE(player->timerForTests("busy")->interval(), 3000);
+            QCOMPARE(stateOf("s1"), YouTubePlayer::State::Starting);
+            QVERIFY(player->hasPlayer());
+            fire("busy");
+            QCOMPARE(st->opens.size(), round + 1);
+        }
+        st->push(st->next, TSMP_EV_FAILED, int(0x8007139F), a("busy"));
+        poll();
+        QVERIFY(!player->timerForTests("busy")->isActive());
+        QCOMPARE(player->cardOf(a("s1"), kVideo).note, a("Can't play this video here"));
+        QCOMPARE(player->engineFailuresForTests(), 0); // never toward the disable
+        QVERIFY(!player->unavailableForTests());
+        QVERIFY(host.opened.isEmpty());
+    }
+    void noReadyThroughBridge()
+    {
+        Settings::instance().youTubeNoticeShown = true;
+        host.net = bridgeNet(5);
+        player->play(a("s1"), kVideo, kLink);
+        st->push(st->next, TSMP_EV_CREATED);
+        poll();
+        proxy::Record r;
+        r.client  = 'p';
+        r.host    = a("www.youtube.com");
+        r.step    = proxy::Step::Connect;
+        r.failure = proxy::Failure::Unreachable;
+        host.records << r;
+        proxy::Record fine;
+        fine.client = 'p';
+        fine.host   = a("i.ytimg.com");
+        fine.step   = proxy::Step::Done;
+        host.records.prepend(fine);
+        fire("ready");
+        QCOMPARE(player->cardOf(a("s1"), kVideo).note, a("Can't play through the proxy"));
+        QCOMPARE(host.recordsAsked.size(), 1);
+        QVERIFY(host.recordsAsked.first() > 0); // since the open
+        QCOMPARE(host.reports.size(), 1);
+        QCOMPARE(host.reports.first().failure, proxy::Failure::Unreachable);
+        QCOMPARE(host.reports.first().step, proxy::Step::Connect);
+        QVERIFY(host.reports.first().decisive);
+        QCOMPARE(host.reports.first().generation, quint64(5));
+        QCOMPARE(host.reports.first().via, proxy::Via::Bridge);
+        QCOMPARE(host.reports.first().host, a("www.youtube.com"));
+        // No route-level record: 2.5's note, no report.
+        host.records.clear();
+        host.records << fine;
+        player->tryAgain(a("s2"), kVideo, kLink);
+        st->push(st->next, TSMP_EV_CREATED);
+        poll();
+        fire("ready");
+        QCOMPARE(player->cardOf(a("s2"), kVideo).note, a("Can't play this video here"));
+        QCOMPARE(host.reports.size(), 1);
+        // Windows mode: the records are never asked.
+        make();
+        Settings::instance().youTubeNoticeShown = true;
+        player->play(a("s1"), kVideo, kLink);
+        st->push(st->next, TSMP_EV_CREATED);
+        poll();
+        fire("ready");
+        QVERIFY(host.recordsAsked.isEmpty());
+        QCOMPARE(player->cardOf(a("s1"), kVideo).note, a("Can't play this video here"));
+    }
+    void readyReportsOk()
+    {
+        host.net = bridgeNet(7);
+        playToReady();
+        QCOMPARE(host.oks, QVector<quint64>({7}));
+        make();
+        playToReady(); // Windows settings: nothing for route health
+        QVERIFY(host.oks.isEmpty());
+    }
+    void proxyNoteGoesOnRouteChange()
+    {
+        Settings::instance().youTubeNoticeShown = true;
+        host.net = kindNet(proxy::PlayerNetwork::Kind::Blocked, proxy::Failure::PasswordUnreadable);
+        player->play(a("s1"), kVideo, kLink);
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::Note);
+        host.net = kindNet(proxy::PlayerNetwork::Kind::System);
+        host.changed.clear();
+        player->networkChanged();
+        QCOMPARE(stateOf("s1"), YouTubePlayer::State::None);
+        QVERIFY(host.changed.contains(a("s1")));
+        player->play(a("s1"), kVideo, kLink);
+        QCOMPARE(st->opens.size(), 1);
     }
 
     // ---- Y-T6 source rules ----

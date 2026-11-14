@@ -4,6 +4,7 @@
 // render tools and the unit tests can use them too.
 
 #include <QColor>
+#include <QDateTime>
 #include <QString>
 #include <QVector>
 
@@ -32,5 +33,9 @@ QColor readableOn(const QColor& color, const QVector<QColor>& backs, double mini
 // The confirmation after saving a file: "Saved to Pictures" (the folder's name; a drive root is
 // shown as "C:\"). Shared by the viewer and the chat so both say the same.
 QString savedToText(const QString& savedPath);
+
+// "today at 10:15", "yesterday at 10:15", "Nov 2 at 10:15" (local time, English like the rest): the Updates group's
+// last check and (2.6) the Chat proxy's last test.
+QString whenText(const QDateTime& utc);
 
 } // namespace ui

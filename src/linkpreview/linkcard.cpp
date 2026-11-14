@@ -103,6 +103,11 @@ QString actionText(const Card& card)
     case Look::Click:
         return i18n::t("Load preview");
     case Look::Error:
+        // 2.6 (F10): a filtered site's Retry can't work; the strip offers the chat proxy instead (Retry stays in the menu).
+        if (card.proxyStrip == ProxyStrip::FilteredUseProxy)
+            return i18n::t("Use chat proxy");
+        if (card.proxyStrip == ProxyStrip::FilteredSetUp)
+            return i18n::t("Set up proxy…");
         return card.nothing ? i18n::t("Open in browser") : i18n::t("Retry");
     case Look::TooLarge:
     case Look::Poster:
@@ -873,10 +878,35 @@ QString footerText(const Card& card, const QFontMetricsF& fm, qreal width)
     return own + arrow + elidedHost(fm, card.redirectedTo, rest);
 }
 
+QString actionLabel(const Card& card)
+{
+    return actionText(card);
+}
+
+QString proxyErrorText(ProxyStrip strip)
+{
+    switch (strip) {
+    case ProxyStrip::ChatProxy:
+        return i18n::t("Couldn't load through the chat proxy");
+    case ProxyStrip::Windows:
+        return i18n::t("Couldn't load through your Windows proxy");
+    case ProxyStrip::FilteredUseProxy:
+    case ProxyStrip::FilteredSetUp:
+        return i18n::t("Your network blocks this site");
+    default:
+        return {};
+    }
+}
+
 QString statusText(const Card& card)
 {
     switch (card.look) {
     case Look::Click:
+        // 2.6 chat proxy: an automatic load that waits for the route (design 1.5).
+        if (card.proxyStrip == ProxyStrip::PausedChatProxy)
+            return i18n::t("Paused · the proxy isn't working");
+        if (card.proxyStrip == ProxyStrip::PausedWindows)
+            return i18n::t("Couldn't load through your Windows proxy");
         if (card.size > 0)
             return i18n::t("%1 · %2").arg(stripLabel(card), formatSize(static_cast<quint64>(card.size)));
         if (card.overAutoLimit && card.autoLimit > 0) // the site didn't say how large: at least the limit
@@ -977,12 +1007,45 @@ QString toolTip(const Card& card, Zone zone)
             break;
         return i18n::t("Opens %1 in your browser").arg(card.host);
     case Zone::Retry:
+        if (card.look == Look::Error && card.proxyStrip != ProxyStrip::None)
+            break; // 2.6: the route's own words (below)
         return i18n::t("Try loading the preview again. This connects your PC to %1, which sees your IP address.").arg(site);
     case Zone::Load:
     case Zone::Body:
         break;
     case Zone::None:
         return {};
+    }
+    // 2.6 chat proxy (design 1.5): the route's strips say what failed and what the action does.
+    // Without a reason (a load that made no request, review fix) the tool tips leave "It didn't work" out.
+    const bool reason = !card.proxyReason.isEmpty();
+    switch (card.proxyStrip) {
+    case ProxyStrip::PausedWindows:
+        if (card.look == Look::Click)
+            return reason ? i18n::t("Your Windows proxy didn't work: %1. Click to try again.").arg(card.proxyReason)
+                          : i18n::t("Your Windows proxy didn't work. Click to try again.");
+        break;
+    case ProxyStrip::ChatProxy:
+        if (card.look == Look::Error)
+            return reason ? i18n::t("Load it again through the chat proxy. It didn't work: %1.").arg(card.proxyReason)
+                          : i18n::t("Load it again through the chat proxy.");
+        break;
+    case ProxyStrip::Windows:
+        if (card.look == Look::Error)
+            return reason ? i18n::t("Load it again through your Windows proxy. It didn't work: %1.").arg(card.proxyReason)
+                          : i18n::t("Load it again through your Windows proxy.");
+        break;
+    case ProxyStrip::FilteredUseProxy:
+        if (card.look == Look::Error)
+            return i18n::t("Your network's DNS gave this site a filtered address. The chat proxy loads it through your VPN app.");
+        break;
+    case ProxyStrip::FilteredSetUp:
+        if (card.look == Look::Error)
+            return i18n::t("Your network's DNS gave this site a filtered address. A chat proxy (your VPN app's local port) can load it.");
+        break;
+    case ProxyStrip::PausedChatProxy: // the normal Load preview tool tip
+    case ProxyStrip::None:
+        break;
     }
     switch (card.look) {
     case Look::Click:
@@ -1198,7 +1261,9 @@ QString signature(const Card& card, const PreviewStyle& style, const Pointer& po
           << QString::number(d.color) << QString::number(d.play) << QString::number(d.durationMs) << QString::number(d.sensitive)
           << QString::number(pointer.over) << QString::number(static_cast<int>(pointer.hover)) << QString::number(static_cast<int>(pointer.pressed))
           // 2.5 YouTube player
-          << QString::number(static_cast<int>(card.player)) << QString::number(card.playable) << card.note << QString::number(card.resumeMs / 1000);
+          << QString::number(static_cast<int>(card.player)) << QString::number(card.playable) << card.note << QString::number(card.resumeMs / 1000)
+          // 2.6 chat proxy
+          << QString::number(static_cast<int>(card.proxyStrip)) << card.proxyReason << actionText(card);
     return parts.join(QLatin1Char('|'));
 }
 
@@ -1372,7 +1437,11 @@ QImage render(const Card& card, const PreviewStyle& style, const Pointer& pointe
                 status << (card.progress >= 0 && card.waiting == Waiting::None ? i18n::t("Loading… %1%").arg(qRound(qBound(0.0, card.progress, 1.0) * 100))
                                                                               : i18n::t("Loading…"));
         }
-        if (card.look == Look::Click && (card.size > 0 || (card.overAutoLimit && card.autoLimit > 0)))
+        if (card.look == Look::Click && card.proxyStrip == ProxyStrip::PausedChatProxy)
+            status << i18n::t("Paused") << stripLabel(card); // 2.6: a narrow chat's short forms
+        else if (card.look == Look::Click && card.proxyStrip == ProxyStrip::PausedWindows)
+            status << i18n::t("Couldn't load") << stripLabel(card);
+        else if (card.look == Look::Click && (card.size > 0 || (card.overAutoLimit && card.autoLimit > 0)))
             status << stripLabel(card);
         p.drawText(QRectF(l.text.left(), top + tfm.height() + 2, l.text.width(), sfm.height()), align, fitText(sfm, status, l.text.width()));
 

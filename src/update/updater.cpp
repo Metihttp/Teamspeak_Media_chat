@@ -21,10 +21,12 @@
 #include "i18n.h"
 #include "medialink.h" // formatSize
 #include "ownedtimer.h"
+#include "proxy/control.h" // 2.6 chat proxy: route health hears the update check
 #include "ts3api.h"
 #include "updatedialog.h"
 #include "updateinstaller.h"
 #include "updatepolicy.h"
+#include "sessionplan.h"
 #include "updateworker.h"
 #include "version.h"
 
@@ -87,9 +89,11 @@ int connectedServers()
 }
 
 // Short text for Settings ("Last check failed: …") and the chat.
-QString shortError(http::Error error)
+QString shortError(http::Error error, proxy::Failure proxyFailure = proxy::Failure::None, proxy::Via via = proxy::Via::Unset)
 {
     switch (error) {
+    case http::Error::Proxy:
+        return proxyShortError(proxyFailure, via); // 2.6 chat proxy
     case http::Error::Offline:
     case http::Error::Unavailable:
         return i18n::t("couldn't reach GitHub");
@@ -115,9 +119,13 @@ struct ErrorCopy {
     int     action;
 };
 
-ErrorCopy networkError(http::Error error)
+ErrorCopy networkError(http::Error error, proxy::Failure proxyFailure = proxy::Failure::None, proxy::Via via = proxy::Via::Unset)
 {
     switch (error) {
+    case http::Error::Proxy: {
+        const ProxyErrorCopy copy = proxyErrorCopy(proxyFailure, via); // 2.6 chat proxy
+        return {copy.heading, copy.body, TryAgain};
+    }
     case http::Error::Timeout:
         return {i18n::t("GitHub is taking too long to respond"), i18n::t("Try again in a few minutes. Nothing was changed."), TryAgain};
     case http::Error::RateLimited:
@@ -519,6 +527,35 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
     // The check the newer-version hint's link started (always Origin::Chat). Cleared here for every path.
     const Version hinted = origin == Origin::Chat ? m_hintCheck : Version();
     m_hintCheck          = Version();
+    // 2.6 chat proxy (design 5.2): route health hears the check (the Control ignores an older route generation): a
+    // route failure the proxy answered, or (custom) a check that reached GitHub through the bridge.
+    if (proxy::Control* control = proxy::Control::current()) {
+        if (outcome.httpError == http::Error::Proxy && proxy::isRouteLevel(outcome.proxyFailure)) {
+            proxy::RouteReport report;
+            report.failure    = outcome.proxyFailure;
+            report.decisive   = proxy::isDecisive(outcome.proxyFailure, proxy::Step::None);
+            report.host       = latin("github.com");
+            report.generation = outcome.routeGeneration;
+            report.via        = outcome.proxyVia;
+            control->report(report);
+        } else if (outcome.proxyVia == proxy::Via::Bridge) {
+            // GitHub answered through the bridge (any status, any manifest verdict): the route works.
+            switch (outcome.httpError) {
+            case http::Error::None:
+            case http::Error::NotFound:
+            case http::Error::RateLimited:
+            case http::Error::ServerError:
+            case http::Error::Redirect:
+            case http::Error::TooLarge:
+            case http::Error::BadResponse:
+            case http::Error::Sink:
+                control->reportOk(outcome.routeGeneration);
+                break;
+            default:
+                break;
+            }
+        }
+    }
     // Nothing newer than latest: the hinted version isn't released (a test build, or made up). Said
     // instead of "You have the latest version", and it isn't hinted again this session.
     const auto notReleased = [this, &hinted](const Version& latest, const Version& have) {
@@ -551,6 +588,20 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
     }
 
     if (!outcome.ok()) {
+        // 2.6 chat proxy (F8): a route failure of an older route generation is quiet: no "Last check failed", the
+        // normal schedule; a manual check's dialog still offers Try again.
+        if (outcome.httpError == http::Error::Proxy
+            && proxyFailureIsQuiet(outcome.routeGeneration, proxy::snapshot()->generation, outcome.proxyFailure)) {
+            log(latin("check failed on an earlier route (") + QString::fromLatin1(proxy::failureName(outcome.proxyFailure)) + latin("): ignored"));
+            setPhase(restPhase);
+            if (origin == Origin::Settings && m_dialog) {
+                const ErrorCopy copy = networkError(outcome.httpError, outcome.proxyFailure, outcome.proxyVia);
+                showError(copy.heading, copy.body, copy.action);
+            }
+            schedule();
+            emit statusChanged();
+            return;
+        }
         const int failures = st.intValue(kCheck, "failures", 0, 0, 1000) + 1;
         st.setInt(kCheck, "failures", failures);
         st.setTime(kCheck, "nextUtc", nextAfterFailure(now, failures, outcome.retryAfterSec));
@@ -558,9 +609,10 @@ void Updater::onCheckDone(const CheckOutcome& outcome, Origin origin)
         if (outcome.httpError != http::Error::None) {
             st.setValue(kCheck, "lastResult", latin("error:") + http::errorCode(outcome.httpError));
             log(latin("check failed: ") + http::errorCode(outcome.httpError) + latin(" (status ") + QString::number(outcome.httpStatus) + latin(", error ")
-                + QString::number(outcome.winError) + latin(")"));
-            m_lastError = shortError(outcome.httpError);
-            copy        = networkError(outcome.httpError);
+                + QString::number(outcome.winError) + latin(")")
+                + (outcome.httpError == http::Error::Proxy ? latin(" proxy ") + QString::fromLatin1(proxy::failureName(outcome.proxyFailure)) : QString()));
+            m_lastError = shortError(outcome.httpError, outcome.proxyFailure, outcome.proxyVia);
+            copy        = networkError(outcome.httpError, outcome.proxyFailure, outcome.proxyVia);
         } else {
             st.setValue(kCheck, "lastResult", latin("error:") + errorCode(outcome.manifestError));
             log(latin("the update manifest was rejected: ") + errorCode(outcome.manifestError)
@@ -1036,7 +1088,7 @@ void Updater::onPrepareDone(const PrepareOutcome& outcome)
         return;
     case F::Network: {
         log(latin("download failed: ") + http::errorCode(outcome.httpError) + latin(" (error ") + QString::number(outcome.winError) + latin(")"));
-        const ErrorCopy copy = networkError(outcome.httpError);
+        const ErrorCopy copy = networkError(outcome.httpError, outcome.proxyFailure, outcome.proxyVia);
         showError(copy.heading, copy.body, copy.action);
         return;
     }

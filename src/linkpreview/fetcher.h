@@ -54,6 +54,9 @@
 #include "hostgate.h"
 #include "linkurl.h"
 #include "netpolicy.h"
+#include "proxy/failure.h"
+#include "proxy/records.h"
+#include "proxy/router.h"
 
 class QTimer;
 
@@ -76,7 +79,7 @@ struct Result {
     QString thumbnailFile; // YouTube: the thumbnail; Video / Loop: a poster frame; large pictures: a smaller JPEG
     int     width = 0, height = 0; // of the picture / video (YouTube: of the thumbnail), as displayed
     qint64  durationMs = 0;        // Video / Loop
-    bool    viaProxy = false;      // a request went through the user's Windows proxy (transport.h)
+    bool    viaProxy = false;      // a request went through a proxy (the Windows proxy or the chat proxy's bridge)
     // 2.5
     Kind     kind = Kind::None;    // what it turned out to be (legacy loads too: by bytes); with kTooLarge also when a
                                    // page answered with media over the media cap (Web class)
@@ -87,6 +90,14 @@ struct Result {
     int      requests     = 0;     // HTTP requests made (redirect hops not counted)
     bool     hasAudio     = false; // Video / Loop
     QString  hopRefused;           // the host a provider's hop list refused (the log and the smoke tool say it)
+    // 2.6 chat proxy (design 3.3.5)
+    proxy::Via     via             = proxy::Via::Unset; // the last hop's route
+    quint64        routeGeneration = 0;                 // the first hop's route generation (an older one is dropped)
+    proxy::Failure proxyFailure    = proxy::Failure::None; // the load's (first) proxy failure, with its step
+    proxy::Step    proxyStep       = proxy::Step::None;
+    bool           proxyDecisive   = false;
+    bool           routeOk         = false; // custom: a site's response head came through the bridge
+    bool           siteResponded   = false; // any hop got a site's head, any route
 };
 
 // One line of the Fetcher's log, in parts: the plugin tags the address as private (logtext.h).
@@ -95,6 +106,7 @@ struct LogLine {
     QString   address;  // logUrl(): scheme, host, the last path segment (never a query): who visited what
     QString   outcome;  // "loaded, 12 KB in 340 ms" / "card, 2 requests, 412 ms": no names, no titles, no addresses
     bool      viaProxy = false;
+    bool      viaChatProxy = false;           // 2.6: through the bridge: "(via the chat proxy)"
     LinkClass cls      = LinkClass::None; // 2.5
     int       requests = 0;               // 2.5
     QString text() const; // "Link preview (image) https://cdn.example.com/…/cat.png: loaded, ..."
@@ -133,6 +145,10 @@ inline constexpr char kGateBusy[]    = "gatebusy";    // a later request of the 
 inline constexpr char kWebOff[]      = "weboff";      // a share link that turned out to be another web page (a redirect to
                                                       // another host, an unconfirmed page) while Caps::webCards is off: no
                                                       // request for it; never remembered (the switch may come on again)
+// 2.6 chat proxy
+inline constexpr char kProxy[]     = "proxy";     // the route failed or is refused (Result::proxyFailure says why); never direct
+inline constexpr char kFiltered[]  = "filtered";  // direct: the local DNS gave the sinkhole (10.10.34.0/24): the network blocks it
+inline constexpr char kRouteDown[] = "routedown"; // custom: the route is down and the load was automatic (no request)
 } // namespace errors
 
 // What one load may download. media: the file of a Direct / MediaPage / media-file load, and a Web page that
@@ -189,6 +205,10 @@ class Fetcher : public QObject
         std::function<QStringList()> localSuffixes;
         std::function<qint64()>      nowSec;
         int    maxGateWaitMs       = 20000; // later hops of a load wait at most this long in all (kGateBusy)
+        // 2.6 chat proxy: the bridge's records (null: proxy::liveRecords() at each hop; tests inject a fake), and the
+        // admission gate (empty: admit; the plugin: proxy::Control::admits) asked before the HostGate.
+        std::shared_ptr<proxy::RecordSource>   records;
+        std::function<bool(bool userAsked)>    routeGate;
         int    pageTimeoutMs       = net::kPageTimeoutMs;
         qint64 pageMinBytes        = net::kPageMinBytes;
         int    pageMinBytesAfterMs = net::kPageMinBytesAfterMs;
@@ -246,6 +266,9 @@ class Fetcher : public QObject
         Target  target;
         Caps    caps;
         QString cacheDir;
+        // 2.6 review fix: the route gate let this load through once and its site then made it wait (HostGate's Wait).
+        // Its next admission doesn't ask the gate again: in Probation the gate's one probe slot is this load's own.
+        bool routeAdmitted = false;
     };
     struct Active {
         quint64                       id = 0;
@@ -259,8 +282,8 @@ class Fetcher : public QObject
     void startQueued();
     // Asks the gate about a load's first request. Go: true and the ticket. Wait: false with *wakeMs. Cooling, walled,
     // broken: false with *wakeMs = -1 and the load finished (kRateLimited / kWalled). A load the cache answers is
-    // admitted at once without a ticket (it makes no request).
-    bool admit(const Pending& pending, HostGate::Ticket* ticket, qint64* wakeMs);
+    // admitted at once without a ticket (it makes no request). Marks pending.routeAdmitted when the route gate let it in.
+    bool admit(Pending& pending, HostGate::Ticket* ticket, qint64* wakeMs);
     bool answersFromCache(const Pending& pending) const;
     void finishLater(const QString& key, const Result& result);
     void onJobProgress(quint64 id, const QString& key, qint64 received, qint64 total);

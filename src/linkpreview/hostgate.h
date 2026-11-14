@@ -79,6 +79,9 @@ class HostGate
     // through (200) and can never give a preview (Klipy's oEmbed naming no GIF), so it isn't asked again meanwhile.
     void    markWalled(const QString& host, const QString& firstSegment);
     void    clear(); // everything forgotten; later releases of old tickets are ignored
+    // 2.6 chat proxy: a route change (design 5.4). Every site's failure streak, breaker and walls are forgotten (they may
+    // have come from the old route); cooldowns (a site's explicit slow-down), spacing and running tickets stay.
+    void    forgetFailures();
 
     // For diagnostics (TESTHOOKS links.gate): one line per group and health entry that is running, cooling,
     // broken or walled ("group reddit page running 1", "health imgur.com cooling hard 512 s"). No paths.

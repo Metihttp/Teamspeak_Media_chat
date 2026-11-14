@@ -229,7 +229,9 @@ class ChatIntegration : public QObject
     void watchDocument(QTextBrowser* browser, QTextDocument* document);
     void scheduleScan(QTextBrowser* browser);
     void scan(QTextBrowser* browser);
-    void insertPreview(QTextBrowser* browser, int position, const QString& key);
+    // keepPlace: a chat at its end stays at its end (chatscroll::toBottom). False inside a scan, which keeps the
+    // reader's place once after all of its edits (2.6, R-DEF-1).
+    void insertPreview(QTextBrowser* browser, int position, const QString& key, bool keepPlace = true);
     void refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly);
     QImage renderFor(QTextBrowser* browser, const QString& key, QSize* logicalSize);
     Hit    previewAt(QTextBrowser* browser, const QPoint& viewportPos) const;
