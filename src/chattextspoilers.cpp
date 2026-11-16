@@ -219,6 +219,17 @@ void ChatTextSpoilers::updateLook(View& view)
     m_handler->setLook(view.document.data(), look);
 }
 
+void ChatTextSpoilers::themeChanged()
+{
+    if (m_shutdown)
+        return;
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        updateLook(it.value()); // the handler draws the bars at paint
+        if (it->browser)
+            it->browser->viewport()->update();
+    }
+}
+
 QString ChatTextSpoilers::keyFor(QTextDocument* doc, int block, int index) const
 {
     const QTextBlock b    = doc->findBlockByNumber(block);

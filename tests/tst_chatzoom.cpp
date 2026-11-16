@@ -466,6 +466,46 @@ class TestChatZoom : public QObject
         delete hidden;
     }
 
+    // 2.7.1 live test: a chat zoomed by Ctrl + wheel (Qt's own zoom, not ensure), then hidden while the zoom goes back from
+    // another chat, then a Reload. Its older size is the zoom's, not TeamSpeak's new font: before, the load took 9.25 pt for
+    // the chat's base, and every such Reload made that chat (live: the server tab's chat) one step bigger than the others.
+    void wheelZoomedChatKeepsItsBaseAcrossReload()
+    {
+        Settings::instance().chatZoom = 0;
+        QWidget window;
+        window.resize(600, 400);
+        QTextBrowser* a = newChat(&window);
+        QTextBrowser* b = newChat(&window);
+        a->setGeometry(0, 0, 300, 400);
+        b->setGeometry(300, 0, 300, 400);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        {
+            ChatZoom zoom(ChatZoom::Host{});
+            zoom.attach(a);
+            zoom.attach(b);
+            ctrlWheel(a);
+            QCOMPARE(a->font().pointSizeF(), 9.25);
+            QCOMPARE(Settings::instance().chatZoom, 10);
+            QTRY_COMPARE_WITH_TIMEOUT(b->font().pointSizeF(), 9.25, 2000); // the other visible chat follows
+            a->hide();                                                       // another chat tab is shown
+            QTest::qWait(400);                                               // the wheel's gesture is over
+            ctrlWheel(b, -120);                                              // back from the other chat
+            QCOMPARE(b->font().pointSizeF(), 8.25);
+            QCOMPARE(Settings::instance().chatZoom, 0);
+            QCOMPARE(a->font().pointSizeF(), 9.25); // hidden: when shown
+            zoom.shutdown();
+        }
+        ChatZoom again(ChatZoom::Host{}); // Reload
+        again.attach(a);
+        again.attach(b);
+        QCOMPARE(again.basePoints(a), 8.25);
+        QCOMPARE(again.basePoints(b), 8.25);
+        QCOMPARE(a->font().pointSizeF(), 8.25);
+        QCOMPARE(b->font().pointSizeF(), 8.25);
+        again.shutdown();
+    }
+
     // Shutdown: no filter left, a pending save made now.
     void shutdownSavesAndLetsGo()
     {

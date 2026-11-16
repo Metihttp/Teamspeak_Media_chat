@@ -24,7 +24,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.7.0 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.7.1 loaded`.
 
 ### How do I update?
 
@@ -153,7 +153,7 @@ Since 2.7 the *TS Media chat* lines (an upload's result, a warning, the update n
 
 ### Dark mode and my own TeamSpeak skin
 
-[Dark mode](USAGE.md#dark-mode) (2.7, **Settings → Chat → Appearance**) doesn't replace your choice in **Tools → Options → Design**: while it is on, TeamSpeak shows TS Media's warm dark theme over whatever style you use there (TeamSpeak's light style, the community dark skin or your own), and turning it off brings that style back exactly. The lines in your chats get their colors back too, with two small exceptions: the bold *TS Media chat* at the start of a line printed while dark mode was on with **Same as the chat text** comes back in the name color, and if you turn TS Media off in **Options → Addons** while dark mode is on, cards drawn in dark mode can stay dark until TS Media draws them again. If you pick another style in **Options → Design** while dark mode is on, dark mode stays on, and the style you picked is the one you get back when you turn it off. TeamSpeak's own dark skin and dark mode are two different things: you can use either, or both.
+[Dark mode](USAGE.md#dark-mode) (2.7, **Settings → Chat → Appearance**) doesn't replace your choice in **Tools → Options → Design**: while it is on, TeamSpeak shows TS Media's warm dark theme over whatever style you use there (TeamSpeak's light style, the community dark skin or your own), and turning it off brings that style back exactly. The lines in your chats get their colors back too: lines that came in while dark mode was on get your style's colors, also TS Media's own lines (the bold *TS Media chat*, its text and links) with every choice of **Color of messages from TS Media**, and pictures and cards in the chat are drawn again in your style's colors at once. The same happens when you turn TS Media off in **Options → Addons** (or reload it) while dark mode is on: the pictures and cards in the light chat are drawn again in your style's colors. (A picture far up in a long chat whose image TS Media would first have to read again changes when you scroll to it; at the moment TS Media is turned off, a picture it can't read again quickly, such as a very large one or one of many, keeps the picture it had rather than become a placeholder.) (TS Media 2.7.0 had two small exceptions here: the bold *TS Media chat* of a line printed with **Same as the chat text** came back in the name color, and cards drawn in dark mode could stay dark after turning TS Media off. 2.7.1 fixed both.) If you pick another style in **Options → Design** while dark mode is on, dark mode stays on, and the style you picked is the one you get back when you turn it off. TeamSpeak's own dark skin and dark mode are two different things: you can use either, or both.
 
 ### Some names in the channel tree keep their colors in dark mode
 

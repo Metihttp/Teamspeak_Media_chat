@@ -5,6 +5,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.7.1] - 2026-11-16
+
+### Fixed
+- Dark mode: the *TS Media chat* lines printed while dark mode was on get exactly the colors TS Media uses in your TeamSpeak style when it goes off — the bold *TS Media chat* (with **Same as the chat text** it came back in the name color), the text, the links and the bold commands of `/tsmedia help` — with every choice of *Color of messages from TS Media*, with TeamSpeak's light and dark styles and your own (also one with a picture as the chat background), after another style picked in **Options → Design** while dark mode was on, and after turning TS Media off or reloading it. Names and channels that came in meanwhile still get your style's colors, and an info panel shown while dark mode was on gets its title color back.
+- Dark mode: turning TS Media off in **Options → Addons** (Disable or Reload) while dark mode is on no longer leaves pictures and cards drawn in dark colors in the light chat (previews, albums, file, audio, voice and video cards, spoiler covers), also in chats that weren't shown (a picture TS Media can't read again quickly at that moment keeps the picture it had), and an album's file names no longer come back in dark mode's link color after TeamSpeak started, or TS Media was turned on or reloaded, with dark mode on. Turning dark mode on or off redraws the pictures and cards at once in the new colors (Cozy, Compact and TeamSpeak classic; one far up in a long chat whose picture TS Media has to read again when you scroll to it), chats you open later before you see them, and the reply lines, spoiler bars and the music bar follow right away too. A picture is never swapped for a placeholder on the way.
+- Dark mode: a link or colored text inside a text spoiler you revealed now changes color with dark mode like the rest of the message. Before, it kept the colors of the side dark mode was on when you revealed it: dark mode's link color in the light chat after turning dark mode off, or your style's color on the dark chat after turning it on.
+- A chat that filled while it wasn't shown now opens at its newest messages: the channel chat of a server you connect to (at TeamSpeak's start, with a bookmark or in a new tab), a private chat that an incoming message opened, a hidden chat after **Options → Addons → Reload**. Before, it could open at its very first line when it ended in events TS Media folds into one row (for example several *You are now talking in channel* lines after a few reconnects) or in an album sent as several messages, or a little above its end when its last link card was taller than the chat. It also stays at its newest messages when you changed the chat zoom with Ctrl + mouse wheel while it wasn't shown and the chat area is narrow. With dark mode on and off, in Cozy, Compact and TeamSpeak classic.
+- Chat zoom: a chat you zoomed with Ctrl + mouse wheel and then left for another chat tab, while you changed the zoom again in another chat, no longer keeps its older size after **Options → Addons → Reload** or turning TS Media off and on (it grew by one step each time).
+
 ## [2.7.0] - 2026-11-16
 
 ### Added
@@ -404,6 +413,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.7.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.4.0...v2.5.0

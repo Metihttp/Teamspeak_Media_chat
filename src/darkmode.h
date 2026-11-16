@@ -12,7 +12,9 @@
 // skin's own font rules go after the dark sheet), TeamSpeak's settings and skin choice, Windows settings.
 // Off (and shutdown on a Disable or Reload): the documents first (colours back, then their default sheets), then the
 // palette, then the sheet (the skin reads palette(base) while it polishes), the title bars, each exactly as they were (the
-// snapshot). Shutdown at TeamSpeak's Quit (its main window no longer shown, or after aboutToQuit) puts nothing back: it
+// snapshot). Each of on, off and a skin taken over says so (themeChanged, 2.7.1) inside its place bracket: the chat layer
+// draws TS Media's pictures for the new look then, also the ones a Disable or Reload leaves in TeamSpeak's chats.
+// Shutdown at TeamSpeak's Quit (its main window no longer shown, or after aboutToQuit) puts nothing back: it
 // would repolish windows being torn down (a crash in Qt's style sheet code); only the hooks go, and the dark sheet,
 // palette, document sheets, recoloured fragments and title bars (heap copies, per-window attributes) stay until TeamSpeak
 // exits.
@@ -68,6 +70,12 @@ class DarkMode : public QObject
     // Quit (the main window no longer shown, or after aboutToQuit): only the hooks go, the theme stays on what is left.
     // Idempotent; the object can be deleted afterwards.
     void shutdown();
+    // TeamSpeak is closing (its Quit), the test shutdown() makes (2.7.1: plugin.cpp asks it once at the unload, so the
+    // chat layer draws nothing at Quit either, whether dark mode is on or off): aboutToQuit came, Qt is closing down, or
+    // TeamSpeak's main window isn't shown (it hides it before it lets the plugins go). A Disable or Reload is clicked in
+    // Options over the main window, which is shown then (minimized counts as shown). mainShown, othersShown: what it saw
+    // (the log).
+    bool teamSpeakClosing(bool* mainShown = nullptr, int* othersShown = nullptr) const;
     // Where the glyph folder goes (default: TeamSpeak's config folder). Tests point it elsewhere; "" turns glyphs off.
     void setGlyphBase(const QString& dir);
     // On (plugin.cpp, once the chat layer runs; review fix): a toggle or a skin change doesn't lay out hidden chats for
@@ -91,6 +99,7 @@ class DarkMode : public QObject
         qint64 lastRemoveMs = -1;
         qint64 lastSheetMs = -1;
         qint64 lastChatsMs = -1;
+        qint64 lastCardsMs = -1; // 2.7.1: the last themeChanged's receivers (TS Media's pictures drawn again)
     };
     Stats stats() const;
 
@@ -109,6 +118,8 @@ class DarkMode : public QObject
     int                  tipEntries() const { return m_tips.size(); } // live and dead (review fix: the dead are dropped)
     int                  barEntries() const { return m_bars.size(); }
     int                  deferredPlaces() const { return m_deferred.size(); } // hidden chats whose place waits for their Show
+    // 2.7.1: this hidden chat's place waits for its Show (ChatIntegration's ShowPlace: that place wins over the end it read).
+    bool                 placeWaits(QObject* browser) const { return m_deferred.contains(browser); }
 
   public slots:
     // ChatIntegration found a new chat or a swapped document (chatsChanged): theme what isn't yet.
@@ -121,6 +132,11 @@ class DarkMode : public QObject
     // after a skin change (review fix): those places are read once TeamSpeak's skin has moved the chats, and the pass's own
     // place, taken at the chat's first event, is the right one.
     void placesRestored();
+    // 2.7.1: TeamSpeak's look changed (dark mode on or off, a skin taken over while on, and the off of a Disable or
+    // Reload): emitted inside the place bracket, once the palette, the sheet and the documents are final and the layouts
+    // settled, before the places are put back. The chat layer draws its pictures again for the new look then (they stay in
+    // TeamSpeak's chats after an unload). Never at TeamSpeak's Quit (nothing is put back there).
+    void themeChanged();
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override; // false always
@@ -175,6 +191,7 @@ class DarkMode : public QObject
     darkpalette::Metrics measure(const QList<QTextEdit*>& views) const;
     chatcolors::Colors chatColorsNow(const QList<QTextEdit*>& views) const;
     void restorePalette();
+    void announceTheme(); // themeChanged, timed (inside the place bracket)
 
     bool m_enabled   = false;
     bool m_applied   = false;
@@ -196,6 +213,7 @@ class DarkMode : public QObject
     QVector<QPair<QByteArray, darkchat::Look>> m_darkLooks;
     QVector<QPair<darkchat::Look, QRgb>>       m_extrasForward;
     QVector<QPair<darkchat::Look, QRgb>>       m_extrasBack;
+    QVector<QPair<darkchat::Look, QRgb>>       m_labelsBack; // 2.7.1: TS Media's line label on the way back
     QHash<QString, Maps>                       m_maps;
     darkchat::ColorMap                         m_tipMap;
 

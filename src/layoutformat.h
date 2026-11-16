@@ -38,6 +38,10 @@ constexpr int kKind      = QTextFormat::UserProperty + 0x7480; // int: Kind (cha
 constexpr int kRuns      = QTextFormat::UserProperty + 0x7481; // QVariantList: text, QTextFormat, text, ... (TeamSpeak's form)
 constexpr int kOrigBlock = QTextFormat::UserProperty + 0x7482; // QTextFormat: the block format before ours (stored once)
 constexpr int kOrigChar  = QTextFormat::UserProperty + 0x7483; // QTextFormat: a recoloured fragment's format before
+// The albums' collapsed item link (chatalbums.cpp): one WORD JOINER that keeps the link's format (TeamSpeak's colour) with
+// its text and the line breaks that were in front of it. Here so dark mode reads them as bookkeeping (2.7.1 live test).
+constexpr int kCollapsedLabel     = QTextFormat::UserProperty + 0x7455; // QString: the link's text
+constexpr int kCollapsedSeparator = QTextFormat::UserProperty + 0x7456; // QString: the line breaks before it
 constexpr int kBlockTag  = QTextFormat::UserProperty + 0x7484; // int: a serial per styled block
 constexpr int kTime      = QTextFormat::UserProperty + 0x7485; // QString: "16:00:17" or "4:00:17 PM"
 constexpr int kCollapsed = QTextFormat::UserProperty + 0x7486; // bool, block format: hidden by a collapsed run

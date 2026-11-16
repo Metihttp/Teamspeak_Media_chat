@@ -186,7 +186,7 @@ TeamSpeak's chat gets a modern look in your own view: names, avatars and times a
 New in 2.7: one switch turns all of TeamSpeak into a warm, modern dark theme: the main window with its menus and tool bar, the channel tree, the chat and the info panel, tool tips, scroll bars, TeamSpeak's dialogs (Options, Connect, Bookmarks, Identities, Permissions, …), the title bars and every TS Media window. It acts at once, with no restart, and only on your PC.
 
 - **Turn it on or off** in **Settings → Chat → Appearance → Dark mode**, with **Plugins → TS Media chat → Turn on dark mode** / **Turn off dark mode**, or with a hotkey (*Turn dark mode on or off* in **Tools → Options → Hotkeys**). TS Media remembers it, so TeamSpeak starts dark.
-- **Your own style is kept.** Dark mode doesn't change **Tools → Options → Design**: turn it off and the style you use there (light, the community dark skin or your own) is back exactly, and the lines in your chats get their colors back ([two small exceptions](docs/FAQ.md#dark-mode-and-my-own-teamspeak-skin)).
+- **Your own style is kept.** Dark mode doesn't change **Tools → Options → Design**: turn it off and the style you use there (light, the community dark skin or your own) is back exactly, the lines in your chats get their colors back and pictures and cards follow at once, also when you turn TS Media off while dark mode is on ([details](docs/FAQ.md#dark-mode-and-my-own-teamspeak-skin)).
 - **Old lines read well.** Lines already in the chat get dark-friendly colors, also someone's black `[COLOR]` text. Nothing changes outside TeamSpeak.
 
 [More about dark mode](docs/USAGE.md#dark-mode) · [dark mode and your own skin](docs/FAQ.md#dark-mode-and-my-own-teamspeak-skin)

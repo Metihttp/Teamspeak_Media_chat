@@ -72,6 +72,9 @@ class ChatReplies : public QObject
     void applyChromeScale(QTextBrowser* browser);
     // 2.5 zoom (1.12): the chat's picture budget swapped name for its blank stand-in: drawn again before it is seen.
     void pictureSwapped(QTextBrowser* browser, const QString& name);
+    // 2.7.1 dark mode: TeamSpeak's look changed (ChatIntegration::themeChanged): the reply lines of visible chats in the new
+    // look now, a hidden chat's at its Show (instead of a relayout after it).
+    void themeChanged();
 
     // ---- the send window and file drops -------------------------------------------------------------
     // "Replying to Alice" for the send window, while a reply to that chat is being written (else nullptr).
@@ -114,6 +117,7 @@ class ChatReplies : public QObject
         QString                    styleKey;   // the chat's look the lines were last laid out for
         bool                       indexed = false;
         bool                       stale   = false; // 2.2 emoji: positions inside blocks moved since
+        bool                       lookPending = false; // 2.7.1: hidden at a theme change: its lines at its Show
     };
     struct Style {
         bool   dark = false;

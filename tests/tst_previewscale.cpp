@@ -1144,7 +1144,7 @@ class TestPreviewScale : public QObject
         };
         const QString scan = body("void ChatIntegration::scan(QTextBrowser* browser)");
         const QString insert = body("void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const QString& key, bool keepPlace)");
-        const QString refresh = body("void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly)");
+        const QString refresh = body("bool ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly, bool keepDrawn)");
         QVERIFY(!scan.isEmpty() && !insert.isEmpty() && !refresh.isEmpty());
         QVERIFY(scan.contains(QLatin1String("const chatscroll::TextPlace place = chatscroll::captureText(browser);")));
         QVERIFY(scan.contains(QLatin1String("insertPreview(browser, op.position, op.key, false);")));

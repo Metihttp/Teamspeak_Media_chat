@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QPointer>
 #include <QScrollBar>
+#include <QTabWidget>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextCursor>
@@ -22,11 +23,13 @@
 
 #include <memory>
 
+#include "chatscale.h"
 #include "chatscroll.h"
 #include "layoutart.h"
 #include "layoutdoc.h"
 #include "layoutformat.h"
 #include "loadhold.h"
+#include "showplace.h"
 #include "testmain.h"
 #include "tschat.h"
 
@@ -259,6 +262,195 @@ int trueMaximum(QTextBrowser& b)
 {
     return qMax(0, qRound(b.document()->documentLayout()->documentSize().height()) - b.viewport()->height());
 }
+
+// 2.7.1 (issue 3): TeamSpeak's chat tabs, one shown and a new chat filled while it is hidden the way TeamSpeak fills a chat
+// (QTextEdit::append: the view follows the end, the widget's cursor stays at the end), styled by the layout (Cozy or
+// Compact), then shown for the first time.
+struct NewChat {
+    enum class Ending { Run, Album, TallCard, Plain };
+
+    QTabWidget     tabs;
+    QTextBrowser*  fresh = nullptr; // the new chat
+    layoutdoc::Env env;
+    int            serial = 0;
+
+    explicit NewChat(QSize size = QSize(520, 400))
+    {
+        tabs.resize(size);
+        auto* server = new QTextBrowser;
+        server->append(QStringLiteral("Connected to Server"));
+        tabs.addTab(server, QStringLiteral("Server"));
+        tabs.show();
+        QCoreApplication::processEvents();
+        fresh = new QTextBrowser; // made without a parent, like TeamSpeak's (640 x 480), then added as a hidden tab
+        fresh->setFont(chatFont());
+        addIcons(fresh->document());
+        tabs.addTab(fresh, QStringLiteral("Channel"));
+        QCoreApplication::processEvents();
+    }
+
+    QTextDocument* doc() { return fresh->document(); }
+    QScrollBar*    bar() { return fresh->verticalScrollBar(); }
+
+    // TeamSpeak's hidden chats are laid out at their own size (640 x 480) and their range follows each append; the hidden
+    // tab here has its resize pending until its Show (range 0/0), unless this lays it out (review fix tests).
+    void layOutHidden()
+    {
+        QResizeEvent outer(fresh->size(), QSize());
+        QCoreApplication::sendEvent(fresh, &outer);
+        QResizeEvent inner(fresh->viewport()->size(), QSize());
+        QCoreApplication::sendEvent(fresh->viewport(), &inner);
+    }
+
+    void fill(int messages, Ending ending)
+    {
+        const tschat::Skin s = tschat::darkSkin();
+        fresh->append(tschat::historyHtml(s, QStringLiteral("2026-11-14 20:10:00")));
+        for (int i = 0; i < messages; ++i) {
+            const bool    bob  = i % 2 == 1;
+            const QString time = QStringLiteral("20:%1:%2").arg(i / 60 % 60, 2, 10, QLatin1Char('0')).arg(i % 60, 2, 10, QLatin1Char('0'));
+            const QString body = i % 6 == 3 ? QStringLiteral("nc %1 a longer message that wraps over more than one line in this chat, so the chat is "
+                                                             "taller than its view several times over")
+                                                  .arg(i)
+                                            : QStringLiteral("nc %1 short line").arg(i);
+            fresh->append(tschat::messageHtml(s, time, bob ? 19 : 17, bob ? kBob : kAlice, bob ? QStringLiteral("Bob") : QStringLiteral("Alice"), body));
+        }
+        const QString talkA = QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(s, 1, QStringLiteral("Lobby"));
+        const QString talkB = QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(s, 2, QStringLiteral("Games"));
+        if (ending == Ending::Run) { // the history's last sessions (channel switches), then this one: five events in a row
+            const QString talkC = QStringLiteral("You are now talking in channel: ") + tschat::channelHtml(s, 3, QStringLiteral("Music"));
+            fresh->append(tschat::systemHtml(s, QStringLiteral("21:00:00"), talkA));
+            fresh->append(tschat::systemHtml(s, QStringLiteral("21:05:00"), talkB));
+            fresh->append(tschat::systemHtml(s, QStringLiteral("21:09:00"), talkC));
+            fresh->append(tschat::historyEndHtml(s));
+            fresh->append(tschat::systemHtml(s, QStringLiteral("09:00:01"), talkA));
+            return;
+        }
+        // An album's three messages (the album layout folds the later two under the first), or three plain ones.
+        for (int k = 0; k < 3; ++k)
+            fresh->append(tschat::messageHtml(s, QStringLiteral("21:00:0%1").arg(k), 17, kAlice, QStringLiteral("Alice"), QStringLiteral("nc album %1 of 3").arg(k + 1)));
+    }
+
+    void style(Mode mode)
+    {
+        env              = layoutdoc::Env();
+        env.mode         = mode;
+        env.tokens       = layoutart::tokensFor(mode, chatFont(), false, mode == Mode::Cozy);
+        env.colors       = layoutart::colorsFor(true, QColor(0x2f, 0x31, 0x36), QColor(0xdc, 0xdd, 0xde), QColor(0x1c, 0xb0, 0xf4));
+        env.dpr          = 1.0;
+        env.contentWidth = fresh->viewport()->width() - 2 * doc()->documentMargin();
+        env.today        = QDate(2026, 11, 15);
+        env.tag          = QStringLiteral("nc");
+        env.ownNick      = QStringLiteral("Sam");
+        env.ownUid       = kMe;
+        env.collapse     = true;
+        layoutdoc::styleAll(doc(), env);
+        layoutdoc::renderAll(doc(), env, env.today);
+    }
+
+    // The layout's runs of events (ChatLayout::collapseRuns' planning and edits): a run at the chat's end hides its last
+    // rows.
+    void collapse()
+    {
+        for (const layoutdoc::RunPlan& run : layoutdoc::planRuns(doc(), 0, doc()->blockCount() - 1, QSet<int>(), 0))
+            layoutdoc::applyRun(doc(), run, env, &serial);
+    }
+
+    // A card under the last message (a link preview's picture), taller than the view.
+    void tallCard(int height)
+    {
+        const QTextBlock block = doc()->lastBlock();
+        QTextCursor      c(doc());
+        c.setPosition(block.position() + block.length() - 1);
+        const QString name = QStringLiteral("tsmedia-test-card:%1").arg(++serial);
+        QImage        image(300, height, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::darkCyan);
+        doc()->addResource(QTextDocument::ImageResource, QUrl(name), image);
+        QTextImageFormat f;
+        f.setName(name);
+        f.setWidth(300);
+        f.setHeight(height);
+        c.insertText(QString(QChar::LineSeparator));
+        c.insertImage(f);
+    }
+
+    // What TeamSpeak's own appends and TS Media's place keeping leave a hidden chat with: at its end.
+    void toEnd()
+    {
+        chatscroll::toBottom(fresh);
+        QCoreApplication::processEvents();
+    }
+
+    void show()
+    {
+        tabs.setCurrentIndex(1);
+        QCoreApplication::processEvents();
+    }
+
+    int lastShownBlock()
+    {
+        for (QTextBlock b = doc()->lastBlock(); b.isValid(); b = b.previous()) {
+            if (b.isVisible())
+                return b.blockNumber();
+        }
+        return -1;
+    }
+};
+
+// A test filter in front of everything (like dark mode's application filter): at the chat's Show it puts the view at
+// the top of a block it kept.
+struct AtShow : QObject {
+    QTextBrowser* browser = nullptr;
+    int           block   = -1;
+    bool          eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched == browser && event->type() == QEvent::Show) {
+            chatscroll::syncRange(browser);
+            const QTextBlock b = browser->document()->findBlockByNumber(block);
+            browser->verticalScrollBar()->setValue(qRound(browser->document()->documentLayout()->blockBoundingRect(b).top()));
+        }
+        return false;
+    }
+};
+
+// ChatZoom's Show handler (chatzoom.cpp): the saved zoom for a chat hidden through a zoom change, set before its first
+// paint. Records whether the chat was at its end then.
+struct ZoomAtShow : QObject {
+    QTextBrowser* browser = nullptr;
+    QFont         font;
+    bool          set     = false;
+    bool          atEnd   = false;
+    int           value   = -1;
+    int           maximum = -1;
+    bool          eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched == browser && event->type() == QEvent::Show && browser->font() != font) {
+            atEnd   = chatscroll::atBottom(browser);
+            value   = browser->verticalScrollBar()->value();
+            maximum = browser->verticalScrollBar()->maximum();
+            browser->setFont(font);
+            set = true;
+        }
+        return false;
+    }
+};
+
+// Whether the chat is at its end when the Show reaches this filter; with sync, the chat's range is brought up to date
+// first (as a module that lays the chat out at its Show would: QTextEdit takes a new font's range only a turn later).
+struct SeenAtShow : QObject {
+    QTextBrowser* browser = nullptr;
+    bool          sync    = false;
+    bool          atEnd   = false;
+    bool          eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched == browser && event->type() == QEvent::Show) {
+            if (sync)
+                chatscroll::syncRange(browser);
+            atEnd = chatscroll::atBottom(browser);
+        }
+        return false;
+    }
+};
 
 } // namespace
 
@@ -955,6 +1147,407 @@ class TestReaderPlace : public QObject
             delete hold;
             QTest::qWait(20);
         }
+    }
+
+    // ---- 2.7.1 (issue 3): a new chat's first Show -----------------------------------------------------------------
+
+    // A chat filled while hidden, at its end, shown for the first time. Qt's own first-show move (QTextEdit::showEvent:
+    // ensureCursorVisible) puts TeamSpeak's cursor in view, and that cursor is at the chat's end: in a row the layout hid
+    // (a run of events at the end, an album's later messages), or behind the last line when that line is a card taller
+    // than the view. Qt alone shows the chat's top or the card's top (checked first, the negative control); with ShowPlace
+    // the chat shows its end, before anything paints. In Cozy and Compact, and in a chat narrower than the hidden one (it
+    // grows taller under the same scroll value).
+    void firstShowShowsTheEnd_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::addColumn<int>("ending");
+        QTest::addColumn<QSize>("size");
+        QTest::addColumn<bool>("top"); // Qt alone shows the chat's top (else: short of its end)
+        for (const Mode mode : {Mode::Cozy, Mode::Compact}) {
+            const QString m = mode == Mode::Cozy ? QStringLiteral("cozy") : QStringLiteral("compact");
+            QTest::newRow(qPrintable(m + QStringLiteral(", a run of events at the end"))) << int(mode) << int(NewChat::Ending::Run) << QSize(520, 400) << true;
+            QTest::newRow(qPrintable(m + QStringLiteral(", an album's later messages at the end"))) << int(mode) << int(NewChat::Ending::Album) << QSize(520, 400)
+                                                                                                    << true;
+            QTest::newRow(qPrintable(m + QStringLiteral(", a card taller than the view at the end"))) << int(mode) << int(NewChat::Ending::TallCard)
+                                                                                                      << QSize(520, 200) << false;
+            QTest::newRow(qPrintable(m + QStringLiteral(", a run of events, a chat narrower than the hidden one"))) << int(mode) << int(NewChat::Ending::Run)
+                                                                                                                    << QSize(360, 400) << true;
+        }
+    }
+    void firstShowShowsTheEnd()
+    {
+        QFETCH(int, mode);
+        QFETCH(int, ending);
+        QFETCH(QSize, size);
+        QFETCH(bool, top);
+        const auto kind = static_cast<NewChat::Ending>(ending);
+        for (const bool watched : {false, true}) {
+            NewChat   chat(size);
+            ShowPlace places(ShowPlace::Hooks{});
+            if (watched)
+                places.watch(chat.fresh);
+            chat.fill(60, kind);
+            chat.style(static_cast<Mode>(mode));
+            if (kind == NewChat::Ending::Run)
+                chat.collapse();
+            else if (kind == NewChat::Ending::Album)
+                hideBlocks(chat.doc(), chat.doc()->blockCount() - 2, chat.doc()->blockCount() - 1);
+            else if (kind == NewChat::Ending::TallCard)
+                chat.tallCard(320);
+            chat.toEnd();
+            QVERIFY(!chat.fresh->isVisible());
+            QVERIFY2(chatscroll::atBottom(chat.fresh), "the hidden chat is at its end before its Show");
+            QCOMPARE(chat.fresh->textCursor().position(), chat.doc()->characterCount() - 1); // TeamSpeak's cursor: the end
+            if (kind != NewChat::Ending::TallCard)
+                QVERIFY2(!chat.doc()->lastBlock().isVisible() && chat.lastShownBlock() < chat.doc()->blockCount() - 1, "the chat ends in hidden rows");
+            chat.show();
+            QVERIFY(chat.fresh->isVisible());
+            const QString what = QStringLiteral("%1: scroll %2/%3 (true max %4)")
+                                     .arg(watched ? QStringLiteral("with ShowPlace") : QStringLiteral("Qt alone"))
+                                     .arg(chat.bar()->value())
+                                     .arg(chat.bar()->maximum())
+                                     .arg(trueMaximum(*chat.fresh));
+            qInfo("%s", qPrintable(what));
+            if (!watched) {
+                // Qt's move (the negative control: what 2.6.0 and 2.7.0 showed).
+                QVERIFY2(!chatscroll::atBottom(chat.fresh), qPrintable(what));
+                if (top)
+                    QVERIFY2(chat.bar()->value() <= 40, qPrintable(what));
+                continue;
+            }
+            QVERIFY2(chatscroll::atBottom(chat.fresh), qPrintable(what));
+            QCOMPARE(chat.bar()->value(), chat.bar()->maximum());
+            QCOMPARE(places.armed(), 1);
+            QCOMPARE(places.fixed(), 1);
+            QTest::qWait(20); // the watch goes on the next turn
+            // Later Shows move nothing (Qt's move is once per widget): switched away and back, the chat stays.
+            chat.tabs.setCurrentIndex(0);
+            QCoreApplication::processEvents();
+            chat.show();
+            QVERIFY2(chatscroll::atBottom(chat.fresh), qPrintable(what));
+            QCOMPARE(places.fixed(), 1);
+            QTest::qWait(20);
+        }
+    }
+
+    // A chat whose first Show finds its cursor's line in view (the plain case): ShowPlace arms nothing and Qt's move is
+    // nothing; the chat is at its end as TeamSpeak keeps it.
+    void firstShowPlainArmsNothing()
+    {
+        NewChat   chat;
+        ShowPlace places(ShowPlace::Hooks{});
+        places.watch(chat.fresh);
+        chat.fill(60, NewChat::Ending::Plain);
+        chat.style(Mode::Cozy);
+        chat.toEnd();
+        chat.show();
+        QVERIFY(chatscroll::atBottom(chat.fresh));
+        QCOMPARE(places.armed(), 0);
+        QCOMPARE(places.fixed(), 0);
+    }
+
+    // R-DEF-1 unchanged: a place a load hold keeps (a reader above the end, carried across a Reload while the chat was
+    // hidden) is the chat's place at its first Show, not its end and not its top.
+    void firstShowKeepsAHeldPlace()
+    {
+        NewChat chat;
+        chat.fill(60, NewChat::Ending::Run);
+        chat.style(Mode::Cozy);
+        chat.collapse();
+        chat.toEnd();
+        chatscroll::ReaderPlace held;
+        held.cursor = QTextCursor(chat.doc());
+        held.cursor.setPosition(chat.doc()->findBlockByNumber(30).position());
+        held.offset = 3;
+        ShowPlace::Hooks hooks;
+        hooks.heldPlace = [&](QTextBrowser* b) { return b == chat.fresh ? &held : nullptr; };
+        ShowPlace places(hooks);
+        places.watch(chat.fresh);
+        chat.show();
+        const int want = qRound(blockTop(chat.doc(), 30) + 3);
+        QVERIFY2(qAbs(chat.bar()->value() - want) <= 1, qPrintable(QStringLiteral("scroll %1, want %2").arg(chat.bar()->value()).arg(want)));
+        QCOMPARE(places.fixed(), 1);
+    }
+
+    // Dark mode's place for a hidden chat (a toggle while it was hidden) is put back at the Show by its application filter,
+    // before ShowPlace's: that place is the chat's, kept through Qt's move. Dark mode says so at the hidden resize, so the
+    // end read there doesn't win.
+    void firstShowKeepsAPlacePutBackAtTheShow()
+    {
+        NewChat chat;
+        chat.fill(60, NewChat::Ending::Run);
+        chat.style(Mode::Cozy);
+        chat.collapse();
+        chat.toEnd();
+        AtShow atShow;
+        atShow.browser = chat.fresh;
+        atShow.block   = 25;
+        qApp->installEventFilter(&atShow);
+        ShowPlace::Hooks hooks;
+        int              asked = 0;
+        hooks.placeWaits       = [&](QTextBrowser* b) {
+            ++asked;
+            return b == chat.fresh;
+        };
+        ShowPlace places(hooks);
+        places.watch(chat.fresh);
+        chat.show();
+        qApp->removeEventFilter(&atShow);
+        QVERIFY(asked >= 1);
+        const int want = qRound(blockTop(chat.doc(), 25));
+        QVERIFY2(qAbs(chat.bar()->value() - want) <= 1, qPrintable(QStringLiteral("scroll %1, want %2").arg(chat.bar()->value()).arg(want)));
+        QCOMPARE(places.fixed(), 1);
+    }
+
+    // Review fix: the chat zoom changed while the chat was hidden, and the chat is shown narrower than its hidden layout.
+    // The saved zoom comes at the Show, before ShowPlace (ChatZoom's filter is installed later, so it runs first): its
+    // FontChange starts a scale pass that reads the place there, short of the end (the chat grew taller under the same
+    // scroll value). ShowPlace puts the end back and tells the pass (Hooks::placed -> ChatScale::retake), so the pass's
+    // settle 150 ms later keeps the end. Without the hook (the negative control) the settle takes the chat back up. A
+    // reader's place is never handed to the pass (it read that place before the new font moved the text).
+    void firstShowZoomedPassKeepsTheEnd_data()
+    {
+        QTest::addColumn<int>("ending");
+        QTest::addColumn<qreal>("points"); // the zoomed font at the Show
+        QTest::addColumn<QSize>("size");   // the tabs (the hidden chat is laid out at 640 px)
+        const qreal base = chatFont().pointSizeF();
+        QTest::newRow("a run of events at the end, zoomed in, 360 x 400") << int(NewChat::Ending::Run) << base + 2 << QSize(360, 400);
+        QTest::newRow("a run of events at the end, zoomed in, 400 x 300") << int(NewChat::Ending::Run) << base + 2 << QSize(400, 300);
+        QTest::newRow("a plain end, zoomed in, 360 x 400") << int(NewChat::Ending::Plain) << base + 2 << QSize(360, 400);
+        QTest::newRow("a plain end, zoomed in, 400 x 300") << int(NewChat::Ending::Plain) << base + 2 << QSize(400, 300);
+        QTest::newRow("a run of events at the end, zoomed out, 360 x 400") << int(NewChat::Ending::Run) << base - 1 << QSize(360, 400);
+        QTest::newRow("a plain end, zoomed out, 400 x 300") << int(NewChat::Ending::Plain) << base - 1 << QSize(400, 300);
+    }
+    void firstShowZoomedPassKeepsTheEnd()
+    {
+        QFETCH(int, ending);
+        QFETCH(qreal, points);
+        QFETCH(QSize, size);
+        const auto kind = static_cast<NewChat::Ending>(ending);
+        for (const bool hooked : {false, true}) {
+            NewChat chat(size);
+            chat.layOutHidden();
+            chat.fill(60, kind);
+            chat.style(Mode::Cozy);
+            if (kind == NewChat::Ending::Run)
+                chat.collapse();
+            chat.toEnd();
+            QVERIFY2(chatscroll::atBottom(chat.fresh) && chat.bar()->maximum() > 0, "the hidden chat at the end of its own range");
+            ChatScale*       scale = nullptr;
+            int              placed = 0;
+            ShowPlace::Hooks hooks;
+            if (hooked) {
+                hooks.placed = [&](QTextBrowser* b) {
+                    ++placed;
+                    if (b == chat.fresh && scale && scale->pending())
+                        scale->retake();
+                };
+            }
+            ShowPlace places(hooks);
+            places.watch(chat.fresh); // first, as in attachBrowser
+            ZoomAtShow zoom;          // ChatZoom: attached after ShowPlace, so its filter runs before ShowPlace's
+            zoom.browser = chat.fresh;
+            zoom.font    = chatFont();
+            zoom.font.setPointSizeF(points);
+            chat.fresh->installEventFilter(&zoom);
+            ChatScale::Host host;
+            host.fontEvent = [&scale] {
+                if (scale)
+                    scale->request();
+            };
+            ChatScale pass(chat.fresh, host);
+            scale = &pass;
+            chat.show();
+            QVERIFY(zoom.set);
+            QVERIFY2(!zoom.atEnd, "the new width took the chat short of its end before the zoom");
+            QVERIFY(pass.pending());
+            QTRY_VERIFY_WITH_TIMEOUT(!pass.pending(), 2000); // the 150 ms settle
+            QTest::qWait(20);
+            const QString what = QStringLiteral("%1: at the zoom %5/%6; settled %2/%3 (true max %4)")
+                                     .arg(hooked ? QStringLiteral("hooked") : QStringLiteral("no hook"))
+                                     .arg(chat.bar()->value())
+                                     .arg(chat.bar()->maximum())
+                                     .arg(trueMaximum(*chat.fresh))
+                                     .arg(zoom.value)
+                                     .arg(zoom.maximum);
+            qInfo("%s", qPrintable(what));
+            chat.fresh->removeEventFilter(&zoom);
+            if (!hooked) {
+                QVERIFY2(trueMaximum(*chat.fresh) - chat.bar()->value() > 40, qPrintable(what)); // what 2.7.0 showed
+                continue;
+            }
+            QVERIFY2(qAbs(trueMaximum(*chat.fresh) - chat.bar()->value()) <= 2, qPrintable(what));
+            QVERIFY(placed >= 1);
+        }
+    }
+
+    // The hook is for the end and a load hold's place only: a hidden chat a reader left above its end keeps the place the
+    // scale pass read (no retake), and ShowPlace still undoes Qt's move.
+    void firstShowReaderPlaceIsNotRetaken()
+    {
+        NewChat chat;
+        chat.layOutHidden();
+        chat.fill(60, NewChat::Ending::Run);
+        chat.style(Mode::Cozy);
+        chat.collapse();
+        chat.toEnd();
+        chat.bar()->setValue(qRound(blockTop(chat.doc(), 30)));
+        const QString hidden = QStringLiteral("hidden scroll %1/%2").arg(chat.bar()->value()).arg(chat.bar()->maximum());
+        QVERIFY2(chat.bar()->value() > 40 && !chatscroll::atBottom(chat.fresh), qPrintable(hidden));
+        int              placed = 0;
+        ShowPlace::Hooks hooks;
+        hooks.placed = [&](QTextBrowser*) { ++placed; };
+        ShowPlace places(hooks);
+        places.watch(chat.fresh);
+        const int value = chat.bar()->value();
+        chat.show();
+        const QString what = hidden + QStringLiteral(", shown %1/%2").arg(chat.bar()->value()).arg(chat.bar()->maximum());
+        qInfo("%s", qPrintable(what));
+        QCOMPARE(places.armed(), 1); // Qt's move to the hidden row (the top) ...
+        QCOMPARE(places.fixed(), 1); // ... undone: the reader's place as the Show found it
+        QCOMPARE(placed, 0);
+        QVERIFY2(qAbs(chat.bar()->value() - value) <= 2 && !chatscroll::atBottom(chat.fresh), qPrintable(what));
+    }
+
+    // The end ShowPlace hands to the pass is the one read at the hidden resize, before the zoom's font: a reader a little
+    // above the end of a chat shown before, hidden through a zoom-out, can be pushed down to the end by the smaller font
+    // by the time ShowPlace sees the Show (here: once the range is up to date at the Show; QTextEdit alone takes it a turn
+    // later); that is not the end to keep. The pass keeps the reader's line, which it read before the font.
+    void zoomedOutReaderNearTheEndIsNotRetaken_data()
+    {
+        QTest::addColumn<bool>("sync");
+        QTest::newRow("the range as QTextEdit has it at the Show") << false;
+        QTest::newRow("the range brought up to date before ShowPlace (the reader at the end then)") << true;
+    }
+    void zoomedOutReaderNearTheEndIsNotRetaken()
+    {
+        QFETCH(bool, sync);
+        NewChat chat;
+        chat.fill(60, NewChat::Ending::Plain);
+        chat.style(Mode::Cozy);
+        chat.show(); // shown before: no resize pending at the next Show
+        chat.toEnd();
+        chat.bar()->setValue(chat.bar()->maximum() - 100);
+        const int               value  = chat.bar()->value();
+        const layoutdoc::Anchor anchor = layoutdoc::anchorAt(chat.doc(), value);
+        QVERIFY(anchor.block >= 0 && !chatscroll::atBottom(chat.fresh));
+        chat.tabs.setCurrentIndex(0);
+        QCoreApplication::processEvents();
+        QVERIFY(!chat.fresh->isVisible());
+
+        ChatScale*       scale  = nullptr;
+        int              placed = 0;
+        ShowPlace::Hooks hooks;
+        hooks.placed = [&](QTextBrowser* b) {
+            ++placed;
+            if (b == chat.fresh && scale && scale->pending())
+                scale->retake();
+        };
+        ShowPlace places(hooks);
+        places.watch(chat.fresh);
+        SeenAtShow seen; // between the zoom and ShowPlace: what ShowPlace finds
+        seen.browser = chat.fresh;
+        seen.sync    = sync;
+        chat.fresh->installEventFilter(&seen);
+        ZoomAtShow zoom;
+        zoom.browser = chat.fresh;
+        zoom.font    = chatFont();
+        zoom.font.setPointSizeF(chatFont().pointSizeF() - 3);
+        chat.fresh->installEventFilter(&zoom);
+        ChatScale::Host host;
+        host.fontEvent = [&scale] {
+            if (scale)
+                scale->request();
+        };
+        ChatScale pass(chat.fresh, host);
+        scale = &pass;
+        chat.show();
+        chat.fresh->removeEventFilter(&zoom);
+        chat.fresh->removeEventFilter(&seen);
+        QVERIFY(zoom.set && !zoom.atEnd);
+        if (sync)
+            QVERIFY2(seen.atEnd, "the smaller font pushed the reader down to the end before ShowPlace's filter");
+        QTRY_VERIFY_WITH_TIMEOUT(!pass.pending(), 2000);
+        QTest::qWait(20);
+        const qreal   top  = layoutdoc::anchorY(chat.doc(), anchor);
+        const QString what = QStringLiteral("hidden %1, settled %2/%3, the reader's line at %4").arg(value).arg(chat.bar()->value()).arg(chat.bar()->maximum()).arg(top);
+        qInfo("%s", qPrintable(what));
+        QCOMPARE(placed, 0);
+        QVERIFY2(!chatscroll::atBottom(chat.fresh) && qAbs(chat.bar()->value() - qRound(top)) <= 2, qPrintable(what));
+    }
+
+    // stop(): every filter off, nothing armed (the plugin's unload); a chat shown afterwards gets Qt's move as it is.
+    void showPlaceStops()
+    {
+        NewChat chat;
+        chat.fill(60, NewChat::Ending::Run);
+        chat.style(Mode::Cozy);
+        chat.collapse();
+        chat.toEnd();
+        ShowPlace places(ShowPlace::Hooks{});
+        places.watch(chat.fresh);
+        places.stop();
+        chat.show();
+        QCOMPARE(places.armed(), 0);
+        QVERIFY(!chatscroll::atBottom(chat.fresh));
+    }
+
+    // Where QTextEdit's ensureCursorVisible goes, as cursorJumpTarget says it would: checked against Qt itself.
+    void cursorJumpTargetIsQts_data()
+    {
+        QTest::addColumn<int>("ending");
+        QTest::newRow("a run of events at the end (the top)") << int(NewChat::Ending::Run);
+        QTest::newRow("a card taller than the view") << int(NewChat::Ending::TallCard);
+        QTest::newRow("plain (no move)") << int(NewChat::Ending::Plain);
+    }
+    void cursorJumpTargetIsQts()
+    {
+        QFETCH(int, ending);
+        const auto kind = static_cast<NewChat::Ending>(ending);
+        NewChat    chat(QSize(520, 200));
+        chat.fill(60, kind);
+        chat.style(Mode::Cozy);
+        if (kind == NewChat::Ending::Run)
+            chat.collapse();
+        else if (kind == NewChat::Ending::TallCard)
+            chat.tallCard(320);
+        chat.show();
+        chat.toEnd();
+        const int before = chat.bar()->value();
+        const int target = chatscroll::cursorJumpTarget(chat.fresh);
+        chat.fresh->ensureCursorVisible();
+        QVERIFY2(qAbs(chat.bar()->value() - target) <= 2, qPrintable(QStringLiteral("Qt %1, cursorJumpTarget %2").arg(chat.bar()->value()).arg(target)));
+        if (kind == NewChat::Ending::Plain)
+            QCOMPARE(target, before);
+        else
+            QVERIFY(target < before);
+    }
+
+    // ChatIntegration's wiring: every chat watched first in attachBrowser (its filter the last of ours before QTextEdit's
+    // showEvent), stopped first at unload; the CRASH RULE in the new code.
+    void showPlaceSourceRules()
+    {
+        const QString code = source("src/showplace.cpp") + source("src/showplace.h");
+        QVERIFY(!code.isEmpty());
+        QVERIFY(!code.contains(QLatin1String("QTimer::singleShot")));
+        QVERIFY(!code.contains(QLatin1String("QStringLiteral")));
+        QVERIFY(!code.contains(QLatin1String("QByteArrayLiteral")));
+        QVERIFY(!code.contains(QLatin1String("setProperty")));
+        const QString chat   = source("src/chatintegration.cpp");
+        const int     attach = chat.indexOf(QLatin1String("void ChatIntegration::attachBrowser("));
+        QVERIFY(attach > 0);
+        const int watch = chat.indexOf(QLatin1String("m_showPlace->watch(browser)"), attach);
+        const int zoom  = chat.indexOf(QLatin1String("m_zoom->attach(browser)"), attach);
+        QVERIFY(watch > attach && zoom > watch);
+        // Review fix: the end or a load hold's place ShowPlace set is taken again by a pending scale pass.
+        const int hook = chat.indexOf(QLatin1String("hooks.placed = [this](QTextBrowser* browser)"));
+        QVERIFY(hook > 0 && hook < attach);
+        const int retake = chat.indexOf(QLatin1String("view->scaler->retake()"), hook);
+        QVERIFY(retake > hook && retake < chat.indexOf(QLatin1String("m_showPlace = new ShowPlace(hooks, this)"), hook));
+        const int dtor = chat.indexOf(QLatin1String("ChatIntegration::~ChatIntegration()"));
+        const int stop = chat.indexOf(QLatin1String("m_showPlace->stop()"), dtor);
+        const int kept = chat.indexOf(QLatin1String("QVector<KeptPlace> keptPlaces"), dtor);
+        QVERIFY(dtor > 0 && stop > dtor && kept > stop);
     }
 
     // The CRASH RULE in the new code: no functor singleShot, no QStringLiteral (static data of this DLL in Qt's state);

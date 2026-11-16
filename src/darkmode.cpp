@@ -162,6 +162,11 @@ void DarkMode::buildTheme()
     // Every choice of Settings -> Chat -> Text size and colors, not only the one in use now (review fix): a line printed
     // after the choice changed while dark mode was on maps back too. The one in use goes first (it wins a look two
     // choices would share).
+    // 2.7.1: exactly the shapes ts3api prints: the label "TS Media chat" (bold, never a link), a link (underlined: dark mode's
+    // chat sheet keeps the underline of links; a skin's may drop it, so both on the way there), the text (normal, or bold in
+    // /tsmedia help and the chat layout's notice). Under dark mode the text has the chat text colour, which is also the
+    // label's with Same as the chat text and a nickname's: on the way back the text wins its look among TS Media's shapes,
+    // links are TeamSpeak's (the anchor in the look), and the label has a map of its own (darkchat::isLineLabel).
     chatcolors::Colors dark;
     dark.base        = t.window;
     dark.text        = t.text;
@@ -170,36 +175,43 @@ void DarkMode::buildTheme()
     dark.themeAccent = t.accent;
     m_extrasForward.clear();
     m_extrasBack.clear();
-    const auto pair = [this](const QString& from, const QString& to, bool bold, bool underline) {
+    m_labelsBack.clear();
+    struct Shape {
+        bool bold, underline, anchor;
+    };
+    const Shape label{true, false, false}, text{false, false, false}, boldText{true, false, false}, link{false, true, true}, plainLink{false, false, true};
+    const auto  add = [](QVector<QPair<darkchat::Look, QRgb>>& list, const QString& from, const QString& to, const Shape& s) {
         const QColor a(from), b(to);
-        if (!a.isValid() || !b.isValid() || a == b)
-            return;
-        m_extrasForward.append({darkchat::Look{a.rgba(), bold, underline}, b.rgba()});
-        m_extrasBack.append({darkchat::Look{b.rgba(), bold, underline}, a.rgba()});
+        if (a.isValid() && b.isValid() && a != b)
+            list.append({darkchat::Look{a.rgba(), s.bold, s.underline, s.anchor}, b.rgba()});
     };
     QStringList choices{Settings::normalizeLineColor(Settings::instance().chatLineColor), QString()};
     for (const char* name : Settings::lineColorChoices)
         choices << QString::fromLatin1(name);
     choices.removeDuplicates();
-    for (int i = 0; i < choices.size(); ++i) {
-        const chatcolors::LineColors before = chatcolors::lineColors(m_snap.chat, choices.at(i));
-        const chatcolors::LineColors after  = chatcolors::lineColors(dark, choices.at(i));
-        for (const bool bold : {true, false}) {
-            for (const bool underline : {false, true}) {
-                pair(before.accent, after.accent, bold, underline);
-                if (i == 0) // the warning and the body don't depend on the choice
-                    pair(before.warning, after.warning, bold, underline);
-            }
-        }
-        if (i == 0 && before.wrapBody) {
-            pair(before.body, after.body, false, false);
-        } else if (i == 0) {
-            // Live test: on the skin's chat TeamSpeak draws a plugin line without a colour of ours in dark blue
-            // (chatcolors.cpp), so a line printed while dark gets that back (the way there stays the contrast rule's).
-            const QColor onDark(after.body), plugin(QString::fromLatin1("#00008b"));
-            if (onDark.isValid())
-                m_extrasBack.append({darkchat::Look{onDark.rgba(), false, false}, plugin.rgba()});
-        }
+    // The text and the warning don't depend on the choice.
+    const chatcolors::LineColors skin = chatcolors::lineColors(m_snap.chat, choices.first());
+    const chatcolors::LineColors ours = chatcolors::lineColors(dark, choices.first());
+    // Live test (2.7.0): on the skin's chat TeamSpeak draws a plugin line without a colour of ours in dark blue (chatcolors),
+    // so a line printed while dark gets that back where TS Media doesn't colour its text there (the way there stays the
+    // contrast rule's then).
+    const QString textBack = skin.wrapBody ? skin.body : QString::fromLatin1("#00008b");
+    for (const Shape& s : {text, boldText}) {
+        add(m_extrasBack, ours.body, textBack, s);
+        if (skin.wrapBody)
+            add(m_extrasForward, skin.body, ours.body, s);
+    }
+    add(m_extrasBack, ours.warning, skin.warning, label);
+    add(m_labelsBack, ours.warning, skin.warning, label);
+    add(m_extrasForward, skin.warning, ours.warning, label);
+    for (const QString& choice : qAsConst(choices)) {
+        const chatcolors::LineColors before = chatcolors::lineColors(m_snap.chat, choice);
+        const chatcolors::LineColors after  = chatcolors::lineColors(dark, choice);
+        for (const Shape& s : {link, label})
+            add(m_extrasBack, after.accent, before.accent, s);
+        for (const Shape& s : {link, plainLink, label})
+            add(m_extrasForward, before.accent, after.accent, s);
+        add(m_labelsBack, after.accent, before.accent, label);
     }
     m_maps.clear();
 }
@@ -214,7 +226,7 @@ DarkMode::Maps DarkMode::mapsFor(const QString& sheet)
     const auto from = darkchat::classLooks(darkchat::resolvePaletteRefs(sheet, m_snap.palette), m_snap.palette.color(QPalette::Active, QPalette::Link));
     Maps                       maps;
     maps.forward = darkchat::buildMap(from, m_darkLooks, m_extrasForward, t.window);
-    maps.back    = darkchat::buildMap(m_darkLooks, from, m_extrasBack, QColor());
+    maps.back    = darkchat::buildMap(m_darkLooks, from, m_extrasBack, QColor(), m_labelsBack);
     m_maps.insert(sheet, maps);
     return maps;
 }
@@ -239,23 +251,55 @@ darkpalette::Metrics DarkMode::measure(const QList<QTextEdit*>& views) const
     return m;
 }
 
+// The colours of the skin's chat as TS Media printed its lines for them (2.7.1): the ChatTab's palette with its own
+// style-sheet background sampled, exactly as ChatIntegration's chatcolors::Cache reads them (a picture background never
+// reaches the palette). Never inside a paint (apply and adoptSkin only).
+static chatcolors::Colors skinChatColors(QTextEdit* chat)
+{
+    const QPalette palette = chat->palette();
+    return chatcolors::withSample(chatcolors::fromPalette(palette), chatcolors::sampleBackground(chat), chatcolors::isTexture(palette));
+}
+
 chatcolors::Colors DarkMode::chatColorsNow(const QList<QTextEdit*>& views) const
 {
+    // A probe: never shown and gone at once. Not a QTextBrowser (no module takes it for a chat), and m_applying is set (our
+    // filter leaves its Polish alone).
+    const auto probe = [](const QPalette* palette, const QString& sheet) {
+        QTextEdit edit;
+        edit.setObjectName(QString::fromLatin1("ChatTab"));
+        edit.setAttribute(Qt::WA_DontShowOnScreen);
+        if (palette) {
+            edit.setPalette(*palette);
+            edit.setStyleSheet(sheet);
+        }
+        edit.ensurePolished();
+        return skinChatColors(&edit);
+    };
+    if (m_applied && !(QApplication::palette() == m_snap.palette)) {
+        // 2.7.1: a skin taken over while dark mode is on: the application palette is dark mode's, and Qt resolves a sheet's
+        // palette(base) with the application palette, so a chat would show the skin's sheet on dark mode's colours. The
+        // probe gets the skin's palette and the skin's sheet with those references resolved by it (a widget's own sheet
+        // wins over the application's): what the skin shows once dark mode is off. Review fix: the application sheet may
+        // still be dark mode's (only the palette changed), and its ChatTab rule would fill in what the skin's leaves out
+        // (TeamSpeak's own sets no text colour): the probe's sheet first sets the background, the text and the frame
+        // the way a chat shows them without a rule (the skin's palette; a texture's background is left to the sample),
+        // then the skin's rules (they win where they say something: any selector beats *).
+        const QBrush& base  = m_snap.palette.brush(QPalette::Active, QPalette::Base);
+        const QString reset = QString::fromLatin1("* { %1color: %2; border: none; }\n")
+                                  .arg(base.style() == Qt::SolidPattern ? QString::fromLatin1("background-color: %1; ").arg(base.color().name(QColor::HexRgb)) : QString(),
+                                       m_snap.palette.color(QPalette::Active, QPalette::Text).name(QColor::HexRgb));
+        return probe(&m_snap.palette, reset + darkchat::resolvePaletteRefs(m_snap.sheet, m_snap.palette));
+    }
     QTextEdit* chat = nullptr;
     for (QTextEdit* v : views) {
         if (named(v, "ChatTab") && (!chat || (v->isVisible() && !chat->isVisible())))
             chat = v;
     }
     if (chat)
-        return chatcolors::fromPalette(chat->palette());
-    // No chat yet (TeamSpeak's start, review fix): one polished by the sheet in use now (the skin's: apply and adoptSkin
-    // ask before ours is set), never shown and gone at once. Not a QTextBrowser (no module takes it for a chat), and
-    // m_applying is set (our filter leaves its Polish alone).
-    QTextEdit probe;
-    probe.setObjectName(QString::fromLatin1("ChatTab"));
-    probe.setAttribute(Qt::WA_DontShowOnScreen);
-    probe.ensurePolished();
-    return chatcolors::fromPalette(probe.palette());
+        return skinChatColors(chat);
+    // No chat yet (TeamSpeak's start, review fix): the probe polished by the sheet in use now (the skin's: apply asks before
+    // ours is set).
+    return probe(nullptr, QString());
 }
 
 QList<QTextEdit*> DarkMode::findViews() const
@@ -301,6 +345,7 @@ void DarkMode::apply()
     for (QTextEdit* view : views)
         track(view);
     m_stats.lastChatsMs = clock.elapsed() - m_stats.lastSheetMs;
+    announceTheme(); // 2.7.1: TS Media's pictures for the dark look, inside the bracket
     restorePlaces(places);
     emit placesRestored(); // live test: a scale pass the switch started keeps this place
     for (QWidget* window : QApplication::topLevelWidgets())
@@ -317,14 +362,25 @@ void DarkMode::apply()
         if (top->inherits("QMainWindow"))
             main = top;
     }
-    logLine(QString::fromLatin1("[dark] on in %1 ms (sheet %2 ms, chats %3 ms, %4 widgets; sheet %5 chars, scale %6%, main window %7)")
+    logLine(QString::fromLatin1("[dark] on in %1 ms (sheet %2 ms, chats %3 ms, cards %4 ms, %5 widgets; sheet %6 chars, scale %7%, main window %8)")
                 .arg(m_stats.lastApplyMs)
                 .arg(m_stats.lastSheetMs)
                 .arg(m_stats.lastChatsMs)
+                .arg(m_stats.lastCardsMs)
                 .arg(m_stats.widgets)
                 .arg(m_stats.sheetChars)
                 .arg(qRound(m_k * 100))
                 .arg(main ? QString::fromLatin1("yes") : QString::fromLatin1("no")));
+}
+
+void DarkMode::announceTheme()
+{
+    // The chats' widths final first (tab bar and input heights; restorePlaces does it again and finds nothing left).
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    QElapsedTimer clock;
+    clock.start();
+    emit themeChanged();
+    m_stats.lastCardsMs = clock.elapsed();
 }
 
 void DarkMode::remove()
@@ -372,6 +428,7 @@ void DarkMode::remove()
     QApplication::setPalette(m_snap.palette);
     restorePalette();
     qApp->setStyleSheet(m_snap.sheet);
+    announceTheme(); // 2.7.1: TS Media's pictures for TeamSpeak's look (also those a Disable or Reload leaves), inside the bracket
     restorePlaces(places);
     emit placesRestored(); // live test: a scale pass the switch started keeps this place
     revertTitleBars();
@@ -382,7 +439,7 @@ void DarkMode::remove()
     m_paused   = false;
     m_applying = false;
     m_stats.lastRemoveMs = clock.elapsed();
-    logLine(QString::fromLatin1("[dark] off in %1 ms").arg(m_stats.lastRemoveMs));
+    logLine(QString::fromLatin1("[dark] off in %1 ms (cards %2 ms)").arg(m_stats.lastRemoveMs).arg(m_stats.lastCardsMs));
 }
 
 // Every role of every group as it was; one that Qt resolved differently is set again (it enters the resolve mask then).
@@ -420,26 +477,38 @@ void DarkMode::pause()
     logLine(QString::fromLatin1("[dark] the application style sheet keeps changing; dark mode pauses until it is turned on again"), LogLevel_WARNING);
 }
 
+bool DarkMode::teamSpeakClosing(bool* mainShown, int* othersShown) const
+{
+    // At Quit TeamSpeak hides its main window and then lets the plugin go, before aboutToQuit (live test). A Disable or
+    // Reload is clicked in Options, over the main window, which is shown then (minimized counts as shown). The main window
+    // is the sign (review fix): Qt doesn't hide a window's own windows with it, and another plugin's window or one TeamSpeak
+    // leaves open may still be shown at Quit.
+    bool main   = false;
+    int  others = 0;
+    for (QWidget* top : QApplication::topLevelWidgets()) {
+        if (!top->isVisible() || top->windowType() == Qt::Popup || top->windowType() == Qt::ToolTip || top->objectName().startsWith(QLatin1String("tsmedia")))
+            continue;
+        if (top->inherits("QMainWindow"))
+            main = true;
+        else
+            ++others;
+    }
+    if (mainShown)
+        *mainShown = main;
+    if (othersShown)
+        *othersShown = others;
+    return m_quitting || QCoreApplication::closingDown() || !main;
+}
+
 void DarkMode::shutdown()
 {
     if (m_shutDown)
         return;
     stopTimers();
-    // At Quit TeamSpeak hides its main window and then lets the plugin go, before aboutToQuit (live test). A Disable or
-    // Reload is clicked in Options, over the main window, which is shown then (minimized counts as shown). The main window
-    // is the sign (review fix): Qt doesn't hide a window's own windows with it, and another plugin's window or one TeamSpeak
-    // leaves open may still be shown at Quit.
-    bool mainShown = false;
-    int  othersShown = 0;
-    for (QWidget* top : QApplication::topLevelWidgets()) {
-        if (!top->isVisible() || top->windowType() == Qt::Popup || top->windowType() == Qt::ToolTip || top->objectName().startsWith(QLatin1String("tsmedia")))
-            continue;
-        if (top->inherits("QMainWindow"))
-            mainShown = true;
-        else
-            ++othersShown;
-    }
-    if (m_applied && (m_quitting || QCoreApplication::closingDown() || !mainShown)) {
+    bool       mainShown   = false;
+    int        othersShown = 0;
+    const bool closing     = teamSpeakClosing(&mainShown, &othersShown);
+    if (m_applied && closing) {
         // TeamSpeak is closing (live test): its windows are being torn down, and putting its skin back repolishes every one
         // of them (a crash in the style sheet code at Quit, in a widget half gone). Its main window isn't shown any more and
         // nothing of dark mode in Qt needs this DLL (the sheets, colours and document sheets are copies on the heap), so only
@@ -551,7 +620,6 @@ void DarkMode::adoptSkin()
     if (sheetChanged) {
         m_snap.sheet   = sheet;
         m_snap.metrics = measure(views); // polished with the new skin at this moment
-        m_snap.chat    = chatColorsNow(views);
     }
     if (paletteChanged) {
         // Every role TeamSpeak changed from what we set (a skin that sets only Link keeps the rest of the original).
@@ -564,6 +632,7 @@ void DarkMode::adoptSkin()
             }
         }
     }
+    m_snap.chat = chatColorsNow(views); // 2.7.1: with the skin's sheet and palette as they are now (both above)
     for (QTextDocument* doc : qAsConst(docsChanged))
         m_docs[doc].sheet = doc->defaultStyleSheet(); // the new skin's _chat.qss
     buildTheme();
@@ -576,6 +645,7 @@ void DarkMode::adoptSkin()
         if (it->doc && it->doc->defaultStyleSheet() != m_chatSheet)
             it->doc->setDefaultStyleSheet(m_chatSheet);
     }
+    announceTheme(); // 2.7.1: what the skin's turn drew is drawn for dark mode again, inside the bracket
     restorePlaces(places);
     // No placesRestored here (review fix): these places were read after TeamSpeak's skin had changed the chats (a new chat
     // font moves every line under the same scroll value), so a scale pass the skin started keeps the place it took at the

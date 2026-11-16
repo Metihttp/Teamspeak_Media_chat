@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.7.0 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.7.1 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -96,6 +96,7 @@ add_library(tsmedia SHARED
     src/chatintegration.cpp   src/chatintegration.h
     src/previewscale.h        src/chatscale.cpp     src/chatscale.h       # 2.5 zoom: the preview scale, one coordinator per chat
     src/loadhold.cpp          src/loadhold.h        # 2.7 (R-DEF-1): the reader's place while a chat is styled after a load
+    src/showplace.cpp         src/showplace.h       # 2.7.1: a chat's place across Qt's move at its first Show
     src/chatzoom.cpp          src/chatzoom.h        # 2.7 F5: the saved chat zoom, one for every chat
     src/chatcolors.cpp        src/chatcolors.h      # 2.7 F6: the chat's effective colours, TS Media's line colours
     # 2.7 dark mode: the engine, the look (tokens, palette, sheets), the chat's baked colours, the glyphs, the title bars,
@@ -646,7 +647,7 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_unload23.cpp    # 2.3 cross review (lifetime): every layer given back, menus and music at unload
         tests/tst_reload261.cpp   # R-DEF-1: the real plugin DLL unloaded and loaded again (Reload) under a long chat
         # 2.7 (R-DEF-1): the reader's place on TeamSpeak's own text, its carry across a reload, the load hold
-        tests/tst_readerplace.cpp src/loadhold.cpp src/loadhold.h
+        tests/tst_readerplace.cpp src/loadhold.cpp src/loadhold.h src/showplace.cpp src/showplace.h
         # 2.4 link previews (sender-previews): LP grammar and hostile input, sender matching, the store, the
         # sender pipeline end to end through the real Core against the fake TeamSpeak (a fake fetcher)
         tests/tst_linkpreview_snd.cpp

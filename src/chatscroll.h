@@ -52,6 +52,25 @@ inline void syncRange(QTextBrowser* browser)
         emit layout->documentSizeChanged(size); // QTextEdit adjusts its scroll bars now
 }
 
+// 2.7.1: the scroll value QTextEdit's own ensureCursorVisible() would set, as it does once at a chat's first Show (its
+// _q_ensureVisible: the cursor's line wholly in view, the least move), clamped to the range; the value as it is when the
+// cursor's line shows already. A cursor in a block the layout hid has no place of its own (Qt's block rectangle is
+// empty): Qt then takes the line's offset from the chat's top, which is what this returns too.
+inline int cursorJumpTarget(QTextBrowser* browser)
+{
+    QScrollBar* bar   = browser->verticalScrollBar();
+    const int   value = bar->value();
+    const QRect r     = browser->cursorRect(); // viewport coordinates
+    const int   top   = r.y() + value;
+    const int   h     = browser->viewport()->height();
+    int         want  = value;
+    if (top < value)
+        want = top;
+    else if (top + r.height() > value + h)
+        want = top + r.height() - h;
+    return qBound(bar->minimum(), want, bar->maximum());
+}
+
 // 2.6 (R-DEF-1, design 8.1): to the chat's very end after an edit. Right after a small edit QTextEdit still has the old
 // range (the layout reports the new size on its 0 ms timer), so a plain setValue(maximum()) lands short by the edit's
 // growth, and every later pass then treats the reader as reading above the end: syncRange first.

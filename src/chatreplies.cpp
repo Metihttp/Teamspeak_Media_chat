@@ -665,6 +665,20 @@ void ChatReplies::pictureSwapped(QTextBrowser* browser, const QString& name)
         it->rendered.remove(name); // renderVisible draws it again once it is on screen
 }
 
+void ChatReplies::themeChanged()
+{
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        QTextBrowser* browser = it.key();
+        if (!browser->isVisible()) {
+            it->lookPending = true; // its Show lays its lines out (before its first paint)
+            continue;
+        }
+        it->lookPending = false;
+        if (it->document == browser->document() && !it->lines.isEmpty())
+            refreshLines(browser); // the lines on screen drawn before the paint (renderVisible)
+    }
+}
+
 void ChatReplies::applyChromeScale(QTextBrowser* browser)
 {
     // 2.7 F4: the reply bar of this chat follows its new scale (Ctrl + wheel, the chat font) in the same pass. Its new
@@ -688,8 +702,10 @@ void ChatReplies::refreshLines(QTextBrowser* browser, const QSet<QString>* only,
         return;
     QTextDocument* doc   = browser->document();
     const Style    style = styleOf(browser);
-    if (!only)
-        view->styleKey = keyOf(style);
+    if (!only) {
+        view->styleKey    = keyOf(style);
+        view->lookPending = false; // 2.7.1: every line laid out for the look the chat has now (its Show has nothing left)
+    }
     struct Resize {
         int    message;
         QSizeF size;
@@ -929,6 +945,13 @@ bool ChatReplies::filterEvent(QObject* watched, QEvent* event)
     case QEvent::PaletteChange:
     case QEvent::StyleChange:
     case QEvent::Show:
+        if (View* view = type == QEvent::Show ? viewOf(browser) : nullptr; view && view->lookPending) {
+            view->lookPending = false; // 2.7.1: hidden at a theme change: its lines in the new look before its first paint
+            if (view->document == browser->document() && !view->lines.isEmpty()) {
+                refreshLines(browser);
+                return false;
+            }
+        }
         scheduleRelayout(browser);
         return false;
 

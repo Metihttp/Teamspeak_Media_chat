@@ -881,6 +881,69 @@ class TestChatTextSpoilers : public QObject
         QVERIFY(old->toPlainText().contains(QLatin1String("[spoiler]old one[/spoiler]")));
     }
 
+    // 2.7.1 (dark mode, review): TeamSpeak's look changed (ChatIntegration::themeChanged: dark mode on or off, a skin taken
+    // over): every chat's bars take the colours the chat has now at once, a hidden chat's too, and the shown one paints them.
+    void themeChangedRecolorsEveryChat()
+    {
+        QTextBrowser shown, hidden;
+        for (QTextBrowser* b : {&shown, &hidden}) {
+            b->resize(560, 300);
+            setup(*b->document(), 520);
+            message(b->document(), tschat::lightSkin(), QStringLiteral("a [spoiler]bbbbbbbbbb cccccccc[/spoiler] d"));
+        }
+        shown.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&shown));
+        ChatTextSpoilers::Colors now{QColor(0xff, 0xff, 0xff), QColor(0, 0, 0)};
+        bool                     mutating = false;
+        ChatTextSpoilers::Host   host;
+        host.othersMutating = [&mutating] { return mutating; };
+        host.setMutating    = [&mutating](bool on) {
+            const bool was = mutating;
+            mutating       = on;
+            return was;
+        };
+        host.colors = [&now](QTextBrowser*) { return now; };
+        ChatTextSpoilers spoilers(host);
+        spoilers.attach(&shown);
+        spoilers.attach(&hidden);
+        spoilers.runEarlyPass();
+        QCOMPARE(spoilers.hiddenCount(), 2);
+        QVERIFY(!hidden.isVisible());
+        const auto lookOf = [](QTextDocument* doc) {
+            auto* handler = dynamic_cast<textspoilerdoc::Handler*>(doc->documentLayout()->handlerForObject(textspoilerdoc::kObjectType));
+            return handler ? handler->look(doc) : textspoilerdoc::Look();
+        };
+        const auto barPixel = [&] {
+            shown.document()->documentLayout()->documentSize();
+            chatscroll::syncRange(&shown);
+            const QRect  bar   = spoilers.barRects(&shown).value(0);
+            const QImage image = shown.viewport()->grab().toImage();
+            return bar.isEmpty() ? QColor() : QColor(image.pixel(bar.center()));
+        };
+        for (QTextBrowser* b : {&shown, &hidden})
+            QCOMPARE(lookOf(b->document()).base, now.base);
+        const int  id     = textspoilerdoc::spoilersIn(shown.document()).value(0).id;
+        const auto before = lookOf(shown.document());
+        QCOMPARE(barPixel(), textspoilerdoc::barColor(before, id));
+        // Dark mode on: the chat's colours change; nothing follows until TeamSpeak's look is said to have changed.
+        now = {QColor(0x26, 0x26, 0x24), QColor(0xf5, 0xf4, 0xee)};
+        QCOMPARE(lookOf(shown.document()).base, QColor(0xff, 0xff, 0xff));
+        spoilers.themeChanged();
+        for (QTextBrowser* b : {&shown, &hidden}) {
+            QCOMPARE(lookOf(b->document()).base, now.base);
+            QCOMPARE(lookOf(b->document()).text, now.text);
+        }
+        const auto after = lookOf(shown.document());
+        QVERIFY(textspoilerdoc::barColor(after, id) != textspoilerdoc::barColor(before, id));
+        QCOMPARE(barPixel(), textspoilerdoc::barColor(after, id));
+        // Off again, from the hidden chat's side: both back.
+        now = {QColor(0xff, 0xff, 0xff), QColor(0, 0, 0)};
+        spoilers.themeChanged();
+        for (QTextBrowser* b : {&shown, &hidden})
+            QCOMPARE(lookOf(b->document()).base, now.base);
+        QCOMPARE(barPixel(), textspoilerdoc::barColor(before, id));
+    }
+
     void unloadGivesTheChatBack()
     {
         Chat chat;

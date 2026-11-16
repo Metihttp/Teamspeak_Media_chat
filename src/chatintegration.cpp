@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileIconProvider>
@@ -85,6 +86,7 @@
 #include "previewpaint.h" // fontForRatio
 #include "chatscroll.h"
 #include "loadhold.h" // 2.7 (R-DEF-1): the reader's place while a chat is styled after a load
+#include "showplace.h" // 2.7.1: a chat's place across Qt's move at its first Show
 #include "chatzoom.h" // 2.7 F5
 #include "darkmode.h" // 2.7 dark mode: DarkMode::isActive() for the chats' colours
 #include "chattextspoilers.h"   // 2.7 F1: text spoilers
@@ -104,6 +106,10 @@ constexpr int kGapBottom = 4;
 // Marks the line breaks insertPreview puts around a preview, so they can be told apart from the
 // chat's own line breaks when previews are removed again.
 constexpr int kSeparatorProperty = QTextFormat::UserProperty + 0x7453;
+
+// 2.7.1: at a Disable's or Reload's unload, the pictures still in an older look whose still Core doesn't have at hand get
+// a cheap decode for at most this long in all (ChatIntegration::drawForLook); the rest keep the picture they have.
+constexpr qint64 kUnloadDecodeMs = 150;
 
 // Content (drawn picture) size of a preview object in du, without the transparent gaps (2.5 zoom: the du size the
 // object was laid out for, previewscale::kDuSizeProperty).
@@ -322,6 +328,9 @@ ChatIntegration::ChatIntegration(Core* core, QObject* parent)
 
 ChatIntegration::~ChatIntegration()
 {
+    // 2.7.1: no place is put back during the unload (its filters off, nothing queued).
+    if (m_showPlace)
+        m_showPlace->stop();
     // 2.7 F1: first: the input menu's catcher disarmed, the inputs' filters off, our menu actions gone.
     delete m_inputFormat;
     m_inputFormat = nullptr;
@@ -355,6 +364,22 @@ ChatIntegration::~ChatIntegration()
         }
     }
     m_activeHolds = 0;
+    // 2.7.1 dark mode, on a Disable or Reload only (beginUnload; never at TeamSpeak's Quit, where nothing of ours is drawn
+    // while TeamSpeak tears its windows down): the pictures still in an older look get TeamSpeak's look now, since they
+    // stay in its chats after the unload. That is every chat hidden since a theme change (dark mode's off just before, or
+    // a toggle earlier) and the pictures a redraw for the look kept (lookOld). Inside this place bracket, while the layout
+    // (its bubbles), the reactions (their rows) and the players are still there; dark mode laid these chats out for their
+    // size already (its shutdown doesn't defer them).
+    if (m_unloadDraws) {
+        for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+            if (!it->browser)
+                continue;
+            if (it->lookPending)
+                redrawForLook(it->browser, true, "at unload");
+            else if (!it->lookOld.isEmpty())
+                drawOldLooks(it->browser, it.value(), false, "at unload");
+        }
+    }
     // 2.5 zoom: every chat's coordinator first: timers stopped, its filter off the chat, no pass after this.
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         if (it->scaler) {
@@ -528,6 +553,46 @@ void ChatIntegration::start()
         m_zoom                = new ChatZoom(zoomHost, this);
         connect(m_zoom, &ChatZoom::chatZoomChanged, this, &ChatIntegration::chatZoomChanged);
     }
+    // 2.7.1: a chat filled while hidden shows its end at its first Show, also when TS Media's layout hid the line that
+    // holds TeamSpeak's cursor (showplace.h); a load hold's place and one dark mode keeps for the Show win.
+    {
+        ShowPlace::Hooks hooks;
+        hooks.heldPlace = [this](QTextBrowser* browser) -> const chatscroll::ReaderPlace* {
+            const View* view = viewFor(browser);
+            if (!view || !view->hold || !view->hold->active())
+                return nullptr;
+            const chatscroll::ReaderPlace& held = view->hold->place();
+            return held.bottom || held.cursor.document() == browser->document() ? &held : nullptr;
+        };
+        hooks.placeWaits = [](QTextBrowser* browser) {
+            const DarkMode* dark = DarkMode::instance();
+            return dark && dark->placeWaits(browser);
+        };
+        hooks.placed = [this](QTextBrowser* browser) { // review fix: the zoom's scale pass keeps the place the Show got
+            View* view = viewFor(browser);
+            if (!view || !view->scaler || !view->scaler->pending())
+                return;
+            view->scaler->retake();
+#ifdef TSMEDIA_TESTHOOKS
+            ts3::log(QString::fromLatin1("[test] place: chat %1 shown: the pending scale pass took the place again (%2/%3)")
+                         .arg(view->number)
+                         .arg(browser->verticalScrollBar()->value())
+                         .arg(browser->verticalScrollBar()->maximum()));
+#endif
+        };
+#ifdef TSMEDIA_TESTHOOKS
+        hooks.putBack = [this](QTextBrowser* browser, int before, int left, int now) {
+            const View* view = viewFor(browser);
+            ts3::log(QString::fromLatin1("[test] place: chat %1 shown: put back after the Show moved it (%2 -> %3, now %4/%5)")
+                         .arg(view ? view->number : 0)
+                         .arg(before)
+                         .arg(left)
+                         .arg(now)
+                         .arg(browser->verticalScrollBar()->maximum()));
+        };
+#endif
+        m_showPlace = new ShowPlace(hooks, this);
+    }
     // 2.7 F6: a chat's style-sheet background sampled outside any paint (design M8), then one restyle if it changed.
     m_sampleTimer = new QTimer(this);
     m_sampleTimer->setSingleShot(true);
@@ -576,6 +641,8 @@ void ChatIntegration::start()
         m_testRawChat = QString::fromUtf8(options.readAll()).contains(QLatin1String("nohide"), Qt::CaseInsensitive);
         if (m_testRawChat)
             ts3::log(QStringLiteral("[test] nohide: plugin-required notes stay visible and no previews are inserted for localhost links"));
+        options.seek(0);
+        m_testScrollTrace = QString::fromUtf8(options.readAll()).contains(QLatin1String("scrolltrace"), Qt::CaseInsensitive);
     }
 #endif
 
@@ -637,6 +704,8 @@ void ChatIntegration::discover()
             v.positionsValid = false;
             v.resourced.clear();
             v.stale.clear();
+            v.lookOld.clear();
+            v.lookPending = false; // 2.7.1: the scan draws the new document's pictures for the look it has
             if (v.scaler) // 2.5 zoom: the old document's pictures went with it; the books start again (review fix)
                 v.scaler->resetLedger();
             if (v.hold) // 2.7 (R-DEF-1): its place was in the old document
@@ -667,6 +736,9 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
     // layout): the place the last unload left on the chat widget if the chat is still exactly there (it has the offset
     // as the reader saw it in our look), else the place as it is now (the reader scrolled meanwhile: theirs wins). The
     // carry is removed in any case. An empty chat gets no hold.
+    // 2.7.1: first, so its filter is the last of ours to see the chat's Show (right before QTextEdit's own showEvent).
+    if (m_showPlace)
+        m_showPlace->watch(browser);
     chatscroll::ReaderPlace place;
     bool                    holdPlace = false;
     bool                    carried   = false;
@@ -767,6 +839,37 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
         hold->onFinished = [this](LoadHold::End) { --m_activeHolds; };
 #endif
     }
+#ifdef TSMEDIA_TESTHOOKS
+    if (!holdPlace)
+        ts3::log(QString::fromLatin1("[test] place: chat %1 attached empty (no hold), visible %2, scroll %3/%4")
+                     .arg(m_views[browser].number)
+                     .arg(browser->isVisible() ? 1 : 0)
+                     .arg(browser->verticalScrollBar()->value())
+                     .arg(browser->verticalScrollBar()->maximum()));
+    if (m_testScrollTrace) { // a new chat's scroll bar for its first 12 s: who moves it shows in the lines around
+        QElapsedTimer age;
+        age.start();
+        const int  number = m_views[browser].number;
+        QScrollBar* bar   = browser->verticalScrollBar();
+        const auto  trace = [b = QPointer<QTextBrowser>(browser), age, number](const char* what) {
+            if (!b || age.elapsed() > 12000)
+                return;
+            QScrollBar* sb = b->verticalScrollBar();
+            ts3::log(QString::fromLatin1("[test] trace: chat %1 %2 %3/%4 visible %5 viewport %6x%7 blocks %8 t %9")
+                         .arg(number)
+                         .arg(QString::fromLatin1(what))
+                         .arg(sb->value())
+                         .arg(sb->maximum())
+                         .arg(b->isVisible() ? 1 : 0)
+                         .arg(b->viewport()->width())
+                         .arg(b->viewport()->height())
+                         .arg(b->document()->blockCount())
+                         .arg(age.elapsed()));
+        };
+        connect(bar, &QScrollBar::valueChanged, this, [trace] { trace("value"); });
+        connect(bar, &QScrollBar::rangeChanged, this, [trace] { trace("range"); });
+    }
+#endif
 }
 
 void ChatIntegration::endLoadHold(QTextBrowser* browser)
@@ -1365,8 +1468,10 @@ void ChatIntegration::pictureSwapped(QTextBrowser* browser, const QString& name,
 {
     switch (module) {
     case ChatScale::Media:
-        if (View* view = viewFor(browser); view && name.startsWith(kScheme))
+        if (View* view = viewFor(browser); view && name.startsWith(kScheme)) {
             view->stale.insert(name.mid(kScheme.length())); // drawn again within 400 px of the view
+            view->lookOld.remove(name.mid(kScheme.length())); // 2.7.1: a blank is in no look (nothing of it to keep)
+        }
         break;
     case ChatScale::Links:
         if (m_links)
@@ -1534,6 +1639,7 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
         doc->addResource(QTextDocument::ImageResource, url, paddedPixmap(img, scaleOf(browser).displayRatio()));
     if (View* view = viewFor(browser)) {
         view->resourced.insert(key);
+        view->lookOld.remove(key); // 2.7.1: drawn for the look the chat has now
         // While a relayout is pending, the older previews still have the width it was queued for:
         // overwriting it would make the relayout believe they are up to date.
         if (!view->relayoutQueued) {
@@ -1569,28 +1675,37 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
     requestSnapshot(browser, QStringLiteral("preview inserted for ") + key);
 }
 
-void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly)
+bool ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, bool pixelsOnly, bool keepDrawn)
 {
     View* view = viewFor(browser);
     if (!view)
-        return;
+        return false;
     ensurePositions(*view);
     if (!albums::isObjectId(key))
         refreshAlbumsOf(browser, key, pixelsOnly); // 2.2 album: the grids that show it are drawn again too
     const auto found = view->positionsByKey.constFind(key);
     if (found == view->positionsByKey.constEnd())
-        return;
+        return false;
     const QVector<int> positions = found.value();
 
     if (pixelsOnly && !onScreen(browser, *view, key)) {
         view->stale.insert(key); // redrawn by updateVisibleKeys once it can be seen again
-        return;
+        return false;
     }
 
-    QSize        size;
-    const QImage img = renderFor(browser, key, &size);
+    const quint64 standIns = m_core->stillStandIns();
+    QSize         size;
+    const QImage  img = renderFor(browser, key, &size);
     if (img.isNull())
-        return;
+        return false;
+    if (keepDrawn && m_core->stillStandIns() != standIns && view->resourced.contains(key)) {
+        // 2.7.1: a redraw for the look keeps the picture it has rather than one with a stand-in still (the photo would
+        // become its blurhash, a smaller copy or "Can't preview" until a decode lands, or for good at the unload). Drawn
+        // near the view (stale), by the decode's entryChanged, at the Show or a Disable's unload (lookOld).
+        view->lookOld.insert(key);
+        view->stale.insert(key);
+        return false;
+    }
 
     QTextDocument* doc = browser->document();
     if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
@@ -1599,6 +1714,7 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         doc->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img, scaleOf(browser).displayRatio()));
     view->resourced.insert(key);
     view->stale.remove(key);
+    view->lookOld.remove(key); // 2.7.1: drawn for the look the chat has now
 
     // 2.5 zoom: sizes are compared in du (the formats keep theirs), never as converted logical sizes.
     if (view->formatSizes.value(key) != size) {
@@ -1651,6 +1767,7 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         }
     }
     requestSnapshot(browser, (pixelsOnly ? QStringLiteral("frame of ") : QStringLiteral("preview refreshed for ")) + key);
+    return true;
 }
 
 void ChatIntegration::refreshAll()
@@ -1712,6 +1829,7 @@ void ChatIntegration::refreshAll()
             }
             it->resourced.clear();
             it->stale.clear();
+            it->lookOld.clear();
             scan(b); // notes stay hidden
             continue;
         }
@@ -1773,25 +1891,145 @@ void ChatIntegration::scheduleRelayout(QTextBrowser* browser)
         if (!v)
             return;
         v->relayoutQueued = false;
-        // A new width re-lays the previews out; a new device pixel ratio (the window moved to
-        // another monitor) or a theme switch re-renders them (sharp, in the chat's new colours).
-        const PreviewStyle style = styleFor(guard.data());
-        const QString      bubbles = surfacesKey(style); // 2.3: bubbles switched on or off, another skin
-        // Review fix: the theme's accent too (dark mode on or off between two dark backgrounds changes only the play buttons).
-        if (style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr && style.dark == v->layoutDark && bubbles == v->layoutBubbles
-            && style.accent == v->layoutAccent)
-            return;
-        v->layoutWidth   = style.maxWidth;
-        v->layoutDpr     = style.dpr;
-        v->layoutDark    = style.dark;
-        v->layoutBubbles = bubbles;
-        v->layoutAccent  = style.accent;
-        ensurePositions(*v);
-        const QStringList keys = v->positionsByKey.keys();
-        for (const QString& key : keys)
-            refreshPreview(guard.data(), key, false);
-        scheduleVisibilityUpdate();
+        redrawForLook(guard.data(), false);
     });
+}
+
+void ChatIntegration::redrawForLook(QTextBrowser* browser, bool themeChange, const char* when)
+{
+    View* v = browser ? viewFor(browser) : nullptr;
+    if (!v)
+        return;
+    if (themeChange && v->document != browser->document())
+        return; // swapped since: its next scan draws every preview without a picture
+#ifdef TSMEDIA_TESTHOOKS
+    QElapsedTimer clock;
+    clock.start();
+#else
+    Q_UNUSED(when);
+#endif
+    // A new width re-lays the previews out; a new device pixel ratio (the window moved to
+    // another monitor) or a theme switch re-renders them (sharp, in the chat's new colours).
+    const PreviewStyle style    = styleFor(browser);
+    const QString      bubbles  = surfacesKey(style); // 2.3: bubbles switched on or off, another skin
+    const bool         sameSize = style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr;
+    // Review fix: the theme's accent too (dark mode on or off between two dark backgrounds changes only the play buttons).
+    // 2.7.1: a theme change draws them whatever was noted (a picture inserted for the new look in a hidden chat doesn't mean
+    // the older ones are).
+    if (!themeChange && sameSize && style.dark == v->layoutDark && bubbles == v->layoutBubbles
+        && style.accent == v->layoutAccent)
+        return;
+    v->layoutWidth   = style.maxWidth;
+    v->layoutDpr     = style.dpr;
+    v->layoutDark    = style.dark;
+    v->layoutBubbles = bubbles;
+    v->layoutAccent  = style.accent;
+    ensurePositions(*v);
+    const QStringList keys  = v->positionsByKey.keys();
+    int               drawn = 0, kept = 0;
+    if (!themeChange && !sameSize) {
+        // A new width or ratio: every picture laid out and drawn again now.
+        for (const QString& key : keys) {
+            refreshPreview(browser, key, false);
+            ++drawn;
+        }
+    } else {
+        // 2.7.1: only the look changed. A picture the budget swapped for its blank stays one (it is in stale: drawn for the
+        // look it then has when it comes near the view; never at the unload, where no budget is left to keep). The others
+        // are drawn without a stand-in for a still that isn't at hand (drawForLook).
+        for (const QString& key : keys) {
+            if (v->scaler && v->scaler->isSwapped(kScheme + key))
+                continue;
+            if (drawForLook(browser, *v, key))
+                ++drawn;
+            else
+                ++kept;
+        }
+    }
+    // Every picture is drawn for this look now, or listed in lookOld: nothing waits for the chat's Show (review fix: the
+    // relayout timer after a toggle drew a hidden chat already, and its Show drew everything again).
+    v->lookPending = false;
+    if (m_unloadDraws)
+        v->lookOld.clear(); // the unload's one try: what it kept stays as it is
+    scheduleVisibilityUpdate();
+#ifdef TSMEDIA_TESTHOOKS
+    if (when)
+        ts3::log(QString::fromLatin1("[test] look: chat %1 drew %2 pictures in %3 ms (%4%5)")
+                     .arg(v->number)
+                     .arg(drawn)
+                     .arg(clock.elapsed())
+                     .arg(QLatin1String(when))
+                     .arg(kept ? QString::fromLatin1(", %1 kept until their still is at hand").arg(kept) : QString()));
+#else
+    Q_UNUSED(drawn);
+    Q_UNUSED(kept);
+#endif
+}
+
+bool ChatIntegration::drawForLook(QTextBrowser* browser, View& view, const QString& key)
+{
+    const Core::StillDecode before = m_core->stillDecode();
+    const auto              draw   = [&](Core::StillDecode mode) {
+        m_core->setStillDecode(mode);
+        const bool drawn = refreshPreview(browser, key, false, true);
+        m_core->setStillDecode(before);
+        return drawn;
+    };
+    if (!m_unloadDraws) // near the view of a shown chat: as any draw (a slow still on a worker); else what Core has
+        return draw(onScreen(browser, view, key, true) ? Core::StillDecode::Any : Core::StillDecode::CachedOnly);
+    // A Disable or Reload: nothing comes back after the unload (no worker's result, no Show). What Core has at hand first;
+    // a picture that needs its still decoded again then gets a cheap decode now, within one budget for the whole unload
+    // (only those draws count); a slow one, or any after the budget, keeps its picture.
+    if (draw(Core::StillDecode::CachedOnly))
+        return true;
+    if (!view.lookOld.contains(key) || m_unloadDecodeNs >= kUnloadDecodeMs * 1000000)
+        return false;
+    QElapsedTimer clock;
+    clock.start();
+    const bool drawn = draw(Core::StillDecode::CheapOnly);
+    m_unloadDecodeNs += clock.nsecsElapsed();
+    return drawn;
+}
+
+void ChatIntegration::drawOldLooks(QTextBrowser* browser, View& view, bool near, const char* when)
+{
+    if (view.lookOld.isEmpty() || view.document != browser->document())
+        return;
+#ifdef TSMEDIA_TESTHOOKS
+    QElapsedTimer clock;
+    clock.start();
+#else
+    Q_UNUSED(when);
+#endif
+    ensurePositions(view);
+    const QSet<QString> old   = view.lookOld;
+    int                 drawn = 0, kept = 0;
+    for (const QString& key : old) {
+        if (!view.positionsByKey.contains(key)) {
+            view.lookOld.remove(key);
+            continue;
+        }
+        if (near && !onScreen(browser, view, key, true))
+            continue;
+        if (drawForLook(browser, view, key))
+            ++drawn;
+        else
+            ++kept;
+    }
+    if (m_unloadDraws)
+        view.lookOld.clear(); // the unload's one try
+#ifdef TSMEDIA_TESTHOOKS
+    if (when && drawn + kept > 0)
+        ts3::log(QString::fromLatin1("[test] look: chat %1 drew %2 pictures in %3 ms (%4, older looks%5)")
+                     .arg(view.number)
+                     .arg(drawn)
+                     .arg(clock.elapsed())
+                     .arg(QLatin1String(when))
+                     .arg(kept ? QString::fromLatin1(", %1 kept until their still is at hand").arg(kept) : QString()));
+#else
+    Q_UNUSED(drawn);
+    Q_UNUSED(kept);
+#endif
 }
 
 // ============================================================================================
@@ -1904,15 +2142,15 @@ void ChatIntegration::scheduleVisibilityUpdate()
     singleShotOwned(30, this, [this] { updateVisibleKeys(); });
 }
 
-bool ChatIntegration::onScreen(QTextBrowser* browser, View& view, const QString& key)
+bool ChatIntegration::onScreen(QTextBrowser* browser, View& view, const QString& key, bool near)
 {
     if (!browser->isVisible() || browser->window()->isMinimized())
         return false;
     ensurePositions(view);
     QRectF viewport(browser->viewport()->rect());
     // 2.5 zoom: a picture swapped for its stand-in (the budget) or left stale by a scale pass is drawn again before it
-    // is on screen: within kOnScreenMargin (400 px) of the view.
-    if (view.stale.contains(key))
+    // is on screen: within kOnScreenMargin (400 px) of the view. 2.7.1: near asks for the same margin.
+    if (near || view.stale.contains(key))
         viewport.adjust(0, -400, 0, 400);
     const QSizeF size(view.formatSizes.value(key));
     for (int pos : view.positionsByKey.value(key)) {
@@ -1968,8 +2206,9 @@ void ChatIntegration::updateVisibleKeys()
         if (!view.stale.isEmpty()) {
             const QSet<QString> stale = view.stale;
             view.stale.clear();
+            // 2.7.1: a picture in an older look keeps it rather than show a stand-in (the decode started here draws it).
             for (const QString& key : stale)
-                refreshPreview(b, key, true);
+                refreshPreview(b, key, true, view.lookOld.contains(key));
         }
         if (view.scaler) // 2.5 zoom: after a scroll ended, the chat's pictures within its budget
             view.scaler->enforceBudget();
@@ -3008,6 +3247,37 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
     case QEvent::Paint:
         if (QTextBrowser* browser = browserForViewport(watched))
             checkScale(browser, false);
+        break;
+
+    // 2.7.1 dark mode: a chat hidden when TeamSpeak's look changed and not drawn for it since (the relayout timer draws a
+    // hidden chat too, when it gets an event): its pictures for the new look before its first paint (Qt has given it its
+    // size by now; dark mode puts its place back at the chat's own Show, which comes after this one). Pictures a redraw
+    // for the look kept while the chat was hidden: those near the view now.
+    case QEvent::Show:
+        if (QTextBrowser* browser = browserForViewport(watched)) {
+            if (View* v = viewFor(browser); v && v->lookPending) {
+                v->lookPending = false;
+                redrawForLook(browser, true, "at show");
+            } else if (v && !v->lookOld.isEmpty()) {
+                drawOldLooks(browser, *v, true, "at show");
+            }
+#ifdef TSMEDIA_TESTHOOKS // 2.7.1: the live test's first Show of each chat
+            if (View* v = viewFor(browser); v && !v->testShown) {
+                v->testShown    = true;
+                QScrollBar* bar = browser->verticalScrollBar();
+                ts3::log(QString::fromLatin1("[test] place: chat %1 first shown: scroll %2/%3 (end %4), viewport %5x%6, blocks %7, hold %8, cursor %9")
+                             .arg(v->number)
+                             .arg(bar->value())
+                             .arg(bar->maximum())
+                             .arg(isAtBottom(browser) ? 1 : 0)
+                             .arg(browser->viewport()->width())
+                             .arg(browser->viewport()->height())
+                             .arg(browser->document()->blockCount())
+                             .arg(v->hold ? (v->hold->active() ? QString::fromLatin1("active") : QString::fromLatin1("ended")) : QString::fromLatin1("none"))
+                             .arg(browser->textCursor().position()));
+            }
+#endif
+        }
         break;
 
     // A new chat width re-lays the previews out; a theme switch (palette / style sheet) re-renders
@@ -4137,6 +4407,16 @@ void ChatIntegration::invalidateColors(QTextBrowser* browser)
 
 void ChatIntegration::sampleColors()
 {
+    if (sampleWaiting()) {
+        // A picture background the palette didn't know, or a new one: every chat module and TS Media's lines follow it
+        // (rare: a skin or style change; never a font change, review fix).
+        refreshAll();
+        emit chatColorsChanged(); // 2.7 dark mode: the Settings window's preview too (review fix)
+    }
+}
+
+bool ChatIntegration::sampleWaiting()
+{
     bool changed = false;
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         QTextBrowser* b = it->browser;
@@ -4150,12 +4430,67 @@ void ChatIntegration::sampleColors()
         if (cached->takeSample(chatcolors::sampleBackground(b)))
             changed = true;
     }
-    if (changed) {
-        // A picture background the palette didn't know, or a new one: every chat module and TS Media's lines follow it
-        // (rare: a skin or style change; never a font change, review fix).
-        refreshAll();
-        emit chatColorsChanged(); // 2.7 dark mode: the Settings window's preview too (review fix)
+    return changed;
+}
+
+void ChatIntegration::beginUnload(bool teamSpeakClosing)
+{
+    m_unloading   = true;
+    m_unloadDraws = !teamSpeakClosing;
+#ifdef TSMEDIA_TESTHOOKS
+    int waiting = 0, older = 0;
+    for (auto it = m_views.cbegin(); it != m_views.cend(); ++it) {
+        waiting += it->lookPending ? 1 : 0;
+        older += it->lookOld.size();
     }
+    ts3::log(QString::fromLatin1("[test] look: unload (%1): %2 chats wait for the look, %3 pictures in an older look")
+                 .arg(teamSpeakClosing ? QString::fromLatin1("TeamSpeak's Quit, nothing drawn") : QString::fromLatin1("Disable or Reload"))
+                 .arg(waiting)
+                 .arg(older));
+#endif
+    if (!teamSpeakClosing)
+        return;
+    // TeamSpeak's Quit: nothing of ours is drawn while TeamSpeak tears its windows down (the documents go with it).
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        it->lookPending = false;
+        it->lookOld.clear();
+    }
+}
+
+void ChatIntegration::themeChanged()
+{
+    if (m_unloading && !m_unloadDraws)
+        return; // TeamSpeak's Quit (dark mode says nothing then either)
+    // 2.7.1 dark mode (inside DarkMode's place bracket). The colours first, read and sampled now (outside any paint): a
+    // sample of the look before would win over the new palette until the sampler's next turn (chatcolors::Cache), and with
+    // every chat sampled here that turn finds nothing to do (no refreshAll after a toggle any more).
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (QTextBrowser* b = it->browser) {
+            chatcolors::Cache& c = m_colorCache[b];
+            c.invalidate();
+            c.read(b->palette());
+        }
+    }
+    sampleWaiting();
+    // Then the layout's environment (the bubbles the cards are drawn on), the text spoilers' bars, TS Media's lines.
+    if (m_layout)
+        m_layout->themeChanged();
+    if (m_textSpoilers)
+        m_textSpoilers->themeChanged();
+    updateLineColors();
+    // The pictures: visible chats now, hidden ones before their first paint (their Show) or at the unload.
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        QTextBrowser* b = it->browser;
+        if (!b)
+            continue;
+        if (b->isVisible())
+            redrawForLook(b, true, "now");
+        else
+            it->lookPending = true;
+    }
+    if (m_replies)
+        m_replies->themeChanged();
+    emit chatColorsChanged(); // the Settings window's line preview
 }
 
 void ChatIntegration::updateLineColors(QTextBrowser* chat) const

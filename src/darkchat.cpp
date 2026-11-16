@@ -10,6 +10,9 @@
 
 #include "chatcolors.h"
 #include "layoutformat.h"
+#include "polldoc.h"        // 2.7.1 review: the poll card's line break (bookkeeping)
+#include "replydoc.h"       // 2.7.1 live test: the reply line's line break (bookkeeping)
+#include "textspoilerdoc.h" // 2.7.1 review: a text spoiler's revealed text (bookkeeping)
 #include "uiutil.h"
 
 // 2.7 Dark mode (design_dark 1.5), proven by the prototype's recolor / classLooks / buildMap.
@@ -73,14 +76,31 @@ bool isModuleProperty(int id)
     return id >= kModuleFirst && id <= kModuleLast;
 }
 
+// What a module keeps on TeamSpeak's own text without making its colour the module's: the chat layout's format before, and
+// (2.7.1 live test) an album's collapsed item link (its text and line breaks kept as strings) and the reply line's line break
+// after its picture (the header's format). Recoloured both ways like any of TeamSpeak's text: a link folded while dark mode
+// was on came back in dark mode's colour when the album unfolded at the unload. 2.7.1 review: likewise the poll card's line
+// break (the message's format) and a text spoiler's text fragments, revealed (the text's format with the tint) or a link's
+// space in a hidden one (the link's format without the link), each with its format before (kBefore, mapped as a kept format,
+// what the spoiler gives back): a link revealed while dark mode was on kept dark mode's colour after off, one revealed before
+// kept the skin's on the dark chat. The spoiler's objects (words, markers) are objects: never recoloured.
+bool isBookkeeping(int id, const QVariant& value)
+{
+    if (id == textspoilerdoc::kKind)
+        return value.toInt() == textspoilerdoc::Revealed || value.toInt() == textspoilerdoc::Space;
+    return id == layoutformat::kOrigChar || id == layoutformat::kCollapsedLabel || id == layoutformat::kCollapsedSeparator
+           || id == replydoc::kSeparatorProperty || id == polldoc::kSeparatorProperty || id == textspoilerdoc::kId
+           || id == textspoilerdoc::kBefore;
+}
+
 // Whether the format's own colour is TeamSpeak's (or another plugin's, or a person's): no property of TS Media's modules,
-// or only the chat layout's recolouring bookkeeping (kApplied, kOrigChar) on TeamSpeak's text without a colour of the
+// or only the chat layout's recolouring bookkeeping (kApplied, isBookkeeping) on TeamSpeak's text without a colour of the
 // layout's own among what it set (a link that only got the layout's underline colour keeps TeamSpeak's colour).
 bool ownColorIsTheirs(const QTextFormat& format, const QMap<int, QVariant>& properties)
 {
     bool applied = false;
     for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
-        if (!isModuleProperty(it.key()) || it.key() == layoutformat::kOrigChar)
+        if (!isModuleProperty(it.key()) || isBookkeeping(it.key(), it.value()))
             continue;
         if (it.key() != layoutformat::kApplied)
             return false;
@@ -96,8 +116,9 @@ bool ownColorIsTheirs(const QTextFormat& format, const QMap<int, QVariant>& prop
     return true;
 }
 
-// The format's own colour, mapped by recolor()'s rules. False: unchanged.
-bool mapOwn(QTextFormat& format, const ColorMap& map, bool forward)
+// The format's own colour, mapped by recolor()'s rules. label: the format is TS Media's line label (the way back looks it up
+// in map.label first). False: unchanged.
+bool mapOwn(QTextFormat& format, const ColorMap& map, bool forward, bool label)
 {
     if (!format.isCharFormat() || format.isImageFormat() || format.objectType() != QTextFormat::NoObject)
         return false;
@@ -125,6 +146,13 @@ bool mapOwn(QTextFormat& format, const ColorMap& map, bool forward)
         format.clearProperty(kOriginal);
         return true;
     }
+    if (label) { // 2.7.1: TS Media's label (with Same as the chat text it has the look of its text, which exact gives the text)
+        const auto own = map.label.constFind(lookOf(f));
+        if (own != map.label.constEnd()) {
+            format.setForeground(QColor::fromRgba(own.value()));
+            return true;
+        }
+    }
     const auto known = map.exact.constFind(lookOf(f));
     if (known == map.exact.constEnd())
         return false;
@@ -132,13 +160,15 @@ bool mapOwn(QTextFormat& format, const ColorMap& map, bool forward)
     return true;
 }
 
-bool mapFormat(QTextFormat& format, const ColorMap& map, bool forward, int depth);
+bool mapFormat(QTextFormat& format, const ColorMap& map, bool forward, int depth, bool label);
 
 // The formats a module keeps in the format's properties (the chat layout's header runs and recoloured fragments' formats
 // before, an HD emoji's text format, a text spoiler's hidden runs, a reply's quote line, a poll card's text): mapped like
 // a fragment of their own, so whatever a module gives back later (another chat layout, unload) has the colours of the
-// side dark mode is on, and the way back stays exact (kOriginal inside them). False: unchanged.
-bool mapKept(QTextFormat& format, const ColorMap& map, bool forward, int depth, const QMap<int, QVariant>& properties)
+// side dark mode is on, and the way back stays exact (kOriginal inside them). A format kept on its own is the fragment's
+// text (label: the fragment's); in a list of runs (text, format, text, format, ...) a format is TS Media's label when the
+// text before it is (2.7.1: the chat layout's prefix picture keeps the label that way). False: unchanged.
+bool mapKept(QTextFormat& format, const ColorMap& map, bool forward, int depth, const QMap<int, QVariant>& properties, bool label)
 {
     if (depth >= kMaxDepth)
         return false;
@@ -149,18 +179,27 @@ bool mapKept(QTextFormat& format, const ColorMap& map, bool forward, int depth, 
         const QVariant& value = it.value();
         if (value.userType() == QMetaType::QTextFormat) {
             QTextFormat inner = qvariant_cast<QTextFormat>(value);
-            if (mapFormat(inner, map, forward, depth + 1)) {
+            if (mapFormat(inner, map, forward, depth + 1, label)) {
                 format.setProperty(it.key(), QVariant::fromValue<QTextFormat>(inner));
                 changed = true;
             }
         } else if (value.userType() == QMetaType::QVariantList) {
             QVariantList list        = value.toList();
             bool         listChanged = false;
+            bool         runLabel    = false; // the text item before the next format is TS Media's label
             for (QVariant& item : list) {
-                if (item.userType() != QMetaType::QTextFormat)
+                if (item.userType() == QMetaType::QString) {
+                    runLabel = isLineLabel(item.toString());
                     continue;
-                QTextFormat inner = qvariant_cast<QTextFormat>(item);
-                if (mapFormat(inner, map, forward, depth + 1)) {
+                }
+                if (item.userType() != QMetaType::QTextFormat) {
+                    runLabel = false;
+                    continue;
+                }
+                QTextFormat inner   = qvariant_cast<QTextFormat>(item);
+                const bool  isLabel = runLabel;
+                runLabel            = false;
+                if (mapFormat(inner, map, forward, depth + 1, isLabel)) {
                     item        = QVariant::fromValue<QTextFormat>(inner);
                     listChanged = true;
                 }
@@ -174,12 +213,12 @@ bool mapKept(QTextFormat& format, const ColorMap& map, bool forward, int depth, 
     return changed;
 }
 
-bool mapFormat(QTextFormat& format, const ColorMap& map, bool forward, int depth)
+bool mapFormat(QTextFormat& format, const ColorMap& map, bool forward, int depth, bool label)
 {
     const QMap<int, QVariant> properties = format.properties();
-    bool                      changed    = mapKept(format, map, forward, depth, properties);
+    bool                      changed    = mapKept(format, map, forward, depth, properties, label);
     if (ownColorIsTheirs(format, properties))
-        changed = mapOwn(format, map, forward) || changed;
+        changed = mapOwn(format, map, forward, label) || changed;
     return changed;
 }
 
@@ -187,12 +226,12 @@ bool mapFormat(QTextFormat& format, const ColorMap& map, bool forward, int depth
 
 uint qHash(const Look& look, uint seed)
 {
-    return ::qHash(look.rgb, seed) ^ (look.bold ? 0x1000u : 0u) ^ (look.underline ? 0x2000u : 0u);
+    return ::qHash(look.rgb, seed) ^ (look.bold ? 0x1000u : 0u) ^ (look.underline ? 0x2000u : 0u) ^ (look.anchor ? 0x4000u : 0u);
 }
 
 Look lookOf(const QTextCharFormat& format)
 {
-    return {format.foreground().color().rgba(), format.fontWeight() > QFont::Normal, format.fontUnderline()};
+    return {format.foreground().color().rgba(), format.fontWeight() > QFont::Normal, format.fontUnderline(), format.isAnchor()};
 }
 
 QVector<QPair<QByteArray, Look>> classLooks(const QString& css, const QColor& plainLink)
@@ -258,17 +297,30 @@ QString resolvePaletteRefs(const QString& css, const QPalette& palette)
     return out;
 }
 
+bool isLineLabel(const QString& text)
+{
+    const QLatin1String label("TS Media chat"); // ts3api's printInfo, and printWarning's with " " U+26A0 (layoutdoc's own prints)
+    if (text.size() == label.size())
+        return text == label;
+    return text.size() == label.size() + 2 && text.startsWith(label) && text.at(label.size()) == QLatin1Char(' ') && text.at(label.size() + 1) == QChar(0x26a0);
+}
+
 ColorMap buildMap(const QVector<QPair<QByteArray, Look>>& from, const QVector<QPair<QByteArray, Look>>& to, const QVector<QPair<Look, QRgb>>& extras,
-                  const QColor& base)
+                  const QColor& base, const QVector<QPair<Look, QRgb>>& labels)
 {
     ColorMap map;
     map.base = base;
+    for (const auto& l : labels) {
+        if (!map.label.contains(l.first) && l.first.rgb != l.second)
+            map.label.insert(l.first, l.second);
+    }
     QHash<QByteArray, Look> target;
     for (const auto& t : to)
         target.insert(t.first, t.second);
     // The info panel's classes come after the extras (live test): they never occur in a chat, while TS Media's own lines
-    // do. Under TeamSpeak's own dark chat sheet (Windows in dark mode) the info title link and TS Media's line text share
-    // the dark text look, and the line text came back light steel blue on the white chat (1.8:1).
+    // do. Under TeamSpeak's own dark chat sheet (Windows in dark mode) the info title link and TS Media's line text shared
+    // the dark text look, and the line text came back light steel blue on the white chat (1.8:1). (2.7.1: the title is a
+    // link and TS Media's text never is, so their looks differ now; the order stays.)
     const auto infoPanel = [](const QByteArray& key) {
         return key == "InfoTitleLink" || key == "Highlight" || key == "Important" || key == "Active" || key == "Inactive";
     };
@@ -320,8 +372,11 @@ int recolor(QTextDocument* doc, const ColorMap& map, bool forward, int from, int
                 break;
             QTextFormat               format     = fragment.charFormat();
             const QMap<int, QVariant> properties = format.properties();
-            const bool                keptNow    = mapKept(format, map, forward, 0, properties);
-            const bool                own        = ownColorIsTheirs(format, properties) && mapOwn(format, map, forward);
+            // 2.7.1: TS Media's label (13 or 15 characters in bold: only then is the fragment's text read).
+            const bool label = (fragment.length() == 13 || fragment.length() == 15) && format.toCharFormat().fontWeight() > QFont::Normal
+                               && isLineLabel(fragment.text());
+            const bool keptNow = mapKept(format, map, forward, 0, properties, label);
+            const bool own     = ownColorIsTheirs(format, properties) && mapOwn(format, map, forward, label);
             if (!keptNow && !own)
                 continue;
             kept = kept || keptNow;
@@ -366,10 +421,12 @@ ColorMap tipMap(const QColor& link, const QColor& error, const QColor& tipBase)
     map.base = tipBase;
     for (const bool bold : {false, true}) {
         for (const bool underline : {false, true}) {
-            map.exact.insert(Look{QColor(Qt::blue).rgba(), bold, underline}, link.rgba());
-            map.exact.insert(Look{QColor(Qt::red).rgba(), bold, underline}, error.rgba());
-            map.exact.insert(Look{QColor(Qt::darkRed).rgba(), bold, underline}, error.rgba());
-            map.exact.insert(Look{QColor(0x8b, 0x00, 0x00).rgba(), bold, underline}, error.rgba()); // CSS darkred
+            for (const bool anchor : {false, true}) { // 2.7.1: in a link or not
+                map.exact.insert(Look{QColor(Qt::blue).rgba(), bold, underline, anchor}, link.rgba());
+                map.exact.insert(Look{QColor(Qt::red).rgba(), bold, underline, anchor}, error.rgba());
+                map.exact.insert(Look{QColor(Qt::darkRed).rgba(), bold, underline, anchor}, error.rgba());
+                map.exact.insert(Look{QColor(0x8b, 0x00, 0x00).rgba(), bold, underline, anchor}, error.rgba()); // CSS darkred
+            }
         }
     }
     return map;

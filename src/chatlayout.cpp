@@ -565,6 +565,17 @@ void ChatLayout::settingsChanged()
     schedule(0);
 }
 
+void ChatLayout::themeChanged()
+{
+    if (m_mode == Mode::Classic)
+        return; // its environment isn't used (no bubbles under the cards)
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->browser && it->document == it->browser->document())
+            refreshEnv(it.value());
+    }
+    schedule(0); // the restyle: the screen first, before the paint
+}
+
 layoutdoc::Env ChatLayout::envFor(View& v) const
 {
     layoutdoc::Env env;

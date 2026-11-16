@@ -32,8 +32,8 @@ namespace {
 // Block format of a message we hid (a later message of an album sent as several messages).
 constexpr int kHiddenBlockProperty = QTextFormat::UserProperty + 0x7454;
 // Char format of a collapsed item link: its text, and the line breaks that were in front of it.
-constexpr int kCollapsedLabelProperty     = QTextFormat::UserProperty + 0x7455;
-constexpr int kCollapsedSeparatorProperty = QTextFormat::UserProperty + 0x7456;
+constexpr int kCollapsedLabelProperty     = layoutformat::kCollapsedLabel;
+constexpr int kCollapsedSeparatorProperty = layoutformat::kCollapsedSeparator;
 // What a collapsed link becomes: one zero-width character (WORD JOINER) that keeps the link's format.
 constexpr ushort kCollapsedChar = 0x2060;
 // Longer link texts are left alone (a link label is a file name: far shorter).

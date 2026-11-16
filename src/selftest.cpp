@@ -157,6 +157,7 @@ Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int 
 #include "chatemoji.h"     // part 3: HD emoji counts
 #include "chatinput.h"     // 2.2.1: TeamSpeak's placeholder in the chat input
 #include "chatintegration.h"
+#include "loadhold.h" // 2.7.1: the chats command reads a chat's load hold
 #include "chatscale.h"       // 2.5 zoom live pass: passes and holds per chat
 #include "chatpolls.h"     // 2.3 poll: the poll.* commands
 #include "chatlinkpreviews.h" // 2.4 link previews: the links.* commands
@@ -182,6 +183,7 @@ Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int 
 #include "layoutbubbles.h" // 2.3.1 live test: the bubbles as laid out (ownplaces)
 #include "layoutdoc.h"     // part 4: chips
 #include "layoutformat.h"  // part 4
+#include "darkchat.h"      // 2.7.1 live test: colours dark mode keeps for its way back (DARKORIG)
 #include "micbutton.h"     // part 5: the chat input's microphone
 #include "reactionart.h"   // part 3: rx::addButtonRect
 #include "voicecontroller.h" // part 5
@@ -1192,6 +1194,18 @@ bool SelfTest::run(const QJsonObject& c)
                     continue;
                 if (chatTabs && bar->objectName() != QLatin1String("ChatTabBar"))
                     continue;
+                // 2.7.1: {"cmd":"tab","server":true,"name":...,"at":N}: the N-th tab of the bar that has one named so
+                bool named = false;
+                for (int i = 0; i < bar->count(); ++i)
+                    named = named || bar->tabText(i).contains(name, Qt::CaseInsensitive);
+                if (serverTabs && c.contains(QString::fromLatin1("at")) && named && !found) {
+                    const int at = c.value(QString::fromLatin1("at")).toInt();
+                    if (at >= 0 && at < bar->count()) {
+                        bar->setCurrentIndex(at);
+                        found = true;
+                        say(QString::fromLatin1("tab: %1 #%2 \"%3\" selected").arg(bar->objectName()).arg(at).arg(bar->tabText(at)));
+                    }
+                }
                 for (int i = 0; i < bar->count() && !found; ++i) {
                     if (bar->tabText(i).contains(name, Qt::CaseInsensitive) && seen++ < index)
                         continue;
@@ -2418,6 +2432,8 @@ QString describeFormat(const QTextCharFormat& f)
                 run += QString::fromLatin1("{img=") + rf.toImageFormat().name() + QLatin1Char('}');
             if (rf.foreground().style() != Qt::NoBrush)
                 run += QString::fromLatin1("{fg=") + rf.foreground().color().name() + QLatin1Char('}');
+            if (rf.hasProperty(darkchat::kOriginal))
+                run += QString::fromLatin1("{DARKORIG=") + QColor::fromRgba(rf.property(darkchat::kOriginal).toUInt()).name() + QLatin1Char('}');
             runs << run;
         }
         parts << QString::fromLatin1("LAYOUT kind=%1 time=%2 runs=[%3]").arg(static_cast<int>(layoutformat::kindOf(f))).arg(f.stringProperty(layoutformat::kTime), runs.join(QLatin1Char(' ')));
@@ -2426,6 +2442,8 @@ QString describeFormat(const QTextCharFormat& f)
         parts << QString::fromLatin1("APPLIED");
     if (f.foreground().style() != Qt::NoBrush)
         parts << QString::fromLatin1("fg=") + f.foreground().color().name();
+    if (f.hasProperty(darkchat::kOriginal)) // 2.7.1: the colour dark mode gives back at off
+        parts << QString::fromLatin1("DARKORIG=") + QColor::fromRgba(f.property(darkchat::kOriginal).toUInt()).name();
     if (f.fontItalic())
         parts << QString::fromLatin1("i");
     if (f.fontWeight() > QFont::Normal)
@@ -3128,6 +3146,28 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         }
         next(400);
         return false;
+    }
+    if (cmd == QLatin1String("chats")) { // 2.7.1: every attached chat's scroll bar (a new or hidden chat's end)
+        for (auto it = m_chat->m_views.cbegin(); it != m_chat->m_views.cend(); ++it) {
+            const ChatIntegration::View& v  = it.value();
+            QTextBrowser*                cb = v.browser;
+            if (!cb)
+                continue;
+            QScrollBar* bar = cb->verticalScrollBar();
+            say(QString::fromLatin1("chats: chat %1 visible %2 scroll %3/%4 (end %5) viewport %6x%7 blocks %8 hold %9, cursor %10 of %11")
+                    .arg(v.number)
+                    .arg(cb->isVisible() ? 1 : 0)
+                    .arg(bar->value())
+                    .arg(bar->maximum())
+                    .arg(ChatIntegration::atBottom(cb) ? 1 : 0)
+                    .arg(cb->viewport()->width())
+                    .arg(cb->viewport()->height())
+                    .arg(cb->document()->blockCount())
+                    .arg(v.hold ? (v.hold->active() ? QString::fromLatin1("active") : QString::fromLatin1("ended")) : QString::fromLatin1("none"))
+                    .arg(cb->textCursor().position())
+                    .arg(cb->document()->characterCount()));
+        }
+        return true;
     }
     if (cmd == QLatin1String("where")) { // part 5: the reader's place: the scroll bar and the block on top
         if (!b) {

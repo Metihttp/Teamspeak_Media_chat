@@ -74,6 +74,7 @@ class ChatTextSpoilers : public QObject
     void documentSwapped(QTextBrowser* browser);
     void afterScan(QTextBrowser* browser);
     void settingsChanged(); // Settings::revealSpoilers
+    void themeChanged();    // 2.7.1 dark mode: TeamSpeak's look changed: every chat's bars in its colours now
     // ChatIntegration's event filter (chat viewports): clicks, hover, tool tips. True: taken.
     bool filterEvent(QObject* watched, QEvent* event);
     // The message menu (ChatReplies::actionsFor): "Reveal spoiler(s)" for block's hidden spoilers, parented to menu;

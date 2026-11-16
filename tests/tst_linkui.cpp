@@ -1279,6 +1279,90 @@ class TestLinkUi : public QObject
         Settings::instance() = saved;
     }
 
+    // 2.7.1 (dark mode, review): the chat's redraws for a new look ask Core for stills without decoding any file
+    // (CachedOnly) or without a worker (CheapOnly: the unload, where nothing would come back). Every answer that isn't the
+    // best still this size will have (left undecoded, or waiting for its worker) is counted, so the chat keeps the picture
+    // it has instead of a stand-in. Any, the default, decodes as before (a slow file on a worker, entryChanged after).
+    void stillDecodeModes()
+    {
+        const TS3Functions savedFuncs = ts3::funcs;
+        const Settings     saved      = Settings::instance();
+        QTemporaryDir      dir;
+        QVERIFY(dir.isValid());
+        fakets3::install(dir.path());
+        Settings::instance() = Settings();
+        {
+            auto core = std::make_unique<Core>();
+            core->start();
+            const QString links = core->cacheDir() + QStringLiteral("/links");
+            QVERIFY(QDir().mkpath(links));
+            const auto adopt = [&](const char* name, const QImage& img) {
+                const QString path = links + QLatin1Char('/') + QString::fromLatin1(name);
+                if (!img.save(path, "PNG"))
+                    return QString();
+                const linkpreview::Target t = linkpreview::classify(QStringLiteral("https://example.com/") + QString::fromLatin1(name));
+                MediaLink link = linkstate::webLink(t, QStringLiteral("image/png"), QFileInfo(path).size(), img.width(), img.height(), 0);
+                link.blurHash  = QStringLiteral("LEHV6nWB2yk8pyo0adR*.7kCMdnj");
+                return core->adoptLocalFile(link, path);
+            };
+            QImage small(320, 240, QImage::Format_RGB32);
+            small.fill(Qt::darkCyan);
+            QImage large(2100, 2000, QImage::Format_RGB32); // 4.2 megapixels of PNG: decoded on a worker
+            large.fill(Qt::darkMagenta);
+            const QString cheap = adopt("small.png", small);
+            const QString slow  = adopt("large.png", large);
+            QVERIFY(!cheap.isEmpty() && !slow.isEmpty());
+            const QSize pixels(160, 120);
+            QTest::qWait(100);
+            QSignalSpy changed(core.get(), &Core::entryChanged);
+            const auto changedFor = [&changed](const QString& key) {
+                int n = 0;
+                for (const QList<QVariant>& args : qAsConst(changed))
+                    n += args.value(0).toString() == key ? 1 : 0;
+                return n;
+            };
+            QCOMPARE(core->stillDecode(), Core::StillDecode::Any);
+
+            // CachedOnly: nothing decoded (the blurhash meanwhile), counted; Any decodes it at once; then it is cached.
+            quint64 n = core->stillStandIns();
+            core->setStillDecode(Core::StillDecode::CachedOnly);
+            QCOMPARE(core->still(cheap, pixels).source, MediaStill::BlurHash);
+            QVERIFY(core->stillStandIns() > n);
+            core->setStillDecode(Core::StillDecode::Any);
+            n = core->stillStandIns();
+            QCOMPARE(core->still(cheap, pixels).source, MediaStill::Full);
+            QCOMPARE(core->stillStandIns(), n);
+            core->setStillDecode(Core::StillDecode::CachedOnly);
+            QCOMPARE(core->still(cheap, pixels).source, MediaStill::Full);
+            QCOMPARE(core->stillStandIns(), n);
+            QCOMPARE(core->still(slow, pixels).source, MediaStill::BlurHash);
+            QVERIFY(core->stillStandIns() > n);
+
+            // CheapOnly: the slow file isn't decoded and no worker starts.
+            core->setStillDecode(Core::StillDecode::CheapOnly);
+            n = core->stillStandIns();
+            QCOMPARE(core->still(slow, pixels).source, MediaStill::BlurHash);
+            QVERIFY(core->stillStandIns() > n);
+            QCOMPARE(core->still(cheap, pixels).source, MediaStill::Full);
+            QTest::qWait(1000);
+            QCOMPARE(changedFor(slow), 0);
+
+            // Any: a worker decodes it (a stand-in meanwhile, counted), entryChanged says when; then it is the full still.
+            core->setStillDecode(Core::StillDecode::Any);
+            n = core->stillStandIns();
+            QVERIFY(core->still(slow, pixels).source != MediaStill::Full);
+            QVERIFY(core->stillStandIns() > n);
+            QTRY_VERIFY_WITH_TIMEOUT(changedFor(slow) > 0, 10000);
+            n = core->stillStandIns();
+            core->setStillDecode(Core::StillDecode::CachedOnly);
+            QCOMPARE(core->still(slow, pixels).source, MediaStill::Full);
+            QCOMPARE(core->stillStandIns(), n);
+            core->setStillDecode(Core::StillDecode::Any);
+        }
+        ts3::funcs           = savedFuncs;
+        Settings::instance() = saved;
+    }
+
     // ---- 2.4 auto-load: caps, waits, the per-sender budget -------------------------------------------------------
     void autoCapPerKind()
     {

@@ -57,6 +57,9 @@ class ChatLayout : public QObject
     // Chat viewport events (from ChatIntegration's filter); true when one was for the layout.
     bool filterEvent(QObject* watched, QEvent* event);
     void settingsChanged();
+    // 2.7.1 dark mode: TeamSpeak's look changed (ChatIntegration::themeChanged): every chat's environment now (the bubbles
+    // the cards are drawn on, before they are drawn), the restyle in steps as after any new environment. Nothing in Classic.
+    void themeChanged();
 
     // ChatReplies: before it collapses (or gives back) a quote line in block, and after.
     void unstyle(QTextBrowser* browser, int block);

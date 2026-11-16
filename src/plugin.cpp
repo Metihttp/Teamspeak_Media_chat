@@ -66,6 +66,9 @@
 #include "voicecontroller.h" // 2.2 voice
 #ifdef TSMEDIA_TESTHOOKS
 #include <QElapsedTimer>
+#include <QImage>  // 2.7.1 live test: the pictures left after unload
+#include <QPixmap>
+#include <QUrl>
 #include <QTextBlock>    // 2.3.1 live test: the chats after the chat layer went
 #include <QTextDocument>
 #include <QTextFrame>
@@ -82,6 +85,42 @@ void selfTestCapturePre(uint64 sch, short* samples, int sampleCount, int channel
 void selfTestCapturePost(uint64 sch, const short* samples, int sampleCount, int channels, const int* edited);
 void selfTestPlaybackVoice(uint64 sch, anyID client, const short* samples, int sampleCount, int channels);
 void selfTestTalkStatus(uint64 sch, int status, anyID client);
+
+// 2.7.1 live test (dark mode): TS Media's pictures left in a chat once the chat layer is gone (images named "tsmedia:"
+// with a picture), how many have pixels of a card drawn for a dark chat (previewrenderer's #2b2d31 and #232428: on a light
+// chat a leftover of dark mode) and of dark mode's accent (within 6 of #d97757).
+QString picturesLeft(QTextDocument* doc)
+{
+    QStringList names;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+        for (auto it = b.begin(); !it.atEnd(); ++it) {
+            const QTextCharFormat f = it.fragment().charFormat();
+            if (f.isImageFormat() && f.toImageFormat().name().startsWith(QLatin1String("tsmedia:")) && !names.contains(f.toImageFormat().name()))
+                names << f.toImageFormat().name();
+        }
+    }
+    int pictures = 0, dark = 0, accent = 0;
+    for (const QString& name : qAsConst(names)) {
+        const QVariant v = doc->resource(QTextDocument::ImageResource, QUrl(name));
+        QImage         img = v.userType() == QMetaType::QPixmap ? qvariant_cast<QPixmap>(v).toImage() : qvariant_cast<QImage>(v);
+        if (img.width() <= 1 || img.height() <= 1)
+            continue;
+        ++pictures;
+        img        = img.convertToFormat(QImage::Format_ARGB32);
+        bool d = false, a = false;
+        for (int y = 0; y < img.height(); ++y) {
+            const QRgb* line = reinterpret_cast<const QRgb*>(img.constScanLine(y));
+            for (int x = 0; x < img.width(); ++x) {
+                const QRgb px = line[x] & 0xffffffu;
+                d             = d || px == 0x2b2d31u || px == 0x232428u;
+                a             = a || (qAlpha(line[x]) == 255 && qAbs(qRed(px) - 0xd9) <= 6 && qAbs(qGreen(px) - 0x77) <= 6 && qAbs(qBlue(px) - 0x57) <= 6);
+            }
+        }
+        dark += d ? 1 : 0;
+        accent += a ? 1 : 0;
+    }
+    return QString::fromLatin1("pictures %1 (drawn for the dark look %2, theme accent %3)").arg(pictures).arg(dark).arg(accent);
+}
 #endif
 
 #define PLUGIN_API_VERSION 26
@@ -667,6 +706,9 @@ TS3_EXPORT int ts3plugin_init()
         if (g_dark) {
             QObject::connect(chat, &ChatIntegration::chatsChanged, g_dark.data(), &DarkMode::checkDocuments);
             QObject::connect(g_dark.data(), &DarkMode::placesRestored, chat, &ChatIntegration::retakeScalePlaces);
+            // 2.7.1: TeamSpeak's look changed (on, off, a skin taken over, the off of a Disable or Reload; never at Quit): the
+            // chat layer draws its pictures for it at once (direct: inside dark mode's place bracket).
+            QObject::connect(g_dark.data(), &DarkMode::themeChanged, chat, &ChatIntegration::themeChanged);
             g_dark->setDeferHiddenPlaces(true);
         }
         // 2.7 dark mode: on, off or paused, the sheet's size and scale, what it took over (counts only).
@@ -695,6 +737,8 @@ TS3_EXPORT int ts3plugin_init()
         // 2.3 live music: the paperclip menu's "Live music", the bar above the chat input (after the chat).
         // Deleted early in ts3plugin_shutdown.
         g_music = new MusicController(MusicController::pluginHost());
+        if (g_dark) // 2.7.1: the bar in the new look at once (deleted before dark mode at the unload)
+            QObject::connect(g_dark.data(), &DarkMode::themeChanged, g_music.data(), &MusicController::refreshNow);
         diag::addSectionProvider([]() -> diag::Section {
             return g_music ? diag::Section{MusicController::diagnosticsTitle(), g_music->diagnosticLines()} : diag::Section();
         });
@@ -801,6 +845,11 @@ TS3_EXPORT void ts3plugin_shutdown()
         // the chat layer still exists (its modules see one more StyleChange; their timers die with them right after), and
         // before ~ChatIntegration writes the R-DEF-1 carry (it describes the chat in TeamSpeak's own colours). At TeamSpeak's
         // Quit (its main window no longer shown) only its hooks go (DarkMode::shutdown).
+        // 2.7.1: TeamSpeak's Quit or not, decided once with dark mode's own test, for the chat layer too, before dark mode
+        // goes: at Quit nothing of ours is drawn any more (dark mode on or off); on a Disable or Reload the pictures still
+        // in an older look are drawn for TeamSpeak's look (dark mode's off right below, and ~ChatIntegration).
+        if (g_chat)
+            g_chat->beginUnload(g_dark ? g_dark->teamSpeakClosing() : QCoreApplication::closingDown());
         if (g_dark) {
             g_dark->shutdown();
             delete g_dark.data();
@@ -855,6 +904,12 @@ TS3_EXPORT void ts3plugin_shutdown()
                          .arg(linkSlots));
             if (i < placesBefore.size() && !placesBefore.at(i).isEmpty())
                 ts3::log(QString::fromLatin1("[test] shutdown: reader's place %1 -> %2").arg(placesBefore.at(i), placeOf(tb)));
+            // 2.7.1: what TS Media's pictures look like in TeamSpeak's chat now (the chat shown or hidden, light or dark).
+            ts3::log(QString::fromLatin1("[test] shutdown: chat view %1 (%2, %3): %4")
+                         .arg(i + 1)
+                         .arg(tb->isVisible() ? QString::fromLatin1("shown") : QString::fromLatin1("hidden"))
+                         .arg(chatcolors::isDark(chatcolors::fromPalette(tb->palette()).base) ? QString::fromLatin1("dark chat") : QString::fromLatin1("light chat"))
+                         .arg(picturesLeft(doc)));
         }
 #endif
 

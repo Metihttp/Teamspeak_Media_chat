@@ -252,6 +252,15 @@ class Core : public QObject
     // (chat files are untrusted) are decoded on a worker thread: until then the next best still
     // is returned, and entryChanged(key) is emitted once the better one is available.
     MediaStill still(const QString& key, const QSize& maxPixels);
+    // 2.7.1 (the chat's look redraws: dark mode on or off): how still() gets a source it hasn't cached. Any (the
+    // default): cheap files decoded at once, slow ones on a worker. CheapOnly: never a worker (the unload: nothing would
+    // come back). CachedOnly: no file decoded at all. Each time still() answers with less than the best still this size
+    // will have (that source waits for its worker, or the mode left it undecoded) stillStandIns() counts one: a caller
+    // that has a picture drawn already keeps it then. Set it around a draw and back (GUI thread).
+    enum class StillDecode { Any, CheapOnly, CachedOnly };
+    void        setStillDecode(StillDecode mode) { m_stillDecode = mode; }
+    StillDecode stillDecode() const { return m_stillDecode; }
+    quint64     stillStandIns() const { return m_stillStandIns; }
 
     // File actions for context menus / viewer (no-ops if the main file is not Ready).
     void openExternally(const QString& key) const; // default app; executables are only revealed
@@ -820,6 +829,8 @@ class Core : public QObject
     QCache<QString, MediaStill> m_stills;
     QHash<QString, quint64>     m_stillJobs;     // still cache key -> id of the worker decode producing it
     quint64                     m_nextStillJob = 0;
+    StillDecode                 m_stillDecode   = StillDecode::Any; // 2.7.1
+    quint64                     m_stillStandIns = 0;               // 2.7.1: answers with less than the best still
     QHash<QString, qint64>      m_usedAt;         // path -> last LRU refresh (ms since epoch)
     QSet<QString>               m_recentlyFinished; // spared by the next cache limit pass
     QTimer*                     m_progressTimer = nullptr;

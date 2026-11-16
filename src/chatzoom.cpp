@@ -314,9 +314,16 @@ void ChatZoom::userZoomed(QTextBrowser* browser)
     const int   t      = chatzoom::clampTenths(qRound(10.0 * (font.pointSizeF() - base.pointSizeF())));
     Settings::instance().chatZoom = t;
     m_save->start(); // saved after the last notch
-    if (!sameSize(font, targetFor(base, t)))
+    if (!sameSize(font, targetFor(base, t))) {
         queueApply(browser); // past a bound, or a touchpad's fraction: back to the saved size
-    m_sync->start();         // the other visible chats follow after the last notch
+    } else {
+        // 2.7.1 live test: Qt's wheel set the zoom's own size, so it is ours like a size ensure() sets. Before, the chat,
+        // hidden while the zoom changed from another chat, came to a Reload with that older size, and the load took it for
+        // TeamSpeak's new font (its base): that chat stayed a step bigger than the others, one more step per Reload.
+        const QByteArray set = chatzoom::appliedProperty();
+        browser->setProperty(set.constData(), QVariant(font));
+    }
+    m_sync->start(); // the other visible chats follow after the last notch
     if (t != before)
         emit chatZoomChanged(t);
 }

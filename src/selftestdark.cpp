@@ -6,6 +6,8 @@
 //                        bars, the last times, the widget count
 //   dark.metrics         the size factor, TeamSpeak's font, the chat's frame and scroll bar width kept from the skin
 //   dark.tip             the visible tool tip: its document's colours (TeamSpeak's template colours remapped), recoloured now
+//   dark.print {kind, text, url, link}  2.7.1: one of TS Media's own lines in the current server tab, as the plugin prints it:
+//                        kind info (default), warning, link (printInfoLink: the channel tab) or raw (ts3::print, BBCode as given)
 
 #include <QApplication>
 #include <QFontInfo>
@@ -38,9 +40,24 @@ QString yesNo(bool v)
 
 bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<void(const QString&)>& say)
 {
-    Q_UNUSED(c);
     if (!cmd.startsWith(QLatin1String("dark.")))
         return false;
+    if (cmd == QLatin1String("dark.print")) {
+        const uint64  sch  = ts3::currentConnection();
+        const QString kind = c.value(QString::fromLatin1("kind")).toString(QString::fromLatin1("info"));
+        const QString text = c.value(QString::fromLatin1("text")).toString(QString::fromLatin1("Dark mode test line."));
+        if (kind == QLatin1String("warning"))
+            ts3::printWarning(sch, text);
+        else if (kind == QLatin1String("link"))
+            ts3::printInfoLink(sch, text, c.value(QString::fromLatin1("url")).toString(QString::fromLatin1("https://example.com/")),
+                               c.value(QString::fromLatin1("link")).toString(QString::fromLatin1("a link")));
+        else if (kind == QLatin1String("raw"))
+            ts3::print(sch, text);
+        else
+            ts3::printInfo(sch, text);
+        say(QString::fromLatin1("dark.print: %1 printed").arg(kind));
+        return true;
+    }
     DarkMode* dark = DarkMode::instance();
     if (cmd == QLatin1String("dark.on") || cmd == QLatin1String("dark.off")) {
         ts3plugin_onMenuItemEvent(ts3::currentConnection(), PLUGIN_MENU_TYPE_GLOBAL, cmd == QLatin1String("dark.on") ? 10 : 11, 0);
@@ -72,7 +89,7 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                 .arg(now.resolve())
                 .arg(snap.resolve()));
         say(QString::fromLatin1("dark.state: documents %1, recolored %2, pending %3; adoptions %4; title bars %5; tips %6; filter %7; timers %8; "
-                                "on %9 ms (sheet %10 ms, chats %11 ms, %12 fragments), off %13 ms; widgets %14 at apply, %15 now")
+                                "on %9 ms (sheet %10 ms, chats %11 ms, %12 fragments), off %13 ms, cards %14 ms; widgets %15 at apply, %16 now")
                 .arg(s.tracked)
                 .arg(s.recolored)
                 .arg(s.pending)
@@ -86,6 +103,7 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                 .arg(s.lastChatsMs)
                 .arg(s.fragments)
                 .arg(s.lastRemoveMs)
+                .arg(s.lastCardsMs)
                 .arg(s.widgets)
                 .arg(QApplication::allWidgets().size()));
         return true;

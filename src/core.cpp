@@ -1703,8 +1703,10 @@ MediaStill Core::still(const QString& key, const QSize& maxPixels)
             return tagged(*cached);
         }
 
-        if (!path.isEmpty() && m_stillJobs.contains(cacheKey)) {
-            // Being decoded on a worker: show this source at another size meanwhile, if there is one.
+        if (!path.isEmpty() && (m_stillJobs.contains(cacheKey) || m_stillDecode == StillDecode::CachedOnly)) {
+            // Being decoded on a worker (or, 2.7.1, not decoded now: a look redraw): show this source at another size
+            // meanwhile, if there is one.
+            ++m_stillStandIns;
             const MediaStill other = otherSizeStill(key, source, maxPixels);
             if (!other.image.isNull())
                 return tagged(other);
@@ -1717,8 +1719,10 @@ MediaStill Core::still(const QString& key, const QSize& maxPixels)
         if (expensive) {
             // Chat files are untrusted: a large or slow image (e.g. a tiny PNG of 80 megapixels) is
             // never decoded on the GUI thread. A worker decodes it and entryChanged(key) announces it;
-            // until then the next best still is shown.
-            startStillDecode(key, cacheKey, source, path, maxPixels);
+            // until then the next best still is shown. 2.7.1: not at the unload (CheapOnly: nothing would come back).
+            ++m_stillStandIns;
+            if (m_stillDecode == StillDecode::Any)
+                startStillDecode(key, cacheKey, source, path, maxPixels);
             const MediaStill other = otherSizeStill(key, source, maxPixels);
             if (!other.image.isNull())
                 return tagged(other);
