@@ -26,7 +26,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 - **Output:** `dist\TSMedia-<version>.ts3_plugin`, containing `tsmedia_win64.dll` and `tsmedia_win32.dll` in the same layout as packages from myteamspeak.com. The version comes from `project(... VERSION ...)` in `CMakeLists.txt`.
-- **Your build has no update check.** Without `-Release`, `build.ps1` builds with `TSMEDIA_UPDATER` off, so a copy you build yourself never replaces itself with an official release and never contacts GitHub (it still loads `winhttp.dll` for link previews). Settings → Privacy & updates says *Updates are turned off in versions you build yourself*.
+- **Your build has no update check.** Without `-Release`, `build.ps1` builds with `TSMEDIA_UPDATER` off, so a copy you build yourself never replaces itself with an official release and never contacts GitHub (it still loads `winhttp.dll` for link previews). Settings → About & updates says *Updates are turned off in versions you build yourself*.
 - **Cloned without `--recursive`?** Run `git submodule update --init`. The TeamSpeak plugin SDK is a git submodule.
 
 ### `build.ps1` options
@@ -49,6 +49,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | `-VerifyPublished` | download both manifests of the latest release and every file they list, check sizes, SHA-256 and the signature of `tsmedia-update.json`, that the signed file still serves 2.2.0 users on both architectures (and is the pinned bridge when it is 2.2.1's), that the manifest belongs to the latest release, and that release's important marker if it has one (network: github.com), then stop. `-VerifyFrom <url>` checks a local test server with GitHub's paths instead (and also trusts the test key 99) |
 
 Every build also checks the DLLs' imports: a DLL outside an allowlist (`winhttp.dll` must be loaded on demand only) fails the build, and with a reference list each imported Qt symbol must exist in TeamSpeak's own Qt DLLs. A plugin that doesn't load on a user's PC could never update itself again.
+
+Since 2.7 the plugin uses Qt's Sql module too (TeamSpeak's contacts for *Only from friends*; it is part of `qtbase`, so the Qt install above has it). `Qt5Sql.dll` may only be a delay-load import, like `mfplat.dll` and `mfreadwrite.dll`: a direct import fails the build. Run `-CaptureReference` once more with TeamSpeak 3.6.2 so the reference list has `Qt5Sql.dll`'s exports too; a reference list from before 2.7 fails the check until then.
 
 ### Plain CMake
 

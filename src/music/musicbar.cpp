@@ -25,6 +25,7 @@
 #include "i18n.h"
 #include "medialink.h" // formatDuration
 #include "replyart.h"
+#include "replybar.h" // 2.7 F4: widgetFont, inputScale
 #include "uiutil.h"
 
 namespace music {
@@ -44,26 +45,37 @@ constexpr int    kSeekMin  = 56;
 constexpr int    kVolumeW  = 64;
 constexpr qreal  kRadius   = 6.0;
 
+// 2.7 F4: the bar follows the input's text size (Windows scaling): every pixel size is px(v, font), the same at 100%.
+qreal scaleOf(const QFont& input)
+{
+    return qMin(4.0, replybar::inputScale(input));
+}
+
+int px(int v, const QFont& input)
+{
+    return qRound(v * scaleOf(input));
+}
+
 QFont titleFont(const QFont& input)
 {
-    QFont font = replyart::scaledFont(input, 1.0);
+    QFont font = replybar::widgetFont(input, 1.0, scaleOf(input));
     font.setWeight(QFont::DemiBold);
     return font;
 }
 
 QFont smallFont(const QFont& input)
 {
-    return replyart::scaledFont(input, 0.92);
+    return replybar::widgetFont(input, 0.92, scaleOf(input));
 }
 
 int rowHeight(const QFont& font)
 {
-    return qMax(38, static_cast<int>(std::ceil(QFontMetricsF(titleFont(font)).height())) + 20);
+    return qMax(px(38, font), static_cast<int>(std::ceil(QFontMetricsF(titleFont(font)).height())) + px(20, font));
 }
 
 int problemHeight(const QFont& font)
 {
-    return qMax(20, static_cast<int>(std::ceil(QFontMetricsF(smallFont(font)).height())) + 6);
+    return qMax(px(20, font), static_cast<int>(std::ceil(QFontMetricsF(smallFont(font)).height())) + px(6, font));
 }
 
 // A notice's text in at most kNoticeLines lines (the last one elided), as wide as width.
@@ -90,16 +102,16 @@ QStringList noticeLines(const QFont& font, const QString& text, qreal width)
     return lines.isEmpty() ? QStringList{text} : lines;
 }
 
-int noticeTextWidth(int barWidth)
+int noticeTextWidth(int barWidth, const QFont& font)
 {
-    return qMax(40, barWidth - kPadLeft - 16 - kGap - kGap - kButton - kPadRight);
+    return qMax(px(40, font), barWidth - px(kPadLeft + 16 + kGap + kGap + kButton + kPadRight, font));
 }
 
 int timeWidth(const QFont& font, qint64 durationMs)
 {
     const QFontMetricsF fm(smallFont(font));
     const QString       sample = durationMs >= 3600000 ? QStringLiteral("8:88:88") : durationMs >= 600000 ? QStringLiteral("88:88") : QStringLiteral("8:88");
-    return static_cast<int>(std::ceil(fm.horizontalAdvance(sample))) + 2;
+    return static_cast<int>(std::ceil(fm.horizontalAdvance(sample))) + px(2, font);
 }
 
 QColor withAlpha(QColor color, int alpha)
@@ -284,7 +296,7 @@ class BarButton : public QAbstractButton
     }
     std::function<void(int)> step; // the volume button: wheel and arrow keys change the volume
 
-    QSize sizeHint() const override { return QSize(kButton, kButton); }
+    QSize sizeHint() const override { return QSize(px(kButton, m_bar->font()), px(kButton, m_bar->font())); }
 
   protected:
     void paintEvent(QPaintEvent*) override
@@ -375,7 +387,7 @@ class BarSlider : public QAbstractSlider
         setAttribute(Qt::WA_Hover);
         setTracking(true);
     }
-    QSize sizeHint() const override { return QSize(120, kButton); }
+    QSize sizeHint() const override { return QSize(px(120, m_bar->font()), px(kButton, m_bar->font())); }
     bool  wheelMoves = true; // false (the position): the wheel isn't a seek, the thumb doesn't move for it
     void  setDimmed(bool dimmed) // the music is muted: the level stays, drawn quiet
     {
@@ -599,16 +611,16 @@ int MusicBar::heightForWidth(int width) const
 {
     if (m_view.mode != Mode::Notice)
         return sizeHint().height();
-    const int lines = static_cast<int>(noticeLines(font(), m_view.notice, noticeTextWidth(width)).size());
+    const int lines = static_cast<int>(noticeLines(font(), m_view.notice, noticeTextWidth(width, font())).size());
     if (lines <= 1)
         return rowHeight(font()); // one line: as high as the playing bar
     const int line = static_cast<int>(std::ceil(QFontMetricsF(smallFont(font())).lineSpacing()));
-    return qMax(rowHeight(font()), lines * line + 20);
+    return qMax(rowHeight(font()), lines * line + px(20, font()));
 }
 
 QSize MusicBar::minimumSizeHint() const
 {
-    return QSize(160, sizeHint().height());
+    return QSize(px(160, font()), sizeHint().height());
 }
 
 bool MusicBar::seeking() const
@@ -624,19 +636,24 @@ qint64 MusicBar::shownPositionMs() const
 MusicBar::Geometry MusicBar::geometryFor(const QSize& size, const QFont& font, const View& view)
 {
     Geometry   g;
+    // 2.7 F4: the layout's sizes at the input's text size (the same numbers at 100%).
+    const int  padLeft = px(kPadLeft, font), padRight = px(kPadRight, font), badgeSide = px(kBadge, font), button = px(kButton, font);
+    // The gap stays even: the seek slider reaches half a gap into each side, the same on both.
+    const int  gap = 2 * px(kGap / 2, font), tight = px(kTight, font), titleMin = px(kTitleMin, font), titleMax = px(kTitleWant, font);
+    const int  seekMin = px(kSeekMin, font), volumeW = px(kVolumeW, font);
     const int  row   = rowHeight(font);
     const int  cy    = row / 2;
     const int  width = size.width();
     const auto box   = [cy](int x, int w, int h) { return QRect(x, cy - h / 2, w, h); };
     if (!view.problem.isEmpty() && view.mode != Mode::Notice)
-        g.problem = QRect(kPadLeft, row - 4, qMax(0, width - kPadLeft - kPadRight), problemHeight(font));
+        g.problem = QRect(padLeft, row - px(4, font), qMax(0, width - padLeft - padRight), problemHeight(font));
 
     if (view.mode == Mode::Notice) { // the icon and the close button by the first line, the text as high as it needs
         const qreal spacing = QFontMetricsF(smallFont(font)).lineSpacing();
-        const int   center  = size.height() > row ? static_cast<int>(std::round(10.0 + spacing / 2.0)) : cy;
-        g.badge             = QRect(kPadLeft, center - 8, 16, 16);
-        g.close             = QRect(width - kPadRight - kButton, center - kButton / 2, kButton, kButton);
-        g.title = QRect(g.badge.right() + 1 + kGap, 0, noticeTextWidth(width), qMax(row, size.height()));
+        const int   center  = size.height() > row ? static_cast<int>(std::round(10.0 * scaleOf(font) + spacing / 2.0)) : cy;
+        g.badge             = QRect(padLeft, center - px(8, font), px(16, font), px(16, font));
+        g.close             = QRect(width - padRight - button, center - button / 2, button, button);
+        g.title = QRect(g.badge.right() + 1 + gap, 0, noticeTextWidth(width, font), qMax(row, size.height()));
         g.showElapsed = g.showTotal = g.showSeek = g.showVolumeSlider = g.showVolumeButton = false;
         return g;
     }
@@ -645,12 +662,12 @@ MusicBar::Geometry MusicBar::geometryFor(const QSize& size, const QFont& font, c
         // 2.3: on another server tab: the note, the title and where it plays, play / pause and stop (and the
         // line below when it waits for its tab: "Paused while you're on another server tab…").
         g.showElapsed = g.showTotal = g.showSeek = g.showVolumeSlider = g.showVolumeButton = false;
-        int x         = kPadLeft;
-        g.badge       = box(x, kBadge, kBadge);
-        x += kBadge + kGap;
-        g.stop  = box(width - kPadRight - kButton, kButton, kButton);
-        g.play  = box(g.stop.left() - kTight - kButton, kButton, kButton);
-        g.title = QRect(x, 0, qMax(0, g.play.left() - kGap - x), row);
+        int x         = padLeft;
+        g.badge       = box(x, badgeSide, badgeSide);
+        x += badgeSide + gap;
+        g.stop  = box(width - padRight - button, button, button);
+        g.play  = box(g.stop.left() - tight - button, button, button);
+        g.title = QRect(x, 0, qMax(0, g.play.left() - gap - x), row);
         return g;
     }
 
@@ -662,19 +679,19 @@ MusicBar::Geometry MusicBar::geometryFor(const QSize& size, const QFont& font, c
     const QString       subtitle  = view.mode == Mode::Loading && view.artist.isEmpty() ? i18n::t("Loading…") : view.artist;
     if (!subtitle.isEmpty())
         natural += sm.horizontalAdvance(QStringLiteral("  ·  ") + subtitle);
-    // The title (not the artist) keeps up to kTitleWant of what it needs before anything optional goes;
+    // The title (not the artist) keeps up to titleMax of what it needs before anything optional goes;
     // then the parts go in this order: the volume slider, the total, the volume button, the seek slider,
     // the time.
-    const int titleWant = qBound(kTitleMin, static_cast<int>(std::ceil(titleOnly)), kTitleWant);
-    const int fixedBase = kPadLeft + kBadge + kGap + kGap + kButton + kGap + kTight + kButton + kPadRight;
+    const int titleWant = qBound(titleMin, static_cast<int>(std::ceil(titleOnly)), titleMax);
+    const int fixedBase = padLeft + badgeSide + gap + gap + button + gap + tight + button + padRight;
     struct Part {
         bool* shown;
         int   width;
     };
     g.showTotal  = seekable;
     g.showSeek   = seekable;
-    Part parts[] = {{&g.showVolumeSlider, kVolumeW}, {&g.showTotal, tw + kGap}, {&g.showVolumeButton, kButton},
-                    {&g.showSeek, kSeekMin + kGap}, {&g.showElapsed, tw + kGap}};
+    Part parts[] = {{&g.showVolumeSlider, volumeW}, {&g.showTotal, tw + gap}, {&g.showVolumeButton, button},
+                    {&g.showSeek, seekMin + gap}, {&g.showElapsed, tw + gap}};
     int  optional = 0;
     for (const Part& part : parts)
         optional += *part.shown ? part.width : 0;
@@ -688,42 +705,42 @@ MusicBar::Geometry MusicBar::geometryFor(const QSize& size, const QFont& font, c
     }
     // The room left: the title gets what it still needs (up to 45% of it), the seek slider the rest.
     const int spare     = width - fixedBase - optional;
-    const int titleW    = qMax(kTitleMin, qMin(titleWant, spare));
+    const int titleW    = qMax(titleMin, qMin(titleWant, spare));
     const int rest      = qMax(0, spare - titleW);
     const int titleNeed = qMax(0, static_cast<int>(std::ceil(natural)) - titleW);
     // (Without a seek slider the title takes only what it needs: play stays next to it.)
-    const int titleMore = g.showSeek ? qMin(titleNeed, qMax(rest * 45 / 100, rest - 360)) : qMin(titleNeed, rest);
+    const int titleMore = g.showSeek ? qMin(titleNeed, qMax(rest * 45 / 100, rest - px(360, font))) : qMin(titleNeed, rest);
     const int seekMore  = g.showSeek ? rest - titleMore : 0;
 
-    int x   = kPadLeft;
-    g.badge = box(x, kBadge, kBadge);
-    x += kBadge + kGap;
+    int x   = padLeft;
+    g.badge = box(x, badgeSide, badgeSide);
+    x += badgeSide + gap;
     g.title = QRect(x, 0, titleW + titleMore, row);
-    x += g.title.width() + kGap;
-    g.play = box(x, kButton, kButton);
-    x += kButton + kGap;
+    x += g.title.width() + gap;
+    g.play = box(x, button, button);
+    x += button + gap;
     if (g.showElapsed) {
         g.elapsed = QRect(x, 0, tw, row);
-        x += tw + kGap;
+        x += tw + gap;
     }
     if (g.showSeek) { // the thumb's room reaches half a gap into each side: the track sits a gap from the times
-        g.seek = box(x - kGap / 2, kSeekMin + seekMore + kGap, kButton);
-        x += kSeekMin + seekMore + kGap;
+        g.seek = box(x - gap / 2, seekMin + seekMore + gap, button);
+        x += seekMin + seekMore + gap;
     }
     if (g.showTotal) {
         g.total = QRect(x, 0, tw, row);
-        x += tw + kGap;
+        x += tw + gap;
     }
     // The volume and stop at the right edge.
-    int right = width - kPadRight;
-    g.stop    = box(right - kButton, kButton, kButton);
-    right -= kButton + kTight;
+    int right = width - padRight;
+    g.stop    = box(right - button, button, button);
+    right -= button + tight;
     if (g.showVolumeSlider) {
-        g.volumeSlider = box(right - kVolumeW, kVolumeW, kButton);
-        right -= kVolumeW;
+        g.volumeSlider = box(right - volumeW, volumeW, button);
+        right -= volumeW;
     }
     if (g.showVolumeButton)
-        g.volumeButton = box(right - kButton, kButton, kButton);
+        g.volumeButton = box(right - button, button, button);
     return g;
 }
 
@@ -890,23 +907,25 @@ void MusicBar::paintEvent(QPaintEvent*)
     p.setRenderHint(QPainter::TextAntialiasing);
     const Colors& c = m_colors;
     const QRectF  r(rect());
+    const qreal   s      = scaleOf(font()); // 2.7 F4
+    const qreal   radius = kRadius * s;
 
     // Attached to what is below it: rounded top corners, a hairline along the top (the reply bar's shape).
     QPainterPath bg;
     bg.moveTo(r.left(), r.bottom() + 1);
-    bg.lineTo(r.left(), r.top() + kRadius);
-    bg.quadTo(r.left(), r.top(), r.left() + kRadius, r.top());
-    bg.lineTo(r.right() + 1 - kRadius, r.top());
-    bg.quadTo(r.right() + 1, r.top(), r.right() + 1, r.top() + kRadius);
+    bg.lineTo(r.left(), r.top() + radius);
+    bg.quadTo(r.left(), r.top(), r.left() + radius, r.top());
+    bg.lineTo(r.right() + 1 - radius, r.top());
+    bg.quadTo(r.right() + 1, r.top(), r.right() + 1, r.top() + radius);
     bg.lineTo(r.right() + 1, r.bottom() + 1);
     bg.closeSubpath();
     p.fillPath(bg, c.surface);
     QPainterPath edge;
     edge.moveTo(r.left() + 0.5, r.bottom() + 1);
-    edge.lineTo(r.left() + 0.5, r.top() + kRadius);
-    edge.quadTo(r.left() + 0.5, r.top() + 0.5, r.left() + kRadius, r.top() + 0.5);
-    edge.lineTo(r.right() + 1 - kRadius, r.top() + 0.5);
-    edge.quadTo(r.right() + 0.5, r.top() + 0.5, r.right() + 0.5, r.top() + kRadius);
+    edge.lineTo(r.left() + 0.5, r.top() + radius);
+    edge.quadTo(r.left() + 0.5, r.top() + 0.5, r.left() + radius, r.top() + 0.5);
+    edge.lineTo(r.right() + 1 - radius, r.top() + 0.5);
+    edge.quadTo(r.right() + 0.5, r.top() + 0.5, r.right() + 0.5, r.top() + radius);
     edge.lineTo(r.right() + 0.5, r.bottom() + 1);
     p.setPen(QPen(c.line, 1.0));
     p.setBrush(Qt::NoBrush);
@@ -927,7 +946,7 @@ void MusicBar::paintEvent(QPaintEvent*)
         if (lines.size() == 1 || height() <= row) {
             p.drawText(QPointF(m_geometry.title.left(), baseline(sm)), sm.elidedText(lines.join(QLatin1Char(' ')), Qt::ElideRight, m_geometry.title.width()));
         } else {
-            qreal y = 10.0 + sm.ascent();
+            qreal y = 10.0 * s + sm.ascent();
             for (const QString& line : lines) {
                 p.drawText(QPointF(m_geometry.title.left(), std::round(y)), line);
                 y += sm.lineSpacing();
@@ -943,16 +962,16 @@ void MusicBar::paintEvent(QPaintEvent*)
     const QColor tone  = heard ? c.note : c.muted;
     p.setPen(Qt::NoPen);
     p.setBrush(heard ? c.noteTile : withAlpha(tone, m_dark ? 46 : 34));
-    p.drawRoundedRect(badge, 6, 6);
+    p.drawRoundedRect(badge, 6 * s, 6 * s);
     if (m_view.mode == Mode::Loading) {
-        const QRectF ring = badge.adjusted(6, 6, -6, -6);
-        p.setPen(QPen(withAlpha(tone, 90), 1.8));
+        const QRectF ring = badge.adjusted(6 * s, 6 * s, -6 * s, -6 * s);
+        p.setPen(QPen(withAlpha(tone, 90), 1.8 * s));
         p.setBrush(Qt::NoBrush);
         p.drawEllipse(ring);
-        p.setPen(QPen(tone, 1.8, Qt::SolidLine, Qt::RoundCap));
+        p.setPen(QPen(tone, 1.8 * s, Qt::SolidLine, Qt::RoundCap));
         p.drawArc(ring, 90 * 16, -110 * 16);
     } else {
-        drawBeamedNotes(p, badge.adjusted(3, 3, -3, -3), tone);
+        drawBeamedNotes(p, badge.adjusted(3 * s, 3 * s, -3 * s, -3 * s), tone);
     }
 
     // The title, then the artist in the muted colour (the artist is cut first).
@@ -995,9 +1014,9 @@ void MusicBar::paintEvent(QPaintEvent*)
         const bool   warning = m_view.problemKind == Problem::Warning;
         const QColor ink     = warning ? c.error : c.muted;
         const QRectF line(m_geometry.problem);
-        drawMark(p, QRectF(line.left() + 6, line.center().y() - 6, 12, 12), warning, ink);
+        drawMark(p, QRectF(line.left() + 6 * s, line.center().y() - 6 * s, 12 * s, 12 * s), warning, ink);
         p.setPen(ink);
-        const qreal tx = line.left() + 6 + 12 + 6;
+        const qreal tx = line.left() + (6 + 12 + 6) * s;
         p.drawText(QPointF(tx, std::round(line.center().y() + (sm.ascent() - sm.descent()) / 2.0)),
                    sm.elidedText(m_view.problem, Qt::ElideRight, qMax(0.0, line.right() - tx)));
     }

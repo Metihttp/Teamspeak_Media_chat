@@ -322,7 +322,7 @@ void Updater::start()
     // Noted as said only once the line is printed (flushNotices); until then nothing installs by itself.
     if (m_settings.check == CheckSetting::On && !st.autoAnnounced())
         queueNotice(i18n::t("Important fixes for TS Media chat now install automatically when they are signed by its author; they start "
-                            "with the next TeamSpeak start. You can turn automatic updates off in Settings → Privacy & updates."),
+                            "with the next TeamSpeak start. You can turn automatic updates off in Settings → About & updates."),
                     false, QString(), QString(), false, true);
     m_earliestCheck = QDateTime::currentDateTimeUtc().addMSecs(initialDelayMs(QRandomGenerator::global()->generate()));
     if (shouldAskConsent(m_settings.check, m_settings.timesAsked))
@@ -1364,9 +1364,13 @@ void Updater::flushNotices()
             ts3::printWarning(sch, n.text);
         else
             ts3::printInfo(sch, n.text);
-        // The address is built from a validated version; the text is the plugin's own.
-        if (!n.linkUrl.isEmpty())
-            ts3::print(sch, latin("[url=") + n.linkUrl + latin("]") + n.linkText + latin("[/url]"));
+        // The address is built from a validated version; the text is the plugin's own. 2.7 F6 (M7): in the accent colour of
+        // TS Media's lines (ts3::linkBBCode, the one place for our links' tags).
+        if (!n.linkUrl.isEmpty()) {
+            const QString link = ts3::linkBBCode(n.linkUrl, n.linkText);
+            if (!link.isEmpty())
+                ts3::print(sch, link);
+        }
         startup   = startup || n.startupNotice;
         announced = announced || n.announcement;
     }

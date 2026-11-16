@@ -14,6 +14,7 @@
 #include "inputbars.h" // 2.3 live music: the bars stacked above the input
 #include "medialink.h"
 #include "replyart.h"
+#include "replybar.h" // 2.7 F4: widgetFont, inputScale
 #include "uiutil.h"
 
 namespace {
@@ -60,14 +61,15 @@ Colors colorsFor(const HoldStrip::Look& look, HoldStrip::Mode mode)
     return c;
 }
 
-QFont hintFont(const QFont& input)
+// 2.7 F4: the strip follows the input's text size (Windows scaling): 10 / 11 px at 100%, 20 / 22 px at 200%.
+QFont hintFont(const QFont& input, qreal scale)
 {
-    return replyart::scaledFont(input, 0.92);
+    return replybar::widgetFont(input, 0.92, scale);
 }
 
-QFont timeFont(const QFont& input)
+QFont timeFont(const QFont& input, qreal scale)
 {
-    QFont font = replyart::scaledFont(input, 1.0);
+    QFont font = replybar::widgetFont(input, 1.0, scale);
     font.setWeight(QFont::DemiBold);
     return font;
 }
@@ -128,19 +130,20 @@ void drawNoticeIcon(QPainter& p, const QRectF& box, HoldStrip::Icon icon, const 
     }
 }
 
-void drawWave(QPainter& p, const QRectF& area, const QVector<float>& bins, const QColor& on, const QColor& off)
+void drawWave(QPainter& p, const QRectF& area, const QVector<float>& bins, const QColor& on, const QColor& off, qreal s = 1.0)
 {
-    const int   count  = qMax(0, static_cast<int>((area.width() + kBarGap) / (kBar + kBarGap)));
+    const qreal bar = kBar * s, gap = kBarGap * s; // 2.7 F4
+    const int   count  = qMax(0, static_cast<int>((area.width() + gap) / (bar + gap)));
     const qreal center = area.center().y();
-    const qreal range  = area.height() - 2.0;
+    const qreal range  = area.height() - 2.0 * s;
     const int   have   = bins.size();
     p.setPen(Qt::NoPen);
     for (int i = 0; i < count; ++i) { // newest at the right; places not recorded yet are small dots
         const int   bin = have - count + i;
         const bool  set = bin >= 0;
-        const qreal h   = set ? 2.0 + range * waveform::liveHeight(bins.at(bin)) : 2.0;
+        const qreal h   = set ? 2.0 * s + range * waveform::liveHeight(bins.at(bin)) : 2.0 * s;
         p.setBrush(set ? on : off);
-        p.drawRoundedRect(QRectF(area.left() + i * (kBar + kBarGap), center - h / 2.0, kBar, h), kBar / 2.0, kBar / 2.0);
+        p.drawRoundedRect(QRectF(area.left() + i * (bar + gap), center - h / 2.0, bar, h), bar / 2.0, bar / 2.0);
     }
 }
 
@@ -211,7 +214,8 @@ void HoldStrip::setView(const View& view)
 
 int HoldStrip::heightFor(const QFont& inputFont)
 {
-    return qMax(32, static_cast<int>(std::ceil(QFontMetricsF(timeFont(inputFont)).height())) + 14);
+    const qreal s = replybar::inputScale(inputFont); // 2.7 F4
+    return qMax(qRound(32 * s), static_cast<int>(std::ceil(QFontMetricsF(timeFont(inputFont, s)).height() + 14 * s)));
 }
 
 void HoldStrip::placeAbove(QWidget* input)
@@ -255,6 +259,7 @@ HoldStrip::Look HoldStrip::look() const
     l.base                = pal.color(QPalette::Base);
     l.dark                = l.base.lightness() < 128 || pal.color(QPalette::Text).lightness() > 170; // as the mic button
     l.font                = font();
+    l.scale               = replybar::inputScale(l.font); // 2.7 F4
     if (m_frame->isActive())
         l.phase = static_cast<qreal>(m_clock.elapsed() % kPeriodMs) / static_cast<qreal>(kPeriodMs);
     return l;
@@ -295,41 +300,44 @@ void HoldStrip::render(QPainter& p, const QRectF& r, const View& view, const Loo
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::TextAntialiasing);
     const Colors c = colorsFor(look, view.mode);
+    // 2.7 F4: every size follows the input's text size (1 at 100%).
+    const qreal s      = qBound(1.0, look.scale, 4.0);
+    const qreal radius = kRadius * s, pad = kPad * s, markSize = kMark * s, gapSize = kGap * s;
 
     // Attached to the input: rounded top corners, square at the bottom (the reply bar's shape), and a
     // hairline along the top that sets it off the chat.
     QPainterPath bg;
     bg.moveTo(r.left(), r.bottom());
-    bg.lineTo(r.left(), r.top() + kRadius);
-    bg.quadTo(r.left(), r.top(), r.left() + kRadius, r.top());
-    bg.lineTo(r.right() - kRadius, r.top());
-    bg.quadTo(r.right(), r.top(), r.right(), r.top() + kRadius);
+    bg.lineTo(r.left(), r.top() + radius);
+    bg.quadTo(r.left(), r.top(), r.left() + radius, r.top());
+    bg.lineTo(r.right() - radius, r.top());
+    bg.quadTo(r.right(), r.top(), r.right(), r.top() + radius);
     bg.lineTo(r.right(), r.bottom());
     bg.closeSubpath();
     p.fillPath(bg, c.surface);
     QPainterPath edge;
     edge.moveTo(r.left() + 0.5, r.bottom());
-    edge.lineTo(r.left() + 0.5, r.top() + kRadius);
-    edge.quadTo(r.left() + 0.5, r.top() + 0.5, r.left() + kRadius, r.top() + 0.5);
-    edge.lineTo(r.right() - kRadius, r.top() + 0.5);
-    edge.quadTo(r.right() - 0.5, r.top() + 0.5, r.right() - 0.5, r.top() + kRadius);
+    edge.lineTo(r.left() + 0.5, r.top() + radius);
+    edge.quadTo(r.left() + 0.5, r.top() + 0.5, r.left() + radius, r.top() + 0.5);
+    edge.lineTo(r.right() - radius, r.top() + 0.5);
+    edge.quadTo(r.right() - 0.5, r.top() + 0.5, r.right() - 0.5, r.top() + radius);
     edge.lineTo(r.right() - 0.5, r.bottom());
     p.setPen(QPen(c.line, 1.0));
     p.setBrush(Qt::NoBrush);
     p.drawPath(edge);
 
-    const QFont         small = hintFont(look.font);
-    const QFont         bold  = timeFont(look.font);
+    const QFont         small = hintFont(look.font, s);
+    const QFont         bold  = timeFont(look.font, s);
     const QFontMetricsF sm(small), bm(bold);
     const qreal         cy    = r.center().y();
     const auto baseline = [cy](const QFontMetricsF& fm) { return std::round(cy + (fm.ascent() - fm.descent()) / 2.0); };
-    qreal               x     = r.left() + kPad;
-    const qreal         right = r.right() - kPad;
+    qreal               x     = r.left() + pad;
+    const qreal         right = r.right() - pad;
 
     if (view.mode == Mode::Notice) {
-        const QRectF icon(x, cy - 8.0, 16.0, 16.0);
+        const QRectF icon(x, cy - 8.0 * s, 16.0 * s, 16.0 * s);
         drawNoticeIcon(p, icon, view.icon, view.icon == Icon::Canceled ? c.muted : c.accent);
-        x += 16.0 + 8.0;
+        x += (16.0 + 8.0) * s;
         p.setFont(small);
         p.setPen(c.text);
         p.drawText(QPointF(x, baseline(sm)), sm.elidedText(view.text, Qt::ElideRight, qMax(0.0, right - x)));
@@ -338,7 +346,7 @@ void HoldStrip::render(QPainter& p, const QRectF& r, const View& view, const Loo
     }
 
     // The mark: the dot (breathing while it records), the bin in the cancel zone, the spinner when sent.
-    const QRectF mark(x, cy - kMark / 2.0, kMark, kMark);
+    const QRectF mark(x, cy - markSize / 2.0, markSize, markSize);
     switch (view.mode) {
     case Mode::Recording: {
         qreal opacity = 1.0;
@@ -348,18 +356,18 @@ void HoldStrip::render(QPainter& p, const QRectF& r, const View& view, const Loo
         QColor dot = c.record;
         dot.setAlphaF(opacity);
         p.setBrush(dot);
-        p.drawEllipse(mark.center(), 5.0, 5.0);
+        p.drawEllipse(mark.center(), 5.0 * s, 5.0 * s);
         break;
     }
     case Mode::Cancel:
-        drawBin(p, mark.adjusted(0.5, -0.5, -0.5, 0.5), c.error);
+        drawBin(p, mark.adjusted(0.5 * s, -0.5 * s, -0.5 * s, 0.5 * s), c.error);
         break;
     case Mode::Saving: {
-        p.setPen(QPen(c.quiet, 1.8));
+        p.setPen(QPen(c.quiet, 1.8 * s));
         p.setBrush(Qt::NoBrush);
-        const QRectF ring = mark.adjusted(1.5, 1.5, -1.5, -1.5);
+        const QRectF ring = mark.adjusted(1.5 * s, 1.5 * s, -1.5 * s, -1.5 * s);
         p.drawEllipse(ring);
-        p.setPen(QPen(c.accent, 1.8, Qt::SolidLine, Qt::RoundCap));
+        p.setPen(QPen(c.accent, 1.8 * s, Qt::SolidLine, Qt::RoundCap));
         const int start = look.phase >= 0.0 ? static_cast<int>(-look.phase * 360.0 * 16.0) : 90 * 16;
         p.drawArc(ring, start, -100 * 16);
         break;
@@ -367,7 +375,7 @@ void HoldStrip::render(QPainter& p, const QRectF& r, const View& view, const Loo
     case Mode::Notice:
         break;
     }
-    x += kMark + 8.0;
+    x += markSize + 8.0 * s;
 
     // The time and the limit.
     const QString time  = formatDuration(view.timeMs);
@@ -379,7 +387,7 @@ void HoldStrip::render(QPainter& p, const QRectF& r, const View& view, const Loo
     p.setFont(small);
     p.setPen(c.muted);
     p.drawText(QPointF(x, baseline(bm)), limit);
-    x += sm.horizontalAdvance(limit) + kGap;
+    x += sm.horizontalAdvance(limit) + gapSize;
 
     // The line at the right, then the waveform in what is left.
     QString     text   = line(view);
@@ -390,20 +398,21 @@ void HoldStrip::render(QPainter& p, const QRectF& r, const View& view, const Loo
         font.setWeight(QFont::DemiBold);
     QFontMetricsF fm(font);
     qreal         width = fm.horizontalAdvance(text);
-    if (view.mode == Mode::Recording && view.problem.isEmpty() && right - x - width - kGap < kMinWave) {
+    if (view.mode == Mode::Recording && view.problem.isEmpty() && right - x - width - gapSize < kMinWave * s) {
         text  = hintText(true);
         width = fm.horizontalAdvance(text);
     }
-    qreal waveRight = right - width - kGap;
-    if (waveRight - x < kMinWave / 2.0) { // no room for a waveform: the line gets it all
-        waveRight = x - kGap;
+    qreal waveRight = right - width - gapSize;
+    if (waveRight - x < kMinWave * s / 2.0) { // no room for a waveform: the line gets it all
+        waveRight = x - gapSize;
         text      = fm.elidedText(text, Qt::ElideRight, qMax(0.0, right - x));
         width     = fm.horizontalAdvance(text);
     }
     if (waveRight > x) {
-        const QRectF area(x, r.top() + 8.0, waveRight - x, r.height() - 16.0);
+        const QRectF area(x, r.top() + 8.0 * s, waveRight - x, r.height() - 16.0 * s);
         const bool   live = view.mode == Mode::Recording;
-        drawWave(p, area, view.liveBins, live ? c.live : c.quiet, live ? ui::flatten(QColor(c.quiet.red(), c.quiet.green(), c.quiet.blue(), 130), c.surface) : c.quiet);
+        drawWave(p, area, view.liveBins, live ? c.live : c.quiet, live ? ui::flatten(QColor(c.quiet.red(), c.quiet.green(), c.quiet.blue(), 130), c.surface) : c.quiet,
+                 s);
     }
     p.setFont(font);
     p.setPen(alert ? c.error : c.muted);

@@ -6,11 +6,10 @@
 #include <QLabel>
 #include <QLocale>
 #include <QPushButton>
-#include <QSizePolicy>
-#include <QStyle>
-#include <QVBoxLayout>
 
 #include "i18n.h"
+#include "settingssection.h" // 2.7 F3: rows
+#include "settingswidgets.h"
 #include "uiutil.h"
 #include "updater.h"
 
@@ -43,53 +42,39 @@ UpdateSettingsGroup::UpdateSettingsGroup(QWidget* parent)
     : QGroupBox(i18n::t("Updates"), parent)
 {
     setObjectName(QString::fromLatin1("tsmediaUpdatesGroup"));
-    auto* layout = new QVBoxLayout(this);
+    SettingsSection::makeCard(this); // 2.7 F3: a card of rows (Settings → About & updates)
 
     Updater* updater = Updater::instance();
     if (!Updater::builtIn() || !updater) {
-        layout->addWidget(hintLabel(i18n::t("Updates are turned off in versions you build yourself. Check "
-                                            "github.com/Metihttp/Teamspeak_Media_chat/releases for new versions."),
-                                    this));
+        SettingsSection::customRow(this, hintLabel(i18n::t("Updates are turned off in versions you build yourself. Check "
+                                                           "github.com/Metihttp/Teamspeak_Media_chat/releases for new versions."),
+                                                   nullptr));
         return;
     }
 
-    m_automatic = new QCheckBox(i18n::t("Check for &updates automatically"), this);
-    auto* hint  = hintLabel(i18n::t("About once a day, TS Media chat asks GitHub whether there is a new version. Important fixes signed by the "
-                                    "author install by themselves and start with the next TeamSpeak start; anything else waits for your click "
-                                    "on Update. GitHub sees your IP address, and Windows may check GitHub's certificate with its issuer; "
-                                    "nothing else is sent."),
-                           this);
-    m_automatic->setAccessibleDescription(hint->text());
+    m_automatic = SettingsSection::switchRow(this, i18n::t("Check for &updates automatically"),
+                                             i18n::t("About once a day, TS Media chat asks GitHub whether there is a new version. Important fixes "
+                                                     "signed by the author install by themselves and start with the next TeamSpeak start; anything "
+                                                     "else waits for your click on Update. GitHub sees your IP address, and Windows may check "
+                                                     "GitHub's certificate with its issuer; nothing else is sent."));
     m_initial = updater->status().automatic;
     m_automatic->setChecked(m_initial);
 
-    m_status = new QLabel(this);
-    m_status->setTextFormat(Qt::PlainText);
-    m_status->setWordWrap(true);
-    QSizePolicy policy = m_status->sizePolicy();
-    policy.setHorizontalPolicy(QSizePolicy::Expanding);
-    m_status->setSizePolicy(policy);
-    m_action = new QPushButton(this);
+    m_action = new QPushButton;
     m_action->setFlat(true);
     m_action->setAutoDefault(false);
     m_action->setCursor(Qt::PointingHandCursor);
     m_action->hide();
-    m_checkNow = new QPushButton(i18n::t("Check &now"), this);
+    m_checkNow = new QPushButton(i18n::t("Check &now"));
     m_checkNow->setAutoDefault(false);
-
-    auto* statusRow = new QHBoxLayout;
-    statusRow->addWidget(m_status, 1);
-    statusRow->addWidget(m_action, 0, Qt::AlignVCenter);
-    statusRow->addWidget(m_checkNow, 0, Qt::AlignVCenter);
-
-    layout->addWidget(m_automatic);
-    layout->addWidget(hint);
-    layout->addLayout(statusRow);
-
-    // Lined up with the checkbox's text, like the other dependent rows of the dialog.
-    hint->setContentsMargins(m_automatic->style()->pixelMetric(QStyle::PM_IndicatorWidth, nullptr, m_automatic)
-                                 + m_automatic->style()->pixelMetric(QStyle::PM_CheckBoxLabelSpacing, nullptr, m_automatic),
-                             0, 0, 0);
+    auto* buttons   = new QWidget;
+    auto* buttonRow = new QHBoxLayout(buttons);
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addWidget(m_action, 0, Qt::AlignVCenter);
+    buttonRow->addWidget(m_checkNow, 0, Qt::AlignVCenter);
+    // The status ("Version 2.7.0 · Checked today at 10:15") is the row's title; the buttons are its control.
+    m_status = SettingsSection::fieldRow(this, QString(), buttons, QString());
+    m_status->setTextFormat(Qt::PlainText);
 
     connect(m_checkNow, &QPushButton::clicked, this, [this] {
         if (Updater* u = Updater::instance()) {

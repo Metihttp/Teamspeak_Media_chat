@@ -289,15 +289,14 @@ QString consentNotice()
                        "describes that mode for websites; TS Media is an app). The player loads nothing from YouTube before you press Play. Then "
                        "your PC connects to YouTube and Google: they see your IP address and which video you watch, and ads may play. Microsoft "
                        "Edge WebView2, which runs the player, may also contact Microsoft. By playing videos here you agree to the YouTube Terms "
-                       "of Service; the Google Privacy Policy applies. You can turn this off under Settings \xE2\x86\x92 Privacy & updates "
-                       "\xE2\x86\x92 Link previews.");
+                       "of Service; the Google Privacy Policy applies. You can turn this off under Settings \xE2\x86\x92 Link previews.");
     else
         return i18n::t("TS Media plays this video with YouTube's own player, in a window of its own over TeamSpeak, in YouTube's "
                        "privacy-enhanced mode (YouTube describes that mode for websites; TS Media is an app). The player loads nothing from "
                        "YouTube before you press Play. Then your PC connects to YouTube and Google: they see your IP address and which video you "
                        "watch, and ads may play. Microsoft Edge WebView2, which runs the player, may also contact Microsoft. By playing videos "
                        "here you agree to the YouTube Terms of Service; the Google Privacy Policy applies. You can turn this off under Settings "
-                       "\xE2\x86\x92 Privacy & updates \xE2\x86\x92 Link previews.");
+                       "\xE2\x86\x92 Link previews.");
 }
 
 QString termsText()

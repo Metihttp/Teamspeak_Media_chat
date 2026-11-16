@@ -1267,9 +1267,9 @@ EmojiPicker::EmojiPicker(Mode mode, bool dark, const QColor& base, QWidget* pare
     const Colors& c = d->colors;
     // fromLatin1: TeamSpeak's style keeps the last parsed sheet text beyond this DLL's lifetime.
     d->search->setStyleSheet(QString::fromLatin1("QLineEdit{background:%1;color:%2;border:none;border-radius:6px;padding:0 6px;font-size:13px;"
-                                                 "selection-background-color:%3;selection-color:#ffffff;}"
+                                                 "selection-background-color:%3;selection-color:%5;}"
                                                  "QLineEdit:focus{border:2px solid %4;padding:0 4px;}")
-                                 .arg(c.field.name(), c.fieldText.name(), c.accent.name(), c.ring.name()));
+                                 .arg(c.field.name(), c.fieldText.name(), c.accent.name(), c.ring.name(), c.onAccent.name()));
     {
         // The magnifier, drawn at the screen's pixel ratio.
         const qreal dpr = qMax(1.0, devicePixelRatioF());

@@ -6,16 +6,21 @@
 // Header only (the tests use it as it is).
 
 #include <QAbstractTextDocumentLayout>
+#include <QByteArray>
+#include <QHash>
+#include <QList>
 #include <QScrollBar>
 #include <QSizeF>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextFragment>
 #include <QTextLayout>
 #include <QtMath>
 
 #include "layoutdoc.h"
+#include "layoutformat.h" // 2.7 (R-DEF-1): the layout's own text is not the reader's
 
 namespace chatscroll {
 
@@ -167,6 +172,307 @@ inline void restoreText(QTextBrowser* browser, const TextPlace& p)
     const qreal top = lineTopOf(browser->document(), p.cursor.position());
     if (top >= 0)
         bar->setValue(qRound(top + p.offset));
+}
+
+// ---- 2.7 (R-DEF-1): the reader's place across the plugin's unload and load ------------------------------------
+// TextPlace and Place read the place where it is now, which may be one of our pictures, rows or cards: the unload
+// takes those away and the load puts them back, so the place jumps. The reader's place is taken on TeamSpeak's own
+// text instead (a message's top, or a line of its text), which is there in TeamSpeak's look and in ours, and its
+// offset is never scaled. ChatIntegration takes it once before the unload's first edit and puts it back once after
+// the last one; it carries it to the next load on the chat widget (Carry), and LoadHold keeps it while the load styles
+// the chat again.
+
+// A character TeamSpeak wrote: not a picture of anyone (U+FFFC), not a line break, not a folded album link (chatalbums'
+// U+2060), not the layout's own text (layoutformat::isOurs). It is still there after the plugin gave the chat back,
+// and when the plugin styles it again. from and to are positions in the block; the first such position in [from, to)
+// (in the block), -1: none.
+inline int firstReaderChar(const QTextBlock& block, int from, int to)
+{
+    const int base = block.position();
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment f = it.fragment();
+        if (!f.isValid())
+            continue;
+        const int start = f.position() - base;
+        const int end   = start + f.length();
+        if (end <= from)
+            continue;
+        if (start >= to)
+            break;
+        const QTextCharFormat format = f.charFormat();
+        if (format.isImageFormat() || layoutformat::isOurs(format))
+            continue;
+        const QString text = f.text();
+        for (int i = qMax(from, start); i < qMin(to, end); ++i) {
+            const QChar c = text.at(i - start);
+            if (c != QChar::ObjectReplacementCharacter && c != QChar::LineSeparator && c != QChar::ParagraphSeparator
+                && c != QLatin1Char('\n') && c.unicode() != 0x2060)
+                return i;
+        }
+    }
+    return -1;
+}
+
+struct ReaderPlace {
+    QTextCursor cursor;        // Block: a character of the message (its first, followed through edits); Line: TeamSpeak's
+                               // first character on that line. Null: nothing to keep (an empty chat, or the end only).
+    bool        line   = false;
+    qreal       offset = 0;    // the view's top minus the message's top (Block) or the line's top (Line)
+    bool        bottom = false;
+};
+
+// Where the place's message (Block) or line (Line) is now, in document coordinates; -1: hidden, gone, another document.
+inline qreal readerY(QTextDocument* doc, const ReaderPlace& p)
+{
+    if (!doc || p.cursor.isNull() || p.cursor.document() != doc)
+        return -1;
+    if (p.line)
+        return lineTopOf(doc, p.cursor.position());
+    const QTextBlock block = p.cursor.block();
+    if (!block.isValid() || !block.isVisible())
+        return -1;
+    return doc->documentLayout()->blockBoundingRect(block).top();
+}
+
+// The scroll value that puts the place back: its message's or line's top plus the offset; -1: none (gone, another
+// document). 2.7 review fix: a message the load folded away (a run of join and leave events the reader had expanded, an
+// album's later message) goes to the shown row above it, which it folded into, at its top (layoutdoc::anchorY's rule),
+// instead of the place being given up while the load styles the chat.
+inline qreal readerTarget(QTextDocument* doc, const ReaderPlace& p)
+{
+    const qreal y = readerY(doc, p);
+    if (y >= 0)
+        return y + p.offset;
+    if (!doc || p.cursor.isNull() || p.cursor.document() != doc)
+        return -1;
+    const QTextBlock block = p.cursor.block();
+    if (!block.isValid() || block.isVisible())
+        return -1;
+    QAbstractTextDocumentLayout* layout = doc->documentLayout();
+    for (QTextBlock above = block.previous(); above.isValid(); above = above.previous()) {
+        if (above.isVisible())
+            return layout->blockBoundingRect(above).top();
+    }
+    for (QTextBlock below = block.next(); below.isValid(); below = below.next()) {
+        if (below.isVisible())
+            return layout->blockBoundingRect(below).top();
+    }
+    return -1;
+}
+
+// The reader's place now: at the end, or the first line of TeamSpeak's text that the reader sees (more than half of it
+// below the view's top). It is the message (Block) when that line is its message's first line of TeamSpeak's text (the
+// view's top in the gap above it, in our head row or in its first line), else that line (Line). A view that shows no
+// such line (one big picture): the message at the view's top.
+inline ReaderPlace captureReader(QTextBrowser* browser)
+{
+    ReaderPlace    p;
+    QTextDocument* doc = browser->document();
+    p.bottom           = atBottom(browser);
+    if (doc->characterCount() <= 1)
+        return p;
+    QAbstractTextDocumentLayout* layout = doc->documentLayout();
+    const qreal                  y      = browser->verticalScrollBar()->value();
+    const qreal                  h      = browser->viewport()->height();
+    const int                    hit    = layout->hitTest(QPointF(doc->documentMargin() + 1, y + 1), Qt::FuzzyHit);
+    QTextBlock                   block  = hit >= 0 ? doc->findBlock(hit) : doc->begin();
+    QTextBlock                   atTop; // the first visible block that reaches below the view's top
+    for (; block.isValid(); block = block.next()) {
+        if (!block.isVisible() || !block.layout())
+            continue;
+        const QRectF r = layout->blockBoundingRect(block);
+        if (r.top() > y + h)
+            break;
+        if (!atTop.isValid() && r.bottom() > y)
+            atTop = block;
+        QTextLayout* lines         = block.layout();
+        bool         firstCounting = true;
+        for (int i = 0; i < lines->lineCount(); ++i) {
+            const QTextLine line = lines->lineAt(i);
+            const int       at   = firstReaderChar(block, line.textStart(), line.textStart() + line.textLength());
+            if (at < 0)
+                continue;
+            const bool  first = firstCounting;
+            firstCounting     = false;
+            const qreal top   = r.top() + line.y();
+            if (top > y + h)
+                break;
+            if (top + line.height() - y <= line.height() / 2) // the reader is not reading it (at most half of it shows)
+                continue;
+            p.cursor = QTextCursor(doc);
+            if (first) {
+                p.cursor.setPosition(block.position());
+                p.offset = y - r.top();
+            } else {
+                p.cursor.setPosition(block.position() + at);
+                p.line   = true;
+                p.offset = y - top;
+            }
+            return p;
+        }
+    }
+    if (!atTop.isValid())
+        return p;
+    p.cursor = QTextCursor(doc);
+    p.cursor.setPosition(atTop.position());
+    p.offset = y - layout->blockBoundingRect(atTop).top();
+    return p;
+}
+
+// After edits: at the end again (the range synced), or the place's message or line where it was.
+inline void restoreReader(QTextBrowser* browser, const ReaderPlace& p)
+{
+    syncRange(browser);
+    QScrollBar* bar = browser->verticalScrollBar();
+    if (p.bottom) {
+        bar->setValue(bar->maximum());
+        return;
+    }
+    const qreal y = readerTarget(browser->document(), p);
+    if (y >= 0)
+        bar->setValue(qRound(y));
+}
+
+// The place as the unload left it, carried to the next load on TeamSpeak's chat widget: one dynamic property holding a
+// byte string of numbers built at run time (no text of the chat; the document's address is compared, never followed).
+// The next load uses it only if the chat is still exactly where the unload left it (resolveCarry); otherwise it reads
+// the place anew (the user's own scrolling wins). QObject::setProperty copies the name into its own QByteArray.
+inline const char* carryName()
+{
+    return "tsmediaReaderPlace";
+}
+
+struct Carry {
+    bool    bottom      = false;
+    bool    line        = false;
+    int     pos         = -1; // the cursor's position after the unload's edits
+    int     inBlock     = 0;  // pos - its block's position
+    int     blockLength = 0;  // that block's length
+    uint    blockHash   = 0;  // qHash(block.text(), 0): a fingerprint, no text is stored
+    int     fromEnd     = 0;  // characterCount() - pos (finds it again after TeamSpeak trimmed the top)
+    double  offset      = 0;  // the place's offset as read in the styled chat (what the load restores)
+    double  rawOffset   = 0;  // the scroll value after the unload's restore minus readerY then (offset unless clamped)
+    quint64 doc         = 0;  // the QTextDocument's address (compared only)
+};
+
+// "r1 b l pos inBlock len hash fromEnd offset rawOffset doc" (QByteArray::number and append only: Qt's heap); empty:
+// nothing worth carrying.
+inline QByteArray encodeCarry(const Carry& c)
+{
+    if (!c.bottom && c.pos < 0)
+        return QByteArray();
+    QByteArray out;
+    out.append('r').append('1');
+    const auto add = [&out](const QByteArray& field) { out.append(' ').append(field); };
+    add(QByteArray::number(c.bottom ? 1 : 0));
+    add(QByteArray::number(c.line ? 1 : 0));
+    add(QByteArray::number(c.pos));
+    add(QByteArray::number(c.inBlock));
+    add(QByteArray::number(c.blockLength));
+    add(QByteArray::number(c.blockHash));
+    add(QByteArray::number(c.fromEnd));
+    add(QByteArray::number(c.offset, 'f', 3));
+    add(QByteArray::number(c.rawOffset, 'f', 3));
+    add(QByteArray::number(c.doc));
+    return out;
+}
+
+// False: empty, another version, garbage.
+inline bool decodeCarry(const QByteArray& bytes, Carry* out)
+{
+    const QList<QByteArray> f = bytes.split(' ');
+    if (f.size() != 11 || f.at(0).size() != 2 || f.at(0).at(0) != 'r' || f.at(0).at(1) != '1')
+        return false;
+    bool      ok[10] = {};
+    Carry     c;
+    const int bottom = f.at(1).toInt(&ok[0]);
+    const int line   = f.at(2).toInt(&ok[1]);
+    c.pos            = f.at(3).toInt(&ok[2]);
+    c.inBlock        = f.at(4).toInt(&ok[3]);
+    c.blockLength    = f.at(5).toInt(&ok[4]);
+    c.blockHash      = f.at(6).toUInt(&ok[5]);
+    c.fromEnd        = f.at(7).toInt(&ok[6]);
+    c.offset         = f.at(8).toDouble(&ok[7]);
+    c.rawOffset      = f.at(9).toDouble(&ok[8]);
+    c.doc            = f.at(10).toULongLong(&ok[9]);
+    for (bool b : ok) {
+        if (!b)
+            return false;
+    }
+    if ((bottom != 0 && bottom != 1) || (line != 0 && line != 1) || !qIsFinite(c.offset) || !qIsFinite(c.rawOffset))
+        return false;
+    c.bottom = bottom == 1;
+    c.line   = line == 1;
+    if (out)
+        *out = c;
+    return true;
+}
+
+// After restoreReader, on the chat as the unload gave it back.
+inline Carry carryOf(QTextBrowser* browser, const ReaderPlace& place)
+{
+    Carry          c;
+    QTextDocument* doc = browser->document();
+    c.bottom           = place.bottom;
+    c.line             = place.line;
+    c.offset           = place.offset;
+    c.rawOffset        = place.offset;
+    c.doc              = static_cast<quint64>(reinterpret_cast<quintptr>(doc));
+    if (place.cursor.isNull() || place.cursor.document() != doc)
+        return c;
+    const QTextBlock block = place.cursor.block();
+    c.pos                  = place.cursor.position();
+    c.inBlock              = c.pos - block.position();
+    c.blockLength          = block.length();
+    c.blockHash            = qHash(block.text(), 0);
+    c.fromEnd              = doc->characterCount() - c.pos;
+    const qreal y          = readerY(doc, place);
+    if (y >= 0)
+        c.rawOffset = browser->verticalScrollBar()->value() - y;
+    return c;
+}
+
+// The carried place, if the chat is still where the unload left it: the same document and at its end (for the end), or
+// the place's block unchanged (found at its position, or at its distance from the end after TeamSpeak trimmed the top)
+// and the scroll value where the unload put it (2 px). *out: the place with the carried (styled) offset.
+inline bool resolveCarry(QTextBrowser* browser, const Carry& c, ReaderPlace* out)
+{
+    QTextDocument* doc = browser->document();
+    if (c.doc != static_cast<quint64>(reinterpret_cast<quintptr>(doc)))
+        return false;
+    if (c.bottom) {
+        if (!atBottom(browser))
+            return false;
+        ReaderPlace p;
+        p.bottom = true;
+        if (out)
+            *out = p;
+        return true;
+    }
+    const int  count   = doc->characterCount();
+    const auto matches = [&](int at) {
+        if (at < 0 || at >= count)
+            return false;
+        const QTextBlock block = doc->findBlock(at);
+        return block.isValid() && at - block.position() == c.inBlock && block.length() == c.blockLength && qHash(block.text(), 0) == c.blockHash;
+    };
+    int pos = c.pos;
+    if (!matches(pos)) {
+        pos = count - c.fromEnd;
+        if (!matches(pos))
+            return false;
+    }
+    ReaderPlace p;
+    p.cursor = QTextCursor(doc);
+    p.cursor.setPosition(pos);
+    p.line        = c.line;
+    p.offset      = c.offset;
+    const qreal y = readerY(doc, p);
+    if (y < 0 || qAbs(browser->verticalScrollBar()->value() - (y + c.rawOffset)) > 2)
+        return false;
+    if (out)
+        *out = p;
+    return true;
 }
 
 // A run of events opened or closed (a click on its chip): the clicked row stays where it is on screen, or the

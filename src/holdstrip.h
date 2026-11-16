@@ -59,6 +59,7 @@ class HoldStrip : public QWidget
         QColor base;       // the input's background
         QFont  font;       // the input's font
         qreal  phase = -1; // 0..1 of the dot's pulse and the spinner's turn; < 0: still
+        qreal  scale = 1;  // 2.7 F4: the input's text size against 11 px (replybar::inputScale): text and sizes follow it
     };
 
     explicit HoldStrip(QWidget* parent = nullptr);

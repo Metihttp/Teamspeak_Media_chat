@@ -192,7 +192,9 @@ class ChatReplies : public QObject
     void     cancelReply();
     QWidget* inputFor(QTextBrowser* browser) const;
     void     showBar(QWidget* input);
-    void     applyBarTheme(QWidget* input); // the chat's colours and font (no-op when unchanged)
+    // The chat's colours, font and scale (no-op when unchanged). A new height in the input's layout is applied at once;
+    // keepEnd: a chat at its end stays there (not inside a scale pass, which restores the place itself).
+    void     applyBarTheme(QWidget* input, bool keepEnd = false);
     void     hideBar();
     void     updateComposeLines();
     void     attachBar(QWidget* input);

@@ -1,6 +1,6 @@
 #pragma once
 
-// 2.6 chat proxy: Settings -> Privacy & updates -> Chat proxy (design 1.3.10). A short own-keys group (not a
+// 2.6 chat proxy: Settings -> Privacy -> Chat proxy (design 1.3.10). A short own-keys group (not a
 // SettingsSection: the Settings dialog's OK, Apply, Cancel and Restore defaults never touch the chat proxy):
 //  * the status row of the Chat proxy window (its texts; "No chat proxy is set up." first when nothing is saved);
 //  * "Turn on/off chat pro&xy" acts at once (like the Updates group's Check now), hidden while nothing is saved;

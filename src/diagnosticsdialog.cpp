@@ -17,6 +17,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "darkmode.h"    // 2.7 dark mode: the accent and link colour while it is on
+#include "darkpalette.h"
 #include "i18n.h"
 #include "uiutil.h"
 #include "version.h"
@@ -59,7 +61,8 @@ QColor mutedText(const QPalette& palette, double start, double minContrast)
 QColor linkColor(const QPalette& palette)
 {
     const QColor background = palette.color(QPalette::Active, QPalette::Window);
-    const QColor link       = isDark(palette) ? QColor(0x94, 0x9c, 0xf7) : QColor(0x47, 0x52, 0xc4);
+    // 2.7 dark mode (live test): the theme's link colour, not the plugin's lilac.
+    const QColor link = DarkMode::isActive() ? darkpalette::tokens().link : isDark(palette) ? QColor(0x94, 0x9c, 0xf7) : QColor(0x47, 0x52, 0xc4);
     return ui::contrastRatio(link, background) >= 4.5 ? link : palette.color(QPalette::Active, QPalette::WindowText);
 }
 
@@ -306,14 +309,19 @@ void DiagnosticsDialog::applyTheme()
 
     // Copy is the one primary button (the accent); the others keep the style's look, or are outlined
     // in TeamSpeak's dark skins, which paint every button in the accent.
-    const QString ring = dark ? QString::fromLatin1("#ffffff") : QString::fromLatin1("#1e1f22");
-    QString       sheet = QString::fromLatin1("#tsmediaDiagnosticsDialog QPushButton#diagCopy{background:%1;color:#ffffff;border:2px solid %1;"
+    // 2.7 dark mode (live test): the theme's accent with dark text, as every primary button under dark mode.
+    const bool    themed = DarkMode::isActive();
+    const QString ring   = themed ? darkpalette::tokens().text.name() : dark ? QString::fromLatin1("#ffffff") : QString::fromLatin1("#1e1f22");
+    QString       sheet  = QString::fromLatin1("#tsmediaDiagnosticsDialog QPushButton#diagCopy{background:%1;color:%6;border:2px solid %1;"
                                               "border-radius:3px;padding:2px 16px;font-weight:bold;}"
                                               "#tsmediaDiagnosticsDialog QPushButton#diagCopy:hover{background:%2;border-color:%2;}"
                                               "#tsmediaDiagnosticsDialog QPushButton#diagCopy:pressed{background:%3;border-color:%3;}"
                                               "#tsmediaDiagnosticsDialog QPushButton#diagCopy:disabled{background:%4;border-color:%4;color:%5;}")
-                        .arg(QLatin1String(kAccent), QLatin1String(kAccentHover), QLatin1String(kAccentPressed),
-                             pal.color(QPalette::Disabled, QPalette::Button).name(), mutedText(pal, 0.6, 3.0).name());
+                        .arg(themed ? darkpalette::tokens().accent.name() : QString::fromLatin1(kAccent),
+                             themed ? darkpalette::tokens().accentHover.name() : QString::fromLatin1(kAccentHover),
+                             themed ? darkpalette::tokens().accentPressed.name() : QString::fromLatin1(kAccentPressed),
+                             pal.color(QPalette::Disabled, QPalette::Button).name(), mutedText(pal, 0.6, 3.0).name(),
+                             themed ? darkpalette::tokens().onAccent.name() : QString::fromLatin1("#ffffff"));
     if (m_keyboardFocus)
         sheet += QString::fromLatin1("#tsmediaDiagnosticsDialog QPushButton#diagCopy:focus{border-color:%1;}").arg(ring);
     if (!qApp->styleSheet().isEmpty()) {

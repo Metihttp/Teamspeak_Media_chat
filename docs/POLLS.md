@@ -66,7 +66,7 @@ Polls use TS Media's plugin commands, protocol `tsm1` (`src/peerprotocol.h`). Tw
   - After that, the card says your vote didn't reach the others and offers **Retry**.
 - **The question about a poll** (`PQ`) goes 1.5 s after the poll appears in your channel's chat. It is asked at most every 2 minutes per poll, and only when someone in the channel has TS Media.
 - **Answers** come 0.3–1.5 s later, at background priority and with at most 64 ballots per answer. They are sent at most every 20 s per poll, and at most 16 answer commands per 20 s per server, whoever asks about whichever polls. An answer overheard first takes those ballots off your own answer. One answer therefore usually serves everyone. Questions and answers only go to the channel the poll was posted in, and only while you are in it.
-- **With presence turned off** (**Settings → Privacy & updates → Tell people in your channel that you have TS Media**), your plugin neither asks nor answers. Only the votes you cast go out, so you may not see votes cast before you joined.
+- **With presence turned off** (**Settings → Privacy → Tell people in your channel that you have TS Media**), your plugin neither asks nor answers. Only the votes you cast go out, so you may not see votes cast before you joined.
 - All plugin commands spend the connection's plugin flood bucket (`FloodGovernor`).
 
 ### Limits

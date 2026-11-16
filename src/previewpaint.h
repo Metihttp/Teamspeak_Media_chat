@@ -35,6 +35,13 @@ Palette palette(bool dark);
 Palette palette(const PreviewStyle& style);
 bool    onBubble(const PreviewStyle& style);
 QColor  accent(); // #5865F2
+// 2.7 dark mode (live test): a play button's fill, hover, pressed and glyph colours: TS Media's own (white glyph), or the
+// theme's accent with dark glyphs when style.accent is set (dark mode).
+struct ButtonColors {
+    QColor fill, hover, pressed, glyph;
+    bool   themed = false;
+};
+ButtonColors buttonColors(const PreviewStyle& style);
 qreal   cornerRadius();
 
 QFont  font(const PreviewStyle& style, qreal delta, bool bold = false); // pixel size: the base (11 du) + delta

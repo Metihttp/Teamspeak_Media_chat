@@ -24,7 +24,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.6.0 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.7.0 loaded`.
 
 ### How do I update?
 
@@ -34,7 +34,7 @@ Coming from 2.1 or older, install the latest version by hand once: download the 
 
 ### Why did TS Media chat update by itself?
 
-It was an important update. From 2.4.0 on, with automatic checks on, a release the author marked as important and signed with the release key is downloaded and installed without a click; the chat then says *TS Media chat X is an important update and was installed automatically.* It starts the next time you open TeamSpeak: TeamSpeak is never restarted for it. To start it now, use **Plugins → TS Media chat → Check for updates…**, which offers **Restart TeamSpeak now**. A version that rolled back on your PC, or that you replaced by hand with an older one, is never installed by itself again. Don't want this? Turn off **Settings → Privacy & updates → Check for updates automatically**; then nothing is checked or installed by itself. Details: [important updates](UPDATES.md#important-updates).
+It was an important update. From 2.4.0 on, with automatic checks on, a release the author marked as important and signed with the release key is downloaded and installed without a click; the chat then says *TS Media chat X is an important update and was installed automatically.* It starts the next time you open TeamSpeak: TeamSpeak is never restarted for it. To start it now, use **Plugins → TS Media chat → Check for updates…**, which offers **Restart TeamSpeak now**. A version that rolled back on your PC, or that you replaced by hand with an older one, is never installed by itself again. Don't want this? Turn off **Settings → About & updates → Check for updates automatically**; then nothing is checked or installed by itself. Details: [important updates](UPDATES.md#important-updates).
 
 ### The chat says "Someone in this channel has TS Media chat X"
 
@@ -42,7 +42,7 @@ Someone in your channel has a newer TS Media chat than you (2.4.0 and later show
 
 ### Is the update check safe? What does it send?
 
-It asks the plugin's GitHub releases for one small file (two when automatic checks find a newer version: the second says whether it is an important update), and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. The exception is an important update with automatic checks on: it installs without a click, but only with the author's signature for exactly that release, and its files must match the signed SHA-256. GitHub sees your IP address (your proxy's, with the [chat proxy](#how-do-i-use-ts-media-with-my-vpn-app) on); no names, servers, chats or files are sent. Through a proxy whose own certificate you installed, a clicked update is only as safe as your trust in that proxy ([details](PRIVACY-SECURITY.md#chat-proxy)). It is off until you agree, and you can turn it off in **Settings → Privacy & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
+It asks the plugin's GitHub releases for one small file (two when automatic checks find a newer version: the second says whether it is an important update), and nothing is installed unless you click **Update** and every downloaded file matches the SHA-256 listed in that release. The exception is an important update with automatic checks on: it installs without a click, but only with the author's signature for exactly that release, and its files must match the signed SHA-256. GitHub sees your IP address (your proxy's, with the [chat proxy](#how-do-i-use-ts-media-with-my-vpn-app) on); no names, servers, chats or files are sent. Through a proxy whose own certificate you installed, a clicked update is only as safe as your trust in that proxy ([details](PRIVACY-SECURITY.md#chat-proxy)). It is off until you agree, and you can turn it off in **Settings → About & updates → Updates**. Copies you build yourself have no update check. Details: [updates](UPDATES.md).
 
 ### An update went wrong
 
@@ -86,7 +86,7 @@ The line counts the people in your channel whose TS Media chat answered. People 
 
 ### Some people see my spoiler unblurred
 
-People on TS Media 2.1 or older, and people without the plugin, can't blur it; the send window says so under *Mark as spoiler*. People with 2.2 or later who turned on *Show spoilers without blurring* see spoilers right away by their own choice.
+People on TS Media 2.1 or older, and people without the plugin, can't blur it; the send window says so under *Mark as spoiler*. People with 2.2 or later who turned on *Show spoilers without blurring or hiding* (*Show spoilers without blurring* before 2.7) see spoilers right away by their own choice.
 
 ### My caption appeared as its own message
 
@@ -141,7 +141,27 @@ Either *Play GIFs automatically* is off in **Settings → Receiving & playback**
 
 ### Previews look small on my 4K screen
 
-Since 2.5, previews follow the chat's text: at 150% or 200% display scaling they are drawn larger and sharp, in proportion to TeamSpeak's own text (before, cards and their text stayed at their 100% size). Zooming the chat with Ctrl + mouse wheel, or a larger chat font in TeamSpeak (**Options → Chat**), makes them grow too. If they are still too small or too large for you, change **Preview size** under **Settings → Receiving & playback** (Small, Normal, Large, Larger). *Maximum preview size* is the largest picture at Normal size and 100% scaling.
+Since 2.5, previews follow the chat's text: at 150% or 200% display scaling they are drawn larger and sharp, in proportion to TeamSpeak's own text (before, cards and their text stayed at their 100% size). Zooming the chat with Ctrl + mouse wheel, or a larger chat font in TeamSpeak (**Options → Chat**), makes them grow too. If they are still too small or too large for you, change **Preview size** under **Settings → Receiving & playback** (Small, Normal, Large, Larger). *Maximum preview size* is the largest picture at Normal size and 100% scaling. Since 2.7 the reply bar above the chat input (*Replying to …*), the *View N replies* list, the voice message strip and the music bar grow with Windows scaling too (before, their text stayed tiny at 150% and 200%), and TS Media [remembers your chat zoom](#can-ts-media-remember-my-chat-zoom).
+
+### Can TS Media remember my chat zoom?
+
+Yes, since 2.7. Zoom any chat with Ctrl + mouse wheel and every chat follows (the other open chats a moment after you stop, hidden ones when you open them); TS Media keeps that size when TeamSpeak restarts and after **Options → Addons → Reload**. The zoom is added to TeamSpeak's own chat font (**Tools → Options → Chat**), which stays the base: change that font and the zoom goes back on top of it. **Settings → Chat → Text size and colors → Chat text size** shows it as a percentage of TeamSpeak's chat font (100% is that font) and changes it at once with −, + and **Reset**; Cancel and *Restore defaults* don't undo it. TeamSpeak alone zooms only the chat under the pointer and forgets it at restart. If you turn TS Media off, your chats keep their size until TeamSpeak restarts.
+
+### TS Media's lines are hard to read on my dark theme
+
+Since 2.7 the *TS Media chat* lines (an upload's result, a warning, the update notice) take their colors from your chat's real background: the color your skin or custom style sheet paints, also a gradient or a picture background, not the skin's name. Every line reads at 4.5:1 or better on it. To pick another shade, use **Settings → Chat → Text size and colors → Color of messages from TS Media** (*Automatic*, *Blue*, *Teal*, *Green*, *Orange*, *Pink* or *Same as the chat text*); every choice is made light or dark enough for your background, and the preview there shows the result. Lines that were already in the chat keep their old color, like TeamSpeak's own lines after a skin change. Unless [dark mode](USAGE.md#dark-mode) is on, TS Media doesn't change TeamSpeak's own colors (timestamps, names and links come from your skin); it doesn't load custom CSS. If you would like all of TeamSpeak dark with readable lines, try dark mode (**Settings → Chat → Appearance**, see [Dark mode and my own TeamSpeak skin](#dark-mode-and-my-own-teamspeak-skin)).
+
+### Dark mode and my own TeamSpeak skin
+
+[Dark mode](USAGE.md#dark-mode) (2.7, **Settings → Chat → Appearance**) doesn't replace your choice in **Tools → Options → Design**: while it is on, TeamSpeak shows TS Media's warm dark theme over whatever style you use there (TeamSpeak's light style, the community dark skin or your own), and turning it off brings that style back exactly. The lines in your chats get their colors back too, with two small exceptions: the bold *TS Media chat* at the start of a line printed while dark mode was on with **Same as the chat text** comes back in the name color, and if you turn TS Media off in **Options → Addons** while dark mode is on, cards drawn in dark mode can stay dark until TS Media draws them again. If you pick another style in **Options → Design** while dark mode is on, dark mode stays on, and the style you picked is the one you get back when you turn it off. TeamSpeak's own dark skin and dark mode are two different things: you can use either, or both.
+
+### Some names in the channel tree keep their colors in dark mode
+
+TeamSpeak draws a few names in the channel tree in colors it reads from its style files when it starts: friends in green, blocked people in red, someone recording in dark red. A plugin can't change those colors, so they stay as your TeamSpeak style sets them (the recording icon next to the name still shows it). Web pages shown inside TeamSpeak (the Addons browser, myTeamSpeak) and the YouTube player's page also keep their own look. Everything else (menus, the chat, dialogs, tool tips, scroll bars, title bars and TS Media's windows) turns dark.
+
+### Does dark mode change Windows or other programs?
+
+No. Dark mode only changes how TeamSpeak's own windows look, their title bars included, and only while TS Media runs. It changes no Windows setting and no other program, and TeamSpeak's settings stay as they are. Turning it off, or turning TS Media off in **Tools → Options → Addons**, gives TeamSpeak its own style back at once. TS Media remembers the switch in its own settings, so with dark mode on TeamSpeak starts dark again; without TS Media, TeamSpeak starts in its own style.
 
 ### Pictures look smaller at 100% in the viewer
 
@@ -194,7 +214,7 @@ Yes, since 2.4. YouTube links get a card with the title, channel and thumbnail (
 
 ### How do I turn link previews off?
 
-**Settings → Privacy & updates → Show previews for links to other websites**: no card, no preview and no website request any more. To stop sharing previews of the links you send, turn off **Make previews for links I send**. To keep them but load other people's links only when you click, turn off **Load link previews automatically**. To keep media and site cards but drop cards for other web pages, turn off **Show cards for other web pages**; links shaped like a Nextcloud or ownCloud share (`…/s/…`) are still loaded, to learn whether they hold a picture, GIF or video. To hide just one, right-click it → **Hide preview**.
+**Settings → Link previews → Show previews for links to other websites**: no card, no preview and no website request any more. To stop sharing previews of the links you send, turn off **Make previews for links I send**. To keep them but load other people's links only when you click, turn off **Load link previews automatically**. To keep media and site cards but drop cards for other web pages, turn off **Show cards for other web pages**; links shaped like a Nextcloud or ownCloud share (`…/s/…`) are still loaded, to learn whether they hold a picture, GIF or video. To hide just one, right-click it → **Hide preview**.
 
 ### Link previews say "Couldn't load the preview" (VPN, proxy, filtered internet)
 
@@ -205,6 +225,17 @@ Since 2.6 a few failures say more: *Couldn't load through the chat proxy* and *C
 ### A link shows "Load preview" instead of the picture
 
 Either **Load link previews automatically** is off, or the file is larger than your automatic download limit (the card shows its size, or that it is over your limit), or data saver is on, or it is waiting its turn (links load 2 at a time, one per person, and a few per person in a row), or **Clear cache** removed the preview its sender had shared. Click **Load preview** to load it from the website yourself; that connects your PC to that website. If the sender's preview arrives later, the card switches to it by itself.
+
+### Only friends: my friend's links still show "Load preview"
+
+With **Only from friends** on (**Settings → Link previews**), a link loads by itself only when its sender is marked **Friend** in your TeamSpeak contacts. Check that:
+
+- they are marked **Friend** (right-click their name → **Add as Friend**, or **Tools → Contacts**), not Neutral; changes in the Contacts window count once you close it;
+- your contact is the identity they use now: TeamSpeak matches contacts by unique ID, so someone you added under another identity (another PC, a new identity) is a stranger here;
+- the link isn't over your automatic download limit, or waiting its turn (point at the card: its tool tip says why it waits);
+- the tool tip doesn't say *TS Media couldn't read your TeamSpeak contacts*: then nobody's links load by themselves (**Settings → About & updates → Diagnostic info…** shows *Contacts list: unreadable*).
+
+A click on **Load preview** always works. Previews made by the sender don't need any of this: they come from your TeamSpeak server. Links from people you marked **Blocked** never load by themselves, with or without *Only from friends*. (TeamSpeak's **Add as Blocked** also ticks *Ignore server/channel chat* and *Ignore private chat* for that person in **Tools → Contacts**, so TeamSpeak itself hides their messages until you untick those.) [What TS Media reads](PRIVACY-SECURITY.md#only-from-friends-and-blocked-contacts).
 
 ### A link says "Waiting for the sender's preview…"
 
@@ -226,7 +257,7 @@ The website asked TS Media to wait (HTTP 429). The plugin leaves it alone for as
 
 Since 2.5, Play on a YouTube card plays the video with YouTube's own player, in a small window of its own over TeamSpeak. It opens your browser instead when:
 
-- *Play YouTube videos in a TS Media window* is off (*Settings → Privacy & updates*), or you chose **Open in browser** when the card asked the first time;
+- *Play YouTube videos in a TS Media window* is off (*Settings → Link previews*), or you chose **Open in browser** when the card asked the first time;
 - this PC doesn't have the Microsoft Edge WebView2 Runtime (part of Windows 11 and of current Windows 10; the setting's hint says so);
 - the video's owner doesn't allow it to be played outside YouTube (the card says *This video can only be watched on YouTube*), or it was removed;
 - you use 32-bit TeamSpeak (the player needs 64-bit TeamSpeak);
@@ -253,7 +284,7 @@ Only what that kind of link needs: a file link: that file's address; YouTube: `w
 
 ### How do I use TS Media with my VPN app?
 
-**Keep TeamSpeak out of the VPN:** turn the app's **TUN** or **VPN mode off** (it sends TeamSpeak's voice abroad, and servers in Iran often can't be reached that way). The Windows system proxy setting doesn't affect TeamSpeak. Then in TS Media: **Plugins → TS Media chat → Turn on chat proxy** (or **Settings → Privacy & updates → Chat proxy settings…**), press **Find my VPN app** (or choose **SOCKS5**, server `127.0.0.1` and the app's local port), press **Test**, then **OK**:
+**Keep TeamSpeak out of the VPN:** turn the app's **TUN** or **VPN mode off** (it sends TeamSpeak's voice abroad, and servers in Iran often can't be reached that way). The Windows system proxy setting doesn't affect TeamSpeak. Then in TS Media: **Plugins → TS Media chat → Turn on chat proxy** (or **Settings → Privacy → Chat proxy settings…**), press **Find my VPN app** (or choose **SOCKS5**, server `127.0.0.1` and the app's local port), press **Test**, then **OK**:
 
 - v2rayN: 10808 (one port for SOCKS5 and HTTP)
 - Throne and Nekoray: 2080 (SOCKS5 and HTTP)
@@ -270,7 +301,7 @@ No. TeamSpeak never uses it: the server connection, voice, chat, plugin commands
 
 ### Link previews say "Paused · the proxy isn't working"
 
-The chat proxy is on but doesn't work, for example because your VPN app was closed or isn't connected. TS Media never goes around it: automatic previews wait (*Paused*) instead of turning into error cards, and one line in the chat says why, with a **Turn off chat proxy** link. Start or connect your VPN app: TS Media tries again by itself after 30 seconds (60 for a proxy on another computer), and the paused previews then load. **Load preview** tries one at once. If you turn the chat proxy off instead, the paused previews load only when you click them. **Settings → Privacy & updates → Chat proxy** shows what is wrong; **Test** in the Chat proxy window tells more.
+The chat proxy is on but doesn't work, for example because your VPN app was closed or isn't connected. TS Media never goes around it: automatic previews wait (*Paused*) instead of turning into error cards, and one line in the chat says why, with a **Turn off chat proxy** link. Start or connect your VPN app: TS Media tries again by itself after 30 seconds (60 for a proxy on another computer), and the paused previews then load. **Load preview** tries one at once. If you turn the chat proxy off instead, the paused previews load only when you click them. **Settings → Privacy → Chat proxy** shows what is wrong; **Test** in the Chat proxy window tells more.
 
 ### A link says "Your network blocks this site"
 
@@ -296,7 +327,7 @@ In `settings.ini`, protected with Windows DPAPI for your Windows account and for
 
 ### Others don't see my reactions
 
-Reactions reach people with TS Media chat 2.2 or later who are online in the same channel or private chat; reactions on text messages, links, replies and polls need 2.3 on both sides. People on 2.1 or older and people without the plugin don't see them. Someone who comes in later sees the reactions of the people who are still there. Check that *Show reactions* is on in **Settings → Privacy & updates**, and that you are connected. If a reaction couldn't be sent, it is taken back and its tooltip says why (for example *This server doesn't allow plugin messages*).
+Reactions reach people with TS Media chat 2.2 or later who are online in the same channel or private chat; reactions on text messages, links, replies and polls need 2.3 on both sides. People on 2.1 or older and people without the plugin don't see them. Someone who comes in later sees the reactions of the people who are still there. Check that *Show reactions* is on in **Settings → Privacy**, and that you are connected. If a reaction couldn't be sent, it is taken back and its tooltip says why (for example *This server doesn't allow plugin messages*).
 
 ### Why can't I react in the server chat?
 
@@ -304,21 +335,21 @@ Reactions are only for channel and private chats. In the server chat there are n
 
 ### Can I hide that I use TS Media chat?
 
-Yes: turn off **Settings → Privacy & updates → Tell people in your channel that you have TS Media**. The plugin then says goodbye to the people it told, and your send window no longer counts who will see your media. You still see media and can send it as before. Polls send nothing but the votes you cast: your plugin doesn't ask the channel for earlier votes or answer others who ask, so you may not see votes cast before you joined.
+Yes: turn off **Settings → Privacy → Tell people in your channel that you have TS Media**. The plugin then says goodbye to the people it told, and your send window no longer counts who will see your media. You still see media and can send it as before. Polls send nothing but the votes you cast: your plugin doesn't ask the channel for earlier votes or answer others who ask, so you may not see votes cast before you joined.
 
 ## Replies and emoji
 
 ### TeamSpeak's emoticon button opens a different list
 
-With TS Media, TeamSpeak's own emoticon button next to the chat input shows an HD face and opens the TS Media chat emoji picker (HD emoji, search, recently used). To get TeamSpeak's own emoticon list back, turn off **Settings → General → Emoji → Use TS Media's emoji picker for TeamSpeak's emoji button**; <kbd>Ctrl</kbd>+<kbd>E</kbd> in the chat input still opens TS Media's picker.
+With TS Media, TeamSpeak's own emoticon button next to the chat input shows an HD face and opens the TS Media chat emoji picker (HD emoji, search, recently used). To get TeamSpeak's own emoticon list back, turn off **Settings → Emoji & GIFs → Emoji → Use TS Media's emoji picker for TeamSpeak's emoji button**; <kbd>Ctrl</kbd>+<kbd>E</kbd> in the chat input still opens TS Media's picker.
 
 ### The chat looks different from my friends' TeamSpeak
 
-That is the chat layout (**Settings → General → Chat layout**): *Cozy* and *Compact* change only your own view, and your messages reach everyone as before. Choose *TeamSpeak classic* for TeamSpeak's own look.
+That is the chat layout (**Settings → Chat → Chat layout**): *Cozy* and *Compact* change only your own view, and your messages reach everyone as before. Choose *TeamSpeak classic* for TeamSpeak's own look.
 
 ### Where are my GIFs kept, and how do I clear them?
 
-The emoji picker's GIFs tab keeps its list, small pictures and copies of GIF files in `%APPDATA%\TS3Client\plugins\tsmedia\gifs` on your PC (nothing of it is sent anywhere). *Clear cache* doesn't touch it. Remove one GIF with a right-click on it in the GIFs tab → **Remove**, or all of them with **Remove all GIFs…** in the tab's ⋯ menu or in **Settings → General → Emoji**. To stop keeping the GIFs you send, turn off **Remember GIFs I send** there. Uninstalling the plugin leaves the folder like the rest of the plugin's data.
+The emoji picker's GIFs tab keeps its list, small pictures and copies of GIF files in `%APPDATA%\TS3Client\plugins\tsmedia\gifs` on your PC (nothing of it is sent anywhere). *Clear cache* doesn't touch it. Remove one GIF with a right-click on it in the GIFs tab → **Remove**, or all of them with **Remove all GIFs…** in the tab's ⋯ menu or in **Settings → Emoji & GIFs → GIFs**. To stop keeping the GIFs you send, turn off **Remember GIFs I send** there. Uninstalling the plugin leaves the folder like the rest of the plugin's data.
 
 ### Why does resending a GIF file upload it again?
 
@@ -327,6 +358,18 @@ A GIF *file* (one you uploaded, or saved from someone else's upload) is sent aga
 ### A smiley like `:)` shows as text in a reply line
 
 In the message itself, TeamSpeak's smileys (`:)`, `;)`, `:D` …) show as HD emoji. In the reply line above a reply, the reply bar, the send window's *Replying to* line and *View replies*, they stay text for now. Real emoji show in HD there too.
+
+### Why doesn't Ctrl+B make text bold?
+
+In TeamSpeak, <kbd>Ctrl</kbd>+<kbd>B</kbd>, <kbd>Ctrl</kbd>+<kbd>I</kbd> and <kbd>Ctrl</kbd>+<kbd>U</kbd> open Bookmarks, Identities and Collected URLs, also while you type, and TS Media leaves them to TeamSpeak. Select the text and right-click it → **Bold**, **Italic**, **Underline** or **Spoiler** ([Formatting your text](USAGE.md#formatting-your-text)), or use TeamSpeak's own <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> / <kbd>I</kbd> / <kbd>U</kbd> and TS Media's <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> for a spoiler. TeamSpeak's own keys only wrap the selection in tags; the right-click entries also remove them again (they show a tick when the selection already has them).
+
+### My friend sees `[spoiler]` tags
+
+They don't have TS Media 2.7 (or have no TS Media at all): TeamSpeak shows tags it doesn't know as they were typed, so they read `[spoiler]the text[/spoiler]`. With TS Media 2.7 the text shows as bars until it is clicked. Bold, italic and underline are TeamSpeak's own and look right for everyone. A text spoiler only hides text on the screens of TS Media 2.7 users ([what it hides and doesn't](PRIVACY-SECURITY.md#text-spoilers)).
+
+### My caption shows `[B]` tags
+
+A caption (the text in the chat input when you paste or drop a file, or the send window's caption) is sent exactly as typed, so tags in it show as text to everyone, TS Media users included. A `[spoiler]…[/spoiler]` in a caption is hidden for people with TS Media 2.7 only.
 
 ## Voice messages
 
@@ -421,7 +464,7 @@ No, the plugin is Windows only.
 
 ### The cache takes too much space
 
-Lower the *Size limit* or click **Clear cache** in **Settings → General → Media cache**. Media still in the chat is downloaded again when needed.
+Lower the *Size limit* or click **Clear cache** in **Settings → Receiving & playback → Media cache**. Media still in the chat is downloaded again when needed.
 
 ### Where are my settings, the cache and the log?
 

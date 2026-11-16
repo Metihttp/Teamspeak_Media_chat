@@ -2,6 +2,7 @@
 
 #include <QDir>
 
+#include "chatcolors.h" // 2.7 F6
 #include "pluginlog.h"
 #include "uploadwait.h"
 
@@ -11,7 +12,31 @@ TS3Functions funcs{};
 QString      pluginId;
 
 namespace {
-bool chatDark = false; // setChatDark: the chat the lines are printed into has a dark theme
+// 2.7 F6: setLineColors: the colours for the chat the lines are printed into (unset: TeamSpeak's white chat).
+bool                   linesSet = false;
+chatcolors::LineColors lines;
+
+const chatcolors::LineColors& currentLines()
+{
+    if (!linesSet) {
+        lines    = chatcolors::lineColors(chatcolors::teamSpeakLight(), QString());
+        linesSet = true;
+    }
+    return lines;
+}
+
+// A URL that can't leave TeamSpeak's [url=...] tag.
+bool urlFitsTag(const QString& url)
+{
+    if (url.isEmpty())
+        return false;
+    for (const QChar c : url) {
+        if (c == QLatin1Char('[') || c == QLatin1Char(']') || c == QLatin1Char('"') || c == QLatin1Char('\'') || c.isSpace() || c.unicode() < 0x20
+            || c.unicode() == 0x7f)
+            return false;
+    }
+    return true;
+}
 
 QString escapeBBCode(QString text)
 {
@@ -277,17 +302,39 @@ void log(const QString& message, LogLevel level, uint64 sch)
     writeLog(level, sch, unclassifiedLog(message));
 }
 
-void setChatDark(bool dark)
+void setLineColors(const chatcolors::LineColors& colors)
 {
-    chatDark = dark;
+    // Run-time copies (the strings go into BBCode TeamSpeak keeps).
+    lines.accent   = QString(colors.accent.constData(), colors.accent.size());
+    lines.warning  = QString(colors.warning.constData(), colors.warning.size());
+    lines.body     = QString(colors.body.constData(), colors.body.size());
+    lines.wrapBody = colors.wrapBody;
+    linesSet       = true;
+}
+
+chatcolors::LineColors lineColors()
+{
+    return currentLines();
+}
+
+QString linkBBCode(const QString& url, const QString& text)
+{
+    if (!urlFitsTag(url))
+        return {};
+    // 2.7 F6 (M7): the link in the accent colour (TeamSpeak's own link colour is the document sheet's, which a custom dark
+    // chat may not read). The one place that decides the tags' order (live check L-F6-3).
+    return QString::fromLatin1("[url=") + url + QString::fromLatin1("][color=") + currentLines().accent + QString::fromLatin1("]") + escapeBBCode(text)
+           + QString::fromLatin1("[/color][/url]");
 }
 
 namespace {
-// TeamSpeak draws plugin lines in dark blue (#00008b): 1.2:1 on its dark chat (live test 2.2), so
-// there they get a light colour of their own (prefixes and links inside keep theirs).
+// TeamSpeak draws plugin lines in dark blue (#00008b): 1.2:1 on its dark chat (live test 2.2), so where that doesn't
+// read (2.7 F6: on the chat's effective background) they get the chat's text colour of their own (prefixes and links
+// inside keep theirs).
 QByteArray printable(const QString& bbcode)
 {
-    return (chatDark ? QString::fromLatin1("[color=#dcddde]") + bbcode + QString::fromLatin1("[/color]") : bbcode).toUtf8();
+    const chatcolors::LineColors& c = currentLines();
+    return (c.wrapBody ? QString::fromLatin1("[color=") + c.body + QString::fromLatin1("]") + bbcode + QString::fromLatin1("[/color]") : bbcode).toUtf8();
 }
 } // namespace
 
@@ -303,33 +350,28 @@ void print(uint64 sch, const QString& bbcode)
         funcs.printMessage(sch, utf8.constData(), PLUGIN_MESSAGE_TARGET_CHANNEL);
 }
 
-// Prefix colours keep 4.5:1 on TeamSpeak's white chat and on its dark one (#2b2d31).
+// Prefix colours keep 4.5:1 on the chat's effective background (2.7 F6; 2.6's exact colours on TeamSpeak's white chat
+// and its dark one).
 void printInfo(uint64 sch, const QString& text)
 {
-    const QString color = QString::fromLatin1(chatDark ? "#949cf7" : "#4752c4");
-    print(sch, QStringLiteral("[color=%1][b]TS Media chat[/b][/color] ").arg(color) + escapeBBCode(text));
+    print(sch, QString::fromLatin1("[color=%1][b]TS Media chat[/b][/color] ").arg(currentLines().accent) + escapeBBCode(text));
 }
 
 void printWarning(uint64 sch, const QString& text)
 {
     // Chat warnings put names in curly quotes; the plugin log marks those (logtext.h).
     writeLog(LogLevel_WARNING, sch, quotedNamesLog(text));
-    const QString color = QString::fromLatin1(chatDark ? "#f0b232" : "#b54708");
-    print(sch, QStringLiteral("[color=%1][b]TS Media chat ⚠[/b][/color] ").arg(color) + escapeBBCode(text));
+    print(sch, QStringLiteral("[color=%1][b]TS Media chat ⚠[/b][/color] ").arg(currentLines().warning) + escapeBBCode(text));
 }
 
 void printInfoLink(uint64 sch, const QString& text, const QString& url, const QString& linkText)
 {
-    if (!sch || !funcs.printMessage || url.isEmpty())
+    if (!sch || !funcs.printMessage)
         return;
-    for (const QChar c : url) {
-        if (c == QLatin1Char('[') || c == QLatin1Char(']') || c == QLatin1Char('"') || c == QLatin1Char('\'') || c.isSpace() || c.unicode() < 0x20
-            || c.unicode() == 0x7f)
-            return;
-    }
-    const QString color = QString::fromLatin1(chatDark ? "#949cf7" : "#4752c4");
-    const QString line  = QStringLiteral("[color=%1][b]TS Media chat[/b][/color] ").arg(color) + escapeBBCode(text) + QString::fromLatin1(" [url=") + url
-                         + QString::fromLatin1("]") + escapeBBCode(linkText) + QString::fromLatin1("[/url]");
+    const QString link = linkBBCode(url, linkText);
+    if (link.isEmpty())
+        return;
+    const QString line = QString::fromLatin1("[color=%1][b]TS Media chat[/b][/color] ").arg(currentLines().accent) + escapeBBCode(text) + QLatin1Char(' ') + link;
     // The channel tab even when another tab of sch is in front (print() would use that one).
     funcs.printMessage(sch, printable(line).constData(), PLUGIN_MESSAGE_TARGET_CHANNEL);
 }

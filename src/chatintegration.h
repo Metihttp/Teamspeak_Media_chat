@@ -10,6 +10,7 @@
 
 #include <functional>
 
+#include "chatcolors.h" // 2.7 F6
 #include "core.h"
 #include "previewrenderer.h"
 #include "previewscale.h" // 2.5 zoom
@@ -24,6 +25,10 @@ class ChatPolls;     // 2.3 poll
 class ChatScale;     // 2.5 zoom: one per chat (chatscale.h)
 class ChatLinkPreviews; // 2.4 link previews
 class GifLibrary;       // 2.5 GIFs
+class LoadHold;         // 2.7 (R-DEF-1): one per chat while its load styles it (loadhold.h)
+class ChatZoom;         // 2.7 F5: the saved chat zoom (chatzoom.h)
+class ChatTextSpoilers; // 2.7 F1: text spoilers in the chats (chattextspoilers.h)
+class InputFormat;      // 2.7 F1: formatting in the chat input (inputformat.h)
 class QUrl;
 namespace linkpreview {
 struct Target;
@@ -79,6 +84,26 @@ class ChatIntegration : public QObject
     void    refreshAll(); // after settings changes
     QString dumpWidgetTree() const;
 
+    // 2.7 (R-DEF-1): the hold that keeps a chat's reader in place while the plugin styles it after a load lets go of
+    // that chat (endLoadHold) or of every chat (endLoadHolds). For user actions that move a chat or change its font from
+    // outside the chat (a jump to a message, the Settings zoom control); the chat's own input ends it by itself.
+    void endLoadHold(QTextBrowser* browser);
+    void endLoadHolds();
+    // 2.7 dark mode (live test): after a theme switch put every chat's reader back, a scale pass the switch started keeps
+    // that place (DarkMode::placesRestored).
+    void retakeScalePlaces();
+
+    // 2.7 F5 saved chat zoom (chatzoom.h): Settings::chatZoom; the size as a percentage of TeamSpeak's chat font, on the
+    // visible chat's base font (8.25 pt when no chat is known); a new value for every chat: clamped, endLoadHolds()
+    // first, applied to every visible chat (hidden ones when shown), saved at once, chatZoomChanged emitted.
+    int  chatZoom() const;
+    int  chatZoomPercent() const;
+    void setChatZoom(int tenths);
+    // 2.7 F6 colours (chatcolors.h): the effective colours of a chat (cached; a picture background is sampled later by an
+    // owned timer, M8), and of the visible chat (TeamSpeak's light colours when none is known).
+    chatcolors::Colors chatColorsOf(QTextBrowser* browser) const;
+    chatcolors::Colors visibleChatColors() const;
+
     // Opens MediaViewer on key with every other previewable media of the same chat as a gallery.
     void openViewer(const QString& key);
 
@@ -87,6 +112,8 @@ class ChatIntegration : public QObject
     ChatLayout*  layout() const { return m_layout; }
     ChatEmoji*   emoji() const { return m_emoji; }
     ChatReplies* replies() const { return m_replies; }
+    ChatTextSpoilers* textSpoilers() const { return m_textSpoilers; } // 2.7 F1
+    InputFormat*      inputFormat() const { return m_inputFormat; }   // 2.7 F1
 
     // 2.2 reply: the "Reply to the last message" hotkey (chatreplies.h).
     void replyToLatest();
@@ -144,6 +171,11 @@ class ChatIntegration : public QObject
   signals:
     // 2.2 voice: an inline player or the viewer started playing (the recorder pauses it again).
     void playbackStarted();
+    void chatZoomChanged(int tenths); // 2.7 F5: Ctrl + wheel or setChatZoom changed Settings::chatZoom
+    void chatsChanged();              // 2.7 dark mode: discover() attached a chat or saw a swapped document
+    // 2.7 dark mode (review fix): a chat's colours settled to new ones (its background sampled after a skin or theme
+    // change): what shows them outside the chat (the Settings window's line preview) reads them again.
+    void chatColorsChanged();
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -174,10 +206,14 @@ class ChatIntegration : public QObject
         qreal                   layoutDpr      = 0.0;   // ... the device pixel ratio they were rendered at
         bool                    layoutDark     = false; // ... and the theme
         QString                 layoutBubbles;          // 2.3: ... and the bubbles they sit on (surfacesKey)
+        QColor                  layoutAccent;           // 2.7 dark mode: ... and the theme's accent (invalid: TS Media's own)
         // 2.5 zoom: the scale every preview object of this chat is laid out for (formats, slots, cards), and the
         // coordinator that changes it in one pass (a child of ChatIntegration, deleted with the view).
         PreviewScale            scale;
         ChatScale*              scaler = nullptr;
+        // 2.7 (R-DEF-1): keeps the reader's place while the load styles this chat (a child of ChatIntegration, deleted
+        // with the view or first thing at unload); dormant once it let go.
+        LoadHold*               hold = nullptr;
         int                     number = 0; // the log's chat number
         // The cheap inputs of the scale as last seen (Paint compares these; QFontInfo runs only when one changed).
         qreal                   keyPoint  = -2;
@@ -393,6 +429,7 @@ class ChatIntegration : public QObject
     QTimer*                    m_visibilityTimer = nullptr;
     QHash<QTextBrowser*, View> m_views;
     bool                       m_scaling = false; // 2.5 zoom: inside a ChatScale pass (no own place restores, no drawing)
+    int                        m_activeHolds = 0; // 2.7 (R-DEF-1): load holds still keeping a place (a key in an input ends them)
     int                        m_chatNumbers = 0;
     QList<QPointer<QWidget>>   m_inputs;
     QPointer<UploadToast>      m_toast;
@@ -446,6 +483,8 @@ class ChatIntegration : public QObject
     ChatLayout*                             m_layout    = nullptr; // chat redesign: the Cozy / Compact layout
     ChatPolls*                              m_polls     = nullptr; // 2.3 poll
     ChatLinkPreviews*                       m_links     = nullptr; // 2.4 link previews
+    ChatTextSpoilers*                       m_textSpoilers = nullptr; // 2.7 F1: text spoilers
+    InputFormat*                            m_inputFormat  = nullptr; // 2.7 F1: Bold, Italic, Underline, Spoiler in the input
     // 2.3.4: the own-link handler and the press it took (TeamSpeak saw neither press nor release).
     std::function<bool(const QString&, bool)> m_ownLinkHandler;
     QPointer<GifLibrary>                      m_gifs; // 2.5 GIFs
@@ -454,4 +493,15 @@ class ChatIntegration : public QObject
     bool                                      m_ownLinkDouble = false; // the press was a double click's
 
     bool filterOwnLink(QObject* watched, QEvent* event);
+
+    // ---- 2.7 F5 / F6 ------------------------------------------------------------------------------------------------
+    ChatZoom* m_zoom = nullptr; // child; shut down first thing at unload (no font is changed then)
+    // The colours of TS Media's lines (ts3::setLineColors) for chat (nullptr: the visible one; none known: unchanged).
+    void      updateLineColors(QTextBrowser* chat = nullptr) const;
+    // A chat's palette or style changed (never its font): its colours are read again, its background sampled again later;
+    // the last sample stays in use until then (chatcolors::Cache).
+    void      invalidateColors(QTextBrowser* browser);
+    void      sampleColors(); // m_sampleTimer: the chats waiting for a sample (never inside a paint)
+    mutable QHash<QTextBrowser*, chatcolors::Cache> m_colorCache;
+    QTimer*                                         m_sampleTimer = nullptr; // child, single shot
 };

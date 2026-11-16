@@ -167,9 +167,15 @@ struct Facts {
     int    previewScalePercent = 0;
     int    chatTextPx          = 0;
     int    previewPreset       = 0;
+    // 2.7 F5 / F6: the saved chat zoom (percent of TeamSpeak's chat font, 0: not known; tenths of a point) and the colour
+    // choice for TS Media's lines (Settings::chatLineColor).
+    int     chatZoomPercent = 0;
+    int     chatZoomTenths  = 0;
+    QString lineColor;
     int    screens = 0;
     bool   animations = true;
     int    theme = 0; // 0 unknown, 1 light, 2 dark
+    int    darkMode = 0; // 2.7: TS Media's dark mode: 0 off, 1 on, 2 on but paused
 
     // Connections (no addresses or names: versions only)
     int         connections = 0;

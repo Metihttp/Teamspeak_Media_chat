@@ -209,7 +209,7 @@ qreal bodyAscent(const Tokens& tokens)
 // Colours
 // ============================================================================================
 
-Colors colorsFor(bool dark, const QColor& baseIn, const QColor& skinText, const QColor& skinLink)
+Colors colorsFor(bool dark, const QColor& baseIn, const QColor& skinText, const QColor& skinLink, const QColor& themeAccent)
 {
     Colors c;
     c.dark = dark;
@@ -257,6 +257,15 @@ Colors colorsFor(bool dark, const QColor& baseIn, const QColor& skinText, const 
     c.leave      = nudge(dark ? QColor(0xf2, 0x7a, 0x7d) : QColor(0xc9, 0x37, 0x3d), {base}, 3.0);
     c.announce   = nudge(dark ? QColor(0x94, 0x9c, 0xf7) : QColor(0x58, 0x65, 0xf2), {base}, 3.0);
     c.danger     = nudge(dark ? QColor(0xf2, 0x7a, 0x7d) : QColor(0xc9, 0x37, 0x3d), {base, hover, mention}, 4.5);
+    // 2.7 dark mode (design_dark 1.11): the theme's accent for TS Media's own accents; each is still made readable below.
+    if (themeAccent.isValid()) {
+        const QColor accent(themeAccent.red(), themeAccent.green(), themeAccent.blue());
+        c.accent   = accent;
+        c.focusBar = accent;
+        c.pillBack = QColor(accent.red(), accent.green(), accent.blue(), 77);
+        c.pillText = QColor(0xf2, 0xc2, 0xae);
+        c.announce = nudge(accent, {base}, 3.0);
+    }
     c.spine      = dark ? QColor(0x5c, 0x60, 0x68) : QColor(0xc4, 0xc9, 0xce);
     c.chipBorder = alpha(c.muted, 0.4);
     c.mutedOnMention = nudge(c.muted, {mention}, 4.5);

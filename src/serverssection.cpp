@@ -1,7 +1,6 @@
 #include "serverssection.h"
 
 #include <QComboBox>
-#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -15,6 +14,8 @@
 
 #include "i18n.h"
 #include "settings.h"
+#include "settingssection.h" // 2.7 F3: rows
+#include "settingstheme.h"
 
 namespace {
 
@@ -24,19 +25,6 @@ constexpr int kServerMinWidth = 220;
 
 // Index 0 of both choice boxes is "Same as all servers (…)".
 enum Choice { SameAsAll = 0, ChoiceOn = 1, ChoiceOff = 2 };
-
-QLabel* hintLabel(const QString& text, QWidget* parent)
-{
-    auto* label = new QLabel(text, parent);
-    label->setTextFormat(Qt::PlainText);
-    label->setWordWrap(true);
-    label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    label->setProperty("role", QString::fromLatin1("hint")); // coloured by SettingsDialog::applyTheme
-    QSizePolicy policy = label->sizePolicy();
-    policy.setHorizontalPolicy(QSizePolicy::Expanding);
-    label->setSizePolicy(policy);
-    return label;
-}
 
 QString elided(const QString& name)
 {
@@ -79,8 +67,8 @@ ServersSection::ServersSection(QWidget* parent)
 
     // Access keys are left to the dialog that places this section (the 2.1 dialog has used up the
     // letters these labels share); every field still gets its label as accessible name (buddy).
+    const settingstheme::Tokens t = settingstheme::tokensFor(this); // 2.7 F3 (H1): sizes follow TeamSpeak's font
     m_server = new QComboBox(this);
-    m_server->setMinimumWidth(kServerMinWidth);
     m_server->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_server->setMinimumContentsLength(24);
     m_forget = new QPushButton(i18n::t("For&get"), this);
@@ -104,40 +92,32 @@ ServersSection::ServersSection(QWidget* parent)
     m_limit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_limit->setAccelerated(true);
 
-    m_hint = hintLabel(QString(), this);
-
-    // The server picker spans the section (long names need the room); its values follow as a form.
-    auto* serverLabel = new QLabel(i18n::t("&Server"), this);
+    // 2.7 F3: a card of rows: the server picker (its helper says what is remembered), then its values, indented.
+    SettingsSection::makeCard(this);
+    auto* picker    = new QWidget(this);
+    auto* pickerRow = new QHBoxLayout(picker);
+    pickerRow->setContentsMargins(0, 0, 0, 0);
+    pickerRow->setSpacing(t.px(8));
+    pickerRow->addWidget(m_server, 1);
+    pickerRow->addWidget(m_forget);
+    QLabel* serverLabel = SettingsSection::fieldRow(this, i18n::t("&Server"), picker, i18n::t("Only servers you change here are remembered."));
     serverLabel->setBuddy(m_server);
-    auto* serverRow = new QHBoxLayout;
-    serverRow->addWidget(serverLabel);
-    serverRow->addWidget(m_server, 1);
-    serverRow->addWidget(m_forget);
-
-    auto* layout = new QFormLayout;
-    layout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    layout->setRowWrapPolicy(QFormLayout::WrapLongRows); // a narrow column puts long labels above their field
-    layout->setLabelAlignment(Qt::AlignLeading | Qt::AlignVCenter);
-    auto* outer = new QVBoxLayout(this);
-    outer->addLayout(serverRow);
-    outer->addLayout(layout);
+    m_hint = SettingsSection::hintOf(picker);
     const struct {
         const char* label;
         QWidget*    field;
     } rows[] = {
-        // Access keys: unique on the Servers tab (with Server access below and the dialog's buttons).
+        // Access keys: unique on the Servers page (with Server access below and the dialog's buttons).
         {"Automatic &downloads", m_downloads},
         {"Upload &folder", m_folder},
         {"Upload size &limit", m_limit},
         {"&Note for people without the plugin", m_note},
     };
     for (const auto& row : rows) {
-        auto* label = new QLabel(i18n::t(row.label), this);
-        label->setBuddy(row.field);
-        layout->addRow(label, row.field);
-        m_fields << label << row.field;
+        SettingsSection::fieldRow(this, i18n::t(row.label), row.field, QString(), 1);
+        m_fields << row.field;
     }
-    layout->addRow(m_hint);
+    m_folder->setMinimumWidth(t.px(kServerMinWidth));
 
     connect(m_server, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
         if (m_loading)
@@ -189,15 +169,20 @@ void ServersSection::updateTexts()
     m_note->setItemText(SameAsAll, m_globalNote ? i18n::t("Same as all servers (Added)") : i18n::t("Same as all servers (Not added)"));
     m_folder->setPlaceholderText(i18n::t("Same as all servers (%1)").arg(m_globalFolder));
     m_limit->setSpecialValueText(i18n::t("Same as all servers (%1 MB)").arg(m_globalLimitMB));
+    updateWidths();
+}
+
+void ServersSection::updateWidths()
+{
+    const settingstheme::Tokens t = settingstheme::tokensFor(this);
     // The three choice fields share one width, wide enough for their "Same as all servers (…)" texts
-    // (a spin box sizes itself by its range and suffix only).
-    int width = m_limit->fontMetrics().horizontalAdvance(m_limit->specialValueText()) + 48;
-    for (QComboBox* box : {m_downloads, m_note}) {
-        box->setMinimumWidth(0);
-        width = qMax(width, box->sizeHint().width());
-    }
+    // (a spin box sizes itself by its range and suffix only) and for every item in the style's own field.
+    int width = m_limit->fontMetrics().horizontalAdvance(m_limit->specialValueText()) + t.px(48);
+    for (QComboBox* box : {m_downloads, m_note})
+        width = qMax(width, settingstheme::comboFitWidth(box));
     for (QWidget* field : {static_cast<QWidget*>(m_downloads), static_cast<QWidget*>(m_note), static_cast<QWidget*>(m_limit)})
         field->setMinimumWidth(width);
+    m_server->setMinimumWidth(qMax(t.px(kServerMinWidth), settingstheme::comboFitWidth(m_server)));
 }
 
 ServersSection::Row* ServersSection::currentRow()
@@ -208,7 +193,8 @@ ServersSection::Row* ServersSection::currentRow()
 QString ServersSection::rowLabel(const Row& row) const
 {
     // Shortened so " (connected)" always shows in the field (the list itself is as wide as needed).
-    const QString name = row.name.isEmpty() ? i18n::t("Unnamed server") : m_server->fontMetrics().elidedText(elided(row.name), Qt::ElideRight, kNameWidth);
+    const QString name = row.name.isEmpty() ? i18n::t("Unnamed server")
+                                            : m_server->fontMetrics().elidedText(elided(row.name), Qt::ElideRight, settingstheme::tokensFor(this).px(kNameWidth));
     return row.connected ? i18n::t("%1 (connected)").arg(name) : name;
 }
 
@@ -307,6 +293,7 @@ void ServersSection::rebuildCombo(const QString& selectKey)
         m_server->addItem(i18n::t("Not connected"));
     m_server->setCurrentIndex(qMax(0, m_current));
     m_loading = false;
+    updateWidths(); // the picker's items changed
     showRow();
 }
 
@@ -349,7 +336,7 @@ void ServersSection::updateState()
     const Row* row = currentRow();
     m_server->setEnabled(row != nullptr);
     for (QWidget* field : qAsConst(m_fields))
-        field->setEnabled(row != nullptr);
+        SettingsSection::setRowEnabled(field, row != nullptr); // 2.7 F3: with its label
     m_forget->setEnabled(row && !row->edit.isEmpty());
     m_hint->setText(m_rows.isEmpty() ? i18n::t("Connect to a server to give it its own settings.")
                                      : i18n::t("Only servers you change here are remembered, by their ID and name, on this computer."));

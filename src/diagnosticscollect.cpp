@@ -22,6 +22,7 @@
 
 #include "chatintegration.h"
 #include "core.h"
+#include "darkmode.h" // 2.7 dark mode: on, off or paused
 #include "i18n.h"
 #include "settings.h"
 #include "ts3api.h"
@@ -383,10 +384,16 @@ Facts collectOnGui(const Environment& env, WorkerInput* input)
             f.chatTextPx          = chatPx;
         }
         f.previewPreset = Settings::instance().previewScale;
+        // 2.7 F5 / F6: the saved zoom and the line colour choice.
+        f.chatZoomTenths  = env.chat->chatZoom();
+        f.chatZoomPercent = env.chat->chatZoomPercent();
+        f.lineColor       = Settings::normalizeLineColor(Settings::instance().chatLineColor);
     }
     f.screens    = QGuiApplication::screens().size();
     f.animations = ui::animationsEnabled();
     f.theme      = isDark(window ? window->palette() : QApplication::palette()) ? 2 : 1;
+    if (const DarkMode* dark = DarkMode::instance()) // 2.7
+        f.darkMode = dark->paused() ? 2 : DarkMode::isActive() ? 1 : 0;
 
     if (teamSpeakAvailable()) {
         for (uint64 sch : ts3::connections()) {

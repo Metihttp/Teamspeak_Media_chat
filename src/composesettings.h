@@ -1,6 +1,6 @@
 #pragma once
 
-// 2.2 compose: Settings → Sending → "When you drop files on the chat": open the send window (the
+// 2.2 compose: Settings → Sending → Dropping files → "When you drop files on the chat": open the send window (the
 // default) or send right away. Holding Ctrl while dropping does the other. Available while "Send files
 // dropped on the chat" is on.
 

@@ -35,10 +35,6 @@ constexpr qreal kSeekTop    = 6.0;
 constexpr qreal kSeekBottom = 50.0;
 constexpr qreal kBadge      = 14.0;
 
-// The button's hover and pressed fills (white icons stay above 4.5:1 on all three), as on the audio card.
-const QColor kAccentHover(0x47, 0x52, 0xc4);
-const QColor kAccentPressed(0x3c, 0x45, 0xa5);
-
 struct WaveColors {
     QColor played;   // 3:1+ on the card, clearly lighter (dark) / darker (light) than unplayed
     QColor unplayed; // 3:1+ on the card
@@ -185,19 +181,20 @@ void drawButton(QPainter& p, const VoiceGeometry& g, const MediaEntry& e, const 
         p.setPen(QPen(pal.progress, 1.0)); // the tonal edge keeps the outline at 3:1 on the dark card
     else
         p.setPen(Qt::NoPen);
-    p.setBrush(down ? kAccentPressed : hot ? kAccentHover : pp::accent());
+    const pp::ButtonColors bc = pp::buttonColors(style); // 2.7 dark mode: the theme's accent, dark glyphs
+    p.setBrush(down ? bc.pressed : hot ? bc.hover : bc.fill);
     p.drawEllipse(style.dark ? disc.adjusted(0.5, 0.5, -0.5, -0.5) : disc);
     if (o.busy) {
         const qreal stroke = 2.5;
-        pp::drawRing(p, disc.center(), disc.width() / 2.0 - stroke - 4.5, stroke, o.busyProgress, QColor(255, 255, 255, 70), Qt::white, style.animate);
+        pp::drawRing(p, disc.center(), disc.width() / 2.0 - stroke - 4.5, stroke, o.busyProgress, QColor(bc.glyph.red(), bc.glyph.green(), bc.glyph.blue(), 70), bc.glyph, style.animate);
     } else if (failed) {
-        pp::drawCircularArrow(p, arrowIn, Qt::white);
+        pp::drawCircularArrow(p, arrowIn, bc.glyph);
     } else if (o.externalOnly) {
-        pp::drawOpenIcon(p, icon, Qt::white);
+        pp::drawOpenIcon(p, icon, bc.glyph);
     } else if (o.playing) {
-        pp::drawPauseIcon(p, icon, Qt::white);
+        pp::drawPauseIcon(p, icon, bc.glyph);
     } else {
-        pp::drawPlayIcon(p, icon.translated(1.0, 0.0), Qt::white);
+        pp::drawPlayIcon(p, icon.translated(1.0, 0.0), bc.glyph);
     }
     p.restore();
 

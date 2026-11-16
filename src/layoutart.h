@@ -131,8 +131,9 @@ struct Colors {
     QColor linkOnBubble;
     QColor dangerOnPill;  // kicks, bans and errors on their pill
 };
-// skinLink: the skin's link colour (invalid: none known); skinText: the viewport's Text.
-Colors colorsFor(bool dark, const QColor& base, const QColor& skinText, const QColor& skinLink);
+// skinLink: the skin's link colour (invalid: none known); skinText: the viewport's Text. themeAccent (2.7 dark mode,
+// chatcolors::Colors::themeAccent): the accent, focus bar, mention pill and announce colours follow it; invalid: as before.
+Colors colorsFor(bool dark, const QColor& base, const QColor& skinText, const QColor& skinLink, const QColor& themeAccent = QColor());
 // 2.3 chat-visuals: the flat colour under a bubble's text (own: yours; hover, mention: those layers too).
 QColor bubbleBack(const Colors& colors, bool own, bool hover = false, bool mention = false);
 QColor pillBack(const Colors& colors, bool hover = false);

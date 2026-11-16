@@ -18,6 +18,7 @@
 #include <algorithm>
 
 #include "i18n.h"
+#include "textspoiler.h" // 2.7 F1: no GIF remembered from inside a spoiler
 #include "linkpreview/content.h"
 #include "linkpreview/fetcher.h"
 #include "linkpreview/linkurl.h"
@@ -779,7 +780,7 @@ void GifLibrary::onTextMessage(uint64 sch, int mode, anyID toId, anyID fromId, c
         return; // only ours (the sender pipeline's check)
     if (mode != TextMessageTarget_CHANNEL && mode != TextMessageTarget_CLIENT && mode != TextMessageTarget_SERVER)
         return;
-    const QVector<gifs::Candidate> links = gifs::messageLinks(bbcode);
+    const QVector<gifs::Candidate> links = gifs::messageLinks(textspoiler::withoutHidden(bbcode)); // 2.7 F1: none inside a spoiler
     const qint64                   now   = nowSec();
     QStringList                    keys;
     bool                           any = false;

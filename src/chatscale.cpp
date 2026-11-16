@@ -57,8 +57,16 @@ void ChatScale::prepareShutdown()
 
 bool ChatScale::eventFilter(QObject* watched, QEvent* event)
 {
-    if (!m_down && watched == m_browser && (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange) && m_host.fontEvent)
-        m_host.fontEvent();
+    if (!m_down && watched == m_browser) {
+        const QEvent::Type type = event->type();
+        // A new font or style: a pass.
+        if ((type == QEvent::FontChange || type == QEvent::StyleChange) && m_host.fontEvent)
+            m_host.fontEvent();
+        // 2.7 F6: a new style sheet or palette (a skin): the chat's colours are read again (ChatIntegration's host). A
+        // FontChange never: each zoom notch would throw the background's sample away and restyle every chat (review fix).
+        if (!m_down && (type == QEvent::StyleChange || type == QEvent::PaletteChange) && m_host.styleEvent)
+            m_host.styleEvent();
+    }
     return QObject::eventFilter(watched, event);
 }
 
@@ -84,6 +92,12 @@ void ChatScale::request()
         const qint64 since = m_lastHold.isValid() ? m_lastHold.elapsed() : kHoldMs;
         m_hold->start(static_cast<int>(qBound<qint64>(0, kHoldMs - since, kHoldMs)));
     }
+}
+
+void ChatScale::retake()
+{
+    if (!m_down && m_browser && m_burst)
+        m_place = chatscroll::capture(m_browser);
 }
 
 void ChatScale::hold()

@@ -1061,7 +1061,7 @@ class TestOwnRight : public QObject
         again.chatOwnRight = false;
         again.load(file);
         QVERIFY(again.chatOwnRight);
-        // Settings > Chat layout: only for Cozy with bubbles.
+        // Settings > Chat > Messages: only for Cozy with bubbles.
         ChatLayoutSection section;
         QCheckBox*        box = nullptr;
         QCheckBox*        bubbles = nullptr;

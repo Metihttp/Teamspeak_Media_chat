@@ -1,6 +1,6 @@
 #pragma once
 
-// 2.2 per-server settings: the "Servers" section of the settings dialog. Pick a server (connected
+// 2.2 per-server settings: the "Servers" card of Settings → Servers. Pick a server (connected
 // ones first, then the ones with own settings) and give it its own data saver, upload folder,
 // upload size limit and note for people without the plugin. Self-contained: SettingsDialog places it,
 // feeds it the global values and the connected servers, and calls applyTo() on OK / Apply.
@@ -39,6 +39,10 @@ class ServersSection : public QGroupBox
     void applyTo(Settings& settings);
 
     QSpinBox* limitField() const { return m_limit; } // shares the dialog's number field width
+    // The fields' widths for the current style and font: the three choice fields share one, the server picker keeps its
+    // minimum, and no item is cut (settingstheme::comboFitWidth). The dialog calls it again after a skin, palette or font
+    // change, once it fitted its other combo boxes.
+    void updateWidths();
 
   signals:
     void changed(); // the user edited something (Apply becomes available)

@@ -21,7 +21,9 @@
 #include "fileverify.h"
 #include "settings.h"
 #include "testmain.h"
+#include "chatcolors.h" // 2.7 F6
 #include "ts3api.h"
+#include "uiutil.h"
 
 namespace {
 
@@ -463,25 +465,51 @@ void TestCoreSend::replyLeadGoesFirst()
 
 TSMEDIA_REGISTER_TEST(TestCoreSend)
 
-// Live test 2.2: TeamSpeak draws plugin lines in dark blue (#00008b), unreadable on its dark chat.
+// Live test 2.2: TeamSpeak draws plugin lines in dark blue (#00008b), unreadable on its dark chat. 2.7 F6: the colours
+// come from the chat's effective background (chatcolors::lineColors); TeamSpeak's two chats keep 2.6's exact strings, a
+// custom dark chat (#1e2a38) gets the same treatment with colours that read on it.
 void TestCoreSend::chatLinesReadableOnDarkChat()
 {
     const uint64 sch = channel().sch;
-    ts3::setChatDark(true);
+    const auto   chat = [](const char* base, const char* text) {
+        chatcolors::Colors c;
+        c.base = QColor(QLatin1String(base));
+        c.text = QColor(QLatin1String(text));
+        c.dark = chatcolors::isDark(c.base);
+        return c;
+    };
+    ts3::setLineColors(chatcolors::lineColors(chat("#2f3136", "#dcddde"), QString()));
     ts3::printInfo(sch, QStringLiteral("TesterB can now send files."));
-    ts3::setChatDark(false);
+    ts3::printWarning(sch, QStringLiteral("Dark warning."));
+    ts3::setLineColors(chatcolors::lineColors(chat("#1e2a38", "#d8dee9"), QString()));
+    ts3::printInfo(sch, QStringLiteral("Custom chat line."));
+    ts3::setLineColors(chatcolors::lineColors(chatcolors::teamSpeakLight(), QString()));
     ts3::printInfo(sch, QStringLiteral("Light chat line."));
-    QString dark, light;
+    ts3::printWarning(sch, QStringLiteral("Light warning."));
+    QString dark, darkWarning, custom, light, lightWarning;
     for (const QString& line : fakets3::logLines()) {
         if (line.contains(QLatin1String("TesterB can now send files.")))
             dark = line;
+        if (line.contains(QLatin1String("Dark warning.")) && line.startsWith(QLatin1String("[chat]")))
+            darkWarning = line;
+        if (line.contains(QLatin1String("Custom chat line.")))
+            custom = line;
         if (line.contains(QLatin1String("Light chat line.")))
             light = line;
+        if (line.contains(QLatin1String("Light warning.")) && line.startsWith(QLatin1String("[chat]")))
+            lightWarning = line;
     }
     QVERIFY(dark.startsWith(QLatin1String("[chat] [color=#dcddde][color=#949cf7][b]TS Media chat[/b][/color] ")));
     QVERIFY(dark.endsWith(QLatin1String("[/color]")));
+    QVERIFY2(darkWarning.startsWith(QStringLiteral("[chat] [color=#dcddde][color=#f0b232][b]TS Media chat \u26a0[/b][/color] ").replace(QStringLiteral("\u26a0"), QString(QChar(0x26a0)))),
+             qPrintable(darkWarning));
     QVERIFY(light.startsWith(QLatin1String("[chat] [color=#4752c4][b]TS Media chat[/b][/color] ")));
     QVERIFY(!light.contains(QLatin1String("#dcddde")));
+    QVERIFY2(lightWarning.startsWith(QStringLiteral("[chat] [color=#b54708][b]TS Media chat ")), qPrintable(lightWarning));
+    // The custom dark chat: the body in its text colour, the prefix 4.5:1 on #1e2a38.
+    QVERIFY2(custom.startsWith(QLatin1String("[chat] [color=#d8dee9][color=#")), qPrintable(custom));
+    const QString accent = custom.mid(QStringLiteral("[chat] [color=#d8dee9][color=").size(), 7);
+    QVERIFY2(ui::contrastRatio(QColor(accent), QColor(0x1e, 0x2a, 0x38)) >= 4.5, qPrintable(accent));
 }
 
 // 2.3.4: the newer-version hint's line. The prefix, the escaped text and one raw link in ONE printMessage
@@ -493,17 +521,22 @@ void TestCoreSend::chatInfoLink()
     QCOMPARE(sch, ts3::currentConnection());
     const QString url    = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/latest#tsmupd-0123456789abcdef-2.3.5");
     const int     before = fakets3::channelPrints().size();
-    ts3::setChatDark(false);
+    // 2.7 F6 (M7): the link in the accent colour (ts3::linkBBCode).
+    chatcolors::Colors dark;
+    dark.base = QColor(0x2f, 0x31, 0x36);
+    dark.text = QColor(0xdc, 0xdd, 0xde);
+    dark.dark = true;
+    ts3::setLineColors(chatcolors::lineColors(chatcolors::teamSpeakLight(), QString()));
     ts3::printInfoLink(sch, QStringLiteral("Someone [b]here[/b] has 2.3.5."), url, QStringLiteral("Check [for] updates"));
     QCOMPARE(fakets3::channelPrints().size(), before + 1);
     QCOMPARE(fakets3::channelPrints().last(), QStringLiteral("[color=#4752c4][b]TS Media chat[/b][/color] Someone \\[b\\]here\\[/b\\] has 2.3.5. [url=") + url
-                                                  + QStringLiteral("]Check \\[for\\] updates[/url]"));
-    ts3::setChatDark(true);
+                                                  + QStringLiteral("][color=#4752c4]Check \\[for\\] updates[/color][/url]"));
+    ts3::setLineColors(chatcolors::lineColors(dark, QString()));
     ts3::printInfoLink(sch, QStringLiteral("Dark."), url, QStringLiteral("Check for updates"));
-    ts3::setChatDark(false);
+    ts3::setLineColors(chatcolors::lineColors(chatcolors::teamSpeakLight(), QString()));
     QCOMPARE(fakets3::channelPrints().size(), before + 2);
     QVERIFY(fakets3::channelPrints().last().startsWith(QLatin1String("[color=#dcddde][color=#949cf7][b]TS Media chat[/b][/color] Dark. [url=")));
-    QVERIFY(fakets3::channelPrints().last().endsWith(QLatin1String("[/url][/color]")));
+    QVERIFY(fakets3::channelPrints().last().endsWith(QLatin1String("[color=#949cf7]Check for updates[/color][/url][/color]")));
     for (const QString& bad : {url + QLatin1Char(']'), QStringLiteral("[b]") + url, url + QStringLiteral(" x"), url + QLatin1Char('"'), url + QLatin1Char('\''),
                                url + QLatin1Char('\n'), url + QChar(0x7f), url + QChar(0x3000), QString()})
         ts3::printInfoLink(sch, QStringLiteral("Refused."), bad, QStringLiteral("Check for updates"));

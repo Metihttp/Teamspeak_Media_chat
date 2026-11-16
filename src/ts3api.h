@@ -15,6 +15,10 @@
 #include "teamspeak/public_rare_definitions.h"
 #include "ts3_functions.h"
 
+namespace chatcolors {
+struct LineColors; // 2.7 F6 (chatcolors.h)
+}
+
 namespace ts3 {
 
 extern TS3Functions funcs;
@@ -74,9 +78,13 @@ void log(const QString& message, LogLevel level = LogLevel_INFO, uint64 sch = 0)
 // Prints a BBCode line into the chat tab the user is looking at when sch is the current connection,
 // otherwise into the channel tab of sch (local only).
 void print(uint64 sch, const QString& bbcode);
-// The chat's theme (ChatIntegration knows it): printInfo / printWarning pick prefix colours that are
-// readable on it.
-void setChatDark(bool dark);
+// 2.7 F6: the colours of TS Media's lines for the chat they go into (ChatIntegration knows its effective background and
+// Settings::chatLineColor: chatcolors::lineColors). Copied as run-time strings. Until it is set: TeamSpeak's white chat.
+void setLineColors(const chatcolors::LineColors& colors);
+chatcolors::LineColors lineColors();
+// 2.7 F6 (M7): one link of TS Media's own lines in the accent colour: "[url=<url>][color=<accent>]<text>[/color][/url]"
+// (text escaped). Empty when url has '[', ']', quotes, spaces or control characters (it could leave the tag).
+QString linkBBCode(const QString& url, const QString& text);
 void printInfo(uint64 sch, const QString& text);
 void printWarning(uint64 sch, const QString& text);
 // 2.3.4: printInfo's line plus one link, in ONE line (so the link is part of TS Media's own row,

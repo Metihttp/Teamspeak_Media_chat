@@ -19,6 +19,7 @@
 #include <cmath>
 
 #include "albums.h"      // uidFromClientHref
+#include "darkchat.h"    // 2.7 dark mode: kOriginal goes with the colour it belongs to
 #include "emojiformat.h" // HD emoji: read and stored as TeamSpeak showed them
 #include "i18n.h"
 #include "uiutil.h"
@@ -200,6 +201,14 @@ bool revertFormat(F& format)
                 format.setProperty(id, original.property(id));
             else
                 format.clearProperty(id);
+            if (id == QTextFormat::ForegroundBrush) {
+                // 2.7 dark mode (review fix): the colour comes back with its way back (darkchat's kOriginal), so a
+                // fragment dark mode recoloured before it was ours is exactly that fragment again.
+                if (original.hasProperty(darkchat::kOriginal))
+                    format.setProperty(darkchat::kOriginal, original.property(darkchat::kOriginal));
+                else
+                    format.clearProperty(darkchat::kOriginal);
+            }
         }
         format.clearProperty(kApplied);
         format.clearProperty(kOrigChar);

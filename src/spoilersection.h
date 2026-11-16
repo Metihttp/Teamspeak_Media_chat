@@ -1,7 +1,7 @@
 #pragma once
 
-// 2.2 spoiler: the "Spoilers" group of the settings dialog's Receiving & playback tab
-// (SettingsDialog::addSection). One option: Settings::revealSpoilers.
+// 2.2 spoiler: the "Spoilers" card of Settings → Receiving & playback (SettingsDialog::addSection). One option:
+// Settings::revealSpoilers (2.7: it covers text spoilers too).
 
 #include "settingssection.h"
 

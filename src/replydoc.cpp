@@ -16,6 +16,7 @@
 #include "emojiformat.h"  // 2.2 emoji: HD pictures read as what they stand for
 #include "layoutformat.h" // chat redesign: headers kept in TS Media's chat layout
 #include "polldoc.h"      // 2.3 poll: a poll card's text
+#include "textspoilerdoc.h" // 2.7 F1: a text spoiler's objects read as their text
 
 namespace replydoc {
 
@@ -180,6 +181,10 @@ QString objectPrefix()
 
 QString textOf(const QString& text, const QTextCharFormat& format)
 {
+    // 2.7 F1: a text spoiler's marker or word reads as what TeamSpeak showed there, once per object character (two
+    // objects with one format would be one fragment; textspoilerdoc gives every object its own).
+    if (textspoilerdoc::isObject(format))
+        return textspoilerdoc::identityText(format).repeated(qMax(1, static_cast<int>(text.count(QChar::ObjectReplacementCharacter))));
     if (emojiformat::isHd(format)) {
         const QString emoji = emojiformat::originalText(format);
         return (emoji.isEmpty() ? emoticonText(emojiformat::emoticonName(format)) : emoji).repeated(text.size());
@@ -189,6 +194,31 @@ QString textOf(const QString& text, const QTextCharFormat& format)
     if (format.isImageFormat())
         return emoticonText(format.toImageFormat().name()).repeated(qMax(1, static_cast<int>(text.count(QChar::ObjectReplacementCharacter))));
     return text;
+}
+
+// 2.7 F1
+bool isPicture(const QTextCharFormat& format)
+{
+    return format.isImageFormat() || textspoilerdoc::isObject(format);
+}
+
+// 2.7 F1
+QString pieceText(const QString& text, const QTextCharFormat& format)
+{
+    if (isPicture(format))
+        return textOf(text, format); // emoticons and HD emoji as their text
+    QString part = text;
+    part.replace(QChar::LineSeparator, QLatin1Char(' '));
+    part.replace(QChar::ParagraphSeparator, QLatin1Char(' '));
+    part.remove(QChar(0x2060));
+    part.remove(QChar::ObjectReplacementCharacter);
+    return part;
+}
+
+// 2.7 F1
+QPair<QString, QTextFormat> receivedRun(const QString& text, const QTextCharFormat& format)
+{
+    return asReceived(text, format);
 }
 
 QString emoticonText(const QString& imageName)
@@ -369,7 +399,7 @@ Message parseBlock(const QTextBlock& block)
                     const int to   = qMin(p.end, bpos + lineEnd);
                     if (from >= to)
                         continue;
-                    if (p.format.isImageFormat()) {
+                    if (isPicture(p.format)) { // 2.7 F1: a text spoiler's object too
                         runs.append({textOf(p.text.mid(from - p.start, to - from), p.format), QString()});
                         continue;
                     }
@@ -395,7 +425,7 @@ Message parseBlock(const QTextBlock& block)
         const Piece& p = pieces.at(i);
         if (p.end <= m.textStart)
             continue;
-        if (p.format.isImageFormat()) {
+        if (isPicture(p.format)) { // 2.7 F1: a text spoiler's objects too
             body += textOf(p.text, p.format); // emoticons and HD emoji as their text
             continue;
         }
@@ -407,12 +437,7 @@ Message parseBlock(const QTextBlock& block)
             m.mediaLabel = replies::leftChars(label.trimmed(), replies::kMaxNickChars * 4);
             break;
         }
-        QString part = p.text.mid(qMax(0, m.textStart - p.start));
-        part.replace(QChar::LineSeparator, QLatin1Char(' '));
-        part.replace(QChar::ParagraphSeparator, QLatin1Char(' '));
-        part.remove(QChar(0x2060));
-        part.remove(QChar::ObjectReplacementCharacter);
-        body += part;
+        body += pieceText(p.text.mid(qMax(0, m.textStart - p.start)), p.format); // 2.7 F1: shared with the text spoilers
         if (body.size() > replies::kMaxBodyChars)
             break;
     }

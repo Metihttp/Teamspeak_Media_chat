@@ -1,58 +1,90 @@
 #pragma once
 
 #include <QDialog>
+#include <QPointer>
 #include <QVector>
 
 #include "settings.h"
+#include "settingstheme.h" // 2.7 F3: the tokens its painted widgets ask for
 
 class Core;
 class QCheckBox;
 class QComboBox; // 2.5 zoom
+class QDialogButtonBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
+class QMessageBox;
 class QPushButton;
 class QScrollArea;
 class QSlider;
 class QSpinBox;
-class QTabWidget;
+class QStackedWidget;
 class QTimer;
 class QVBoxLayout;
 class SettingsSection;
 class ServersSection; // 2.2 per-server settings
 
-// Plugin settings in tabs (2.2): General (media cache), Sending (sending, the note for people without
-// the plugin), Receiving & playback, Servers, Privacy & updates. Tabs without content stay hidden.
+// Plugin settings (2.7 F3, design_settings): a sidebar of pages (Chat, Emoji & GIFs, Sending, Receiving & playback, Link
+// previews, Privacy, Servers, About & updates), each a scrolling page of titled cards with rows; OK, Cancel, Apply and
+// Restore defaults below. Pages without content stay hidden. Every size follows TeamSpeak's font (the factor k: sharp
+// and roomy at 100-200 %), every colour the skin's palette (the tokens). Closing with unsaved changes (X, Esc) asks.
 // The window's objectName starts with "tsmedia" so plugin shutdown can close it.
-class SettingsDialog : public QDialog
+class SettingsDialog : public QDialog, public settingstheme::TokenSource
 {
     Q_OBJECT
 
   public:
-    enum class Tab { General, Sending, ReceivingPlayback, Servers, PrivacyUpdates };
+    // 2.7 F3: the sidebar's pages, in its order (the name is kept to limit churn).
+    enum class Tab { Chat, EmojiGifs, Sending, ReceivingPlayback, LinkPreviews, Privacy, Servers, About };
 
     SettingsDialog(Core* core, QWidget* parent = nullptr);
 
-    // 2.2: a feature's settings, added below the tab's groups in the order of the calls (the dialog
-    // takes ownership and shows the tab). A SettingsSection is loaded, checked and stored with the rest
+    // 2.2: a feature's settings, added below the page's cards in the order of the calls (the dialog
+    // takes ownership and shows the page). A SettingsSection is loaded, checked and stored with the rest
     // of the form; any other widget is only shown.
-    // atTop: above what the tab has so far (the Privacy group heads "Privacy & updates").
+    // atTop: above what the page has so far (the chat layout heads the Chat page).
     void addSection(Tab tab, QWidget* section, bool atTop = false);
     // 2.2 per-server settings: the connected servers or saved server settings changed (connection,
     // Plugins menu, command). Values edited in the dialog and not applied yet are kept.
     void reloadServers();
-    void showTab(Tab tab); // e.g. Privacy & updates after "Check for updates…" in the Plugins menu
+    void showTab(Tab tab); // e.g. About & updates after "Check for updates…" in the Plugins menu
+    Tab  currentTab() const;
+
+    // 2.7 F3 (M2): Esc and the window's X come here: with unsaved changes it asks "Save your changes?" (Save, Discard,
+    // Cancel; a window of its own, never a nested event loop). The Cancel button discards without asking.
+    void reject() override;
+    void discardAndClose();
+    bool hasUnsavedChanges() const;
+
+    // settingstheme::TokenSource
+    const settingstheme::Tokens& themeTokens() const override { return m_tokens; }
+    bool                         keyboardFocusShown() const override { return m_keyboardFocus; }
+
+    // Tests and the live-test driver.
+    QListWidget*    pageList() const { return m_nav; }
+    QStackedWidget* pageStack() const { return m_stack; }
+    QScrollArea*    pageArea(Tab tab) const { return m_pageAreas.value(static_cast<int>(tab)); }
+    QLabel*         unsavedNote() const { return m_unsaved; }
+    // H1: the size the window opens at on a screen with this available area (900 x 640 times k, within 92 % of it).
+    QSize initialSizeFor(const QSize& available) const;
+    QSize minimumSizeFor(const QSize& available) const;
 
   signals:
     void settingsChanged();
 
   protected:
     void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     void changeEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    bool focusNextPrevChild(bool next) override; // 2.7 live: Tab leaves the button bar
 
   private:
     void load(const Settings& settings, bool sections = true); // fills the form; Apply stays as it is
     bool apply();                        // saves what changed; false (and nothing saved) if an input is invalid
+    void okClicked();                    // apply (when changed), then close
     void setDirty(bool dirty);
     void updateEnabled();
     void syncVolume();
@@ -62,20 +94,27 @@ class SettingsDialog : public QDialog
     bool checkDownloadUrl(bool normalize); // shows or hides the message under the field
     void showDownloadUrlError(const QString& text);
     void applyTheme();
-    void fitToContents();
-    QVBoxLayout* tabLayout(Tab tab) const;
-    void         showTabOf(QWidget* widget); // the tab a widget is on becomes the current one
+    void rebuildTabOrder();
+    void stepPage(int direction); // Ctrl+Tab and friends: the next visible page, around
+    void initialSize();
+    QWidget*     addPage(Tab tab, const QString& title, const QString& description);
+    QVBoxLayout* pageLayout(Tab tab) const;
+    void         insertCard(Tab tab, QWidget* card, bool last = false); // last: stays below what sections add later
+    void         showTabOf(QWidget* widget); // the page a widget is on becomes the current one
 
     Core* m_core;
 
-    QTabWidget*                 m_tabs;
-    QVector<QWidget*>           m_pages;     // by Tab: the parent of its groups
-    QVector<QScrollArea*>       m_pageAreas; // by Tab: scrolls its page on a screen too short for it
-    QVector<SettingsSection*>   m_sections; // added by features
+    QListWidget*              m_nav   = nullptr;
+    QStackedWidget*           m_stack = nullptr;
+    QVector<QWidget*>         m_pages;     // by Tab: the parent of its cards
+    QVector<QScrollArea*>     m_pageAreas; // by Tab: the page scrolls on its own
+    QVector<QWidget*>         m_lastCards; // by Tab: a card that stays last (Media cache, the note), or nullptr
+    QVector<SettingsSection*> m_sections;  // added by features
 
     // Receiving
     QCheckBox* m_inlinePreviews;
-    QWidget*   m_receiveDetails; // everything that only matters with inline previews on
+    QGroupBox* m_receiveCard;
+    QGroupBox* m_previewCard; // 2.7 F3: Preview size, a card of its own (follows "Show images ...")
     QCheckBox* m_autoDownload;
     QSpinBox*  m_autoDownloadMax;
     QCheckBox* m_autoplayGifs;
@@ -109,7 +148,6 @@ class SettingsDialog : public QDialog
 
     // Note for people without the plugin
     QCheckBox* m_notice;
-    QWidget*   m_noteDetails;
     QLineEdit* m_downloadUrl;
     QWidget*   m_downloadUrlError;
     QLabel*    m_downloadUrlErrorText;
@@ -117,13 +155,17 @@ class SettingsDialog : public QDialog
 
     ServersSection* m_servers; // 2.2 per-server settings
 
-    QPushButton*       m_applyButton;
-    QVector<QWidget*>  m_indented;              // lined up with the text of the checkbox above
-    QVector<QSpinBox*> m_numberFields;          // share one width
-    Settings           m_loaded;                // what the form showed when it was loaded or last applied
-    bool               m_ready         = false; // the constructor has finished
-    bool               m_sized         = false; // opened at its full size once
-    bool               m_loading       = false;
-    bool               m_keyboardFocus = false; // focus has moved by keyboard: show focus rings
-    bool               m_applyingTheme = false;
+    QDialogButtonBox*     m_restoreBox  = nullptr;
+    QDialogButtonBox*     m_buttons     = nullptr;
+    QPushButton*          m_applyButton = nullptr;
+    QLabel*               m_unsaved     = nullptr; // "Not saved yet: OK or Apply saves your changes."
+    QPointer<QMessageBox> m_question;              // M2: "Save your changes?"
+    QVector<QSpinBox*>    m_numberFields;          // share one width
+    Settings              m_loaded;                // what the form showed when it was loaded or last applied
+    settingstheme::Tokens m_tokens;
+    bool                  m_ready         = false; // the constructor has finished
+    bool                  m_sized         = false; // opened at its size once
+    bool                  m_loading       = false;
+    bool                  m_keyboardFocus = false; // focus has moved by keyboard: show focus rings
+    bool                  m_applyingTheme = false;
 };

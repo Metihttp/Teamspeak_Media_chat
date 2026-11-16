@@ -1655,9 +1655,9 @@ class TestLinkUi : public QObject
         fromOlder.autoLoadLinkPreviews = false;
         fromOlder.load(older);
         QVERIFY(fromOlder.autoLoadLinkPreviews);
-        // The Privacy & updates tab: three boxes in this order (decision A: loading automatically under showing),
+        // The Link previews page (2.6: the Privacy & updates tab): three switches in this order (decision A: loading automatically under showing),
         // each with a hint that says who contacts the website.
-        PrivacySection section;
+        LinkPreviewsSection section; // 2.7 F3: the Link previews page
         section.load(d);
         QList<QCheckBox*> boxes;
         for (QCheckBox* box : section.findChildren<QCheckBox*>()) {
@@ -1748,7 +1748,7 @@ class TestLinkUi : public QObject
         fromOlder.load(older);
         QVERIFY(fromOlder.showWebCards);
 
-        PrivacySection section;
+        LinkPreviewsSection section; // 2.7 F3: the Link previews page
         section.load(d);
         QList<QCheckBox*> boxes;
         for (QCheckBox* box : section.findChildren<QCheckBox*>()) {
@@ -1804,6 +1804,83 @@ class TestLinkUi : public QObject
         QVERIFY(!boxes.at(1)->isChecked());
         section.load(d);
         QVERIFY(boxes.at(1)->isChecked());
+    }
+
+    // 2.7 F3 (design 4.4, 7.3): "Only from friends" under "Load link previews automatically" on the Link previews page: off
+    // by default, its own key, greyed out (its tick kept) unless both "Show previews ..." and the automatic loads are on;
+    // its helper names Friend, the automatic loads' names blocked contacts.
+    void onlyFriendsSettingUi()
+    {
+        const Settings d;
+        QVERIFY(!d.autoLoadLinkPreviewsOnlyFriends);
+        LinkPreviewsSection section;
+        section.load(d);
+        QList<QCheckBox*> boxes;
+        for (QCheckBox* box : section.findChildren<QCheckBox*>()) {
+            if (box->text().contains(QStringLiteral("other websites")) || box->text().contains(QStringLiteral("web pages"))
+                || box->text().contains(QStringLiteral("automatically")) || box->text().contains(QStringLiteral("friends"))
+                || box->text().contains(QStringLiteral("links I send")))
+                boxes << box;
+        }
+        QCOMPARE(boxes.size(), 5);
+        section.resize(600, 1100);
+        section.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&section));
+        std::sort(boxes.begin(), boxes.end(), [](QCheckBox* a, QCheckBox* b) { return a->mapTo(a->window(), QPoint()).y() < b->mapTo(b->window(), QPoint()).y(); });
+        QCOMPARE(boxes.at(2)->text(), QStringLiteral("&Load link previews automatically"));
+        QCheckBox* friends = boxes.at(3);
+        QCOMPARE(friends->text(), QStringLiteral("Only from &friends"));
+        QVERIFY(!friends->text().contains(QStringLiteral("automatically"))); // the 2.4 filters above must not take it
+        QVERIFY(boxes.at(4)->text().contains(QStringLiteral("links I send")));
+        // Indented under the automatic loads, which are indented under the first switch.
+        QVERIFY(friends->mapTo(&section, QPoint()).x() > boxes.at(2)->mapTo(&section, QPoint()).x());
+        QVERIFY(boxes.at(2)->mapTo(&section, QPoint()).x() > boxes.at(0)->mapTo(&section, QPoint()).x());
+        // Unique access keys among the five.
+        QSet<QChar> keys;
+        for (QCheckBox* box : qAsConst(boxes)) {
+            const int amp = box->text().indexOf(QLatin1Char('&'));
+            QVERIFY(amp >= 0);
+            QVERIFY(!keys.contains(box->text().at(amp + 1).toLower()));
+            keys.insert(box->text().at(amp + 1).toLower());
+        }
+        // Default off, enabled with both parents on.
+        QVERIFY(!friends->isChecked());
+        QVERIFY(friends->isEnabled());
+        friends->setChecked(true);
+        boxes.at(2)->setChecked(false); // automatic loads off: greyed, tick kept
+        QVERIFY(!friends->isEnabled());
+        QVERIFY(friends->isChecked());
+        boxes.at(2)->setChecked(true);
+        QVERIFY(friends->isEnabled());
+        boxes.at(0)->setChecked(false); // previews off: greyed too
+        QVERIFY(!friends->isEnabled());
+        QVERIFY(friends->isChecked());
+        boxes.at(0)->setChecked(true);
+        QVERIFY(friends->isEnabled());
+        // The helper texts (also the accessible descriptions): who counts as a friend, and blocked contacts.
+        QVERIFY(friends->accessibleDescription().contains(QStringLiteral("Friend")));
+        QVERIFY(friends->accessibleDescription().contains(QStringLiteral("Load preview")));
+        QVERIFY(friends->accessibleDescription().contains(QStringLiteral("own links")));
+        QVERIFY(friends->toolTip().contains(QStringLiteral("read-only")));
+        QVERIFY(boxes.at(2)->accessibleDescription().contains(QStringLiteral("blocked in TeamSpeak never load by themselves")));
+        QVERIFY(boxes.at(1)->accessibleDescription().contains(QStringLiteral("Nextcloud or ownCloud share")));
+        // store() and load() round trip its own key, and nothing else changes with it.
+        Settings stored = d;
+        section.store(stored, d);
+        QVERIFY(stored.autoLoadLinkPreviewsOnlyFriends);
+        QVERIFY(stored.showLinkPreviews && stored.autoLoadLinkPreviews && stored.makeLinkPreviews && stored.showWebCards);
+        section.load(d);
+        QVERIFY(!friends->isChecked());
+        section.load(stored);
+        QVERIFY(friends->isChecked());
+        Settings off = stored;
+        off.autoLoadLinkPreviews = false;
+        section.load(off);
+        QVERIFY(!friends->isEnabled() && friends->isChecked());
+        // Restore defaults: off again.
+        section.restoreDefaults(Settings());
+        QVERIFY(!friends->isChecked());
+        QVERIFY(friends->isEnabled());
     }
 };
 

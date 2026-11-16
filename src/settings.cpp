@@ -67,6 +67,17 @@ int Settings::normalizeVideoQuality(int shortSide) // 2.4 compress
     return shortSide == 480 || shortSide == 1080 ? shortSide : 720;
 }
 
+QString Settings::normalizeLineColor(const QString& choice) // 2.7 colours
+{
+    // A new string every time (never the DLL's literal): it may end up in QSettings' process-wide cache.
+    const QString trimmed = choice.trimmed();
+    for (const char* name : lineColorChoices) {
+        if (trimmed.compare(QLatin1String(name), Qt::CaseInsensitive) == 0)
+            return QString::fromLatin1(name);
+    }
+    return QString();
+}
+
 Settings::DownloadUrlProblem Settings::checkDownloadUrl(const QString& input, QString* normalized)
 {
     normalized->clear();
@@ -170,6 +181,7 @@ void Settings::load(const QString& file)
     autoLoadLinkPreviews = readBool(s, "autoLoadLinkPreviews", d.autoLoadLinkPreviews); // a missing key: on
     makeLinkPreviews     = readBool(s, "makeLinkPreviews", d.makeLinkPreviews);
     showWebCards         = readBool(s, "showWebCards", d.showWebCards); // 2.5; a missing key: on
+    autoLoadLinkPreviewsOnlyFriends = readBool(s, "autoLoadLinkPreviewsOnlyFriends", d.autoLoadLinkPreviewsOnlyFriends); // 2.7
     // 2.5 YouTube player
     playYouTubeInChat  = readBool(s, "playYouTubeInChat", d.playYouTubeInChat);
     youTubeNoticeShown = readBool(s, "youTubeNoticeShown", d.youTubeNoticeShown);
@@ -192,6 +204,9 @@ void Settings::load(const QString& file)
     chatLayoutIntroShown = readBool(s, "chatLayoutIntroShown", d.chatLayoutIntroShown);
     chatBubbles          = readBool(s, "chatBubbles", d.chatBubbles); // 2.3 chat-visuals
     chatOwnRight         = readBool(s, "chatOwnRight", d.chatOwnRight); // 2.3.1
+    chatZoom      = readInt(s, "chatZoom", d.chatZoom, chatZoomRange);                    // 2.7; garbage -> 0, clamped
+    chatLineColor = normalizeLineColor(s.value(key("chatLineColor")).toString());        // 2.7; unknown -> Automatic
+    darkMode      = readBool(s, "darkMode", d.darkMode);                                  // 2.7 dark mode
 }
 
 void Settings::save() const
@@ -252,6 +267,7 @@ void Settings::save(const QString& file) const
     s.setValue(key("autoLoadLinkPreviews"), autoLoadLinkPreviews);
     s.setValue(key("makeLinkPreviews"), makeLinkPreviews);
     s.setValue(key("showWebCards"), showWebCards); // 2.5
+    s.setValue(key("autoLoadLinkPreviewsOnlyFriends"), autoLoadLinkPreviewsOnlyFriends); // 2.7
     s.setValue(key("playYouTubeInChat"), playYouTubeInChat); // 2.5 YouTube player
     s.setValue(key("youTubeNoticeShown"), youTubeNoticeShown);
     s.setValue(key("youTubeWindowSize"), ownedCopy(youTubeWindowSize));
@@ -271,6 +287,9 @@ void Settings::save(const QString& file) const
     s.setValue(key("chatLayoutIntroShown"), chatLayoutIntroShown);
     s.setValue(key("chatBubbles"), chatBubbles); // 2.3 chat-visuals
     s.setValue(key("chatOwnRight"), chatOwnRight); // 2.3.1
+    s.setValue(key("chatZoom"), qBound(chatZoomRange.min, chatZoom, chatZoomRange.max)); // 2.7
+    s.setValue(key("chatLineColor"), ownedCopy(normalizeLineColor(chatLineColor)));    // 2.7
+    s.setValue(key("darkMode"), darkMode); // 2.7 dark mode
     s.sync();
 }
 

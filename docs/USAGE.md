@@ -8,7 +8,7 @@ How to send files, polls, voice messages and live music, reply to messages, use 
 - [Viewing media](#viewing-media): [albums](#albums), [spoilers](#spoilers), [audio](#audio-files), [reactions](#reactions), [link previews](#link-previews), [file checks](#file-checks), [data saver](#data-saver)
 - [Chat proxy](#chat-proxy): link previews, the YouTube player and update checks through your VPN app's local port
 - [Voice messages](#voice-messages), [live music](#live-music) and [polls](#polls)
-- [Chat layout](#chat-layout)
+- [Chat layout](#chat-layout) and [dark mode](#dark-mode)
 - [Replies](#replies) and [emoji](#emoji)
 - [Dragging files out of the chat](#dragging-files-out-of-the-chat)
 - [Right-click menu](#right-click-menu), [gallery viewer](#gallery-viewer), [chat commands](#chat-commands) and [hotkeys](#hotkeys)
@@ -140,6 +140,8 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - When something goes wrong, the reason is written on the preview or card. Failed cards have a **Retry** button, and clicking a failed picture tries again. Deleted files and files in password-protected channels can't be retried: their previews show the normal pointer and do nothing when clicked. The [FAQ](FAQ.md#what-do-the-messages-on-a-preview-mean) explains every message.
 - With Windows animations turned off (**Settings → Accessibility → Visual effects → Animation effects**), GIFs play only while the pointer is over them, and loading indicators stand still.
 - Previews follow the chat's text size: they grow with Windows display scaling and when you zoom the chat with Ctrl + mouse wheel (or change TeamSpeak's chat font), and the line you are reading stays where it is. **Settings → Receiving & playback → Preview size** makes them larger or smaller than the text.
+- **The chat zoom is one size for every chat (2.7):** Ctrl + mouse wheel in any chat zooms all of them (the other chats follow a moment after you stop, hidden ones when you open them), and TS Media remembers it when TeamSpeak restarts. It is added to TeamSpeak's chat font (**Tools → Options → Chat**), which stays the base. **Settings → Chat → Text size and colors → Chat text size** shows it as a percentage of that font and changes it at once with −, + and **Reset** (Cancel and *Restore defaults* don't undo it). Without TS Media, TeamSpeak zooms only the chat under the pointer and forgets it at restart.
+- The reply bar above the chat input, the *View N replies* list, the voice message strip and the music bar grow with Windows scaling too (2.7), and the reply bar and the replies list with the chat's zoom.
 
 ### Albums
 
@@ -159,7 +161,14 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - A spoiler shows a blurred cover with a *SPOILER* pill. Click it to reveal it; right-click → **Hide spoiler** covers it again. A revealed spoiler stays revealed until TeamSpeak restarts.
 - While covered, GIFs don't animate, videos don't play and nothing downloads automatically; it can't be copied or dragged out (*Reveal the spoiler first*). Reactions can be added without revealing it.
 - In the viewer, a covered spoiler shows **Reveal spoiler**; click it or press <kbd>Space</kbd> or <kbd>Enter</kbd>.
-- *Show spoilers without blurring* in the [settings](SETTINGS.md#spoilers) shows them right away.
+- *Show spoilers without blurring or hiding* (Settings → Receiving & playback → [Spoilers](SETTINGS.md#spoilers)) shows them right away, pictures, videos and text spoilers alike.
+
+2.7: **text spoilers.** Text you mark as a spoiler ([Formatting your text](#formatting-your-text)) is sent as `[spoiler]the text[/spoiler]`.
+- People with TS Media 2.7 see each hidden word as a rounded bar of the word's length (the number and lengths of the words stay visible, as in Discord); the markers don't show. The bars follow the chat's text size (<kbd>Ctrl</kbd> + mouse wheel) and its colours.
+- Point at a bar for *Spoiler · Click to reveal*; a click reveals that spoiler (its text gets a light tint). With the keyboard, open the message's menu (the Menu key or <kbd>Shift</kbd>+<kbd>F10</kbd>) → **Reveal spoiler** (*Reveal spoilers* when the message has several). A revealed text spoiler stays revealed until TeamSpeak restarts or TS Media reloads; there is no *Hide spoiler* for text. With *Show spoilers without blurring or hiding* on, text spoilers come revealed; turning it off hides them again, except the ones you clicked and ones a link preview came into meanwhile.
+- A link inside a hidden spoiler is no link and gets no preview; once revealed it follows [Link previews](#link-previews) like any other link. Links you send inside a spoiler get no preview from you, and a GIF sent inside one isn't added to your GIFs tab.
+- Reply quotes, the reply bar, *Copy text* and copies of a selection say *(spoiler)* for a hidden spoiler; a revealed one copies as it was typed.
+- Everyone else (TeamSpeak without TS Media, TS Media 2.6 and older, ServerQuery, chat logs) reads the tags and the text: `[spoiler]the text[/spoiler]`. A text spoiler hides text on screen for TS Media 2.7 users only; it is no secret ([Privacy & security](PRIVACY-SECURITY.md#text-spoilers)).
 
 ### Audio files
 
@@ -176,7 +185,7 @@ A panel at the bottom of the chat shows each upload with its progress, in TeamSp
 - The row under the media shows each reaction with its count, in the order they first appeared; yours are highlighted. Click a pill to add or remove yours, and point at it to see who reacted (*Thumbs up: you, Bob and Carol*). Everyone can add up to 10 reactions to one item, and an item shows up to 20 different ones.
 - Reactions go through TeamSpeak, never to the server's files: people with TS Media 2.2 or later who are online in the same channel or private chat see them right away. Someone who comes in later sees the reactions of the people who are still there. They aren't available in the server chat.
 - If a reaction can't be sent (not connected, TeamSpeak limiting messages, plugin commands blocked on the server), it is taken back and the tooltip says why.
-- Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions* (Privacy & updates) turns reactions off: none are shown or sent.
+- Your computer remembers reactions for 30 days. **Clear cache** in the settings removes them too. *Show reactions* (**Settings → Privacy**) turns reactions off: none are shown or sent.
 
 ### Link previews
 
@@ -188,7 +197,7 @@ Since 2.4, web links in the chat get a preview under them (since 2.5 also pages,
   - A stopped video shows where it stopped (`1:05` on the thumbnail) and plays on from there.
   - Videos whose owner doesn't allow playing them outside YouTube show *This video can only be watched on YouTube*, removed ones *Video unavailable*, other failures *Can't play this video here*; **Watch on YouTube** opens the video in your browser. Right-click such a card and choose **Try again** to try once more.
   - The card's menu: **Stop video** (while it plays), **YouTube Terms of Service**, and the usual items.
-  - Turn it off with *Play YouTube videos in a TS Media window* (*Settings → Privacy & updates*): Play then opens the browser. Without the WebView2 Runtime and in 32-bit TeamSpeak videos always open in the browser. What your PC sends: [privacy](PRIVACY-SECURITY.md#playing-youtube-videos).
+  - Turn it off with *Play YouTube videos in a TS Media window* (*Settings → Link previews*): Play then opens the browser. Without the WebView2 Runtime and in 32-bit TeamSpeak videos always open in the browser. What your PC sends: [privacy](PRIVACY-SECURITY.md#playing-youtube-videos).
 - **Links to pictures, GIFs and videos** (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.mp4`, `.webm`, `.mov`, `.m4v`) show the file itself, like a file sent in the chat: pictures open in the gallery viewer, GIFs animate, videos play inline with the usual controls. A video that is too large to play here shows its poster with **Open in browser**.
 - **GIF and media sites** show the media itself, as if the file had been linked: Tenor, Giphy (also `gph.is`), Imgur (also `.gifv` and albums), Klipy (clips, stickers, memes, emoji, AI GIFs; its GIF pages are behind Klipy's own bot check today, so TS Media asks Klipy's public oEmbed for their GIF, whose answer doesn't name it yet: they get no preview until Klipy fixes that answer, and then work by themselves), Reddit videos (`v.redd.it`) and post links to pictures or videos, Streamable, Imgflip, Pinterest, 9GAG, Coub, Gyazo, Lightshot, ImgBB, Postimages, Gifer, Makeagif, Pixeldrain, Tumblr posts and Steam screenshots. GIF-like videos play silently in a loop like GIFs; videos with sound play with the usual controls.
 - **Cards for well-known sites**: Vimeo, SoundCloud, Spotify, Apple Music, Dailymotion, Medal, X (and twitter.com), Bluesky, Twitch channels and clips, Kick, Steam, GitHub, Wikipedia (every language), Telegram channel posts, Discord invites and Reddit posts show the site's colour, the author, the title, a short text and a picture (a play symbol for videos, which open in your browser). Cards and media from pages that declare themselves for adults show their picture covered like a spoiler (click it to show it; **Show spoilers without blurring** shows it at once); a page without that flag may still be for adults.
@@ -196,9 +205,10 @@ Since 2.4, web links in the chat get a preview under them (since 2.5 also pages,
 - **Other web pages** (**Show cards for other web pages**, on by default) get a card like Discord's: the page's colour, site name, title, a short text and its picture. The card appears when it is ready; a page with nothing usable gets none. A page that redirects to another website (a short link, for example) gets no card from the sender's plugin and isn't loaded by itself; **Load link previews** loads it, and its card then names the link's own site first and the website it went to after it.
 - **Who loads it:** when the sender has TS Media 2.4 (2.5 for pages and sites) and sent the link in a channel or private chat, their plugin made the preview when they sent it and put it in the channel's files. You see it from your TeamSpeak server, like any other file, and never contact the website; until it arrives the card says *Waiting for the sender's preview…* (*Checking for the sender's preview…* while your PC asks whether they make one). Your own links show at once from your own download (*Making the preview…* first). Other links load from the website by themselves when they show on your screen (**Load link previews automatically**, on by default), which shows that website your IP address: cards always (also with data saver), pictures, GIFs and videos within your automatic download limit for images (15 MB by default; videos use your video limit if you set one), and with data saver only cards; 2 at a time, one per person, and a link waiting its turn shows **Load preview** until then. A larger file shows **Load preview** with its size (or that it is over your limit); a click loads pictures and GIFs up to 25 MB and videos up to 50 MB, larger ones say *Too large to preview here* with **Open in browser**. With the switch off, every such link waits for your click on **Load preview** (point at the card to read that this connects your PC to that website). When the sender's preview arrives before a link was loaded here, the card switches to it; when it is gone from the server (or isn't the file that was announced), the link is loaded like other links.
 - **Which links:** YouTube videos, links to files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.mp4`, `.webm`, `.mov`, `.m4v`; `http://` ones are loaded over https), the sites above and other web pages (also written without `https://`, which TeamSpeak links as `http://`; they are loaded over https), at most 3 per message (links to files and YouTube come first). Never: the plugin's own links, sign-in, confirmation or download links, documents and archives, TikTok, IMDb, Amazon, Google Maps and Deezer links. A preview that can't be loaded says *Couldn't load the preview* with **Retry** (through a proxy: *Couldn't load through the chat proxy* or *Couldn't load through your Windows proxy*; a site your network filters: *Your network blocks this site*; see [chat proxy](#when-something-goes-wrong)); a site that asks to wait shows *Site busy* and loads by itself later. Cards for other web pages show nothing while they load or when they fail: right-click the message and choose **Load link previews** to load (or retry) them by hand; with automatic loading off that is how they load. Previews go through your Windows proxy if you have one, or through the [chat proxy](#chat-proxy) when you turn it on ([details](PRIVACY-SECURITY.md#link-previews)).
+- **Only from friends (2.7):** turn on **Settings → Link previews → Only from friends** (it needs *Load link previews automatically*) and other people's links load from their website by themselves only when the sender is marked **Friend** in your TeamSpeak contacts (right-click a name → **Add as Friend**, or **Tools → Contacts**). Everyone else's links show **Load preview**; a click still loads them, and the card's tool tip says why it waits (*Loads by itself only for your TeamSpeak friends.*). Links from people you marked **Blocked** never load by themselves, with or without it (*You blocked this person in TeamSpeak…*). Previews made by the sender (they come from your TeamSpeak server and never connect your PC to the website) and your own links aren't affected. A change in the client menu counts within about 2 seconds, one in **Tools → Contacts** when you close that window. [What TS Media reads](PRIVACY-SECURITY.md#only-from-friends-and-blocked-contacts).
 - **Hide a preview:** point at the card and click **×**, or right-click it → **Hide preview**; the card becomes a small *Preview hidden · Show* pill until TeamSpeak restarts. Right-click also offers **Open in browser** and **Copy link** (the web address).
-- **Your links:** when you send such a link, your plugin loads it once and shares the preview through the TeamSpeak server (you need upload permission in that channel). Turn that off with **Settings → Privacy & updates → Make previews for links I send**.
-- **Turn previews off:** **Settings → Privacy & updates → Show previews for links to other websites**. Every card and preview goes, and nothing is loaded for them any more. To keep previews but load other people's links only on a click, turn off **Load link previews automatically**. To keep media and site cards but drop cards for other web pages, turn off **Show cards for other web pages**. Details: [privacy & security](PRIVACY-SECURITY.md#link-previews).
+- **Your links:** when you send such a link, your plugin loads it once and shares the preview through the TeamSpeak server (you need upload permission in that channel). Turn that off with **Settings → Link previews → Make previews for links I send**.
+- **Turn previews off:** **Settings → Link previews → Show previews for links to other websites**. Every card and preview goes, and nothing is loaded for them any more. To keep previews but load other people's links only on a click, turn off **Load link previews automatically**. To keep media and site cards but drop cards for other web pages, turn off **Show cards for other web pages**. Details: [privacy & security](PRIVACY-SECURITY.md#link-previews).
 - Reactions and replies on a message with a link work as on any text message; the preview itself has no reactions of its own.
 
 ### File checks
@@ -223,7 +233,7 @@ New in 2.6. Where YouTube, Klipy and other sites are filtered, the chat proxy se
 ### Setting it up
 
 1. Start your VPN app and connect it to a server (TUN or VPN mode off; its "system proxy" option doesn't matter for TeamSpeak).
-2. **Plugins → TS Media chat → Turn on chat proxy** (or **Settings → Privacy & updates → Chat proxy settings…**). The first time, the *Chat proxy* window opens with *Use a chat proxy…* ticked and the server `127.0.0.1` (once a proxy is saved, the menu item just turns it on).
+2. **Plugins → TS Media chat → Turn on chat proxy** (or **Settings → Privacy → Chat proxy settings…**). The first time, the *Chat proxy* window opens with *Use a chat proxy…* ticked and the server `127.0.0.1` (once a proxy is saved, the menu item just turns it on).
 3. Press **Find my VPN app**: it finds v2rayN (10808), Throne and Nekoray (2080), Clash Verge Rev (7897) and Hiddify (12334) at their usual ports on this PC and fills in the first that answers. Or choose **SOCKS5** (or **HTTP**), server `127.0.0.1` and your app's local port yourself, or copy a proxy link such as `socks5://127.0.0.1:10808` and press **Paste from clipboard**.
 4. Press **Test**. *Works · 612 ms* means it works; anything else says what is wrong ([the texts](SETTINGS.md#chat-proxy)).
 5. Press **OK**. The chat says *Chat proxy on: SOCKS5 proxy 127.0.0.1:2080. Link previews, the YouTube player and update checks use it; TeamSpeak itself doesn't.*
@@ -237,7 +247,7 @@ Turning it off keeps the proxy, so turning it on again needs no typing:
 - **Plugins → TS Media chat → Turn on chat proxy** / **Turn off chat proxy** (only the one that applies is enabled);
 - a TeamSpeak hotkey, *Turn the chat proxy on or off* ([hotkeys](#hotkeys)); with no proxy set up it only says so in the chat;
 - `/tsmedia proxy on` and `/tsmedia proxy off`; `/tsmedia proxy` says what is in use and whether it works;
-- **Settings → Privacy & updates → Chat proxy**: the **Turn on chat proxy** / **Turn off chat proxy** button acts at once.
+- **Settings → Privacy → Chat proxy**: the **Turn on chat proxy** / **Turn off chat proxy** button acts at once.
 
 Each prints one line in the chat (it names the proxy's address only when the proxy is on this PC). It applies at once, without restarting TeamSpeak: previews that are loading start again through the new route, and a YouTube video that is playing closes (*Closed: the chat proxy changed. Press Play again.*). While it is off, TS Media uses your Windows proxy settings (the default, as before 2.6) or no proxy, as chosen under *When the chat proxy is off* in its window.
 
@@ -252,7 +262,7 @@ The chat proxy never falls back to a direct connection: when it doesn't work, no
 - Right-click such a card for **Turn off chat proxy** or **Turn on chat proxy**, and **Proxy settings…**.
 - The YouTube player says *Can't play through the proxy* when the proxy can't be used for it (its card's menu has the same items).
 - After you turn the chat proxy off (or switch between the Windows settings and no proxy), previews that waited for a proxy or failed through it and haven't loaded since load only when you click them (the line that turning the chat proxy off prints says so). Other previews follow the new route as usual: one that was loading starts again through it, and links that hadn't started loading yet (off screen, or waiting for their turn) load through it by themselves.
-- The status line in **Settings → Privacy & updates → Chat proxy** and in the window says what is in use and what is wrong.
+- The status line in **Settings → Privacy → Chat proxy** and in the window says what is in use and what is wrong.
 
 ## Voice messages
 
@@ -315,7 +325,7 @@ Ask your channel a question and let everyone with TS Media vote, like Telegram's
   <img src="images/chat-layout-light.png" width="100%" alt="The same chat in the two layouts of TS Media chat. Cozy with bubbles, the default: a day divider reading Today, October 10, 2026, join lines centred on small pills with an icon and their time, avatars with names and times above messages in rounded bubbles, your own message on the right in a tinted bubble with its time and without a name or avatar, reactions under a text message, a message that mentions you highlighted, a run of join events folded into +3 more events, and the message under the pointer with its time and the Add reaction, Reply, Copy text and More buttons. Compact: the same messages one line each with the time in front">
 </picture>
 
-TS Media chat gives TeamSpeak's chat a Discord-like look in your own view. Nothing is sent and nobody else sees a difference. Choose the look in **Settings → General → Chat layout**:
+TS Media chat gives TeamSpeak's chat a Discord-like look in your own view. Nothing is sent and nobody else sees a difference. Choose the look in **Settings → Chat → Chat layout**:
 
 - **Cozy** (the default): names, avatars and times above the messages. Messages of one person within 7 minutes are grouped under one name; point at one to see its time. A reply always starts a new group and shows its reply row above the name. Every message sits in its own bubble, like in Telegram, yours tinted with the accent colour, with its pictures, file, audio and voice cards, polls and reactions inside (cards then have no box of their own). The bubbles can be turned off.
 - **Your messages on the right** (Cozy with bubbles, 2.3.1): like in Telegram, your own messages sit on the right and everyone else's on the left. Yours show no name or avatar; each bubble is as wide as what it holds and shows its time, after the last line or under a picture or card. Right-to-left text such as Persian is right-aligned in its bubble, and so are its reactions. A reply's row sits above your bubble, flush right. Turn it off with **Show my messages on the right**.
@@ -332,6 +342,21 @@ In Cozy and Compact:
 - The chat keeps a little room under its newest message, so it never touches the chat tabs below, and stays at its end when new messages come in.
 
 Grouping, message actions, bubbles, your messages on the right, avatars, mentions and folding can each be turned off in the [settings](SETTINGS.md#chat-layout).
+
+### Colors of TS Media's lines
+
+TS Media writes a few lines into your chat itself, starting with **TS Media chat** (an upload's result, a warning, the update notice). Since 2.7 their colors follow your chat's real background: the color your skin or custom style sheet paints, also a gradient or a picture, never just the skin's name. Every line reads at 4.5:1 or better, and TeamSpeak's light and dark skins keep their old colors. **Settings → Chat → Text size and colors → Color of messages from TS Media** picks another shade (*Automatic*, *Blue*, *Teal*, *Green*, *Orange*, *Pink* or *Same as the chat text*); every choice is made light or dark enough for your background, and the preview there shows how the lines will look. Lines already in the chat keep their color, like TeamSpeak's own lines after a skin change. Cards, reply lines, reactions and polls take dark or light from the same background.
+
+## Dark mode
+
+New in 2.7. One switch turns all of TeamSpeak into a warm dark theme: charcoal backgrounds, soft off-white text and one terracotta accent for what is selected, focused or on. It acts at once (no restart) and only on your PC; nobody else sees a difference.
+
+- **Turn it on or off** with **Settings → Chat → Appearance → Dark mode**, with **Plugins → TS Media chat → Turn on dark mode** / **Turn off dark mode**, or with a hotkey (**Tools → Options → Hotkeys**, *Turn dark mode on or off*, see [hotkeys](#hotkeys)). TS Media remembers it: with dark mode on, TeamSpeak starts dark.
+- **What turns dark:** the main window with its menus, tool bar and status bar, the channel tree, the chat tabs and the chat, the info panel, tool tips, scroll bars, TeamSpeak's dialogs (Options, Connect, Bookmarks, Identities, Permissions, the file browser, …), the title bars of TeamSpeak's windows, and every TS Media window. *Automatic* in [Colors of TS Media's lines](#colors-of-ts-medias-lines) becomes the theme's accent.
+- **Lines already in the chat** are made readable on the dark chat: TeamSpeak's own colors (names, times, join and leave lines, links, kicks) get their dark counterparts, and any text whose color wouldn't read on the dark background (someone's black `[COLOR]` text, another plugin's dark blue line) is lightened. Turning dark mode off gives every line its color back exactly; lines that came in while it was on get your TeamSpeak style's colors, as if they had come in then (except the bold *TS Media chat* of a line printed with **Same as the chat text**, which comes back in the name color).
+- **Your TeamSpeak style is kept.** Dark mode doesn't change **Tools → Options → Design**: turning it off brings back exactly the style you use there (light, the community dark skin or your own). If you pick another style there while dark mode is on, dark mode stays on and that style is the one you get back.
+- **What stays as it is:** web pages shown inside TeamSpeak (the Addons browser, myTeamSpeak) and inside the YouTube player, and the colors TeamSpeak draws itself from its style files for some names in the channel tree (friends, blocked people, someone recording). A plugin can't change those; see the [FAQ](FAQ.md#some-names-in-the-channel-tree-keep-their-colors-in-dark-mode).
+- Nothing changes outside TeamSpeak: no Windows setting, no other program. Unloading or disabling TS Media turns the dark theme off and gives TeamSpeak its style back; cards drawn in dark mode can stay dark until TS Media draws them again.
 
 ## Dragging files out of the chat
 
@@ -378,7 +403,25 @@ Right-click a message itself (not a preview) and TeamSpeak's own chat menu opens
 | Copy text | any message: what was written, without the time and name (and without a reply's quote line), with emoji and smileys as text; the selection instead when you right-clicked inside it |
 | The emoji's name, Copy emoji, Use in the chat input | an HD emoji under the pointer ([emoji](#emoji)) |
 
-When TeamSpeak shows no menu of its own there, a small menu with the same items opens.
+When TeamSpeak shows no menu of its own there, a small menu with the same items opens. 2.7: a message with hidden [text spoilers](#spoilers) has **Reveal spoiler** (or *Reveal spoilers*) first.
+
+## Formatting your text
+
+2.7: select text in the chat input and right-click it. After TeamSpeak's *Select All* come four entries of TS Media's, between two lines:
+
+| Entry | What you send | Everyone sees |
+| --- | --- | --- |
+| **Bold** | `[B]text[/B]` | **text** (TeamSpeak's own formatting: also people without TS Media) |
+| **Italic** | `[I]text[/I]` | *text* |
+| **Underline** | `[U]text[/U]` | underlined text |
+| **Spoiler** | `[spoiler]text[/spoiler]` | TS Media 2.7: bars until clicked ([text spoilers](#spoilers)); everyone else: the tags and the text |
+
+- An entry with a tick is applied to the selection: choosing it again removes the tags. The text stays selected, so you can apply another one (bold and italic, say). One <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes one entry.
+- Spaces at the ends of the selection are left out. A selection that cuts through a formatted part (one tag inside, the other outside) takes that whole part in, so no tag is ever left over. A spoiler inside a spoiler isn't possible: **Spoiler** on a selection that holds one makes one spoiler of it all, and **Spoiler** inside a spoiler's text removes that spoiler.
+- A web address at the end of the selection is put into `[URL]…[/URL]` first, so the link and the closing tag never run together. For **Spoiler** this happens also when a comma, a full stop or the rest of the address follows the selection.
+- <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> is **Spoiler** from the keyboard (with nothing selected it puts in an empty `[spoiler][/spoiler]` with the cursor between). TeamSpeak's own *Format* submenu (in the same menu) gets **Spoiler** too.
+- TeamSpeak's own <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, <kbd>I</kbd> and <kbd>U</kbd> (and its *Format* submenu's Bold, Italic and Underline) keep working as before: they wrap the selection but don't remove tags. <kbd>Ctrl</kbd>+<kbd>B</kbd>, <kbd>Ctrl</kbd>+<kbd>I</kbd> and <kbd>Ctrl</kbd>+<kbd>U</kbd> stay TeamSpeak's (Bookmarks, Identities, Collected URLs).
+- The tags count toward TeamSpeak's message limit (8192 bytes).
 
 ## Replies
 
@@ -452,7 +495,7 @@ Letter and number keys also work with non-Latin keyboard layouts. After a mouse 
 - **The emoji picker.** Click TeamSpeak's emoticon button next to the chat input (it shows an HD face), or press <kbd>Ctrl</kbd>+<kbd>E</kbd> there (Windows' own panel, <kbd>Win</kbd>+<kbd>.</kbd>, works too). If TeamSpeak hides its button, a smiley inside the chat input, left of the microphone, takes its place. About 1,600 emoji in eight groups, with *Recently used* first, a search by name or word (`joy`, `+1`, `:fire:` …), a skin-tone choice and a preview with the name. Typing searches right away; <kbd>↓</kbd> or <kbd>Tab</kbd> moves into the grid, the arrows move there, <kbd>Page Up</kbd> / <kbd>Page Down</kbd> jump a group, <kbd>Enter</kbd> inserts and closes, <kbd>Shift</kbd>+<kbd>Enter</kbd> or <kbd>Shift</kbd>+click inserts and keeps it open, <kbd>Esc</kbd> clears the search or closes; <kbd>Ctrl</kbd>+<kbd>E</kbd> or the button again closes it too. The send window's caption field has the same button.
 - **Reactions** use the same HD emoji, and any emoji can be one ([reactions](#reactions)).
 - Reply lines, the reply bar and *View replies* show emoji in HD too ([replies](#replies)).
-- The options are under [Settings → General → Emoji](SETTINGS.md#emoji).
+- The options are under [Settings → Emoji & GIFs → Emoji](SETTINGS.md#emoji).
 
 ### GIFs
 
@@ -481,7 +524,7 @@ The emoji picker of the chat input has two pages on top, **Emoji** and **GIFs**,
 | `/tsmedia datasaver` | show whether data saver is on for this server; `on`, `off` or `default` change it |
 | `/tsmedia proxy` | say whether the [chat proxy](#chat-proxy) is on, what it uses and whether it works; `on` or `off` turns it on or off (2.6) |
 | `/tsmedia update` | check for a new version now (official builds; see [updates](UPDATES.md)) |
-| `/tsmedia diag` | open *Diagnostic info* (also **Settings → General → Diagnostic info…**): versions, settings, session counts and recent plugin messages to copy into a bug report. File names are hidden unless you tick *Include file names*; server addresses, server and channel names and nicknames are never included. *Copy and open bug report* also opens the GitHub form in your browser with the version fields filled in. |
+| `/tsmedia diag` | open *Diagnostic info* (also **Settings → About & updates → Diagnostic info…**): versions, settings, session counts and recent plugin messages to copy into a bug report. File names are hidden unless you tick *Include file names*; server addresses, server and channel names and nicknames are never included. *Copy and open bug report* also opens the GitHub form in your browser with the version fields filled in. |
 | `/tsmedia help` or `/tsmedia` | print the version and the list of commands |
 | `/tsmedia debug` | write a list of TeamSpeak's chat widgets to `widget_dump.txt` in the plugin's data folder (`%APPDATA%\TS3Client\plugins\tsmedia`) for bug reports; the chat says *Diagnostics saved to …* |
 
@@ -497,7 +540,8 @@ In **Tools → Options → Hotkeys**, click **Add**, then **Show Advanced Action
 | Cancel all uploads | stops every running upload |
 | Reply to the last message in the current chat | starts a reply to the newest message of the chat you are looking at ([replies](#replies)) |
 | Turn the chat proxy on or off | turns the [chat proxy](#chat-proxy) on or off (2.6); with none set up it only says so in the chat and opens no window |
+| Turn dark mode on or off | turns [dark mode](#dark-mode) on or off (2.7) |
 
 2.2.0's *Record a voice message* hotkey is gone since 2.2.1 (use the microphone in the chat input). If you had bound it, it no longer does anything; you can remove it from TeamSpeak's hotkey list.
 
-The **Plugins → TS Media chat** menu also has **Pause automatic downloads on this server** / **Resume automatic downloads on this server**, **Turn on chat proxy** / **Turn off chat proxy** ([chat proxy](#chat-proxy)), **Check for updates…** (official builds), **Settings…** and **Open media cache folder**. Server admins find **Give TS Media chat access** and **Remove TS Media chat access** in a client's right-click menu ([server admin guide](SERVER-ADMIN.md#one-click-ts-media-chat-group)).
+The **Plugins → TS Media chat** menu also has **Pause automatic downloads on this server** / **Resume automatic downloads on this server**, **Turn on chat proxy** / **Turn off chat proxy** ([chat proxy](#chat-proxy)), **Turn on dark mode** / **Turn off dark mode** ([dark mode](#dark-mode)), **Check for updates…** (official builds), **Settings…** and **Open media cache folder**. Server admins find **Give TS Media chat access** and **Remove TS Media chat access** in a client's right-click menu ([server admin guide](SERVER-ADMIN.md#one-click-ts-media-chat-group)).

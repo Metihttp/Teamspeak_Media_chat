@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.7.0] - 2026-11-16
+
+### Added
+- **Dark mode** (Settings → Chat → Appearance, the Plugins menu or a hotkey): all of TeamSpeak in a warm dark theme at once — main window, channel tree, chat, info panel, menus, dialogs, title bars and TS Media's windows; old chat lines are made readable, and turning it off brings your TeamSpeak style back exactly (chat colors with [two small exceptions](docs/FAQ.md#dark-mode-and-my-own-teamspeak-skin)). [Dark mode](docs/USAGE.md#dark-mode).
+- **Format your text.** Select text in the chat input and right-click it: **Bold**, **Italic**, **Underline** and **Spoiler** come right after *Select All*. Bold, italic and underline are TeamSpeak's own formatting, so everyone sees them; an entry with a tick removes the formatting again, and one <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes one entry. <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> marks a spoiler from the keyboard, and TeamSpeak's own *Format* submenu gets **Spoiler** too. A selection that cuts through formatted text takes it in whole, so no tag is left over. [Formatting your text](docs/USAGE.md#formatting-your-text).
+- **Text spoilers.** Text marked as a spoiler is sent as `[spoiler]the text[/spoiler]`. People with TS Media 2.7 see each word as a bar until they click it (or open the message's menu → **Reveal spoiler** with the keyboard); everyone else reads the tags and the text. A link inside a hidden spoiler gets no preview and loads nothing, links you send inside one get no preview from you, and reply quotes and copies say *(spoiler)*. [What a text spoiler hides and doesn't](docs/PRIVACY-SECURITY.md#text-spoilers).
+- **Only from friends** (**Settings → Link previews**, off by default): with *Load link previews automatically* on, a link loads from its website by itself only when its sender is marked **Friend** in your TeamSpeak contacts; everyone else's links show **Load preview** (a click still loads them, and the tool tip says why). Previews made by the sender (they come from your TeamSpeak server and never connect your PC to the website) and your own links aren't affected. TS Media reads your TeamSpeak contacts on this computer, read-only, and keeps only the Friend and Blocked marks and the IDs, in memory; nothing is sent, logged or saved. [What is read](docs/PRIVACY-SECURITY.md#only-from-friends-and-blocked-contacts).
+- Links from people you marked **Blocked** in TeamSpeak never load from their website by themselves, with or without *Only from friends* (a click still loads them).
+- **TS Media remembers your chat zoom.** Ctrl + mouse wheel in any chat sets one text size for every chat, kept when TeamSpeak restarts and after **Options → Addons → Reload**; TeamSpeak's own chat font (**Tools → Options → Chat**) stays the base. **Settings → Chat → Text size and colors → Chat text size** shows it as a percentage (*124%*) and changes it at once with −, + and **Reset**.
+- **Color of messages from TS Media** (**Settings → Chat → Text size and colors**): *Automatic*, *Blue*, *Teal*, *Green*, *Orange*, *Pink* or *Same as the chat text* for the *TS Media chat* lines and their links; every choice is made light or dark enough to read on your chat's background.
+- **A new Settings window.** The pages sit in a sidebar (*Chat*, *Emoji & GIFs*, *Sending*, *Receiving & playback*, *Link previews*, *Privacy*, *Servers*, *About & updates*), each a scrolling column of titled cards with a short line about the page; on/off options are switches with their explanation under them, options that need another one are indented under it and greyed out, and the chat layouts are picture tiles. Every size follows TeamSpeak's font, so the window is sharp and roomy at 150% and 200% display scaling (it opens at most 92% of your screen, and narrow windows stack rows instead of clipping them), and every colour follows your TeamSpeak skin, also a custom dark one. Every option keeps an access key, <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>PgDn</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>PgUp</kbd> switch pages, and focus rings show once you use the keyboard. No setting, default or `settings.ini` key changed ([settings](docs/SETTINGS.md)).
+  - *Not saved yet: OK or Apply saves your changes.* shows while something isn't saved, and closing the window with <kbd>Esc</kbd> or its **X** then asks *Save your changes?* (**Save**, **Discard**, **Cancel**). The **Cancel** button still closes without asking.
+  - **Settings → Chat → Text size and colors**: *Chat text size* shows the chat zoom in percent with **−**, **+** and **Reset** (acts at once, like Ctrl + mouse wheel), and *Color of messages from TS Media* with a preview of the lines on your chat's background.
+  - **Settings → Link previews → Only from friends**, under *Load link previews automatically*.
+  - The Privacy page links to the Link previews page (*Link previews and your IP address…*).
+- The diagnostic info shows the chat text size, the color choice, *Only from friends* and the contacts list's state (never a name, an ID or a count of people).
+
+### Changed
+- *Show spoilers without blurring or hiding* (Settings → Receiving & playback → Spoilers) covers text spoilers too. Turning it off again hides what it revealed, but not spoilers you clicked or ones a link preview came into meanwhile.
+- Ctrl + mouse wheel zooms every chat, not only the one under the pointer: the other chats follow a moment after you stop (hidden ones when you open them).
+- The link in TS Media's own lines (the update notice, the chat proxy's notices) is drawn in the line's accent color instead of TeamSpeak's link color, so it reads on dark chats too.
+- Settings moved with the new window: *General → Chat layout* is **Chat** (its options in a *Messages* card), *General → Emoji* is **Emoji & GIFs** (*Remember GIFs I send* in a *GIFs* card), *General → Media cache* is the last card of **Receiving & playback**, *General → Diagnostic info…* is **About & updates → Troubleshooting**, *Privacy & updates* became **Privacy** (reactions, presence, the chat proxy), **Link previews** and **About & updates** (Updates), and *Preview size* has a card of its own. *Fold runs of join and leave events* has the access key E (R is Restore defaults). Texts that named a Settings place (the update notice and consent, the YouTube player's notice, the chat layout's first line, *Clear cache*) name the new one.
+
+### Fixed
+- After **Tools → Options → Addons → Reload**, or turning TS Media off and on again, a chat that was at its end comes back at its end, and a chat you scrolled up shows the same message in the same place, with any Windows scaling and also in chats with albums, polls and link cards. Before, the chat could stop far above its end with scaling above 100%, and a chat you scrolled up could move by a message or two.
+- The reply bar above the chat input (*Replying to …*), the *View N replies* list, the voice message strip and the music bar were tiny at 150% and 200% display scaling (their text stayed at 10–11 pixels). They now grow with Windows scaling, and the reply bar and the replies list with the chat's zoom too, like the reply lines in the chat.
+- TS Media's chat lines were hard to read on custom dark themes: their colors, and dark or light for cards, replies, reactions and polls, now come from the chat's real background (the style sheet's color, the average of a gradient, or a picture background's color), not from one known skin. Every line reads at 4.5:1 or better; TeamSpeak's light and dark skins keep exactly the colors of 2.6.
+
 ## [2.6.0] - 2026-11-14
 
 ### Added
@@ -376,7 +404,9 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
-[2.5.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.4.0...HEAD
+[2.7.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.6.0...v2.7.0
+[2.6.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.5.0...v2.6.0
+[2.5.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.3...v2.4.0
 [2.3.3]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.3.1...v2.3.2

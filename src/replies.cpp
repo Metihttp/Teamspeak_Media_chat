@@ -5,6 +5,7 @@
 
 #include "albums.h"    // uidFromClientHref: the same reading of TeamSpeak's client links
 #include "medialink.h" // escapedMessageSize, bbcodeLiteral, sanitizeCaption
+#include "textspoiler.h" // 2.7 F1: spoilers as "(spoiler)" in snippets
 
 namespace replies {
 
@@ -146,7 +147,10 @@ QString makeSnippet(const QString& source, int maxChars)
     if (maxChars <= 0)
         return {};
     static const QRegularExpression url(QStringLiteral("(?:\\b[A-Za-z][A-Za-z0-9+.\\-]{1,15}://|\\bwww\\.)\\S+"));
-    QString text = withoutInvisible(leftChars(source, kMaxBodyChars));
+    // 2.7 F1: a text spoiler is "(spoiler)" in every snippet (before anything else: also its links), on both sides. An
+    // opening marker without its closing one hides the rest too: the source may have been cut inside a spoiler (the
+    // chat's reader keeps the first kMaxBodyChars of a message), and parseQuote matches the same way (review fix).
+    QString text = withoutInvisible(leftChars(textspoiler::masked(source, true), kMaxBodyChars));
     text.replace(url, QStringLiteral("(link)"));
     text = sanitizeCaption(text); // one line, no controls or bidi marks, whitespace collapsed
     if (text.size() <= maxChars)
@@ -299,7 +303,12 @@ Quote parseQuote(const QVector<Run>& runs)
             return {};
         quote.minutes = hours * 60 + minutes;
     }
-    QString snippet = leftChars(withoutInvisible(m.captured(3)).trimmed(), kMaxSnippet); // a giant emoji run: never half of one
+    // 2.7 F1: a spoiler quoted by TS Media 2.6 or older (or cut inside one) shows as "(spoiler)"; a cut one stays cut.
+    const QString quoted = withoutInvisible(m.captured(3)).trimmed();
+    QString       masked = textspoiler::masked(quoted, true);
+    if (quoted.endsWith(kEllipsis) && !masked.endsWith(kEllipsis))
+        masked += kEllipsis;
+    QString snippet = leftChars(masked, kMaxSnippet); // a giant emoji run: never half of one
     if (snippet.startsWith(clip())) {
         quote.media = true;
         snippet     = snippet.mid(clip().size()).trimmed();

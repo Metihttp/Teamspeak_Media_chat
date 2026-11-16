@@ -13,6 +13,7 @@
 #include "emojirender.h"
 #include "i18n.h"
 #include "replyart.h"
+#include "replybar.h" // 2.7 F4: widgetFont
 #include "uiutil.h"
 
 namespace {
@@ -23,14 +24,16 @@ constexpr int kMaxVisible = 6;
 
 } // namespace
 
-RepliesPopup::RepliesPopup(bool dark, const QColor& base, const QFont& chatFont, const QString& title, const QVector<ReplyRow>& rows, QWidget* parent)
+RepliesPopup::RepliesPopup(bool dark, const QColor& base, const QFont& chatFont, const QString& title, const QVector<ReplyRow>& rows, qreal scale,
+                           QWidget* parent)
     : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
     , m_dark(dark)
     , m_base(base)
     , m_title(title)
     , m_rows(rows.mid(qMax(0, rows.size() - kMaxRows)))
     , m_offset(qMax(0, rows.size() - kMaxRows))
-    , m_font(replyart::scaledFont(chatFont, 1.0))
+    , m_font(replybar::widgetFont(chatFont, 1.0, qBound(1.0, scale, 4.0))) // 2.7 F4: 11 px at 100%, 22 px at 200%
+    , m_scale(qBound(1.0, scale, 4.0))
 {
     setObjectName(QString::fromLatin1("tsmediaRepliesPopup"));
     setAttribute(Qt::WA_DeleteOnClose);
@@ -42,13 +45,23 @@ RepliesPopup::RepliesPopup(bool dark, const QColor& base, const QFont& chatFont,
     setAccessibleName(title);
     setFont(m_font);
     const QFontMetricsF fm(m_font);
-    m_rowHeight = qMax(40, static_cast<int>(std::ceil(fm.height() * 2 + 14)));
-    m_header    = qMax(28, static_cast<int>(std::ceil(fm.height() + 14)));
+    const qreal         s = m_scale;
+    m_rowHeight = qMax(qRound(40 * s), static_cast<int>(std::ceil(fm.height() * 2 + 14 * s)));
+    m_header    = qMax(qRound(28 * s), static_cast<int>(std::ceil(fm.height() + 14 * s)));
     m_current   = 0;
-    setFixedSize(kWidth, 2 * kPadding + m_header + visibleRows() * m_rowHeight);
+    // 2.7 F4: as wide as the scale asks, never wider than the screen's free width (minus 32 px).
+    int width = qRound(kWidth * s);
+    if (const QScreen* screen = QGuiApplication::primaryScreen())
+        width = qMin(width, qMax(kWidth, screen->availableGeometry().width() - 32));
+    setFixedSize(width, 2 * pad() + m_header + visibleRows() * m_rowHeight);
     // 2.2 emoji: emoji the worker draws later (emojitext.h) show once they are there.
     if (emoji::ImageNotifier* notifier = emoji::notifier())
         connect(notifier, &emoji::ImageNotifier::imagesReady, this, QOverload<>::of(&QWidget::update));
+}
+
+int RepliesPopup::pad() const
+{
+    return qRound(kPadding * m_scale);
 }
 
 int RepliesPopup::visibleRows() const
@@ -78,7 +91,7 @@ void RepliesPopup::openAt(const QPoint& pos)
 
 QRectF RepliesPopup::rowRect(int row) const
 {
-    return QRectF(kPadding, kPadding + m_header + (row - m_first) * m_rowHeight, width() - 2 * kPadding, m_rowHeight);
+    return QRectF(pad(), pad() + m_header + (row - m_first) * m_rowHeight, width() - 2 * pad(), m_rowHeight);
 }
 
 int RepliesPopup::rowAt(const QPoint& pos) const
@@ -120,7 +133,8 @@ void RepliesPopup::paintEvent(QPaintEvent*)
         background = ui::flatten(QColor(255, 255, 255, 8), m_base); // a step above the chat (like the reaction picker)
     p.setPen(QPen(border, 1.0));
     p.setBrush(background);
-    p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+    const qreal s = m_scale; // 2.7 F4
+    p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8 * s, 8 * s);
 
     const replyart::Palette on    = replyart::paletteFor(m_dark, background);
     const QColor            muted = on.muted;
@@ -129,14 +143,14 @@ void RepliesPopup::paintEvent(QPaintEvent*)
     const QFontMetricsF fm(m_font), bm(bold);
 
     // Header: "3 replies"
-    const QRectF head(kPadding + 8, kPadding, width() - 2 * kPadding - 16, m_header);
-    replyart::drawGlyph(p, replyart::Glyph::Replies, QRectF(head.left(), head.center().y() - 8, 16, 16), muted);
+    const QRectF head(pad() + 8 * s, pad(), width() - 2 * pad() - 16 * s, m_header);
+    replyart::drawGlyph(p, replyart::Glyph::Replies, QRectF(head.left(), head.center().y() - 8 * s, 16 * s, 16 * s), muted);
     p.setFont(bold);
     p.setPen(on.text);
-    p.drawText(head.adjusted(22, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, bm.elidedText(m_title, Qt::ElideRight, head.width() - 22));
+    p.drawText(head.adjusted(22 * s, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, bm.elidedText(m_title, Qt::ElideRight, head.width() - 22 * s));
 
     p.save();
-    p.setClipRect(QRectF(kPadding, kPadding + m_header, width() - 2 * kPadding, visibleRows() * m_rowHeight));
+    p.setClipRect(QRectF(pad(), pad() + m_header, width() - 2 * pad(), visibleRows() * m_rowHeight));
     for (int row = m_first; row < m_rows.size() && row < m_first + visibleRows(); ++row) {
         const ReplyRow& r    = m_rows.at(row);
         const QRectF    box  = rowRect(row);
@@ -144,36 +158,36 @@ void RepliesPopup::paintEvent(QPaintEvent*)
         if (lit || row == m_pressed) {
             p.setPen(Qt::NoPen);
             p.setBrush(row == m_pressed ? pal.hover.darker(m_dark ? 90 : 104) : on.hover);
-            p.drawRoundedRect(box.adjusted(0, 1, 0, -1), 6, 6);
+            p.drawRoundedRect(box.adjusted(0, 1, 0, -1), 6 * s, 6 * s);
         }
         if (m_keyboard && row == m_current) {
-            p.setPen(QPen(on.accent, 2.0));
+            p.setPen(QPen(on.accent, 2.0 * s));
             p.setBrush(Qt::NoBrush);
-            p.drawRoundedRect(box.adjusted(1, 2, -1, -2), 5, 5);
+            p.drawRoundedRect(box.adjusted(1 * s, 2 * s, -1 * s, -2 * s), 5 * s, 5 * s);
         }
-        const qreal x     = box.left() + 10;
-        const qreal right = box.right() - 10;
-        const qreal line1 = box.top() + 7 + fm.ascent();
-        const qreal line2 = line1 + fm.height() + 2;
+        const qreal x     = box.left() + 10 * s;
+        const qreal right = box.right() - 10 * s;
+        const qreal line1 = box.top() + 7 * s + fm.ascent();
+        const qreal line2 = line1 + fm.height() + 2 * s;
         // Name and time
         const QString time  = r.time;
-        const qreal   timeW = time.isEmpty() ? 0.0 : fm.horizontalAdvance(time) + 8;
+        const qreal   timeW = time.isEmpty() ? 0.0 : fm.horizontalAdvance(time) + 8 * s;
         p.setFont(bold);
         p.setPen(replyart::readable(r.nickColor, background, on.name));
-        const QString name = bm.elidedText(r.nick, Qt::ElideRight, qMax(20.0, right - x - timeW));
+        const QString name = bm.elidedText(r.nick, Qt::ElideRight, qMax(20.0 * s, right - x - timeW));
         replyart::drawRun(p, x, line1, bm, name);
         if (!time.isEmpty()) {
             p.setFont(m_font);
             p.setPen(muted);
-            p.drawText(QPointF(x + bm.horizontalAdvance(name) + 8, line1), time);
+            p.drawText(QPointF(x + bm.horizontalAdvance(name) + 8 * s, line1), time);
         }
         // Text or file
         p.setFont(m_font);
         p.setPen(on.text);
         qreal tx = x;
         if (r.media) {
-            replyart::drawGlyph(p, replyart::Glyph::Clip, QRectF(tx, line2 - fm.ascent() + (fm.ascent() - 12) / 2.0 + 1, 12, 12), muted);
-            tx += 15;
+            replyart::drawGlyph(p, replyart::Glyph::Clip, QRectF(tx, line2 - fm.ascent() + (fm.ascent() - 12 * s) / 2.0 + 1, 12 * s, 12 * s), muted);
+            tx += 15 * s;
         }
         const QString text = r.text.isEmpty() ? QString() : fm.elidedText(r.text, Qt::ElideRight, right - tx);
         replyart::drawRun(p, tx, line2, fm, text);
@@ -182,13 +196,13 @@ void RepliesPopup::paintEvent(QPaintEvent*)
 
     // More than fit: a thin indicator of where the list is.
     if (m_rows.size() > visibleRows()) {
-        const qreal top    = kPadding + m_header;
+        const qreal top    = pad() + m_header;
         const qreal span   = visibleRows() * m_rowHeight;
-        const qreal thumbH = qMax(18.0, span * visibleRows() / m_rows.size());
+        const qreal thumbH = qMax(18.0 * s, span * visibleRows() / m_rows.size());
         const qreal thumbY = top + (span - thumbH) * m_first / qMax(1, m_rows.size() - visibleRows());
         p.setPen(Qt::NoPen);
         p.setBrush(muted.lighter(m_dark ? 70 : 150));
-        p.drawRoundedRect(QRectF(width() - kPadding - 3, thumbY, 3, thumbH), 1.5, 1.5);
+        p.drawRoundedRect(QRectF(width() - pad() - 3 * s, thumbY, 3 * s, thumbH), 1.5 * s, 1.5 * s);
     }
 }
 

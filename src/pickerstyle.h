@@ -6,6 +6,8 @@
 
 #include <QColor>
 
+#include "darkmode.h"    // 2.7 dark mode: the theme's colours while it is on
+#include "darkpalette.h"
 #include "uiutil.h"
 
 namespace pickerstyle {
@@ -13,6 +15,7 @@ namespace pickerstyle {
 struct Colors {
     QColor background, border, field, fieldText, placeholder, text, muted, heading, hover, pressed, accent, ring, marked, dot, divider, thumb;
     QColor danger, dangerFill; // 2.5 GIFs
+    QColor onAccent = QColor(0xff, 0xff, 0xff); // 2.7 dark mode: text on the accent (the search field's selection)
 };
 
 inline Colors colorsFor(bool dark, const QColor& base)
@@ -39,6 +42,22 @@ inline Colors colorsFor(bool dark, const QColor& base)
         c.thumb       = ui::flatten(QColor(255, 255, 255, 46), c.background);
         c.danger      = QColor(0xfa, 0x77, 0x7c);
         c.dangerFill  = QColor(0xc4, 0x28, 0x2d);
+        if (DarkMode::isActive()) {
+            // 2.7 dark mode (live test): the warm theme's text, lines and accent instead of the plugin's cool greys and
+            // blurple (the background above already follows the chat's).
+            const darkpalette::Tokens& t = darkpalette::tokens();
+            c.border      = t.border;
+            c.fieldText   = t.text;
+            c.placeholder = t.muted;
+            c.text        = t.text;
+            c.muted       = t.secondary;
+            c.heading     = t.secondary;
+            c.accent      = t.accent;
+            c.ring        = t.accent; // 4.4:1 on the popup
+            c.marked      = ui::flatten(QColor(t.accent.red(), t.accent.green(), t.accent.blue(), 70), c.background);
+            c.danger      = t.error;
+            c.onAccent    = t.onAccent;
+        }
     } else {
         c.background  = QColor(0xff, 0xff, 0xff);
         c.border      = QColor(0xe3, 0xe5, 0xe8);

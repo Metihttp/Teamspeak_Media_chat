@@ -2,6 +2,7 @@
 // TeamSpeak-like chat documents (tests/tschat.h) and a fake TeamSpeak (tests/fakets3.h). Made-up people only.
 
 #include <QAbstractButton>
+#include <QLabel>
 #include <QAbstractTextDocumentLayout>
 #include <QDir>
 #include <QElapsedTimer>
@@ -20,8 +21,10 @@
 #include <QUrl>
 #include <QtTest>
 
+#include "appearancesection.h" // 2.7 dark mode: the Chat page's first card
 #include "chatavatars.h"
 #include "chatlayoutsection.h"
+#include "chattextsection.h" // 2.7 F3: the Chat page
 #include "emojisection.h"
 #include "fakets3.h"
 #include "layoutart.h"
@@ -897,29 +900,58 @@ class TestChatVisuals : public QObject
         QVERIFY(again.chatBubbles);
     }
 
-    void generalTabAccessKeys()
+    // 2.7 F3 (design_settings 5.1): every page's access keys are its own, with the bar's Apply (a) and Restore defaults (r).
+    static QMap<QChar, QString> pageKeys(const QVector<QWidget*>& sections, QString* clash)
     {
-        // The chat layout and emoji sections share the General tab: no access key twice (Alt+B would only
-        // move between "bubbles" and "emoji button").
-        QWidget      tab;
-        QVector<QWidget*> sections = {new ChatLayoutSection(&tab), new EmojiSection(&tab)};
         QMap<QChar, QString> keys;
-        for (QWidget* section : qAsConst(sections)) {
-            for (const QAbstractButton* button : section->findChildren<QAbstractButton*>()) {
-                const QString text = button->text();
+        keys.insert(QLatin1Char('a'), QStringLiteral("&Apply"));
+        keys.insert(QLatin1Char('r'), QStringLiteral("&Restore defaults"));
+        for (QWidget* section : sections) {
+            QStringList texts;
+            for (const QAbstractButton* button : section->findChildren<QAbstractButton*>())
+                texts << button->text();
+            for (const QLabel* label : section->findChildren<QLabel*>()) {
+                if (label->buddy())
+                    texts << label->text();
+            }
+            for (const QString& text : qAsConst(texts)) {
                 for (int i = text.indexOf(QLatin1Char('&')); i >= 0 && i + 1 < text.size(); i = text.indexOf(QLatin1Char('&'), i + 2)) {
                     if (text.at(i + 1) == QLatin1Char('&'))
                         continue;
                     const QChar key = text.at(i + 1).toLower();
-                    QVERIFY2(!keys.contains(key), qPrintable(QStringLiteral("%1: \"%2\" and \"%3\"").arg(key, keys.value(key), text)));
+                    if (keys.contains(key) && clash->isEmpty())
+                        *clash = QStringLiteral("%1: \"%2\" and \"%3\"").arg(key, keys.value(key), text);
                     keys.insert(key, text);
                     break;
                 }
             }
         }
-        QVERIFY(keys.size() >= 10);
-        const auto* bubbles = tab.findChild<ChatLayoutSection*>();
-        QVERIFY(bubbles);
+        return keys;
+    }
+
+    void chatPageAccessKeys()
+    {
+        // The chat layout and the text size and colors share the Chat page: no access key twice (2.6 "Fold ... one &row"
+        // took r from Restore defaults; 2.7 it is "&events").
+        QWidget           page;
+        QVector<QWidget*> sections = {new AppearanceSection(&page), new ChatLayoutSection(&page), new ChatTextSection(&page)}; // 2.7 dark mode: &Dark mode
+        QString           clash;
+        const QMap<QChar, QString> keys = pageKeys(sections, &clash);
+        QVERIFY2(clash.isEmpty(), qPrintable(clash));
+        QVERIFY(keys.size() >= 12);
+        for (const char* key : {"z", "p", "t", "n", "i", "u", "m", "v", "y", "e", "x", "c", "s", "d"})
+            QVERIFY2(keys.contains(QLatin1Char(key[0])), key);
+        QVERIFY(page.findChild<ChatLayoutSection*>());
+    }
+
+    void emojiPageAccessKeys()
+    {
+        QWidget           page;
+        QVector<QWidget*> sections = {new EmojiSection(&page)};
+        QString           clash;
+        const QMap<QChar, QString> keys = pageKeys(sections, &clash);
+        QVERIFY2(clash.isEmpty(), qPrintable(clash));
+        QCOMPARE(QSet<QChar>(keys.keyBegin(), keys.keyEnd()), QSet<QChar>({'q', 'g', 'b', 'f', 'a', 'r'}));
     }
 
     void fourThousandMessages()

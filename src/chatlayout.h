@@ -69,6 +69,10 @@ class ChatLayout : public QObject
     // path is TeamSpeak's file (empty: the avatar went), remembered for the client's uid on that server.
     void avatarUpdated(quint64 sch, int clientId, const QString& path = QString());
 
+    // 2.7 (R-DEF-1): something of this chat is still to be styled (the history pass, lines TeamSpeak changed, blocks to
+    // style again, a new width); false in "TeamSpeak classic" (ChatIntegration's load hold waits for it).
+    bool hasWork(QTextBrowser* browser) const;
+
     layoutart::Mode mode() const;
     // The content column (previews are that much narrower): G (Cozy), L (Compact) or 0 (classic).
     int indentFor(QTextBrowser* browser) const;
@@ -153,6 +157,9 @@ class ChatLayout : public QObject
         QColor                  statNick;
         QColor                  statLink;
         bool                    statAmPm = false;
+        QColor                  statAccent;       // 2.7 dark mode: the theme's accent when they were read
+        bool                    statDark = false; // and dark or light
+        quint64                 statKept = 0;     // and darkchat::keptSerial() (dark mode maps the colours they read)
         // collapsed runs of events (P2)
         QSet<int>               expandedRuns; // first rows' tags of the runs the reader opened
         int                     chipSerial = 1;

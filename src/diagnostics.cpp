@@ -1,5 +1,7 @@
 #include "diagnostics.h"
 
+#include "chatzoom.h" // 2.7 F5: deltaText
+
 #include <QDir>
 #include <QLocale>
 #include <QRegularExpression>
@@ -662,6 +664,8 @@ QString format(const Facts& f, bool includeNames, const QString& homeDir)
     display << i18n::t("animations %1").arg(onOff(f.animations));
     if (f.theme > 0)
         display << i18n::t("TeamSpeak theme %1").arg(f.theme == 2 ? i18n::t("dark") : i18n::t("light"));
+    if (f.darkMode > 0) // 2.7
+        display << (f.darkMode == 2 ? i18n::t("dark mode on (paused)") : i18n::t("dark mode on"));
     item(i18n::t("Display: %1").arg(display.join(QLatin1String(", "))));
     if (f.previewScalePercent > 0) { // 2.5 zoom
         const QString preset = f.previewPreset == 85    ? i18n::t("Small")
@@ -669,6 +673,18 @@ QString format(const Facts& f, bool includeNames, const QString& homeDir)
                                : f.previewPreset == 150 ? i18n::t("Larger")
                                                         : i18n::t("Normal");
         item(i18n::t("Preview scale: %1% (chat text %2 px, Preview size %3)").arg(f.previewScalePercent).arg(f.chatTextPx).arg(preset));
+    }
+    if (f.chatZoomPercent > 0) { // 2.7 F5 / F6
+        const QString color = f.lineColor == QLatin1String("blue")     ? i18n::t("Blue")
+                              : f.lineColor == QLatin1String("teal")   ? i18n::t("Teal")
+                              : f.lineColor == QLatin1String("green")  ? i18n::t("Green")
+                              : f.lineColor == QLatin1String("orange") ? i18n::t("Orange")
+                              : f.lineColor == QLatin1String("pink")   ? i18n::t("Pink")
+                              : f.lineColor == QLatin1String("text")   ? i18n::t("Same as the chat text")
+                                                                       : i18n::t("Automatic");
+        item(i18n::t("Chat text size: %1% (%2 on TeamSpeak's chat font); color of TS Media's lines: %3")
+                 .arg(f.chatZoomPercent)
+                 .arg(chatzoom::deltaText(f.chatZoomTenths), color));
     }
 
     // Connections: versions only, never addresses or names

@@ -217,22 +217,23 @@ void drawButton(QPainter& p, const AudioGeometry& g, const MediaEntry& e, const 
         p.setPen(QPen(pal.progress, 1.0));
     else
         p.setPen(Qt::NoPen);
-    p.setBrush(down ? kAccentPressed : hot ? kAccentHover : pp::accent());
+    const pp::ButtonColors bc = pp::buttonColors(style); // 2.7 dark mode: the theme's accent, dark glyphs
+    p.setBrush(down ? bc.pressed : hot ? bc.hover : bc.fill);
     p.drawEllipse(style.dark ? disc.adjusted(0.5, 0.5, -0.5, -0.5) : disc);
 
     if (o.busy) {
         const qreal stroke = 2.5;
-        pp::drawRing(p, disc.center(), disc.width() / 2.0 - stroke - 5.0, stroke, o.busyProgress, QColor(255, 255, 255, 70), Qt::white, style.animate);
+        pp::drawRing(p, disc.center(), disc.width() / 2.0 - stroke - 5.0, stroke, o.busyProgress, QColor(bc.glyph.red(), bc.glyph.green(), bc.glyph.blue(), 70), bc.glyph, style.animate);
     } else if (failed) {
-        pp::drawCircularArrow(p, arrowIn, Qt::white); // click to retry
+        pp::drawCircularArrow(p, arrowIn, bc.glyph); // click to retry
     } else if (o.externalOnly) {
-        pp::drawOpenIcon(p, icon, Qt::white);
+        pp::drawOpenIcon(p, icon, bc.glyph);
     } else if (o.playing) {
-        pp::drawPauseIcon(p, icon, Qt::white);
+        pp::drawPauseIcon(p, icon, bc.glyph);
     } else if (o.ended) {
-        pp::drawCircularArrow(p, arrowIn, Qt::white);
+        pp::drawCircularArrow(p, arrowIn, bc.glyph);
     } else {
-        pp::drawPlayIcon(p, icon.translated(1.0, 0.0), Qt::white); // nudged right: the triangle's optical centre
+        pp::drawPlayIcon(p, icon.translated(1.0, 0.0), bc.glyph); // nudged right: the triangle's optical centre
     }
     p.restore();
 

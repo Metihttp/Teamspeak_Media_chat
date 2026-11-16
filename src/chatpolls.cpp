@@ -424,10 +424,11 @@ pollart::Style ChatPolls::computeStyle(QTextBrowser* browser) const
     style.dark = preview.dark;
     style.font = preview.font;
     style.dpr  = preview.dpr; // 2.5 zoom: R
-    style.base = browser->viewport()->palette().color(QPalette::Base);
-    if (style.dark != (style.base.lightness() < 128))
+    // 2.7 F6: the chat's effective background and text (styleFor, chatcolors), consistent with style.dark.
+    style.base = preview.base.isValid() ? preview.base : browser->viewport()->palette().color(QPalette::Base);
+    if (!preview.base.isValid() && style.dark != (style.base.lightness() < 128))
         style.base = QColor(); // a style sheet colours the chat: the theme's default
-    style.text = browser->palette().color(QPalette::Text);
+    style.text = preview.text.isValid() ? preview.text : browser->palette().color(QPalette::Text);
     if (style.base.isValid() && ui::contrastRatio(style.text, style.base) < 4.5)
         style.text = QColor();
     else if (!style.base.isValid() && style.dark != (style.text.lightness() > 128))

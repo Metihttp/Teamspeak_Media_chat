@@ -26,7 +26,10 @@ class RepliesPopup : public QWidget
   public:
     static constexpr int kMaxRows = 200; // listed at most (the newest)
 
-    RepliesPopup(bool dark, const QColor& base, const QFont& chatFont, const QString& title, const QVector<ReplyRow>& rows, QWidget* parent = nullptr);
+    // 2.7 F4: scale is the chat's chrome scale (PreviewScale::chromeRatio(), kept between 1 and 4): text and sizes follow it.
+    RepliesPopup(bool dark, const QColor& base, const QFont& chatFont, const QString& title, const QVector<ReplyRow>& rows, qreal scale = 1.0,
+                 QWidget* parent = nullptr);
+    qreal scale() const { return m_scale; }
 
     // Opens with its top-left at pos (global), moved inside the screen.
     void openAt(const QPoint& pos);
@@ -49,6 +52,7 @@ class RepliesPopup : public QWidget
     void   setCurrent(int row);
     void   scrollTo(int row);
     int    visibleRows() const;
+    int    pad() const; // 2.7 F4: the padding at the scale
 
     bool              m_dark;
     QColor            m_base;
@@ -56,6 +60,7 @@ class RepliesPopup : public QWidget
     QVector<ReplyRow> m_rows;
     int               m_offset = 0; // rows left out at the start (more than kMaxRows)
     QFont             m_font;
+    qreal             m_scale = 1.0; // 2.7 F4
     int               m_rowHeight = 44;
     int               m_header    = 30;
     int               m_first     = 0;  // first row shown

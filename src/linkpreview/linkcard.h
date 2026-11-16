@@ -75,6 +75,10 @@ enum class Waiting { None, Own, Sender, Checking, Host };
 // Windows proxy"), Load preview. ChatProxy / Windows: the Error look with Retry. Filtered*: "Your network blocks this
 // site" with "Use chat proxy" (a proxy is saved) or "Set up proxy…" (none) instead of Retry.
 enum class ProxyStrip { None, PausedChatProxy, PausedWindows, ChatProxy, Windows, FilteredUseProxy, FilteredSetUp };
+// 2.7 F2: a Click card that would load by itself but for the sender's mark in TeamSpeak's contacts (contacts.h): not a
+// friend while "Only from friends" is on, blocked, the contacts couldn't be read (Only from friends on), or the first read
+// is still running (a moment). Its tool tip says why first.
+enum class AutoHold { None, NotFriend, Blocked, Unreadable, Checking };
 
 struct Card {
     Look              look = Look::Click;
@@ -117,6 +121,8 @@ struct Card {
     // 2.6 chat proxy: the route's strip (Click and Error only) and the failure's short text (the tool tips' %1).
     ProxyStrip        proxyStrip = ProxyStrip::None;
     QString           proxyReason;
+    // 2.7 F2: why a Click card didn't load by itself (TeamSpeak's contacts); its tool tip starts with it.
+    AutoHold          autoHold = AutoHold::None;
 };
 
 struct Pointer {

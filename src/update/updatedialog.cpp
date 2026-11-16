@@ -284,7 +284,7 @@ ConsentWindow::ConsentWindow(QWidget* parent)
     // 2.6 (design 8.4): the YouTube player connects too (since 2.5).
     auto* hint = label(i18n::t("Apart from link previews and the YouTube player, this is the only internet connection the plugin makes. GitHub "
                                "sees your IP address, and Windows may check GitHub's certificate with its issuer. No names, servers or chats "
-                               "are sent. You can change this later in Settings → Privacy & updates."),
+                               "are sent. You can change this later in Settings → About & updates."),
                        this, "hint");
     auto* no = button(i18n::t("&No thanks"), this);
     auto* on = button(i18n::t("&Turn on"), this, true);

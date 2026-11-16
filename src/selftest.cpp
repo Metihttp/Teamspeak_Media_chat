@@ -8,7 +8,7 @@
 //   compose.set {caption, album, spoiler:[i...], quality:[[i,q]...]}
 //   compose.wait {timeout}          until its thumbnails are made
 //   compose.grab {name}  compose.log  compose.send (presses Send)  compose.cancel
-//   settings.grab {prefix}          opens Settings, grabs every tab, closes it
+//   settings.grab {prefix}          opens Settings, grabs every page of the sidebar, closes it (2.7: the Cancel button)
 //   snap {name, all}                grabs the visible chat (all: every chat view)
 //   grabmain {name}                 grabs TeamSpeak's main window
 //   jobs  entries {match}           logs upload jobs / media entries
@@ -19,8 +19,17 @@
 //   faketailzero {n}                2.3.2: the next n tail checks of sent files see zeros (as on a TeaSpeak server still
 //                                   receiving the upload; also selftest_options.txt "fake_tail_zero=<n>")
 //   setting {key, value}            a few Settings values (see below), saved and applied
-//   connect {nick}                  a new server tab to 127.0.0.1:9987
-//   say {text}                      a raw channel message (no flood governor)
+//   connect {nick, identity}        a new server tab to 127.0.0.1:9987 (2.7 live: identity = one of the client's own
+//                                   identities by name; empty: the default)
+//   tree.menu {nick}  tree.dump     2.7 live: a client's context menu in the visible channel tree; the tree's rows
+//   selectrow {object, text}        2.7 live: a list row of a visible window (by objectName prefix) made current
+//   msgmenu {find, nth}             2.7 live: the keyboard's menu (Menu key, Shift+F10) on a message of the visible chat
+//   combo {object, name, text}      2.7 live: a combo box of a visible window (e.g. Options > Design's style sheet), chosen
+//   focus                           2.7 live: the widget with the keyboard focus
+//   resize {object, w, h}  closewin {object}   2.7 live: a top-level window resized, or closed as its X does
+//   focuschain {object, max, all}   2.7 live: a window's focus chain from its focus widget on
+//   say {text, sch}                 a raw channel message (no flood governor); 2.7 live: sch = another server tab's
+//                                   connection to send from (that tab stays hidden)
 //   quit                            TeamSpeak's own Quit action (Ctrl+Q), queued
 // Part 2 of the 2.2 live test:
 //   react {name, reaction, emoji, times, gapMs}   toggles a reaction of the newest entry named so (PeerHub::toggle);
@@ -33,7 +42,9 @@
 //   selfvar {var, value}  vars      sets / logs our client variables (CLIENT_INPUT_MUTED = 6, ...)
 //   command {text}                  /tsmedia <text> (ts3plugin_processCommand)
 //   menuitem {id, nick}             a plugin menu item (ts3plugin_onMenuItemEvent), on a client by nickname
-//   settings.tab {name}             opens Settings on the tab whose title contains name
+//   settings.tab {name}             opens Settings on the page whose name contains name (2.7: "General" is "Chat")
+//   settings.click {name}           2.7: a button of Settings by accessible name or text ('&' ignored), e.g. the chat text size's
+//                                   "Smaller chat text", "Larger chat text", "Reset the chat text size to 100%"
 //   grabobj {object, name}          grabs a visible top-level window by objectName (prefix)
 //   textdump {object, name}         writes the texts of a top-level window's text boxes to debug/<name>.txt
 //   clipboard {name}                writes the clipboard text to debug/<name>.txt
@@ -52,11 +63,13 @@
 //   hint.inject {version, inChannel}  as if a peer's hello named that version (Updater::notePeerVersion)
 //   hint.click                      a left click on the newest hint link of the visible chat (runPart6)
 // 2.5 zoom live pass:
-//   chat.zoom {steps}               zoomIn/zoomOut on the visible chat (0: only report the font, scale, passes and holds)
+//   chat.zoom {steps}               2.7: the saved chat zoom by steps of 1 pt (ChatIntegration::setChatZoom, like the Settings
+//                                   row; 0: only report the font, scale, passes and holds); the wheel's path is chat.wheel
+// 2.7 Part B (selftestv27b.cpp): contacts.mark {uid}, contacts.state, chat.colors, reply.bar
 //   chat.wheel {steps, ms, delta}   a Ctrl + wheel gesture: QWheelEvents with Ctrl on the chat's viewport, one per ms
 //   key {..., shortcut: true}       the key offered to the application's shortcuts first (keys Plus, Minus, Equal too)
 //   settings.combo {text, value}    a combo box of Settings by accessible name: reported, or value picked
-//   settings.button {name}          ok, restore or cancel clicked
+//   settings.button {name}          ok, restore or cancel clicked (2.7: in either of the bar's two button boxes)
 //   fontdlg {pt, family}            the open QFontDialog (Options > Chat > Change Font): that font, then OK
 // 2.6 chat proxy (design 9.5; the live run's test proxy only, never the author's real settings):
 //   proxy.state                     mode, generation, health, the Windows status, the bridge's counters and the diagnostic
@@ -106,6 +119,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget> // 2.7 F3: the Settings window's sidebar
 #include <QMap>
 #include <QMainWindow>
 #include <QMenu>
@@ -113,6 +127,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSplitter>
+#include <QStackedWidget> // 2.7 F3: the Settings window's pages
 #include <QTabBar>
 #include <QTabWidget>
 #include <QAbstractTextDocumentLayout>
@@ -177,6 +192,7 @@ Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int 
 #include "inlinemedia.h"
 #include "peerhub.h"
 #include "settings.h"
+#include "settingswidgets.h" // 2.7 live: LinePreview
 #include "ts3api.h"
 #include "update/updater.h" // 2.3.4: hint.inject
 #include "proxy/bridge.h"     // 2.6 chat proxy: the proxy.* commands
@@ -554,7 +570,14 @@ QString SelfTest::runGifs(const QString& cmd, const QJsonObject& c)
 
 // 2.3 live music: music.state, music.volume, music.devices (selftestmusic.cpp).
 bool selfTestMusic(const QString& cmd, const QJsonObject& c, quint64 sch, QObject* owner, const std::function<void(const QString&)>& say);
+// 2.7 Part B: contacts.mark, contacts.state, chat.colors, reply.bar (selftestv27b.cpp).
+bool selfTestV27b(const QString& cmd, const QJsonObject& c, ChatIntegration* chat, const std::function<void(const QString&)>& say);
 bool selfTestCustomDevicesOn(); // live pass B: music.devices is on (selftestmusic.cpp)
+// 2.7 F1: input.set/state/menu, menu.dump/trigger, chat.spoilers, spoiler.click (selftestformat.cpp).
+bool selfTestFormat(const QString& cmd, const QJsonObject& c, ChatTextSpoilers* spoilers, InputFormat* format, QTextBrowser* chat,
+                    const QList<QPointer<QWidget>>& inputs, const std::function<void(const QString&)>& say);
+// 2.7 dark mode: dark.on, dark.off, dark.toggle, dark.state, dark.metrics, dark.tip (selftestdark.cpp).
+bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<void(const QString&)>& say);
 
 namespace {
 
@@ -851,7 +874,54 @@ void SelfTest::waitCompose(qint64 deadline)
     next(0);
 }
 
-// Opens Settings (tab < 0), then grabs tab after tab, then closes it.
+namespace {
+
+// 2.7 F3: the Settings window's sidebar and pages, and a standard button of either of its two button boxes.
+QListWidget* settingsNav(QWidget* dialog)
+{
+    return dialog ? dialog->findChild<QListWidget*>(QString::fromLatin1("tsmediaSettingsNav")) : nullptr;
+}
+
+QPushButton* settingsButton(QWidget* dialog, QDialogButtonBox::StandardButton which)
+{
+    if (!dialog)
+        return nullptr;
+    for (QDialogButtonBox* box : dialog->findChildren<QDialogButtonBox*>()) {
+        if (QPushButton* b = box->button(which))
+            return b;
+    }
+    return nullptr;
+}
+
+// The page holding w becomes the current one (so a grab shows it).
+void showSettingsPageOf(QWidget* dialog, QWidget* w)
+{
+    QListWidget* nav   = settingsNav(dialog);
+    auto*        stack = dialog ? dialog->findChild<QStackedWidget*>(QString::fromLatin1("tsmediaSettingsPages")) : nullptr;
+    if (!nav || !stack || !w)
+        return;
+    for (int i = 0; i < stack->count(); ++i) {
+        if (stack->widget(i)->isAncestorOf(w)) {
+            nav->setCurrentRow(i);
+            return;
+        }
+    }
+}
+
+// Closes Settings as its Cancel button does (2.7: Esc and the window's X ask about unsaved changes first).
+void closeSettings(QWidget* dialog)
+{
+    if (QPushButton* cancel = settingsButton(dialog, QDialogButtonBox::Cancel))
+        cancel->click();
+    else if (auto* d = qobject_cast<QDialog*>(dialog))
+        d->reject();
+    else if (dialog)
+        dialog->close();
+}
+
+} // namespace
+
+// Opens Settings (tab < 0), then grabs page after page of the sidebar (2.7), then closes it.
 void SelfTest::settingsStep(const QString& prefix, int tab)
 {
     QWidget* dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
@@ -867,32 +937,32 @@ void SelfTest::settingsStep(const QString& prefix, int tab)
         t->start(1200);
         return;
     }
-    auto* tabs = dialog ? dialog->findChild<QTabWidget*>(QString::fromLatin1("tsmediaSettingsTabs")) : nullptr;
-    if (!dialog || !tabs) {
+    QListWidget* nav = settingsNav(dialog);
+    if (!dialog || !nav) {
         say(QString::fromLatin1("settings.grab: no settings dialog"));
         next(0);
         return;
     }
-    if (tab > 0) { // the tab chosen in the previous step has been painted by now
+    if (tab > 0) { // the page chosen in the previous step has been painted by now
         const int     shown = tab - 1;
-        const QString path  = saveGrab(dialog, QString::fromLatin1("%1_%2_%3").arg(prefix).arg(shown).arg(tabs->tabText(shown)));
-        say(QString::fromLatin1("settings.grab: tab %1 \"%2\" %3x%4 -> %5").arg(shown).arg(tabs->tabText(shown)).arg(dialog->width()).arg(dialog->height()).arg(path));
+        const QString path  = saveGrab(dialog, QString::fromLatin1("%1_%2_%3").arg(prefix).arg(shown).arg(nav->item(shown)->text()));
+        say(QString::fromLatin1("settings.grab: page %1 \"%2\" %3x%4 -> %5").arg(shown).arg(nav->item(shown)->text()).arg(dialog->width()).arg(dialog->height()).arg(path));
     }
-    if (tab >= tabs->count()) {
-        say(QString::fromLatin1("settings.grab: %1 tabs; dialog \"%2\"").arg(tabs->count()).arg(dialog->windowTitle()));
-        if (auto* d = qobject_cast<QDialog*>(dialog))
-            d->reject();
-        else
-            dialog->close();
+    int page = tab;
+    while (page < nav->count() && nav->isRowHidden(page))
+        ++page; // pages without content aren't in the sidebar
+    if (page >= nav->count()) {
+        say(QString::fromLatin1("settings.grab: %1 pages; dialog \"%2\"").arg(nav->count()).arg(dialog->windowTitle()));
+        closeSettings(dialog);
         next(500);
         return;
     }
-    tabs->setCurrentIndex(tab);
+    nav->setCurrentRow(page);
     auto* t = new QTimer(this);
     t->setSingleShot(true);
-    connect(t, &QTimer::timeout, this, [this, t, prefix, tab] {
+    connect(t, &QTimer::timeout, this, [this, t, prefix, page] {
         t->deleteLater();
-        settingsStep(prefix, tab + 1);
+        settingsStep(prefix, page + 1);
     });
     t->start(500);
 }
@@ -914,8 +984,9 @@ bool SelfTest::run(const QJsonObject& c)
         say(QString::fromLatin1("no chat integration"));
         return true;
     }
-    // 2.5 zoom: Ctrl + mouse wheel without a mouse: {"cmd":"chat.zoom","steps":3} (or -3) zooms the visible chat with
-    // TeamSpeak's own path (QTextEdit::zoomIn / zoomOut, as the wheel does); the [scale] line follows once it settles.
+    // 2.5 zoom: {"cmd":"chat.zoom","steps":3} (or -3). 2.7 (design L8): the saved zoom by steps of 1 pt through
+    // ChatIntegration::setChatZoom (the Settings row's path: every chat, saved); a zoomIn here would read as TeamSpeak's
+    // new chat font. The wheel's own path is chat.wheel. The [scale] line follows once it settles.
     if (cmd == QLatin1String("chat.zoom")) {
         QTextBrowser* b = m_chat->visibleChatBrowser();
         if (!b) {
@@ -923,12 +994,8 @@ bool SelfTest::run(const QJsonObject& c)
             return true;
         }
         const int steps = c.value(QString::fromLatin1("steps")).toInt(1);
-        for (int i = 0; i < qAbs(steps); ++i) { // one notch at a time, like a wheel gesture
-            if (steps > 0)
-                b->zoomIn(1);
-            else
-                b->zoomOut(1);
-        }
+        if (steps != 0)
+            m_chat->setChatZoom(m_chat->chatZoom() + Settings::chatZoomStep * steps);
         const PreviewScale now    = m_chat->scaleOf(b);
         const ChatScale*   scaler = m_chat->chatScale(b);
         say(QString::fromLatin1("chat.zoom %1: font %2 pt, the applied scale before the pass s %3 c %4 R %5; passes %6 holds %7 pending %8; "
@@ -1545,17 +1612,23 @@ bool SelfTest::run(const QJsonObject& c)
             return true;
         }
         const QByteArray nick = c.value(QString::fromLatin1("nick")).toString(QString::fromLatin1("TesterB")).toUtf8();
+        // 2.7 live: "identity" is the name of one of the client's own identities (Tools > Identities), e.g. a test
+        // identity made for the contacts checks; empty: the default one.
+        const QByteArray identity = c.value(QString::fromLatin1("identity")).toString().toUtf8();
         uint64           tab  = 0;
         unsigned         err  = ts3::funcs.guiConnect
-            ? ts3::funcs.guiConnect(PLUGIN_CONNECT_TAB_NEW, nick.constData(), "127.0.0.1:9987", "", nick.constData(), "", "", "", "", "", "", "", "", "", &tab)
+            ? ts3::funcs.guiConnect(PLUGIN_CONNECT_TAB_NEW, nick.constData(), "127.0.0.1:9987", "", nick.constData(), "", "", "", "", "", "", identity.constData(), "", "", &tab)
             : 1u;
-        say(QString::fromLatin1("connect: error %1 tab %2").arg(err).arg(tab));
+        say(QString::fromLatin1("connect: error %1 tab %2%3").arg(err).arg(tab).arg(identity.isEmpty() ? QString() : QString::fromLatin1(" (identity \"%1\")").arg(QString::fromUtf8(identity))));
         return true;
     }
     if (cmd == QLatin1String("say")) {
         const QByteArray text = c.value(QString::fromLatin1("text")).toString().toUtf8();
-        const unsigned   err  = ts3::funcs.requestSendChannelTextMsg(sch, text.constData(), ts3::ownChannel(sch), nullptr);
-        say(QString::fromLatin1("say: error %1").arg(err));
+        // 2.7 live: "sch" sends from another server tab of this client (e.g. a test identity's) while the visible tab
+        // stays as it is, so that tab's own chat never shows (and never loads) the message.
+        const uint64   from = c.contains(QString::fromLatin1("sch")) ? static_cast<uint64>(c.value(QString::fromLatin1("sch")).toInt()) : sch;
+        const unsigned err  = ts3::funcs.requestSendChannelTextMsg(from, text.constData(), ts3::ownChannel(from), nullptr);
+        say(QString::fromLatin1("say: error %1 (tab %2)").arg(err).arg(from));
         return true;
     }
     if (cmd == QLatin1String("quit")) {
@@ -1623,6 +1696,12 @@ bool SelfTest::run(const QJsonObject& c)
         return true;
     }
     if (selfTestMusic(cmd, c, sch, this, [](const QString& text) { say(text); })) // 2.3 live music (selftestmusic.cpp)
+        return true;
+    if (selfTestV27b(cmd, c, m_chat, [](const QString& text) { say(text); })) // 2.7 Part B (selftestv27b.cpp)
+        return true;
+    if (selfTestFormat(cmd, c, m_chat->textSpoilers(), m_chat->inputFormat(), m_chat->visibleChatBrowser(), m_chat->m_inputs, [](const QString& text) { say(text); })) // 2.7 F1
+        return true;
+    if (selfTestDark(cmd, c, [](const QString& text) { say(text); })) // 2.7 dark mode (selftestdark.cpp)
         return true;
     // 2.6 chat proxy: proxy.state, proxy.set, proxy.toggle, proxy.test, proxy.find, proxy.records, ytplayer.netlog.
     if (cmd.startsWith(QLatin1String("proxy.")) || cmd == QLatin1String("ytplayer.netlog"))
@@ -2082,13 +2161,20 @@ bool SelfTest::runPart2(const QString& cmd, const QJsonObject& c, bool* handled)
             m_hooks.openSettings();
             dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
         }
-        auto* tabs = dialog ? dialog->findChild<QTabWidget*>(QString::fromLatin1("tsmediaSettingsTabs")) : nullptr;
-        bool  found = false;
-        for (int i = 0; tabs && i < tabs->count() && !found; ++i) {
-            if (withoutMnemonic(tabs->tabText(i)).contains(name("name", ""), Qt::CaseInsensitive)) {
-                tabs->setCurrentIndex(i);
+        // 2.7 F3: the sidebar's pages. Old scripts' tab names still work: "General" is the Chat page, the others are
+        // contained in the new names ("Privacy & updates": Privacy; Link previews and Updates have pages of their own).
+        QListWidget* nav    = settingsNav(dialog);
+        QString      wanted = name("name", "");
+        if (wanted.compare(QLatin1String("General"), Qt::CaseInsensitive) == 0)
+            wanted = QString::fromLatin1("Chat");
+        else if (wanted.startsWith(QLatin1String("Privacy"), Qt::CaseInsensitive))
+            wanted = QString::fromLatin1("Privacy");
+        bool found = false;
+        for (int i = 0; nav && i < nav->count() && !found; ++i) {
+            if (!nav->isRowHidden(i) && nav->item(i)->text().contains(wanted, Qt::CaseInsensitive)) {
+                nav->setCurrentRow(i);
                 found = true;
-                say(QString::fromLatin1("settings.tab: \"%1\" (%2x%3)").arg(tabs->tabText(i)).arg(dialog->width()).arg(dialog->height()));
+                say(QString::fromLatin1("settings.tab: \"%1\" (%2x%3)").arg(nav->item(i)->text()).arg(dialog->width()).arg(dialog->height()));
             }
         }
         if (!found)
@@ -2213,7 +2299,8 @@ int keyCode(const QString& name)
         {QString::fromLatin1("Home"), Qt::Key_Home},         {QString::fromLatin1("End"), Qt::Key_End},
         {QString::fromLatin1("PageUp"), Qt::Key_PageUp},     {QString::fromLatin1("PageDown"), Qt::Key_PageDown},
         {QString::fromLatin1("Plus"), Qt::Key_Plus},         {QString::fromLatin1("Minus"), Qt::Key_Minus}, // 2.5 zoom live pass
-        {QString::fromLatin1("Equal"), Qt::Key_Equal},
+        {QString::fromLatin1("Equal"), Qt::Key_Equal},       {QString::fromLatin1("Backtab"), Qt::Key_Backtab}, // 2.7 live
+        {QString::fromLatin1("Menu"), Qt::Key_Menu},
     };
     if (keys.contains(name))
         return keys.value(name);
@@ -2560,6 +2647,25 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         next(c.value(QString::fromLatin1("ms")).toInt(900)); // the menu opens from the event loop (TeamSpeak's may run its own loop)
         return false;
     }
+    // 2.7 live: the keyboard's menu on a message (as the Menu key or Shift+F10 with the text cursor in it): the
+    // text cursor goes into the newest message containing find, then a keyboard context-menu event to the chat.
+    if (cmd == QLatin1String("msgmenu")) {
+        const QTextBlock tb = b ? findMessage(b) : QTextBlock();
+        if (!tb.isValid()) {
+            say(QString::fromLatin1("msgmenu: no message with \"%1\"").arg(str("find", "")));
+            return true;
+        }
+        ensureShown(b, tb);
+        QTextCursor cursor(tb);
+        cursor.setPosition(qMin(tb.position() + tb.length() - 1, replydoc::parseBlock(tb).textStart + 1));
+        b->setTextCursor(cursor);
+        b->setFocus(Qt::OtherFocusReason);
+        const QPoint at = b->cursorRect().center();
+        QCoreApplication::postEvent(b, new QContextMenuEvent(QContextMenuEvent::Keyboard, at, b->viewport()->mapToGlobal(at), Qt::NoModifier));
+        say(QString::fromLatin1("msgmenu: block %1, keyboard menu posted").arg(tb.blockNumber()));
+        next(c.value(QString::fromLatin1("ms")).toInt(900));
+        return false;
+    }
     if (cmd == QLatin1String("latemenu")) {
         // A chat menu that TeamSpeak builds late (seen once on a nickname: TeamSpeak's client menu came after the
         // plugin's own small menu). The right-click goes to the plugin's filter only; TeamSpeak never sees it, and
@@ -2670,7 +2776,151 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         next(400);
         return false;
     }
-    if (cmd == QLatin1String("input.set")) {
+    // 2.7 live: a client's context menu in the visible channel tree (as a right click on its row), e.g. for
+    // {"cmd":"menu.pick","path":["Add as Friend"]}; tree.dump logs the tree's rows.
+    if (cmd == QLatin1String("tree.menu") || cmd == QLatin1String("tree.dump")) {
+        const QString wanted = str("nick", "");
+        QWidget*      mw     = m_chat->mainWindow();
+        for (QAbstractItemView* v : mw ? mw->findChildren<QAbstractItemView*>() : QList<QAbstractItemView*>()) {
+            if (!v->isVisible() || !v->inherits("QTreeView"))
+                continue;
+            QAbstractItemModel* m = v->model();
+            QModelIndex         hit;
+            QStringList         rows;
+            std::function<void(const QModelIndex&, int)> walk = [&](const QModelIndex& parent, int level) {
+                for (int r = 0; m && r < m->rowCount(parent) && rows.size() < 200; ++r) {
+                    const QModelIndex i = m->index(r, 0, parent);
+                    rows << QString(level, QLatin1Char('>')) + i.data().toString();
+                    if (!hit.isValid() && !wanted.isEmpty() && i.data().toString() == wanted)
+                        hit = i;
+                    walk(i, level + 1);
+                }
+            };
+            walk(QModelIndex(), 0);
+            if (cmd == QLatin1String("tree.dump")) {
+                say(QString::fromLatin1("tree.dump: ") + rows.join(QString::fromLatin1(" ; ")));
+                return true;
+            }
+            if (!hit.isValid())
+                continue;
+            v->scrollTo(hit);
+            v->setCurrentIndex(hit);
+            const QPoint pos = v->visualRect(hit).center();
+            QWidget*     vp  = v->viewport();
+            sendMouse(vp, QEvent::MouseButtonPress, pos, Qt::RightButton, Qt::RightButton);
+            sendMouse(vp, QEvent::MouseButtonRelease, pos, Qt::RightButton, Qt::NoButton);
+            QCoreApplication::postEvent(vp, new QContextMenuEvent(QContextMenuEvent::Mouse, pos, vp->mapToGlobal(pos), Qt::NoModifier));
+            say(QString::fromLatin1("tree.menu: \"%1\" at %2,%3").arg(wanted).arg(pos.x()).arg(pos.y()));
+            next(800);
+            return false;
+        }
+        say(cmd + QString::fromLatin1(": no tree row \"%1\"").arg(wanted));
+        return true;
+    }
+    // 2.7 live: a combo box of a visible window by objectName (e.g. Options > Design's styleSheetComboBox): its items,
+    // and with "text" that item chosen as the user does (activated, so the window's own handlers run).
+    if (cmd == QLatin1String("combo")) {
+        QWidget*   top   = topLevelByObject(str("object", ""));
+        QComboBox* combo = top ? top->findChild<QComboBox*>(str("name", "")) : nullptr;
+        if (!combo) {
+            say(QString::fromLatin1("combo: no %1 in %2").arg(str("name", ""), str("object", "")));
+            return true;
+        }
+        QStringList items;
+        for (int i = 0; i < combo->count(); ++i)
+            items << combo->itemText(i);
+        const QString want = str("text", "");
+        const int     at   = want.isEmpty() ? -1 : combo->findText(want);
+        if (at >= 0) {
+            combo->setCurrentIndex(at);
+            emit combo->activated(at);
+            emit combo->textActivated(combo->itemText(at));
+        }
+        say(QString::fromLatin1("combo: %1 [%2] now \"%3\"%4").arg(combo->objectName(), items.join(QLatin1String("; ")), combo->currentText(),
+                                                                      !want.isEmpty() && at < 0 ? QString::fromLatin1(" (no item \"%1\")").arg(want) : QString()));
+        return true;
+    }
+    // 2.7 live: a visible top-level window by objectName resized (e.g. the Settings window made narrow), or closed as its
+    // title bar's X does (QWidget::close: the window's closeEvent runs).
+    if (cmd == QLatin1String("resize") || cmd == QLatin1String("closewin")) {
+        QWidget* top = topLevelByObject(str("object", ""));
+        if (!top) {
+            say(cmd + QString::fromLatin1(": no window %1").arg(str("object", "")));
+            return true;
+        }
+        if (cmd == QLatin1String("resize")) {
+            top->resize(c.value(QString::fromLatin1("w")).toInt(top->width()), c.value(QString::fromLatin1("h")).toInt(top->height()));
+            say(QString::fromLatin1("resize: %1 now %2x%3 (minimum %4x%5)").arg(top->objectName()).arg(top->width()).arg(top->height())
+                    .arg(top->minimumSizeHint().width()).arg(top->minimumSizeHint().height()));
+            return true;
+        }
+        say(QString::fromLatin1("closewin: %1").arg(top->objectName()));
+        QMetaObject::invokeMethod(top, "close", Qt::QueuedConnection);
+        next(800);
+        return false;
+    }
+    // 2.7 live: the focus chain of a visible window from its focus widget on (nextInFocusChain): each widget that can take
+    // Tab focus (focusable, visible, enabled) or "with" a marker for the others, up to "max" entries.
+    if (cmd == QLatin1String("focuschain")) {
+        QWidget* top = topLevelByObject(str("object", ""));
+        QWidget* f   = top ? (top->focusWidget() ? top->focusWidget() : top) : nullptr;
+        QStringList out;
+        int         left = c.value(QString::fromLatin1("max")).toInt(60);
+        for (QWidget* w = f ? f->nextInFocusChain() : nullptr; w && w != f && left > 0; w = w->nextInFocusChain(), --left) {
+            const bool tab = (w->focusPolicy() & Qt::TabFocus) == Qt::TabFocus && w->isVisibleTo(top) && w->isEnabled();
+            if (!tab && !c.value(QString::fromLatin1("all")).toBool())
+                continue;
+            QString name = w->accessibleName();
+            if (name.isEmpty()) {
+                if (auto* button = qobject_cast<QAbstractButton*>(w))
+                    name = button->text();
+            }
+            out << QString::fromLatin1("%1%2%3%4").arg(QString::fromLatin1(w->metaObject()->className()), w->objectName().isEmpty() ? QString() : QLatin1Char('#') + w->objectName(),
+                                                       name.isEmpty() ? QString() : QString::fromLatin1(" \"%1\"").arg(name), tab ? QString() : QString::fromLatin1(" (no tab)"));
+        }
+        say(QString::fromLatin1("focuschain: from %1: %2").arg(f ? QString::fromLatin1(f->metaObject()->className()) : QString::fromLatin1("none"), out.join(QLatin1String(" -> "))));
+        return true;
+    }
+    // 2.7 live: the widget with the keyboard focus (class, objectName, accessible name, text) and whether it shows
+    // focus (Qt's own state), for Tab-order checks.
+    if (cmd == QLatin1String("focus")) {
+        QWidget* f = QApplication::focusWidget();
+        QString  text;
+        if (auto* button = qobject_cast<QAbstractButton*>(f))
+            text = button->text();
+        else if (auto* list = qobject_cast<QListWidget*>(f))
+            text = list->currentItem() ? list->currentItem()->text() : QString();
+        QString page; // 2.7 live: the Settings window's page shown, when the focus is in it
+        if (f && f->window()) {
+            if (auto* nav = f->window()->findChild<QListWidget*>(QString::fromLatin1("tsmediaSettingsNav")); nav && nav->currentItem())
+                page = QString::fromLatin1(", page \"%1\"").arg(nav->currentItem()->text());
+        }
+        say(QString::fromLatin1("focus: %1#%2 \"%3\" text \"%4\" in %5 (reason-visible %6)%7")
+                .arg(f ? QString::fromLatin1(f->metaObject()->className()) : QString::fromLatin1("none"), f ? f->objectName() : QString(),
+                     f ? f->accessibleName() : QString(), text, f && f->window() ? f->window()->objectName() : QString())
+                .arg(f && f->hasFocus() ? 1 : 0)
+                .arg(page));
+        return true;
+    }
+    // 2.7 live: a row of a list in a visible window by its text (e.g. a contact in Tools > Contacts), made current.
+    if (cmd == QLatin1String("selectrow")) {
+        QWidget* top  = topLevelByObject(str("object", ""));
+        bool     done = false;
+        for (QAbstractItemView* v : top ? top->findChildren<QAbstractItemView*>() : QList<QAbstractItemView*>()) {
+            QAbstractItemModel* m = v->model();
+            for (int r = 0; m && r < m->rowCount() && !done; ++r) {
+                const QModelIndex i = m->index(r, 0);
+                if (i.data().toString().compare(str("text", ""), Qt::CaseInsensitive) == 0) {
+                    v->setCurrentIndex(i);
+                    done = true;
+                }
+            }
+        }
+        say(QString::fromLatin1("selectrow: \"%1\" in %2: %3").arg(str("text", ""), str("object", ""), done ? QString::fromLatin1("selected") : QString::fromLatin1("not found")));
+        return true;
+    }
+    // 2.7: with "from" or "to" (a selection) the F1 driver's input.set answers (selftestformat.cpp).
+    if (cmd == QLatin1String("input.set") && !c.contains(QString::fromLatin1("from")) && !c.contains(QString::fromLatin1("to"))) {
         QTextEdit* e = input();
         if (!e) {
             say(QString::fromLatin1("input.set: no chat input"));
@@ -2855,6 +3105,7 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
     }
     if (cmd == QLatin1String("scrollchat")) {
         if (b) {
+            m_chat->endLoadHold(b); // 2.7 (R-DEF-1): the live driver is the user (a load hold lets go)
             QScrollBar*   bar = b->verticalScrollBar();
             const QString to  = str("to", "bottom");
             if (c.contains(QString::fromLatin1("block"))) { // part 5: that block's top (plus offset px) at the top of the view
@@ -4185,7 +4436,8 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
     QTextBrowser* b   = m_chat->visibleChatBrowser();
 
     if (cmd == QLatin1String("settings.check") || cmd == QLatin1String("settings.apply") || cmd == QLatin1String("settings.close")
-        || cmd == QLatin1String("settings.combo") || cmd == QLatin1String("settings.button") || cmd == QLatin1String("settings.spin")) {
+        || cmd == QLatin1String("settings.combo") || cmd == QLatin1String("settings.button") || cmd == QLatin1String("settings.spin")
+        || cmd == QLatin1String("settings.click")) {
         QWidget* dialog = m_hooks.settingsDialog ? m_hooks.settingsDialog() : nullptr;
         if (!dialog) {
             say(cmd + QString::fromLatin1(": no settings dialog"));
@@ -4249,18 +4501,21 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
                     out += QString::fromLatin1(" -> \"%1\" (data %2)").arg(combo->currentText(), combo->currentData().toString());
                 }
             }
+            // 2.7 live (L-F6-4): the Chat page's preview of TS Media's lines, as it paints them now.
+            if (const auto* preview = dialog->findChild<LinePreview*>())
+                out += QString::fromLatin1("; preview base %1 accent %2 warning %3").arg(preview->base().name(), preview->accent().name(), preview->warning().name());
             say(out);
             return true;
         }
-        // {"cmd":"settings.button","name":"ok"|"restore"|"cancel"}: that button clicked (Apply: settings.apply).
+        // {"cmd":"settings.button","name":"ok"|"restore"|"cancel"}: that button clicked (Apply: settings.apply). 2.7: the bar
+        // has two button boxes (Restore defaults on its own).
         if (cmd == QLatin1String("settings.button")) {
-            auto*         box  = dialog->findChild<QDialogButtonBox*>();
             const QString name = str("name", "");
             const QDialogButtonBox::StandardButton which = name == QLatin1String("ok")        ? QDialogButtonBox::Ok
                                                            : name == QLatin1String("restore") ? QDialogButtonBox::RestoreDefaults
                                                                                               : QDialogButtonBox::Cancel;
-            QPushButton* button = box ? box->button(which) : nullptr;
-            QPushButton* apply  = box ? box->button(QDialogButtonBox::Apply) : nullptr;
+            QPushButton* button = settingsButton(dialog, which);
+            QPushButton* apply  = settingsButton(dialog, QDialogButtonBox::Apply);
             say(QString::fromLatin1("settings.button: %1 %2 (Apply enabled %3)")
                     .arg(name, button ? QString::fromLatin1("clicked") : QString::fromLatin1("not found"))
                     .arg(apply && apply->isEnabled() ? 1 : 0));
@@ -4270,35 +4525,70 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
             return false;
         }
         if (cmd == QLatin1String("settings.close")) {
-            if (auto* d = qobject_cast<QDialog*>(dialog))
-                d->reject();
-            else
-                dialog->close();
+            closeSettings(dialog); // the Cancel button: unsaved changes are dropped without the question (2.7 M2)
             say(QString::fromLatin1("settings.close: closed"));
             next(600);
             return false;
         }
         if (cmd == QLatin1String("settings.apply")) {
-            auto*        box   = dialog->findChild<QDialogButtonBox*>();
-            QPushButton* apply = box ? box->button(QDialogButtonBox::Apply) : nullptr;
+            QPushButton* apply = settingsButton(dialog, QDialogButtonBox::Apply);
             say(QString::fromLatin1("settings.apply: %1").arg(apply ? QString::fromLatin1("enabled %1").arg(apply->isEnabled() ? 1 : 0) : QString::fromLatin1("no Apply button")));
             if (apply && apply->isEnabled())
                 apply->click();
             next(1500);
             return false;
         }
+        // 2.7 F3: {"cmd":"settings.click","name":"Larger chat text"}: a button by accessible name or text (no access-key
+        // marks), clicked as the user does (its page shown first). The chat text size's -, + and Reset act at once.
+        if (cmd == QLatin1String("settings.click")) {
+            const QString want   = str("name", "");
+            QPushButton*  button = nullptr;
+            for (QPushButton* candidate : dialog->findChildren<QPushButton*>()) {
+                if (!want.isEmpty() && (candidate->accessibleName().compare(want, Qt::CaseInsensitive) == 0
+                                        || withoutMnemonic(candidate->text()).compare(want, Qt::CaseInsensitive) == 0)) {
+                    button = candidate;
+                    break;
+                }
+            }
+            if (!button) {
+                say(QString::fromLatin1("settings.click: no button \"%1\"").arg(want));
+                return true;
+            }
+            showSettingsPageOf(dialog, button);
+            const bool enabled = button->isEnabled();
+            if (enabled)
+                button->click();
+            say(QString::fromLatin1("settings.click: \"%1\" %2 (%3)")
+                    .arg(want, enabled ? QString::fromLatin1("clicked") : QString::fromLatin1("greyed out, not clicked"), button->accessibleDescription()));
+            return true;
+        }
+        // 2.7 (L12): the switch whose text (no access-key marks) is exactly text, else the one it starts (when only one
+        // does), else the first that contains it (2.6 scripts: "Show spoilers without blurring" still finds "... blurring
+        // or hiding"). Its page is shown first, so a grab shows it.
         const QString want  = str("text", "");
         QCheckBox*    found = nullptr;
-        for (QCheckBox* box : dialog->findChildren<QCheckBox*>()) {
-            if (!want.isEmpty() && withoutMnemonic(box->text()).contains(want, Qt::CaseInsensitive)) {
-                found = box;
-                break;
+        if (!want.isEmpty()) {
+            QList<QCheckBox*> prefixed;
+            QCheckBox*        contains = nullptr;
+            for (QCheckBox* box : dialog->findChildren<QCheckBox*>()) {
+                const QString text = withoutMnemonic(box->text());
+                if (text.compare(want, Qt::CaseInsensitive) == 0) {
+                    found = box;
+                    break;
+                }
+                if (text.startsWith(want, Qt::CaseInsensitive))
+                    prefixed << box;
+                if (!contains && text.contains(want, Qt::CaseInsensitive))
+                    contains = box;
             }
+            if (!found)
+                found = prefixed.size() == 1 ? prefixed.first() : prefixed.isEmpty() ? contains : nullptr;
         }
         if (!found) {
             say(QString::fromLatin1("settings.check: no check box \"%1\"").arg(want));
             return true;
         }
+        showSettingsPageOf(dialog, found);
         const auto state = [found] {
             return QString::fromLatin1("checked %1 enabled %2").arg(found->isChecked() ? 1 : 0).arg(found->isEnabled() ? 1 : 0);
         };

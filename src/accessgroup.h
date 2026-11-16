@@ -1,7 +1,7 @@
 #pragma once
 
 // 2.2 servergroup: the one-click "tsmediachat" server group. AccessGroup is the TeamSpeak side of
-// Settings > Server access and of the client menu items "Give / Remove TS Media chat access":
+// Settings → Servers → Server access and of the client menu items "Give / Remove TS Media chat access":
 //  * it keeps per-connection caches fed by TeamSpeak's events (the server group list, your needed
 //    permissions) and per-server state (the adopted group, its permissions, refusals this session);
 //  * it runs access::Job (accessgroupjob.h) against the server, one request at a time, each with its

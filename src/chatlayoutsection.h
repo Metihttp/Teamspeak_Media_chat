@@ -1,8 +1,8 @@
 #pragma once
 
-// Chat redesign: Settings > General > "Chat layout", at the top: Cozy (the default), Compact or TeamSpeak
-// classic, and what the layout does (grouping, the action bar, bubbles, your messages on the right, avatars,
-// mentions, collapsed events).
+// Chat redesign: Settings → Chat → "Chat layout", at the top: Cozy (the default), Compact or TeamSpeak
+// classic (2.7: three picture tiles), and (2.7: the "Messages" card) what the layout does (grouping, the action bar,
+// bubbles, your messages on the right, avatars, mentions, collapsed events).
 // Everything applies at once (OK / Apply).
 
 #include "settingssection.h"

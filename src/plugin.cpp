@@ -17,13 +17,18 @@
 #include <cstring>
 
 #include "accessgroup.h" // 2.2 servergroup
+#include "appearancesection.h" // 2.7 dark mode: Settings → Chat → Appearance
 #include "chatintegration.h"
 #include "chatlayout.h"        // chat redesign: avatars
 #include "chatlayoutsection.h" // chat redesign
+#include "chattextsection.h"   // 2.7 F3: Text size and colors
+#include "chatcolors.h"        // 2.7 F6: the colour preview (the Join)
+#include "chatzoom.h"          // 2.7 F5: the zoom row without a chat (the Join)
 #include "chatpolls.h"         // 2.3 poll: /tsmedia poll
 #include "composesettings.h" // 2.2 compose
 #include "compresssettings.h" // 2.4 compress
 #include "core.h"
+#include "darkmode.h" // 2.7 dark mode
 #include "datasaver.h" // 2.2 per-server settings
 #include "diagnosticscollect.h" // 2.2 diagnostics
 #include "diagnosticsdialog.h"  // 2.2 diagnostics
@@ -93,6 +98,7 @@ QPointer<DiagnosticsDialog> g_diagnostics;             // 2.2 diagnostics
 QPointer<PeerHub>           g_peers;                   // 2.2 protocol: presence and reactions
 QPointer<MusicController>   g_music;                   // 2.3 live music
 QPointer<GifLibrary>        g_gifs;                    // 2.5 GIFs: the emoji picker's GIFs tab
+QPointer<DarkMode>          g_dark;                    // 2.7 dark mode
 bool                        g_mediaFoundation = false; // mf::startup() succeeded (GUI thread only)
 
 // Explicit values: each feature owns its ids, and existing ones stay stable.
@@ -106,6 +112,8 @@ enum MenuId {
     MenuVoice           = 7,  // 2.2 voice: Record voice message… (enabled while connected)
     MenuProxyOn         = proxy::commands::kMenuOn,  // 2.6 chat proxy: Turn on chat proxy (8, enabled while off)
     MenuProxyOff        = proxy::commands::kMenuOff, // 2.6 chat proxy: Turn off chat proxy (9, enabled while on)
+    MenuDarkOn          = 10, // 2.7 dark mode: Turn on dark mode (enabled while off)
+    MenuDarkOff         = 11, // 2.7 dark mode: Turn off dark mode (enabled while on)
     MenuGiveAccess      = 20, // 2.2 servergroup: client context menu (AccessGroup greys them)
     MenuRemoveAccess    = 21, // 2.2 servergroup
 };
@@ -138,6 +146,19 @@ void copyText(char* dst, size_t size, const QString& text)
 
 void updateMenus();
 
+// 2.7 dark mode (design_dark 3.2): the one way it changes (the Settings switch, the Plugins menu pair, the hotkey): saved
+// at once and applied at once (a running load hold of a chat ends first, like setChatZoom does).
+void setDarkMode(bool on)
+{
+    if (g_chat)
+        g_chat->endLoadHolds();
+    Settings::instance().darkMode = on;
+    Settings::instance().save();
+    if (g_dark)
+        g_dark->setEnabled(on);
+    updateMenus();
+}
+
 void showSettings(QWidget* parent)
 {
     if (!g_core)
@@ -150,12 +171,54 @@ void showSettings(QWidget* parent)
     // Heap allocated and non-blocking so plugin shutdown can always close it.
     auto* dialog = new SettingsDialog(g_core, parent ? parent : (g_chat ? g_chat->mainWindow() : nullptr));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // 2.7 F3: the pages of the sidebar (design_settings 2): Sending gets Dropping files, then Videos (the note stays last);
+    // Receiving & playback the Spoilers card (Media cache stays last); Privacy heads its page above the Chat proxy;
+    // the chat layout heads the Chat page, above Text size and colors.
     dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog)); // 2.2 compose
     dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog)); // 2.2 spoiler
-    dialog->addSection(SettingsDialog::Tab::PrivacyUpdates, new PrivacySection, true); // 2.2 protocol: Privacy above Updates
+    dialog->addSection(SettingsDialog::Tab::Privacy, new PrivacySection, true); // 2.2 protocol: Privacy above the Chat proxy
+    dialog->addSection(SettingsDialog::Tab::LinkPreviews, new LinkPreviewsSection); // 2.4 link previews (2.7: a page of its own)
     dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, g_core)); // 2.4 compress
-    dialog->addSection(SettingsDialog::Tab::General, new EmojiSection(dialog));         // 2.2 emoji
-    dialog->addSection(SettingsDialog::Tab::General, new ChatLayoutSection(dialog), true); // chat redesign: at the top
+    dialog->addSection(SettingsDialog::Tab::EmojiGifs, new EmojiSection(dialog));         // 2.2 emoji
+    dialog->addSection(SettingsDialog::Tab::Chat, new ChatLayoutSection(dialog), true); // chat redesign: at the top
+    // 2.7 dark mode: Appearance heads the Chat page, above the chat layout (design_dark 3.1); its switch acts at once and
+    // mirrors the Plugins menu pair and the hotkey while the window is open.
+    {
+        auto* appearance = new AppearanceSection(dialog, [](bool on) { setDarkMode(on); });
+        dialog->addSection(SettingsDialog::Tab::Chat, appearance, true);
+        if (g_dark)
+            QObject::connect(g_dark, &DarkMode::enabledChanged, appearance, &AppearanceSection::refresh);
+    }
+    // 2.7 F3/F5/F6: Text size and colors, joined to the chat (design 8.2 J1/J2): the zoom row reads and sets the one
+    // chat zoom (it acts at once, like Ctrl + wheel), and the preview shows the visible chat's background with the colours
+    // TS Media's lines will really be printed in. The dialog is deleted before g_chat at shutdown; without g_chat the row
+    // shows the saved value and changes nothing.
+    {
+        ChatTextHooks hooks;
+        hooks.zoomTenths    = [] { return g_chat ? g_chat->chatZoom() : chatzoom::clampTenths(Settings::instance().chatZoom); };
+        hooks.zoomPercent   = [] {
+            return g_chat ? g_chat->chatZoomPercent() : chatzoom::percentOf(Settings::instance().chatZoom, chatzoom::kDefaultBasePoints);
+        };
+        hooks.setZoomTenths = [](int tenths) {
+            if (g_chat)
+                g_chat->setChatZoom(tenths);
+        };
+        hooks.linePreview   = [](const QString& choice) {
+            const chatcolors::Colors     chat  = g_chat ? g_chat->visibleChatColors() : chatcolors::teamSpeakLight();
+            const chatcolors::LineColors lines = chatcolors::lineColors(chat, choice);
+            return LinePreviewColors{chat.base, chat.text, QColor(lines.accent), QColor(lines.warning)};
+        };
+        auto* section = new ChatTextSection(dialog, std::move(hooks));
+        dialog->addSection(SettingsDialog::Tab::Chat, section);
+        if (g_chat)
+            QObject::connect(g_chat, &ChatIntegration::chatZoomChanged, section, &ChatTextSection::refreshZoom);
+        // 2.7 dark mode (review fix): the preview below the switch follows it once the whole theme is in place, and again
+        // once the chat's colours settled (its background is sampled a turn later).
+        if (g_dark)
+            QObject::connect(g_dark, &DarkMode::enabledChanged, section, &ChatTextSection::refreshColors);
+        if (g_chat)
+            QObject::connect(g_chat, &ChatIntegration::chatColorsChanged, section, &ChatTextSection::refreshColors);
+    }
     QObject::connect(dialog, &SettingsDialog::settingsChanged, dialog, [] {
         if (g_peers)
             g_peers->applySettings(); // 2.2 protocol: HELLO or BYE when presence was switched
@@ -174,7 +237,7 @@ void showSettings(QWidget* parent)
     dialog->activateWindow();
 }
 
-// 2.2 diagnostics: one "Diagnostic info" window (/tsmedia diag, Settings → Diagnostic info…). Owned
+// 2.2 diagnostics: one "Diagnostic info" window (/tsmedia diag, Settings → About & updates → Diagnostic info…). Owned
 // by TeamSpeak's main window, so it stays open when the settings close.
 void showDiagnostics(QWidget* parent)
 {
@@ -280,6 +343,9 @@ void updateMenus()
     ts3::funcs.setPluginMenuEnabled(id.constData(), MenuVoice, ts3::isConnected(ts3::currentConnection()) ? 1 : 0); // 2.2 voice
     datasaver::updateMenu(MenuPauseDownloads, MenuResumeDownloads); // 2.2 data saver
     proxy::commands::updateMenu();                                  // 2.6 chat proxy: which of the pair is enabled
+    const bool dark = Settings::instance().darkMode;                // 2.7 dark mode: exactly one of the pair
+    ts3::funcs.setPluginMenuEnabled(id.constData(), MenuDarkOn, dark ? 0 : 1);
+    ts3::funcs.setPluginMenuEnabled(id.constData(), MenuDarkOff, dark ? 1 : 0);
 }
 
 // 2.2 per-server settings: after the Plugins menu or a command changed a server's data saver.
@@ -496,6 +562,22 @@ TS3_EXPORT int ts3plugin_init()
     // below, before the first Fetcher or the updater exists.
     proxy::init();
 
+    // 2.7 dark mode (design_dark 1.8): before the chat, so the first paint after a load is dark. The queued call is posted to
+    // g_dark itself (freed with it if the plugin goes first).
+    g_dark = new DarkMode;
+    if (QThread::currentThread() != qApp->thread()) {
+        g_dark->moveToThread(qApp->thread());
+        QMetaObject::invokeMethod(
+            g_dark.data(),
+            [] {
+                if (g_dark)
+                    g_dark->setEnabled(Settings::instance().darkMode);
+            },
+            Qt::QueuedConnection);
+    } else {
+        g_dark->setEnabled(Settings::instance().darkMode); // synchronous: no light frame after a reload
+    }
+
     auto* core = new Core;
     auto* chat = new ChatIntegration(core);
     if (QThread::currentThread() != qApp->thread()) {
@@ -505,14 +587,14 @@ TS3_EXPORT int ts3plugin_init()
     g_core = core;
     g_chat = chat;
 
-    // 2.2 servergroup: Settings > Server access and the Give / Remove TS Media chat access menu items
+    // 2.2 servergroup: Settings → Servers → Server access and the Give / Remove TS Media chat access menu items
     g_access = new AccessGroup(MenuGiveAccess, MenuRemoveAccess);
     if (QThread::currentThread() != qApp->thread())
         g_access->moveToThread(qApp->thread());
 
     QMetaObject::invokeMethod(core, [core, chat] {
         diag::startSessionStats(core);              // 2.2 diagnostics: counts from the start (a child of core)
-        diag::setDialogOpener(&showDiagnostics);    // 2.2 diagnostics: Settings → Diagnostic info…
+        diag::setDialogOpener(&showDiagnostics);    // 2.2 diagnostics: Settings → About & updates → Diagnostic info…
         // 2.2 diagnostics: recent lines from the plugin log (names marked, so they can be left out).
         // Called on the dialog's worker thread; plog is thread-safe.
         diag::setLogTailProvider([](int maxLines) {
@@ -579,6 +661,18 @@ TS3_EXPORT int ts3plugin_init()
                                   i18n::t("Pictures cached: %1 (%2 KB), waiting: %3").arg(cache.entries).arg(cache.bytes / 1024).arg(cache.pending)}};
         });
         chat->start();
+        // 2.7 dark mode: a new chat or a swapped document is themed (where the event filter didn't see it first). From now on
+        // a toggle doesn't lay out hidden chats: each one's place waits for its Show (review fix; the load before this kept
+        // them exact for the chat layer's own place keeping, and the shutdown does too).
+        if (g_dark) {
+            QObject::connect(chat, &ChatIntegration::chatsChanged, g_dark.data(), &DarkMode::checkDocuments);
+            QObject::connect(g_dark.data(), &DarkMode::placesRestored, chat, &ChatIntegration::retakeScalePlaces);
+            g_dark->setDeferHiddenPlaces(true);
+        }
+        // 2.7 dark mode: on, off or paused, the sheet's size and scale, what it took over (counts only).
+        diag::addSectionProvider([]() -> diag::Section {
+            return g_dark ? diag::Section{i18n::t("Appearance"), g_dark->diagnosticLines()} : diag::Section();
+        });
         // 2.4 link previews: the chat's cards show the senders' previews the hub accepted (link-previews.json), wait
         // for them (the peers' capability, the senders' LPNO) and show our own links from our pipeline's download.
         if (chat->linkPreviews() && peers->linkPreviews())
@@ -703,6 +797,14 @@ TS3_EXPORT void ts3plugin_shutdown()
         // 2.6 chat proxy: the Test and Find workers joined and the bridge stopped (listener first, then tunnels; bounded),
         // after the Fetchers, the player and the updater are gone and before the chat.
         proxy::shutdown();
+        // 2.7 dark mode (design_dark 1.9): on a Disable or Reload, TeamSpeak's skin back exactly, with every chat's place, while
+        // the chat layer still exists (its modules see one more StyleChange; their timers die with them right after), and
+        // before ~ChatIntegration writes the R-DEF-1 carry (it describes the chat in TeamSpeak's own colours). At TeamSpeak's
+        // Quit (its main window no longer shown) only its hooks go (DarkMode::shutdown).
+        if (g_dark) {
+            g_dark->shutdown();
+            delete g_dark.data();
+        }
 
 #ifdef TSMEDIA_TESTHOOKS
         // 2.3.1 live test: what TeamSpeak's chats hold once the chat layer is gone (nothing of ours, its own margins).
@@ -939,6 +1041,9 @@ TS3_EXPORT void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** m
         // 2.6 chat proxy: an enable/disable pair too (design 1.4): exactly one of them is enabled.
         {MenuProxyOn, proxy::texts::menuOnText()},
         {MenuProxyOff, proxy::texts::menuOffText()},
+        // 2.7 dark mode: an enable/disable pair too: exactly one of them is enabled.
+        {MenuDarkOn, i18n::t("Turn on dark mode")},
+        {MenuDarkOff, i18n::t("Turn off dark mode")},
         {MenuSettings, i18n::t("Settings…")},
         {MenuCache, i18n::t("Open media cache folder")},
         {MenuUpdate, i18n::t("Check for updates…")}, // 2.2 updater (official builds only)
@@ -979,6 +1084,7 @@ TS3_EXPORT void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys)
         {"tsmedia_cancel", i18n::t("Cancel all uploads")},
         {"tsmedia_reply", i18n::t("Reply to the last message in the current chat")}, // 2.2 reply
         {proxy::commands::kHotkey, proxy::texts::hotkeyDescription()},               // 2.6 chat proxy: never opens a window
+        {"tsmedia_darkmode", i18n::t("Turn dark mode on or off")},                   // 2.7 dark mode
     };
     constexpr size_t count = sizeof(keys) / sizeof(keys[0]);
 
@@ -1027,11 +1133,11 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
                 g_core->openCacheFolder();
         });
         break;
-    case MenuUpdate: // 2.2 updater: the result shows in Settings → Updates (or the update dialog)
+    case MenuUpdate: // 2.2 updater: the result shows in Settings → About & updates → Updates (or the update dialog)
         onGuiThread([] {
             showSettings(nullptr);
-            if (g_settings) // the dialog opens on the tab used last; the result is on this one
-                g_settings->showTab(SettingsDialog::Tab::PrivacyUpdates);
+            if (g_settings) // the dialog opens on the page used last; the result is on this one
+                g_settings->showTab(SettingsDialog::Tab::About);
             if (g_updater)
                 g_updater->checkNow(upd::Updater::Origin::Settings);
         });
@@ -1042,6 +1148,10 @@ TS3_EXPORT void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum
     case MenuProxyOn: // 2.6 chat proxy: the line says what happened (nothing saved: the window opens)
     case MenuProxyOff:
         onGuiThread([sch, menuItemID] { proxy::commands::handleMenu(menuItemID, sch); });
+        break;
+    case MenuDarkOn: // 2.7 dark mode
+    case MenuDarkOff:
+        onGuiThread([on = menuItemID == MenuDarkOn] { setDarkMode(on); });
         break;
     default:
         break;
@@ -1065,6 +1175,8 @@ TS3_EXPORT void ts3plugin_onHotkeyEvent(const char* keyword)
         });
     } else if (key == QLatin1String(proxy::commands::kHotkey)) { // 2.6 chat proxy: on if off, else off (a line, never a window)
         onGuiThread([key] { proxy::commands::handleHotkey(key, ts3::currentConnection()); });
+    } else if (key == QLatin1String("tsmedia_darkmode")) { // 2.7 dark mode: on if off, else off
+        onGuiThread([] { setDarkMode(!Settings::instance().darkMode); });
     }
 }
 

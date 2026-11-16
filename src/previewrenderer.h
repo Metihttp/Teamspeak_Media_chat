@@ -38,6 +38,13 @@ struct PreviewStyle {
     // their own, start at the bubble's text column and keep their texts readable on each of these colours.
     // Empty: on the chat itself.
     QVector<QColor> bubbles;
+    // 2.7 F6: the chat's effective background, text and link colours (chatcolors.h; dark follows base). Invalid: not
+    // known (the modules' known-colour fallbacks).
+    QColor base;
+    QColor text;
+    QColor link;
+    // 2.7 dark mode (live test): the theme's accent while dark mode is on (play buttons, progress); invalid: TS Media's own.
+    QColor accent;
 };
 
 // Controls drawn on top of an inline video.

@@ -170,7 +170,7 @@ QString copyText(const QTextCharFormat& format)
     for (int i = 0; i + 1 < runs.size() && out.size() <= 16384; i += 2) {
         const QTextFormat f    = qvariant_cast<QTextFormat>(runs.at(i + 1));
         const QString     text = runs.at(i).toString();
-        out += f.isImageFormat() ? replydoc::textOf(text, f.toCharFormat()) : text;
+        out += replydoc::isPicture(f.toCharFormat()) ? replydoc::textOf(text, f.toCharFormat()) : text; // 2.7 F1: a text spoiler's objects too
     }
     out.replace(QChar::LineSeparator, QLatin1Char('\n'));
     out.remove(QChar::ObjectReplacementCharacter);
@@ -238,7 +238,7 @@ Found parseBlock(const QTextBlock& block)
         if (from >= to)
             continue;
         const QString part = p.text.mid(from - p.start, to - from);
-        text += p.format.isImageFormat() ? replydoc::textOf(part, p.format) : part;
+        text += replydoc::isPicture(p.format) ? replydoc::textOf(part, p.format) : part; // 2.7 F1: a text spoiler's objects too
         if (text.size() > 8192)
             return none;
     }

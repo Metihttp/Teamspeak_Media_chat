@@ -84,6 +84,12 @@
 #include "chatscale.h" // 2.5 zoom
 #include "previewpaint.h" // fontForRatio
 #include "chatscroll.h"
+#include "loadhold.h" // 2.7 (R-DEF-1): the reader's place while a chat is styled after a load
+#include "chatzoom.h" // 2.7 F5
+#include "darkmode.h" // 2.7 dark mode: DarkMode::isActive() for the chats' colours
+#include "chattextspoilers.h"   // 2.7 F1: text spoilers
+#include "diagnosticscollect.h" // 2.7 F1: their counts in the diagnostic info
+#include "inputformat.h"        // 2.7 F1: formatting in the chat input
 
 namespace {
 
@@ -266,6 +272,46 @@ bool videoStarted(const PlaybackOverlay& o, bool hasFrame)
 
 VoiceController::Host voiceHostFor(ChatIntegration* chat, Core* core); // 2.2.1 voice (the voice part below)
 
+#ifdef TSMEDIA_TESTHOOKS
+// 2.7 (R-DEF-1): a reader's place for the live tests' log: "end", "block B offset O" or "line block B offset O".
+QString describeReader(const chatscroll::ReaderPlace& p)
+{
+    if (p.bottom)
+        return QString::fromLatin1("end");
+    if (p.cursor.isNull())
+        return QString::fromLatin1("nothing");
+    return QString::fromLatin1("%1block %2 offset %3")
+        .arg(p.line ? QString::fromLatin1("line ") : QString())
+        .arg(p.cursor.block().blockNumber())
+        .arg(p.offset, 0, 'f', 1);
+}
+
+QString endName(LoadHold::End why)
+{
+    switch (why) {
+    case LoadHold::End::User:
+        return QString::fromLatin1("user");
+    case LoadHold::End::Settled:
+        return QString::fromLatin1("settled");
+    case LoadHold::End::Cap:
+        return QString::fromLatin1("cap");
+    case LoadHold::End::Swapped:
+        return QString::fromLatin1("swapped");
+    case LoadHold::End::None:
+        break;
+    }
+    return QString::fromLatin1("unloaded");
+}
+#endif
+
+// 2.7 F1: the text spoilers' counts in the diagnostic info (the provider is a plain function: the module it reads).
+QPointer<ChatTextSpoilers> g_textSpoilers;
+
+diag::Section textSpoilerSection()
+{
+    return g_textSpoilers ? diag::Section{i18n::t("Formatting"), g_textSpoilers->diagnosticLines()} : diag::Section();
+}
+
 } // namespace
 
 ChatIntegration::ChatIntegration(Core* core, QObject* parent)
@@ -276,6 +322,39 @@ ChatIntegration::ChatIntegration(Core* core, QObject* parent)
 
 ChatIntegration::~ChatIntegration()
 {
+    // 2.7 F1: first: the input menu's catcher disarmed, the inputs' filters off, our menu actions gone.
+    delete m_inputFormat;
+    m_inputFormat = nullptr;
+    // 2.7 (R-DEF-1): every chat's reader's place, once, before anything of ours gives a chat back (the first edit is
+    // the text reactions' below): the end, or TeamSpeak's own text at the view's top (a message's top or a line of its
+    // text, never one of our pictures, rows or cards). A chat whose load hold still keeps a place keeps that one. No
+    // syncRange first: a chat at its end on a range Qt hasn't updated yet still reads as at its end (the reader's
+    // intent). The holds go now, so none reacts to the teardown. RULE for later code: anything that edits a chat
+    // document or changes a chat's font at unload goes between this block and the restore after `delete m_media`.
+    struct KeptPlace {
+        QPointer<QTextBrowser>  browser;
+        chatscroll::ReaderPlace place;
+        int                     number   = 0;
+        bool                    fromHold = false;
+    };
+    QVector<KeptPlace> keptPlaces;
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->browser && it->browser->document()->characterCount() > 1) {
+            KeptPlace k;
+            k.browser  = it->browser;
+            k.number   = it->number;
+            k.fromHold = it->hold && it->hold->active()
+                         && (it->hold->place().bottom || it->hold->place().cursor.document() == it->browser->document());
+            k.place = k.fromHold ? it->hold->place() : chatscroll::captureReader(it->browser);
+            keptPlaces.append(k);
+        }
+        if (it->hold) {
+            it->hold->onFinished = nullptr;
+            delete it->hold;
+            it->hold = nullptr;
+        }
+    }
+    m_activeHolds = 0;
     // 2.5 zoom: every chat's coordinator first: timers stopped, its filter off the chat, no pass after this.
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
         if (it->scaler) {
@@ -284,6 +363,15 @@ ChatIntegration::~ChatIntegration()
             it->scaler = nullptr;
         }
     }
+    // 2.7 F5 / F6: the zoom's timers and filters go (a pending save is made; the chats keep their size: no font is set at
+    // unload), and no background is sampled any more.
+    if (m_zoom) {
+        m_zoom->shutdown();
+        delete m_zoom;
+        m_zoom = nullptr;
+    }
+    if (m_sampleTimer)
+        m_sampleTimer->stop();
     // 2.2 voice: first, while the players and Core exist: a recording is canceled, the mic given back.
     delete m_voice;
     m_voice = nullptr;
@@ -300,6 +388,10 @@ ChatIntegration::~ChatIntegration()
     // and overlays gone), while the replies, the emoji and the albums it sits on are still there.
     delete m_layout;
     m_layout = nullptr;
+    // 2.7 F1: every text spoiler back to TeamSpeak's text (the replies, emoji and albums it sits among are still
+    // there), the handler unregistered and deleted, the chat's cursor back.
+    delete m_textSpoilers;
+    m_textSpoilers = nullptr;
     // 2.4 link previews: every fetch canceled and joined, every card and link media out of every chat (after the
     // layout gave its blocks back: nothing it kept can bring a format of ours back).
     delete m_links;
@@ -321,6 +413,24 @@ ChatIntegration::~ChatIntegration()
     // Inline players are shut down here, synchronously, while Core still exists.
     delete m_media;
     m_media = nullptr;
+    // 2.7 (R-DEF-1): the place taken at the top, back once after the last edit (the range synced). Each module above
+    // keeps a place of its own in normal use; here their sum would lose it (albums given back above a chat at its end,
+    // a card the view's top sat on, an offset scaled with a block's new height). The place is left on TeamSpeak's chat
+    // widget for the next load (numbers only, chatscroll::Carry). RULE for later code: edits at unload go above this.
+    for (const KeptPlace& k : qAsConst(keptPlaces)) {
+        if (!k.browser)
+            continue;
+        chatscroll::restoreReader(k.browser, k.place);
+        const QByteArray carry = chatscroll::encodeCarry(chatscroll::carryOf(k.browser, k.place));
+        k.browser->setProperty(chatscroll::carryName(), carry.isEmpty() ? QVariant() : QVariant(carry));
+#ifdef TSMEDIA_TESTHOOKS
+        ts3::log(QString::fromLatin1("[test] place: chat %1 unload %2%3, scroll %4/%5")
+                     .arg(k.number)
+                     .arg(describeReader(k.place), k.fromHold ? QString::fromLatin1(" (from its load hold)") : QString())
+                     .arg(k.browser->verticalScrollBar()->value())
+                     .arg(k.browser->verticalScrollBar()->maximum()));
+#endif
+    }
     if (m_compose) // 2.2 compose: waits for its thumbnail workers (code of this DLL)
         delete m_compose.data();
     if (m_dropOverlay)
@@ -409,6 +519,56 @@ void ChatIntegration::start()
     });
     m_textReactions = new ChatTextReactions(this); // 2.3 text reactions (after PeerHub made its hub)
     m_links         = new ChatLinkPreviews(this, m_core); // 2.4 link previews (message keys from the text reactions)
+    // 2.7 F5: the saved chat zoom (before the first discover: every chat gets it in attachBrowser).
+    {
+        ChatZoom::Host zoomHost;
+        zoomHost.endLoadHolds = [this] { endLoadHolds(); };
+        zoomHost.discover     = [this] { discover(); };
+        zoomHost.visible      = [this] { return visibleChatBrowser(); };
+        m_zoom                = new ChatZoom(zoomHost, this);
+        connect(m_zoom, &ChatZoom::chatZoomChanged, this, &ChatIntegration::chatZoomChanged);
+    }
+    // 2.7 F6: a chat's style-sheet background sampled outside any paint (design M8), then one restyle if it changed.
+    m_sampleTimer = new QTimer(this);
+    m_sampleTimer->setSingleShot(true);
+    m_sampleTimer->setInterval(0);
+    connect(m_sampleTimer, &QTimer::timeout, this, &ChatIntegration::sampleColors);
+    // 2.7 F1: text spoilers (after the replies and before the text reactions in every scan) and the input's formatting.
+    {
+        ChatTextSpoilers::Host host;
+        host.othersMutating = [this] { return m_mutating || ChatEmoji::isMutating() || ChatLayout::isMutating(); };
+        host.setMutating    = [this](bool on) {
+            const bool was = m_mutating;
+            m_mutating     = on;
+            return was;
+        };
+        host.edited = [this](QTextBrowser* browser) {
+            if (m_replies) // positions inside its blocks moved
+                m_replies->documentEdited(browser);
+            if (View* view = viewFor(browser))
+                view->positionsValid = false;
+            scheduleVisibilityUpdate();
+        };
+        host.hid = [this](QTextBrowser* browser, int block) {
+            if (m_layout) // its mention test reads the hidden text (bars) now
+                m_layout->restyleSoon(browser, block);
+        };
+        // 2.7 F6 (design J3): the chat's effective colours (a gradient's or a sampled picture's background too), the ones
+        // every other module and TS Media's lines use.
+        host.colors    = [this](QTextBrowser* browser) {
+            const chatcolors::Colors c = chatColorsOf(browser);
+            return ChatTextSpoilers::Colors{c.base, c.text};
+        };
+        host.toolTip   = [this] { return spoilerToolTip(); };
+        m_textSpoilers = new ChatTextSpoilers(host, this);
+        g_textSpoilers = m_textSpoilers;
+        diag::addSectionProvider(&textSpoilerSection);
+        m_inputFormat                   = new InputFormat(this);
+        m_inputFormat->showsPlaceholder = [this](const QTextEdit* input) {
+            ChatInputs* inputs = m_emoji ? m_emoji->inputs() : nullptr;
+            return inputs && inputs->showsPlaceholder(input);
+        };
+    }
 
 #ifdef TSMEDIA_TESTHOOKS
     QFile options(ts3::dataDir() + QStringLiteral("/selftest_options.txt"));
@@ -449,11 +609,17 @@ void ChatIntegration::discover()
 {
     m_inputs.removeAll(QPointer<QWidget>());
 
+    bool chatsChangedNow = false; // 2.7 dark mode: a new chat or a swapped document
     const auto widgets = QApplication::allWidgets();
     for (QWidget* w : widgets) {
         if (auto* browser = qobject_cast<QTextBrowser*>(w)) {
-            if (!m_views.contains(browser) && hasChatAncestor(browser))
+            if (!m_views.contains(browser) && hasChatAncestor(browser)) {
                 attachBrowser(browser);
+                chatsChangedNow = true;
+            }
+        } else if (w->inherits("ChatTabWidget")) {
+            if (m_zoom) // 2.7 F5 (M4): a new tab is found when it arrives, zoomed before its first paint
+                m_zoom->watchTabs(w);
         } else if (w->inherits("ChatLineEdit")) {
             bool known = false;
             for (const auto& input : qAsConst(m_inputs))
@@ -473,24 +639,55 @@ void ChatIntegration::discover()
             v.stale.clear();
             if (v.scaler) // 2.5 zoom: the old document's pictures went with it; the books start again (review fix)
                 v.scaler->resetLedger();
+            if (v.hold) // 2.7 (R-DEF-1): its place was in the old document
+                v.hold->finish(LoadHold::End::Swapped);
             watchDocument(v.browser, v.document);
             scheduleScan(v.browser);
             if (m_emoji) // 2.2 emoji
                 m_emoji->documentSwapped(v.browser);
             if (m_layout) // chat redesign: the new document styled newest first, the old one given back on unload
                 m_layout->documentSwapped(v.browser);
+            if (m_textSpoilers) // 2.7 F1: the new document gets the handler and a full pass
+                m_textSpoilers->documentSwapped(v.browser);
+            chatsChangedNow = true; // 2.7 dark mode
         }
     }
     if (m_emoji) // chat redesign: TeamSpeak's emoticon button may come after its input
         m_emoji->rediscover();
 
     // Lines Core prints (upload results, warnings) use prefix colours for the chat's theme.
-    if (QTextBrowser* chat = visibleChatBrowser())
-        ts3::setChatDark(styleFor(chat).dark);
+    updateLineColors(); // 2.7 F6: the visible chat's effective background and the colour setting
+    if (chatsChangedNow)
+        emit chatsChanged(); // 2.7 dark mode: themes what it doesn't know yet (DarkMode::checkDocuments)
 }
 
 void ChatIntegration::attachBrowser(QTextBrowser* browser)
 {
+    // 2.7 (R-DEF-1): the reader's place first, before anything of ours touches the chat (the zoom, the scale, the
+    // layout): the place the last unload left on the chat widget if the chat is still exactly there (it has the offset
+    // as the reader saw it in our look), else the place as it is now (the reader scrolled meanwhile: theirs wins). The
+    // carry is removed in any case. An empty chat gets no hold.
+    chatscroll::ReaderPlace place;
+    bool                    holdPlace = false;
+    bool                    carried   = false;
+    {
+        const QVariant carry = browser->property(chatscroll::carryName());
+        if (carry.isValid())
+            browser->setProperty(chatscroll::carryName(), QVariant());
+        if (browser->document()->characterCount() > 1) {
+            chatscroll::Carry c;
+            carried   = carry.isValid() && chatscroll::decodeCarry(carry.toByteArray(), &c) && chatscroll::resolveCarry(browser, c, &place);
+            holdPlace = true;
+            if (!carried)
+                place = chatscroll::captureReader(browser);
+        }
+    }
+    // 2.7 F5 (design M3.1): the saved zoom after the place was taken and before the scale, so the first scale is the
+    // zoomed one and no extra pass runs; a reload finds the chat zoomed already and sets no font. The load hold below
+    // keeps the place through the relayout.
+    if (m_zoom)
+        m_zoom->attach(browser);
+
     View v;
     v.browser  = browser;
     v.document = browser->document();
@@ -504,6 +701,11 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
             delete gone->scaler;
             gone->scaler = nullptr;
         }
+        if (View* gone = viewFor(browser); gone && gone->hold) { // 2.7 (R-DEF-1)
+            delete gone->hold;
+            gone->hold = nullptr;
+        }
+        m_colorCache.remove(browser); // 2.7 F6
         m_views.remove(browser);
         scheduleVisibilityUpdate(); // players whose preview went with it are stopped
     });
@@ -524,8 +726,69 @@ void ChatIntegration::attachBrowser(QTextBrowser* browser)
     scheduleScan(browser);
     if (m_emoji) // 2.2 emoji (its event filter goes before ours: it only takes events on its own emoji)
         m_emoji->attach(browser);
+    // 2.7 F1: the text spoilers before the layout, so their 0 ms pass hides what the chat holds before the layout's first
+    // step styles it (a mention inside a hidden spoiler would tint the row; the pass also asks the layout to look again).
+    if (m_textSpoilers)
+        m_textSpoilers->attach(browser);
     if (m_layout) // chat redesign
         m_layout->attach(browser);
+
+    // 2.7 (R-DEF-1): last, so its filters see the reader's wheel, click or key before any module may take it. It keeps
+    // the place while the scan, the layout's history pass, the albums, polls, cards, replies, emoji and the scale pass
+    // style the chat, and lets go at the reader's first input, once the chat is quiet with nothing left to style, or
+    // after 30 s.
+    if (holdPlace) {
+        const QPointer<QTextBrowser> b(browser);
+        auto* hold = new LoadHold(browser, place, [this, b] {
+            View* view = b ? viewFor(b) : nullptr;
+            return view && (view->scanQueued || (m_layout && m_layout->hasWork(b)));
+        }, this);
+        m_views[browser].hold = hold;
+        m_activeHolds += hold->active() ? 1 : 0;
+#ifdef TSMEDIA_TESTHOOKS
+        const int number = m_views[browser].number;
+        ts3::log(QString::fromLatin1("[test] place: chat %1 load %2 (%3)")
+                     .arg(number)
+                     .arg(describeReader(place), carried ? QString::fromLatin1("carried") : QString::fromLatin1("read now")));
+        hold->onFinished = [this, hold, b, number](LoadHold::End why) {
+            --m_activeHolds;
+            if (why == LoadHold::End::None)
+                return;
+            ts3::log(QString::fromLatin1("[test] place: chat %1 hold ended (%2) after %3 ms, %4 correction(s), scroll %5/%6")
+                         .arg(number)
+                         .arg(endName(why))
+                         .arg(hold->ageMs())
+                         .arg(hold->corrections())
+                         .arg(b ? b->verticalScrollBar()->value() : -1)
+                         .arg(b ? b->verticalScrollBar()->maximum() : -1));
+        };
+#else
+        Q_UNUSED(carried)
+        hold->onFinished = [this](LoadHold::End) { --m_activeHolds; };
+#endif
+    }
+}
+
+void ChatIntegration::endLoadHold(QTextBrowser* browser)
+{
+    if (View* view = viewFor(browser); view && view->hold)
+        view->hold->finish(LoadHold::End::User);
+}
+
+void ChatIntegration::endLoadHolds()
+{
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->hold)
+            it->hold->finish(LoadHold::End::User);
+    }
+}
+
+void ChatIntegration::retakeScalePlaces()
+{
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        if (it->scaler && it->scaler->pending())
+            it->scaler->retake();
+    }
 }
 
 void ChatIntegration::watchDocument(QTextBrowser* browser, QTextDocument* document)
@@ -551,6 +814,8 @@ void ChatIntegration::attachInput(QWidget* input)
     }
     if (auto* edit = qobject_cast<QTextEdit*>(input); edit && m_emoji) // 2.2 emoji: the emoji button, Ctrl+E
         m_emoji->attachInput(edit);
+    if (auto* edit = qobject_cast<QTextEdit*>(input); edit && m_inputFormat) // 2.7 F1: the menu's formatting, Alt+Shift+S
+        m_inputFormat->attach(edit);
 }
 
 ChatIntegration::View* ChatIntegration::viewFor(QTextBrowser* browser)
@@ -763,6 +1028,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
             m_polls->afterScan(browser);
         if (m_replies) // 2.2 reply: quote lines become reply lines
             m_replies->afterScan(browser);
+        if (m_textSpoilers) // 2.7 F1: text spoilers hidden (before anything gives a link in them a slot)
+            m_textSpoilers->afterScan(browser);
         if (m_textReactions) // 2.3 text reactions: the messages read, their reaction rows
             m_textReactions->afterScan(browser);
         if (m_links) // 2.4 link previews: the cards and media under web links
@@ -809,6 +1076,8 @@ void ChatIntegration::scan(QTextBrowser* browser)
         m_polls->afterScan(browser);
     if (m_replies) // 2.2 reply: quote lines become reply lines
         m_replies->afterScan(browser);
+    if (m_textSpoilers) // 2.7 F1: text spoilers hidden (before anything gives a link in them a slot)
+        m_textSpoilers->afterScan(browser);
     if (m_textReactions) // 2.3 text reactions: the messages read, their reaction rows
         m_textReactions->afterScan(browser);
     if (m_links) // 2.4 link previews: the cards and media under web links
@@ -822,9 +1091,14 @@ PreviewStyle ChatIntegration::styleFor(QTextBrowser* browser) const
 {
     const Settings& s = Settings::instance();
     PreviewStyle    style;
-    // TeamSpeak themes are style sheets; light text means a dark chat even if Base was not set.
-    style.dark = browser->viewport()->palette().color(QPalette::Base).lightness() < 128
-                 || browser->palette().color(QPalette::Text).lightness() > 170;
+    // 2.7 F6: dark or light from the chat's effective background (chatcolors: the style sheet's solid colour, a gradient's
+    // average, or a picture's sampled colour), and that background, text and link colour for every chat module.
+    const chatcolors::Colors colors = chatColorsOf(browser);
+    style.dark                      = colors.dark;
+    style.base                      = colors.base;
+    style.text                      = colors.text;
+    style.link                      = colors.link;
+    style.accent                    = colors.themeAccent; // 2.7 dark mode (live test): invalid unless it is on
     style.font = browser->font();
     if (style.font.pointSizeF() <= 0 && style.font.pixelSize() <= 0)
         style.font.setPointSizeF(9);
@@ -941,6 +1215,16 @@ void ChatIntegration::attachScale(QTextBrowser* browser)
         if (View* v = b ? viewFor(b) : nullptr; v && v->scaler)
             v->scaler->request();
     };
+    // 2.7 F6: a new palette or style (a skin, a custom sheet): the chat's colours are read again (its background sampled
+    // again later, the last sample in use until then), and TS Media's lines follow the visible chat. Never on a font
+    // change (a zoom notch can't change the background; review fix).
+    host.styleEvent = [this, b] {
+        if (b) {
+            invalidateColors(b);
+            if (b == visibleChatBrowser())
+                updateLineColors(b);
+        }
+    };
     host.swapped   = [this, b](const QString& name, int module) {
         if (b)
             pictureSwapped(b, name, module);
@@ -1039,6 +1323,7 @@ void ChatIntegration::applyScale(QTextBrowser* browser, const PreviewScale& scal
     view->layoutDpr          = style.dpr;
     view->layoutDark         = style.dark;
     view->layoutBubbles      = surfacesKey(style);
+    view->layoutAccent       = style.accent;
     if (m_links) // link cards and strips
         m_links->applyScale(browser, scale);
     if (m_polls)
@@ -1257,6 +1542,7 @@ void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const Q
             view->layoutDpr          = style.dpr;
             view->layoutDark         = style.dark;
             view->layoutBubbles      = surfacesKey(style);
+            view->layoutAccent       = style.accent;
         }
     }
 
@@ -1369,12 +1655,15 @@ void ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
 
 void ChatIntegration::refreshAll()
 {
+    updateLineColors(); // 2.7 F6: Settings::chatLineColor
     if (m_emoji) // 2.2 emoji
         m_emoji->settingsChanged();
     if (m_layout) // chat redesign: a new layout (everything back first, then the new one in steps)
         m_layout->settingsChanged();
     if (m_links) // 2.4 link previews: off: fetches canceled, every slot out (the scans below put them back when on)
         m_links->settingsChanged();
+    if (m_textSpoilers) // 2.7 F1: revealSpoilers (everything revealed, or what the setting revealed hidden again)
+        m_textSpoilers->settingsChanged();
     const bool previewsOn = Settings::instance().inlinePreviews;
     if (m_media) {
         m_media->settingsChanged();
@@ -1435,6 +1724,7 @@ void ChatIntegration::refreshAll()
             view->layoutDpr          = style.dpr;
             view->layoutDark         = style.dark;
             view->layoutBubbles      = surfacesKey(style);
+            view->layoutAccent       = style.accent;
             const QStringList keys   = view->positionsByKey.keys();
             for (const QString& key : keys)
                 refreshPreview(b, key, false);
@@ -1487,12 +1777,15 @@ void ChatIntegration::scheduleRelayout(QTextBrowser* browser)
         // another monitor) or a theme switch re-renders them (sharp, in the chat's new colours).
         const PreviewStyle style = styleFor(guard.data());
         const QString      bubbles = surfacesKey(style); // 2.3: bubbles switched on or off, another skin
-        if (style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr && style.dark == v->layoutDark && bubbles == v->layoutBubbles)
+        // Review fix: the theme's accent too (dark mode on or off between two dark backgrounds changes only the play buttons).
+        if (style.maxWidth == v->layoutWidth && style.dpr == v->layoutDpr && style.dark == v->layoutDark && bubbles == v->layoutBubbles
+            && style.accent == v->layoutAccent)
             return;
         v->layoutWidth   = style.maxWidth;
         v->layoutDpr     = style.dpr;
         v->layoutDark    = style.dark;
         v->layoutBubbles = bubbles;
+        v->layoutAccent  = style.accent;
         ensurePositions(*v);
         const QStringList keys = v->positionsByKey.keys();
         for (const QString& key : keys)
@@ -1659,7 +1952,7 @@ void ChatIntegration::updateVisibleKeys()
         // event, is noticed here (this runs every 300 ms).
         if (!view.previews.isEmpty() && view.layoutDpr > 0 && !view.relayoutQueued && !(view.scaler && view.scaler->pending())) {
             const PreviewStyle style = styleFor(b);
-            if (style.dpr != view.layoutDpr || style.dark != view.layoutDark || surfacesKey(style) != view.layoutBubbles)
+            if (style.dpr != view.layoutDpr || style.dark != view.layoutDark || surfacesKey(style) != view.layoutBubbles || style.accent != view.layoutAccent)
                 scheduleRelayout(b);
         }
         const QRectF viewport(b->viewport()->rect());
@@ -2432,9 +2725,23 @@ ChatIntegration::Hit ChatIntegration::updateHoverAt(QTextBrowser* browser, const
 
 bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
 {
+    // 2.7 (R-DEF-1): a key in a chat input (sending a message makes TeamSpeak scroll to the end): no load hold pulls a
+    // reader back after that. Only while some hold is active.
+    if (m_activeHolds > 0 && event->type() == QEvent::KeyPress) {
+        for (const QPointer<QWidget>& input : qAsConst(m_inputs)) {
+            const auto* area = qobject_cast<const QAbstractScrollArea*>(input.data());
+            if (input && (watched == input.data() || (area && watched == area->viewport()))) {
+                endLoadHolds();
+                break;
+            }
+        }
+    }
     const Settings& s = Settings::instance();
     // 2.2 reply: first, so it sees every context menu (it only notes where, the menus open as before).
     if (m_replies && m_replies->filterEvent(watched, event))
+        return true;
+    // 2.7 F1: a click on a text spoiler's bar reveals it (taken before TeamSpeak starts a selection there).
+    if (m_textSpoilers && m_textSpoilers->filterEvent(watched, event))
         return true;
     // Chat redesign: pictures and what goes under the text before the chat paints, hover, the action bar,
     // a Cozy head's reply row (taken before TeamSpeak's link click).
@@ -2949,7 +3256,7 @@ void ChatIntegration::warnCantSend(QWidget* widget, SendBlock block) const
     if (text.isEmpty())
         return;
     if (QTextBrowser* chat = chatBrowserFor(widget))
-        ts3::setChatDark(styleFor(chat).dark);
+        updateLineColors(chat); // 2.7 F6
     ts3::printWarning(ts3::currentConnection(), text);
     if (widget && widget->isVisible())
         QToolTip::showText(widget->mapToGlobal(QPoint(12, widget->height() / 2)), text, widget);
@@ -3215,7 +3522,7 @@ bool ChatIntegration::voiceTarget(ChatTarget* target, QString* description, QWid
         // The file goes to the own channel's file browser, which a password channel doesn't allow.
         const QString text = i18n::t("Voice messages can't be sent from password-protected channels. Join another channel, then try again.");
         if (QTextBrowser* chat = chatBrowserFor(source))
-            ts3::setChatDark(styleFor(chat).dark);
+            updateLineColors(chat); // 2.7 F6
         ts3::printWarning(ts3::currentConnection(), text);
         if (source && source->isVisible())
             QToolTip::showText(source->mapToGlobal(QPoint(12, source->height() / 2)), text, source);
@@ -3415,7 +3722,7 @@ void ChatIntegration::onUploadChanged(int id)
         m_toast->setHost(host);
     const bool dark = styleFor(host).dark; // TeamSpeak's light or dark theme, like the previews
     m_toast->setDark(dark);
-    ts3::setChatDark(dark);
+    updateLineColors(host); // 2.7 F6
     m_toast->updateJob(id);
 }
 
@@ -3763,4 +4070,98 @@ QVector<QRectF> ChatIntegration::mediaRectsIn(QTextBrowser* browser, int block) 
         }
     }
     return rects;
+}
+
+// ============================================================================================
+// 2.7 F5: the saved chat zoom (chatzoom.h)
+// ============================================================================================
+
+int ChatIntegration::chatZoom() const
+{
+    return m_zoom ? m_zoom->zoom() : chatzoom::clampTenths(Settings::instance().chatZoom);
+}
+
+int ChatIntegration::chatZoomPercent() const
+{
+    return m_zoom ? m_zoom->percent() : chatzoom::percentOf(chatZoom(), chatzoom::kDefaultBasePoints);
+}
+
+void ChatIntegration::setChatZoom(int tenths)
+{
+    if (m_zoom)
+        m_zoom->setChatZoom(tenths);
+}
+
+// ============================================================================================
+// 2.7 F6: the chats' effective colours (chatcolors.h)
+// ============================================================================================
+
+// 2.7 dark mode: while it is on, the theme's accent goes with every chat's colours (TS Media's lines, the layout's accents).
+static chatcolors::Colors withDarkTheme(chatcolors::Colors colors)
+{
+    if (DarkMode::isActive())
+        colors.themeAccent = darkpalette::tokens().accent;
+    return colors;
+}
+
+chatcolors::Colors ChatIntegration::chatColorsOf(QTextBrowser* browser) const
+{
+    if (!browser)
+        return withDarkTheme(chatcolors::teamSpeakLight());
+    if (!m_views.contains(browser))
+        return withDarkTheme(chatcolors::fromPalette(browser->palette())); // not one of ours: no cache, no sample
+    chatcolors::Cache& c = m_colorCache[browser];
+    if (c.valid)
+        return withDarkTheme(c.colors);
+    // The palette's answer now (a few reads: styleFor runs in paints), with the last sample over it; a background the
+    // style sheet paints is sampled a turn later by the owned timer (never inside a paint), which restyles once if that
+    // changes the colours.
+    c.read(browser->palette());
+    if (!c.sampleDone && m_sampleTimer)
+        m_sampleTimer->start();
+    return withDarkTheme(c.colors);
+}
+
+chatcolors::Colors ChatIntegration::visibleChatColors() const
+{
+    QTextBrowser* chat = visibleChatBrowser();
+    return chat ? chatColorsOf(chat) : withDarkTheme(chatcolors::teamSpeakLight());
+}
+
+void ChatIntegration::invalidateColors(QTextBrowser* browser)
+{
+    const auto it = m_colorCache.find(browser);
+    if (it != m_colorCache.end())
+        it->invalidate();
+}
+
+void ChatIntegration::sampleColors()
+{
+    bool changed = false;
+    for (auto it = m_views.begin(); it != m_views.end(); ++it) {
+        QTextBrowser* b = it->browser;
+        if (!b)
+            continue;
+        const auto cached = m_colorCache.find(b);
+        if (cached == m_colorCache.end() || !cached->valid || cached->sampleDone)
+            continue;
+        // Compared with the colours handed out since the last read (the earlier sample over the new palette): an unchanged
+        // background restyles nothing.
+        if (cached->takeSample(chatcolors::sampleBackground(b)))
+            changed = true;
+    }
+    if (changed) {
+        // A picture background the palette didn't know, or a new one: every chat module and TS Media's lines follow it
+        // (rare: a skin or style change; never a font change, review fix).
+        refreshAll();
+        emit chatColorsChanged(); // 2.7 dark mode: the Settings window's preview too (review fix)
+    }
+}
+
+void ChatIntegration::updateLineColors(QTextBrowser* chat) const
+{
+    QTextBrowser* b = chat ? chat : visibleChatBrowser();
+    if (!b)
+        return; // no chat known: the colours stay (TeamSpeak's white chat until the first one)
+    ts3::setLineColors(chatcolors::lineColors(chatColorsOf(b), Settings::instance().chatLineColor));
 }

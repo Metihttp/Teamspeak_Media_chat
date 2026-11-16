@@ -1,9 +1,7 @@
 #include "emojisection.h"
 
 #include <QCheckBox>
-#include <QFormLayout>
 #include <QGroupBox>
-#include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
@@ -13,65 +11,39 @@
 #include "giflibrary.h" // 2.5 GIFs
 #include "gifpanel.h"   // 2.6: the Remove button's text
 #include "i18n.h"
+#include "settingstheme.h"   // 2.7 F3
+#include "settingswidgets.h" // 2.7 F3
 
 EmojiSection::EmojiSection(QWidget* parent)
     : SettingsSection(parent)
 {
     setObjectName(QString::fromLatin1("tsmediaEmojiSection"));
-    m_colour    = emoji::hasColor();
-    auto* group = new QGroupBox(i18n::t("Emoji"), this);
-
-    m_hd = new QCheckBox(i18n::t("Show emoji in high &quality in the chat"), group);
-    QLabel* hdHint =
-        hint(m_colour ? i18n::t("Emoji and TeamSpeak's smileys like :) show as sharp, colorful pictures. Everyone with TS Media sees them like this; "
-                                "people without it see TeamSpeak's own.")
-                      : i18n::t("This PC has no color emoji font (Segoe UI Emoji), so TeamSpeak's own emoji are shown."),
-             group);
-    m_hd->setAccessibleDescription(hdHint->text());
-
-    m_jumbo = new QCheckBox(i18n::t("Show messages of only emoji lar&ge"), group);
-    QLabel* jumboHint = hint(i18n::t("Up to 27 emoji with nothing else in the message, like in Discord."), group);
-    m_jumbo->setAccessibleDescription(jumboHint->text());
-
-    m_button = new QCheckBox(i18n::t("Use TS Media's emoji picker for TeamSpeak's emoji &button"), group);
-    QLabel* buttonHint = hint(i18n::t("Off: TeamSpeak's own emoticon list. Ctrl+E opens TS Media's picker either way."), group);
-    m_button->setAccessibleDescription(buttonHint->text());
-
-    // 2.5 GIFs: the picker's GIFs tab, and its list managed without the picker (also with the emoji button off).
-    m_remember = new QCheckBox(i18n::t("Remember GI&Fs I send") /* "lar&ge" has G on this tab */, group);
-    QLabel* rememberHint = hint(i18n::t("The emoji picker's GIFs tab keeps the GIF links you send from GIF sites, and copies of GIF files you upload, "
-                                        "on this PC so you can send them again. Nothing of it is sent anywhere. Open the picker with Ctrl+E when "
-                                        "the emoji button is off."),
-                                group);
-    m_remember->setAccessibleDescription(rememberHint->text());
-    m_gifCount  = new QLabel(group);
-    m_removeAll = new QPushButton(i18n::t("Remove all GIFs…"), group);
-    m_removeAll->setObjectName(QString::fromLatin1("tsmediaRemoveAllGifs"));
-    m_removeAll->setAutoDefault(false);
-    auto* gifRow = new QHBoxLayout;
-    gifRow->setContentsMargins(0, 0, 0, 0);
-    gifRow->addWidget(m_gifCount, 1);
-    gifRow->addWidget(m_removeAll);
-
-    auto* rows = form(group);
-    rows->addRow(m_hd);
-    rows->addRow(hdHint);
-    rows->addRow(m_jumbo);
-    rows->addRow(jumboHint);
-    rows->addRow(m_button);
-    rows->addRow(buttonHint);
-    rows->addRow(m_remember);
-    rows->addRow(rememberHint);
-    rows->addRow(gifRow);
-    addIndented(rememberHint);
-    addIndented(hdHint);
-    addIndented(m_jumbo); // depends on the first one
-    addIndented(jumboHint);
-    addIndented(buttonHint);
-
+    m_colour     = emoji::hasColor();
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(group);
+    layout->setSpacing(settingstheme::tokensFor(this).px(18));
+
+    QGroupBox* group = card(i18n::t("Emoji"), this);
+    m_hd             = switchRow(group, i18n::t("Show emoji in high &quality in the chat"),
+                     m_colour ? i18n::t("Emoji and TeamSpeak's smileys like :) show as sharp, colorful pictures. Everyone with TS Media sees them like "
+                                        "this; people without it see TeamSpeak's own.")
+                              : i18n::t("This PC has no color emoji font (Segoe UI Emoji), so TeamSpeak's own emoji are shown."));
+    m_jumbo  = switchRow(group, i18n::t("Show messages of only emoji lar&ge"), i18n::t("Up to 27 emoji with nothing else in the message, like in Discord."),
+                        1); // depends on the first one
+    m_button = switchRow(group, i18n::t("Use TS Media's emoji picker for TeamSpeak's emoji &button"),
+                         i18n::t("Off: TeamSpeak's own emoticon list. Ctrl+E opens TS Media's picker either way."));
+
+    // 2.5 GIFs: the picker's GIFs tab, and its list managed without the picker (also with the emoji button off).
+    QGroupBox* gifCard = card(i18n::t("GIFs"), this);
+    m_remember      = switchRow(gifCard, i18n::t("Remember GI&Fs I send") /* "lar&ge" has G on this page */,
+                           i18n::t("The emoji picker's GIFs tab keeps the GIF links you send from GIF sites, and copies of GIF files you upload, "
+                                   "on this PC so you can send them again. Nothing of it is sent anywhere. Open the picker with Ctrl+E when "
+                                   "the emoji button is off."));
+    m_removeAll = new QPushButton(i18n::t("Remove all GIFs…"), gifCard);
+    m_removeAll->setObjectName(QString::fromLatin1("tsmediaRemoveAllGifs"));
+    m_removeAll->setAutoDefault(false);
+    m_gifCount = fieldRow(gifCard, QString(), m_removeAll, QString());
+    m_gifCount->setBuddy(nullptr); // a readout, not the button's label
 
     connect(m_hd, &QCheckBox::toggled, this, [this] {
         updateEnabled();
@@ -137,8 +109,8 @@ void EmojiSection::confirmRemoveAll()
 
 void EmojiSection::updateEnabled()
 {
-    m_hd->setEnabled(m_colour);
-    m_jumbo->setEnabled(m_colour && m_hd->isChecked());
+    setRowEnabled(m_hd, m_colour);
+    setRowEnabled(m_jumbo, m_colour && m_hd->isChecked());
 }
 
 void EmojiSection::load(const Settings& s)

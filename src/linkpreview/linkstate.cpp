@@ -467,6 +467,10 @@ const char* holdReasonName(HoldReason reason)
         return "failed";
     case HoldReason::Paused:
         return "paused";
+    case HoldReason::NotFriend:
+        return "not-friend";
+    case HoldReason::Blocked:
+        return "blocked";
     }
     return "none";
 }
@@ -500,6 +504,18 @@ HoldReason holdReason(const Decision& d, const LocalState& local, const Context&
         return HoldReason::Gate;
     if (!context.autoOn)
         return HoldReason::Setting;
+    // 2.7 F2: TeamSpeak's contacts (the first read's moment counts as waiting).
+    switch (context.autoHold) {
+    case Context::AutoHold::NotFriend:
+    case Context::AutoHold::Unreadable:
+        return HoldReason::NotFriend;
+    case Context::AutoHold::Blocked:
+        return HoldReason::Blocked;
+    case Context::AutoHold::Checking:
+        return HoldReason::Waiting;
+    case Context::AutoHold::None:
+        break;
+    }
     if (!capOk || local.state == Local::OverAutoLimit)
         return HoldReason::Cap;
     if (!onScreen)

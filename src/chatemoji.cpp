@@ -37,6 +37,8 @@
 #include "polldoc.h"      // 2.3 poll: a poll card copies as its text
 #include "settings.h"
 #include "textreactdoc.h" // 2.3 text reactions: a row's line break is no text
+#include "textspoiler.h"    // 2.7 F1: a hidden text spoiler copies as "(spoiler)"
+#include "textspoilerdoc.h" // 2.7 F1: a text spoiler's objects
 
 namespace {
 
@@ -199,7 +201,8 @@ bool selectionNeedsFix(const QTextCursor& selection)
             if (f.isValid() && f.position() < to && f.position() + f.length() > from
                 && (isOurs(f.charFormat()) || layoutformat::isOurs(f.charFormat()) || polldoc::isObject(f.charFormat()) // 2.3 poll: its card
                     || textreactdoc::isRowObject(f.charFormat()) || textreactdoc::isRowSeparator(f.charFormat()) // 2.3 text reactions: a row
-                    || linkdoc::isSlotObject(f.charFormat()) || linkdoc::isSlotSeparator(f.charFormat()))) // 2.4 link previews: a slot
+                    || linkdoc::isSlotObject(f.charFormat()) || linkdoc::isSlotSeparator(f.charFormat()) // 2.4 link previews: a slot
+                    || textspoilerdoc::isObject(f.charFormat()))) // 2.7 F1: a text spoiler (copied as "(spoiler)")
                 return true;
         }
     }
@@ -646,6 +649,11 @@ bool ChatEmoji::processBlock(View& view, const QTextBlock& block, bool synchrono
             continue; // our pictures, line breaks and trailers (never emoji)
         if (textreactdoc::isRowObject(cf) || textreactdoc::isRowSeparator(cf))
             continue; // 2.3 text reactions: a row is no part of the message (a jumbo message stays jumbo)
+        if (textspoilerdoc::isObject(cf)) { // 2.7 F1: a text spoiler's marker or word counts as text (never only emoji)
+            if (header && pos >= messageStart)
+                otherInMessage = true;
+            continue;
+        }
         if (cf.isAnchor() || !href.isEmpty()) {
             if (href.contains(QLatin1String("ts3file"), Qt::CaseInsensitive))
                 break; // the TS Media link and the "plugin required" note after it stay as they are
@@ -840,9 +848,12 @@ QString ChatEmoji::originalText(QTextDocument* document, int from, int to)
     QString out;
     if (!document || to <= from)
         return out;
+    QSet<int> spoilers;    // 2.7 F1: hidden text spoilers copied (as "(spoiler)") so far
+    int       inside = -1; // ... the one being walked through (its spaces give nothing)
     for (QTextBlock b = document->findBlock(from); b.isValid() && b.position() < to; b = b.next()) {
         if (b.position() > from)
             out += QLatin1Char('\n');
+        inside = -1;
         for (auto it = b.begin(); !it.atEnd(); ++it) {
             const QTextFragment f = it.fragment();
             if (!f.isValid())
@@ -852,6 +863,28 @@ QString ChatEmoji::originalText(QTextDocument* document, int from, int to)
             if (start >= end)
                 continue;
             const QTextCharFormat cf = f.charFormat();
+            // 2.7 F1: a hidden text spoiler copies as "(spoiler)" once; a revealed one as typed (its markers' text).
+            if (textspoilerdoc::isObject(cf)) {
+                const int  id       = cf.intProperty(textspoilerdoc::kId);
+                const int  kind     = textspoilerdoc::kindOf(cf);
+                const bool revealed = cf.intProperty(textspoilerdoc::kState) == 1;
+                if (kind == textspoilerdoc::Word) {
+                    inside = id;
+                    if (!spoilers.contains(id)) {
+                        spoilers.insert(id);
+                        out += textspoiler::placeholder();
+                    }
+                } else if (revealed) {
+                    for (int i = start; i < end; ++i)
+                        out += textspoilerdoc::identityText(cf);
+                } else {
+                    inside = kind == textspoilerdoc::Open ? id : -1;
+                }
+                continue;
+            }
+            if (inside >= 0 && textspoilerdoc::kindOf(cf) != textspoilerdoc::Revealed && !cf.isImageFormat()
+                && f.text().mid(start - f.position(), end - start).trimmed().isEmpty())
+                continue; // the spaces between a hidden spoiler's words
             if (isOurs(cf)) {
                 const QString original = originalOf(cf);
                 for (int i = start; i < end; ++i)

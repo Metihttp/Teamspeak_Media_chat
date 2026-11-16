@@ -137,7 +137,7 @@ AccessGroupBox::AccessGroupBox(QWidget* parent)
     m_extra->hide();
 
     m_buttons = new QWidget(this);
-    // Access keys unique on the settings dialog's Servers tab: h ("c&hat"), t, c.
+    // Access keys unique on the settings dialog's Servers page: h ("c&hat"), t, c.
     m_primary    = new QPushButton(m_buttons);
     m_details    = new QPushButton(i18n::t("De&tails…"), m_buttons);
     m_checkAgain = new QPushButton(i18n::t("&Check again"), m_buttons);

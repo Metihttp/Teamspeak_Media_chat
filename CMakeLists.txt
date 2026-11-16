@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.6.0 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.7.0 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -14,6 +14,9 @@ set(CMAKE_AUTOMOC ON)
 # TeamSpeak 3.6 ships Qt 5.15.2 (MSVC 2019 x64). The plugin must be built against the same Qt version
 # and may only use modules TeamSpeak ships (Core, Gui, Widgets, ...; NOT Multimedia or Concurrent).
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets)
+# 2.7 F2: Qt Sql reads TeamSpeak's contacts (settings.db) for "Only from friends". TeamSpeak ships and loads Qt5Sql.dll
+# itself; the plugin delay-loads it and binds it only behind a guard (src/delayload.cpp, tsmedia_delay_load_qtsql below).
+find_package(Qt5 5.15 REQUIRED COMPONENTS Sql)
 
 # TeamSpeak loads <name>_win64.dll in the 64-bit client and <name>_win32.dll in the 32-bit one.
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -63,6 +66,17 @@ function(tsmedia_delay_load_media_foundation target)
     endif()
 endfunction()
 
+# 2.7 F2 (design H4): Qt5Sql.dll is a delay-load import, never a hard one: a TeamSpeak without it still loads the plugin
+# (only "Only from friends" and Blocked are lost). src/delayload.cpp binds every Qt5Sql import at once behind a guard
+# (the DLL must already be loaded by TeamSpeak). A data import of Qt5Sql (QSqlDatabase::defaultConnection, the default
+# argument of addDatabase and contains) can't be delay-loaded: the link fails with LNK1194, the build-time guard.
+function(tsmedia_delay_load_qtsql target)
+    if(MSVC)
+        target_link_options(${target} PRIVATE "/DELAYLOAD:$<IF:$<CONFIG:Debug>,Qt5Sqld.dll,Qt5Sql.dll>")
+        target_link_libraries(${target} PRIVATE delayimp)
+    endif()
+endfunction()
+
 add_library(tsmedia SHARED
     src/plugin.cpp
     src/ts3api.cpp            src/ts3api.h
@@ -81,6 +95,17 @@ add_library(tsmedia SHARED
                               src/loopplayers.h     # 2.5: the loop pool of GIF-like link videos
     src/chatintegration.cpp   src/chatintegration.h
     src/previewscale.h        src/chatscale.cpp     src/chatscale.h       # 2.5 zoom: the preview scale, one coordinator per chat
+    src/loadhold.cpp          src/loadhold.h        # 2.7 (R-DEF-1): the reader's place while a chat is styled after a load
+    src/chatzoom.cpp          src/chatzoom.h        # 2.7 F5: the saved chat zoom, one for every chat
+    src/chatcolors.cpp        src/chatcolors.h      # 2.7 F6: the chat's effective colours, TS Media's line colours
+    # 2.7 dark mode: the engine, the look (tokens, palette, sheets), the chat's baked colours, the glyphs, the title bars,
+    # and its Settings card (Settings → Chat → Appearance)
+    src/darkmode.cpp          src/darkmode.h
+    src/darkpalette.cpp       src/darkpalette.h
+    src/darkchat.cpp          src/darkchat.h
+    src/darkglyphs.cpp        src/darkglyphs.h
+    src/darktitlebar.cpp      src/darktitlebar.h
+    src/appearancesection.cpp src/appearancesection.h
     src/uploadtoast.cpp       src/uploadtoast.h
     src/mediaviewer.cpp       src/mediaviewer.h
     src/settingsdialog.cpp    src/settingsdialog.h
@@ -91,6 +116,8 @@ add_library(tsmedia SHARED
     src/hashing.cpp           src/hashing.h
     src/floodgovernor.cpp     src/floodgovernor.h
     src/settingssection.cpp   src/settingssection.h
+    src/settingswidgets.cpp   src/settingswidgets.h   # 2.7 F3: the Settings window's switches, rows, tiles, sidebar
+    src/chattextsection.cpp   src/chattextsection.h   # 2.7 F3: Settings → Chat → Text size and colors
     # 2.2 servergroup: Settings > Server access, the Give / Remove access menu items
     src/accessgroupplan.cpp   src/accessgroupplan.h
     src/accessgroupjob.cpp    src/accessgroupjob.h
@@ -124,6 +151,12 @@ add_library(tsmedia SHARED
     src/spoilercover.cpp      src/spoilercover.h
     src/spoilersection.cpp    src/spoilersection.h
     src/chatintegration_spoiler.cpp
+    # 2.7 F1: formatting in the chat input (Bold, Italic, Underline, Spoiler) and text spoilers in the chats
+    src/textformat.cpp        src/textformat.h
+    src/textspoiler.cpp       src/textspoiler.h
+    src/textspoilerdoc.cpp    src/textspoilerdoc.h
+    src/chattextspoilers.cpp  src/chattextspoilers.h
+    src/inputformat.cpp       src/inputformat.h
     # 2.2 album
     src/albums.cpp            src/albums.h
     src/chatalbums.cpp
@@ -234,6 +267,8 @@ add_library(tsmedia SHARED
     src/linkpreview/linkstate.cpp     src/linkpreview/linkstate.h
     src/linkpreview/autoload.cpp      src/linkpreview/autoload.h
     src/chatlinkpreviews.cpp          src/chatlinkpreviews.h
+    src/contacts.cpp                  src/contacts.h        # 2.7 F2: TeamSpeak's contacts (Only from friends, Blocked)
+    src/delayload.cpp                 src/delayload.h       # 2.7 F2: the Qt5Sql delay-load guard
     # end 2.4 link previews
     # 2.5 YouTube player: the page, the state machine, the helper's loader (the helper itself: tsmedia_player below)
     src/ytplayer/ytpage.cpp           src/ytplayer/ytpage.h
@@ -311,6 +346,8 @@ if(MSVC)
 endif()
 target_link_libraries(tsmedia PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets ${TSMEDIA_MF_LIBS})
 tsmedia_delay_load_media_foundation(tsmedia)
+target_link_libraries(tsmedia PRIVATE Qt5::Sql) # 2.7 F2
+tsmedia_delay_load_qtsql(tsmedia)
 
 # Extra logging, chat snapshots and self-test hooks for automated testing. Never ship with this on.
 option(TSMEDIA_TESTHOOKS "Build with test hooks" OFF)
@@ -318,6 +355,9 @@ if(TSMEDIA_TESTHOOKS)
     target_compile_definitions(tsmedia PRIVATE TSMEDIA_TESTHOOKS)
     target_sources(tsmedia PRIVATE src/selftest.cpp src/selftest.h src/selftestecho.h) # the scripted live-test driver
     target_sources(tsmedia PRIVATE src/selftestmusic.cpp) # 2.3 live music: its live-test commands
+    target_sources(tsmedia PRIVATE src/selftestv27b.cpp) # 2.7 Part B: contacts, chat colours, the reply bar
+    target_sources(tsmedia PRIVATE src/selftestformat.cpp) # 2.7 F1: the input's menu, text spoilers, the paint meter
+    target_sources(tsmedia PRIVATE src/selftestdark.cpp) # 2.7 dark mode: dark.on/off/state/metrics/tip
 endif()
 
 # 2.2 updater (docs/UPDATES.md). The install/rollback/manifest parts are always built (a DLL installed by
@@ -427,6 +467,7 @@ if(TSMEDIA_BUILD_TESTS)
     add_executable(tsmedia_tests
         tests/testmain.h
         tests/tst_tsmedia.cpp     # TeamSpeak's config folder is a temporary one for every test file
+        tests/tst_settings27.cpp  # 2.7 Part 0: the new settings keys (Only friends, chat zoom, line colour)
         src/medialink.cpp
         src/blurhash.cpp
         src/i18n.cpp
@@ -603,6 +644,9 @@ if(TSMEDIA_BUILD_TESTS)
         # system rows; the bars above the input; the send window's presence line)
         tests/tst_wiring23.cpp
         tests/tst_unload23.cpp    # 2.3 cross review (lifetime): every layer given back, menus and music at unload
+        tests/tst_reload261.cpp   # R-DEF-1: the real plugin DLL unloaded and loaded again (Reload) under a long chat
+        # 2.7 (R-DEF-1): the reader's place on TeamSpeak's own text, its carry across a reload, the load hold
+        tests/tst_readerplace.cpp src/loadhold.cpp src/loadhold.h
         # 2.4 link previews (sender-previews): LP grammar and hostile input, sender matching, the store, the
         # sender pipeline end to end through the real Core against the fake TeamSpeak (a fake fetcher)
         tests/tst_linkpreview_snd.cpp
@@ -643,6 +687,11 @@ if(TSMEDIA_BUILD_TESTS)
         tests/tst_linkpage_net.cpp tests/tst_safeimage.cpp tests/linkfixtures.cpp tests/linkfixtures.h
         tests/tst_shares.cpp) # 2.5 Nextcloud and ownCloud shares: classify, the page's markers, the decision, the card text
     # end 2.4 link previews (net-core)
+    # 2.7 F1: the formatting rules, text spoilers as text, in TeamSpeak-like chats (hide, reveal, give back, identity),
+    # the module on a QTextBrowser chat (the 0 ms pass, clicks, the setting) and the input's menu and keys
+    target_sources(tsmedia_tests PRIVATE tests/tst_textformat.cpp tests/tst_textspoiler.cpp tests/tst_chattextspoilers.cpp
+        tests/tst_inputformat.cpp src/textformat.cpp src/textspoiler.cpp src/textspoilerdoc.cpp src/chattextspoilers.cpp
+        src/inputformat.cpp)
     target_include_directories(tsmedia_tests PRIVATE src tests player third_party/ts3client-pluginsdk/include
         ${CMAKE_CURRENT_BINARY_DIR}/generated) # 2.2 servergroup: groupicon_data.h
     target_compile_definitions(tsmedia_tests PRIVATE ${TSMEDIA_COMMON_OPTIONS}
@@ -659,6 +708,13 @@ if(TSMEDIA_BUILD_TESTS)
         ${TSMEDIA_PROXY_UI_SOURCES} src/update/sessionplan.cpp src/update/sessionplan.h
         tests/tst_proxyui.cpp # 2.6 I2b: the Chat proxy window, the Settings group, the menu / hotkey / command, the notices
         tests/tst_proxydiag.cpp src/selftestecho.h) # 2.6 I3: the diagnostic info's section, no secrets in it or the logs
+    # 2.7 Part B: TeamSpeak's contacts and the Qt5Sql guard (F2), the saved zoom (F5), the chat's colours (F6), the reply
+    # widgets on 4K (F4)
+    target_sources(tsmedia_tests PRIVATE tests/tst_contacts.cpp tests/tst_onlyfriends.cpp tests/tst_chatzoom.cpp tests/tst_chatcolors.cpp
+        src/contacts.cpp src/contacts.h src/delayload.cpp src/delayload.h src/chatzoom.cpp src/chatzoom.h src/chatcolors.cpp src/chatcolors.h
+        src/replybar.cpp src/replybar.h src/repliespopup.cpp src/repliespopup.h)
+    target_link_libraries(tsmedia_tests PRIVATE Qt5::Sql)
+    tsmedia_delay_load_qtsql(tsmedia_tests) # the guard behaves as in the plugin
     target_link_libraries(tsmedia_tests PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Test bcrypt ws2_32 ${TSMEDIA_MF_LIBS})
     # 2.5 YouTube player: stand-ins for the helper (tst_playerload): the C API without WebView2, and one with another
     # API version. With the SDK, the real helper is loaded too (only tsmp_apiVersion, tsmp_init and tsmp_shutdown).
@@ -673,6 +729,9 @@ if(TSMEDIA_BUILD_TESTS)
         add_dependencies(tsmedia_tests ${_stub})
     endforeach()
     target_compile_definitions(tsmedia_player_stub_v99 PRIVATE TSMP_STUB_API_VERSION=99)
+    # R-DEF-1: tst_reload261 loads this build's plugin DLL into a fake TeamSpeak window (Reload as TeamSpeak does it).
+    target_compile_definitions(tsmedia_tests PRIVATE TSMEDIA_PLUGIN_DLL="$<TARGET_FILE:tsmedia>")
+    add_dependencies(tsmedia_tests tsmedia)
     target_compile_definitions(tsmedia_tests PRIVATE TSMP_STUB_DLL="$<TARGET_FILE:tsmedia_player_stub>"
         TSMP_STUB_V99_DLL="$<TARGET_FILE:tsmedia_player_stub_v99>")
     if(TSMEDIA_PLAYER)
@@ -680,6 +739,16 @@ if(TSMEDIA_BUILD_TESTS)
         add_dependencies(tsmedia_tests tsmedia_player)
     endif()
     tsmedia_delay_load_media_foundation(tsmedia_tests) # Core probes media like the plugin does
+    # 2.7 F3: the Settings window itself (every page as plugin.cpp builds it), its switches, rows, tiles and tokens
+    target_sources(tsmedia_tests PRIVATE tests/tst_settingsui.cpp src/settingswidgets.cpp src/chattextsection.cpp src/settingsdialog.cpp
+        src/spoilersection.cpp src/composesettings.cpp src/compresssettings.cpp src/serverssection.cpp src/accessgroupbox.cpp
+        src/accessgroup.cpp src/datasaver.cpp src/diagnosticsdialog.cpp src/peerhub.cpp src/update/updatesettingsgroup.cpp
+        src/update/updater.cpp src/update/updatedialog.cpp src/presenceline.cpp src/textreacthub.cpp
+        tests/diagstubs.cpp) # the Diagnostic info window's collectors need the whole chat integration: stand-ins, never called
+    # 2.7 dark mode: the tokens and sheets, the exact restore, skin changes, the chats' colours and places, title bars, glyphs,
+    # the Settings card and key (settingstheme.cpp asks DarkMode::isActive(), so the engine is in every test build)
+    target_sources(tsmedia_tests PRIVATE tests/tst_darkmode.cpp src/darkmode.cpp src/darkpalette.cpp src/darkchat.cpp src/darkglyphs.cpp
+        src/darktitlebar.cpp src/appearancesection.cpp)
     get_target_property(_qmake Qt5::qmake IMPORTED_LOCATION)
     get_filename_component(_qtbin "${_qmake}" DIRECTORY)
     add_test(NAME tsmedia_tests COMMAND tsmedia_tests)

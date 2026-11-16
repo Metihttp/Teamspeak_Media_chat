@@ -1,8 +1,8 @@
 #pragma once
 
-// 2.2 emoji: Settings > General > "Emoji": HD emoji in the chat, our picker on TeamSpeak's emoji button,
-// jumbo emoji for messages of only emoji. All on by default. 2.5 GIFs: "Remember GIFs I send" (the picker's GIFs tab),
-// the list's count and size, and Remove all GIFs….
+// 2.2 emoji: Settings → Emoji & GIFs → "Emoji": HD emoji in the chat, our picker on TeamSpeak's emoji button,
+// jumbo emoji for messages of only emoji. All on by default. 2.5 GIFs (2.7: the "GIFs" card): "Remember GIFs I send" (the
+// picker's GIFs tab), the list's count and size, and Remove all GIFs….
 
 #include "settingssection.h"
 

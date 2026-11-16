@@ -1,4 +1,5 @@
 #include "chatlinkpreviews.h"
+#include "contacts.h" // 2.7 F2
 
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
@@ -233,6 +234,15 @@ ChatLinkPreviews::ChatLinkPreviews(ChatIntegration* chat, Core* core)
         scheduleRefresh();
     });
     m_pool.setMaxThreadCount(1);
+    // 2.7 F2: TeamSpeak's contacts (Only from friends, Blocked): read when automatic loads are on (the first read a turn
+    // later), never inside a decision.
+    {
+        const QString config = ts3::configDir();
+        m_contacts           = new ContactList(config.isEmpty() ? QString() : QDir(config).filePath(QString::fromLatin1("settings.db")), this);
+        connect(m_contacts, &ContactList::changed, this, &ChatLinkPreviews::contactsChanged);
+        const Settings& s = Settings::instance();
+        m_contacts->setActive(enabled() && s.autoLoadLinkPreviews);
+    }
 
     m_refreshTimer = new QTimer(this); // owned: stops with us
     m_refreshTimer->setSingleShot(true);
@@ -542,6 +552,7 @@ void ChatLinkPreviews::scrollSlotIntoView(const QString& slotId)
         SlotRef       ref;
         if (!browser || !refOfSlot(browser, slotId, &ref) || !ref.slot.isCard())
             continue;
+        m_chat->endLoadHold(browser); // 2.7 (R-DEF-1): the reader's own action; no load hold pulls the chat back
         const PreviewStyle     style = styleOf(browser);
         const linkcard::Card   card  = cardFor(ref, decisionFor(ref, false), style);
         const linkcard::Layout l     = linkcard::layout(card, style);
@@ -580,6 +591,8 @@ void ChatLinkPreviews::prepareShutdown()
     // outlive us) call us no more.
     m_autoTimer->stop();
     m_waitTimer->stop();
+    if (m_contacts) // 2.7 F2: no read after this
+        m_contacts->shutdown();
     m_autoWanted.clear();
     m_autoRuns.clear();
     m_autoHeld.clear();
@@ -923,6 +936,9 @@ linkstate::Context ChatLinkPreviews::contextFor(const SlotRef& ref) const
     linkstate::Context c;
     c.autoOn   = s.autoLoadLinkPreviews;
     c.webCards = s.showWebCards;
+    // 2.7 F2: the sender's mark holds it (the cheap test first; your own links are never held).
+    if (c.autoOn && !contactAllows(ref.senderUid) && !isOwn(ref, contextOf(ref.browser)))
+        c.autoHold = contactHold(ref.senderUid);
     if (m_hub && !ref.messageKey.isEmpty() && m_hub->isSkipped(ref.messageKey, ref.target.key)) {
         const linkpreview::SkipReason why = m_hub->skipReason(ref.messageKey, ref.target.key);
         c.senderNothing                   = why == linkpreview::SkipReason::Nothing || why == linkpreview::SkipReason::CrossSite;
@@ -1025,6 +1041,7 @@ linkcard::Card ChatLinkPreviews::cardFor(const SlotRef& ref, const linkstate::De
         c.proxyReason   = l.via == proxy::Via::System || l.via == proxy::Via::Refused ? proxy::shortText(l.proxyFailure)
                                                                                       : proxy::texts::chatShortText(l.proxyFailure, m_proxy ? m_proxy->config() : proxy::Config());
         c.size          = shownSize(ref, l); // above the automatic limit: "Video · 38 MB"
+        c.autoHold      = contextFor(ref).autoHold; // 2.7 F2: held by TeamSpeak's contacts (the tool tip says why)
         c.overAutoLimit = l.state == linkstate::Local::OverAutoLimit || c.size > 0;
         if (c.overAutoLimit) // the site didn't say its size: "Video · over 15 MB"
             c.autoLimit = linkpreview::autoload::mediaCapOf(linkpreview::autoload::autoCaps(ref.target, Settings::instance(), contextOf(ref.browser).serverUid),
@@ -1371,6 +1388,8 @@ void ChatLinkPreviews::settingsChanged()
     // 2.4 auto-load: switched off (or the previews), its loads stop and their cards are click cards again; a lower
     // limit or the data saver stops the ones that may not go on. Clicked loads are never stopped by it.
     const Settings& s = Settings::instance();
+    if (m_contacts) // 2.7 F2: the contacts are read while automatic loads are on
+        m_contacts->setActive(enabled() && s.autoLoadLinkPreviews);
     if (!s.autoLoadLinkPreviews || !enabled()) {
         const QList<QString> automatic = m_autoRuns.keys();
         for (const QString& key : automatic) {
@@ -1383,6 +1402,7 @@ void ChatLinkPreviews::settingsChanged()
         m_autoTimer->stop();
     } else {
         limitsChanged();
+        cancelDisallowedAutoRuns(); // 2.7 F2 (M1): Only from friends switched on: before any load starts again below
     }
     if (!s.showWebCards) {
         // R21: cards for other web pages off: their loads stop (clicked ones too: the class is off), their slots go.
@@ -2386,10 +2406,13 @@ void ChatLinkPreviews::setHidden(const QString& slotId, const QString& urlKey, b
     updateVisibleViewports();
 }
 
-void ChatLinkPreviews::startFetch(const linkpreview::Target& target, Origin origin, const QString& serverUid, const QString& sender)
+void ChatLinkPreviews::startFetch(const linkpreview::Target& target, Origin origin, const QString& serverUid, const QString& sender,
+                                  const QString& senderUid, bool own)
 {
     if (!enabled() || m_down || m_stopped || target.key.isEmpty() || target.kind == linkpreview::Kind::None || target.cls == linkpreview::LinkClass::None)
         return;
+    if (origin == Origin::Auto && !own && !contactAllows(senderUid))
+        return; // 2.7 F2 (M1): the sink refuses too: never an automatic load for a sender the contacts don't allow
     if (target.cls == linkpreview::LinkClass::Web && !Settings::instance().showWebCards)
         return; // never a class the user switched off
     if (origin == Origin::Click)
@@ -2436,6 +2459,8 @@ void ChatLinkPreviews::startFetch(const linkpreview::Target& target, Origin orig
     if (origin == Origin::Auto) {
         AutoRun run;
         run.sender     = sender;
+        run.senderUid  = senderUid; // 2.7 F2
+        run.own        = own;
         run.serverUid  = serverUid;
         run.maxBytes   = maxBytes;
         run.mediaBytes = caps.media;
@@ -2488,7 +2513,7 @@ void ChatLinkPreviews::restartWebCardsLoads()
         idle.coolingMs   = before.coolingMs;
         m_local.insert(key, idle);
         if (wasRun) {
-            startFetch(target, Origin::Auto, run.serverUid, run.sender);
+            startFetch(target, Origin::Auto, run.serverUid, run.sender, run.senderUid, run.own);
             if (before.clicked)
                 startFetch(target, Origin::Click); // R26: still the user's (with the automatic caps and turn it had)
         } else {
@@ -2863,6 +2888,8 @@ bool ChatLinkPreviews::autoEligible(const SlotRef& ref, const linkstate::LocalSt
     if (m_store && !ref.messageKey.isEmpty() && m_store->clearedEarlier(ref.messageKey, ref.target.key))
         return false; // its sender shared a preview (Clear cache took it): never from the website by itself
     const ChatContext ctx = contextOf(ref.browser);
+    if (!contactAllows(ref.senderUid) && !isOwn(ref, ctx))
+        return false; // 2.7 F2: Only from friends, or a contact marked Blocked (your own links are never held)
     // 2.5: per link (a card's picture cap, the media cap otherwise; a web page needs "Show cards for other web pages").
     const qint64      cap = linkpreview::autoload::autoCap(ref.target, s, ctx.serverUid);
     if (cap <= 0)
@@ -2989,7 +3016,7 @@ void ChatLinkPreviews::runAutoLoads()
             continue;
         }
         m_autoHeld.remove(ref.slotId);
-        startFetch(ref.target, Origin::Auto, ctx.serverUid, sender);
+        startFetch(ref.target, Origin::Auto, ctx.serverUid, sender, ref.senderUid, isOwn(ref, ctx));
     }
     if (changed)
         updateVisibleViewports();
@@ -3335,10 +3362,11 @@ QStringList ChatLinkPreviews::diagnosticLines() const
         if (ts3::isConnected(sch))
             cap = qMax(cap, linkpreview::lpxSendCap(m_core && m_core->serverIsTeamSpeakOwn(sch)));
     }
-    out << i18n::t("Link previews: shown %1, web cards %2, loaded automatically %3, made %4; LPX cap %5")
+    out << i18n::t("Link previews: shown %1, web cards %2, loaded automatically %3 (only from friends: %4), made %5; LPX cap %6")
                .arg(s.showLinkPreviews ? i18n::t("on") : i18n::t("off"))
                .arg(s.showWebCards ? i18n::t("on") : i18n::t("off"))
                .arg(s.autoLoadLinkPreviews ? i18n::t("on") : i18n::t("off"))
+               .arg(s.autoLoadLinkPreviewsOnlyFriends ? i18n::t("on") : i18n::t("off")) // 2.7 F2
                .arg(s.makeLinkPreviews ? i18n::t("on") : i18n::t("off"))
                .arg(cap);
     if (m_hub) {
@@ -3364,15 +3392,82 @@ QStringList ChatLinkPreviews::diagnosticLines() const
                    .arg(c.lpxSkipsCrossSite)
                    .arg(c.intakeNotices);
     }
-    out << i18n::t("Link previews held: budget %1, gate %2, turn %3, cap %4, sender-nothing %5")
+    out << i18n::t("Link previews held: budget %1, gate %2, turn %3, cap %4, sender-nothing %5, held by your contacts setting %6")
                .arg(m_holdCounts.value(QStringLiteral("budget")))
                .arg(m_holdCounts.value(QStringLiteral("gate")))
                .arg(m_holdCounts.value(QStringLiteral("turn")))
                .arg(m_holdCounts.value(QStringLiteral("cap")))
-               .arg(m_holdCounts.value(QStringLiteral("sender-nothing")));
+               .arg(m_holdCounts.value(QStringLiteral("sender-nothing")))
+               // 2.7 F2 (L2): Only from friends and Blocked as one count, never who
+               .arg(m_holdCounts.value(QStringLiteral("not-friend")) + m_holdCounts.value(QStringLiteral("blocked")));
+    // 2.7 F2: the contacts list's state only (never a name, an ID or a count of people).
+    out << i18n::t("Contacts list: %1").arg(contacts::stateWord(m_contacts ? m_contacts->state() : contacts::State::Unavailable));
     if (m_yt)
         out << m_yt->diagnosticLines(); // 2.5 YouTube player
     return out;
+}
+
+// ============================================================================================
+// 2.7 F2: Only from friends and Blocked (TeamSpeak's contacts, contacts.h)
+// ============================================================================================
+
+bool ChatLinkPreviews::contactAllows(const QString& senderUid) const
+{
+    const contacts::State state = m_contacts ? m_contacts->state() : contacts::State::Unavailable;
+    const contacts::Mark  mark  = m_contacts ? m_contacts->markOf(senderUid) : contacts::Mark::None;
+    return contacts::allows(state, mark, Settings::instance().autoLoadLinkPreviewsOnlyFriends, !senderUid.isEmpty());
+}
+
+linkcard::AutoHold ChatLinkPreviews::contactHold(const QString& senderUid) const
+{
+    const contacts::State state = m_contacts ? m_contacts->state() : contacts::State::Unavailable;
+    const contacts::Mark  mark  = m_contacts ? m_contacts->markOf(senderUid) : contacts::Mark::None;
+    switch (contacts::holdOf(state, mark, Settings::instance().autoLoadLinkPreviewsOnlyFriends, !senderUid.isEmpty())) {
+    case contacts::Hold::NotFriend:
+        return linkcard::AutoHold::NotFriend;
+    case contacts::Hold::Blocked:
+        return linkcard::AutoHold::Blocked;
+    case contacts::Hold::Unreadable:
+        return linkcard::AutoHold::Unreadable;
+    case contacts::Hold::Checking:
+        return linkcard::AutoHold::Checking;
+    case contacts::Hold::None:
+        break;
+    }
+    return linkcard::AutoHold::None;
+}
+
+void ChatLinkPreviews::cancelDisallowedAutoRuns()
+{
+    if (m_down || m_stopped)
+        return;
+    const QList<QString> automatic = m_autoRuns.keys();
+    bool                 canceled  = false;
+    for (const QString& key : automatic) {
+        const AutoRun run = m_autoRuns.value(key);
+        if (run.clicked || run.own || contactAllows(run.senderUid))
+            continue; // the user asked for it (R26), our own link, or still allowed
+        cancelFetch(key);
+        canceled = true;
+    }
+    if (canceled)
+        scheduleRefresh();
+}
+
+void ChatLinkPreviews::contactsChanged()
+{
+    if (m_down || m_stopped)
+        return;
+    // A contact changed (or the first read ended): running loads the contacts don't allow any more stop, and every card is
+    // decided again (held ones say why; newly allowed ones on screen load by themselves).
+#ifdef TSMEDIA_TESTHOOKS
+    // The live tests' timing (F2-9): how long the read took and the list's state; never a name, an ID or a count.
+    if (m_contacts)
+        ts3::log(QString::fromLatin1("[test] contacts: read %1 ms, %2").arg(m_contacts->lastReadMs()).arg(contacts::stateWord(m_contacts->state())));
+#endif
+    cancelDisallowedAutoRuns();
+    scheduleRefresh();
+    updateVisibleViewports();
 }
 
 #ifdef TSMEDIA_TESTHOOKS

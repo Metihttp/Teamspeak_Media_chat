@@ -1,6 +1,6 @@
 #pragma once
 
-// Settings → Updates: a self-contained group for the settings dialog (one line there adds it, one
+// Settings → About & updates → Updates: a self-contained group for the settings dialog (one line there adds it, one
 // line calls apply()). The checkbox follows the dialog's OK/Apply/Cancel; "Check now" and the link
 // buttons act at once. Restore defaults never touches it: it records consent, not a preference.
 

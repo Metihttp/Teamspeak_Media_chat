@@ -1048,16 +1048,33 @@ QString toolTip(const Card& card, Zone zone)
         break;
     }
     switch (card.look) {
-    case Look::Click:
+    case Look::Click: {
+        // 2.7 F2: held by TeamSpeak's contacts: why first, then whom a click contacts.
+        QString held;
+        switch (card.autoHold) {
+        case AutoHold::NotFriend:
+            held = i18n::t("Loads by itself only for your TeamSpeak friends. ");
+            break;
+        case AutoHold::Blocked:
+            held = i18n::t("You blocked this person in TeamSpeak: their links never load by themselves. ");
+            break;
+        case AutoHold::Unreadable:
+            held = i18n::t("TS Media couldn't read your TeamSpeak contacts. Click to load. ");
+            break;
+        case AutoHold::Checking:
+        case AutoHold::None:
+            break;
+        }
         if (card.size > 0 || card.overAutoLimit)
-            return i18n::t("Larger than your limit for automatic downloads. Loading the preview connects your PC to %1, which sees your IP address.").arg(site);
+            return held + i18n::t("Larger than your limit for automatic downloads. Loading the preview connects your PC to %1, which sees your IP address.").arg(site);
         if (card.cls == linkpreview::LinkClass::MediaPage && card.provider == QLatin1String("nextcloud"))
-            return i18n::t("Loading the preview connects your PC to %1, which sees your IP address.").arg(card.host);
+            return held + i18n::t("Loading the preview connects your PC to %1, which sees your IP address.").arg(card.host);
         if (card.cls == linkpreview::LinkClass::MediaPage)
-            return i18n::t("Loading the preview connects your PC to %1's servers, which see your IP address.").arg(card.host);
+            return held + i18n::t("Loading the preview connects your PC to %1's servers, which see your IP address.").arg(card.host);
         if (card.cls == linkpreview::LinkClass::Site || card.cls == linkpreview::LinkClass::Web)
-            return i18n::t("Loading the preview connects your PC to %1 and to the site its picture comes from, which see your IP address.").arg(card.host);
-        return i18n::t("Loading the preview connects your PC to %1, which sees your IP address.").arg(site);
+            return held + i18n::t("Loading the preview connects your PC to %1 and to the site its picture comes from, which see your IP address.").arg(card.host);
+        return held + i18n::t("Loading the preview connects your PC to %1, which sees your IP address.").arg(site);
+    }
     case Look::Loading:
         if (card.waiting == Waiting::Own)
             return i18n::t("Your TS Media is loading this link once to share its preview in this chat.");

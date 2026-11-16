@@ -290,7 +290,7 @@ class TestPlayerLoad : public QObject
         QVERIFY(player.playable());
         QVERIFY(player.cardOf(a("s1"), a("M7lc1UVf-VE")).playable);
         {
-            PrivacySection section;
+            LinkPreviewsSection section;
             section.load(Settings::instance());
         }
         QVERIFY(!QDir(dir).exists() || filesIn(dir) == 0);
@@ -410,13 +410,13 @@ class TestPlayerLoad : public QObject
         QVERIFY(!ytbackend::runtimePresent());
         QCOMPARE(reads, first);
         {
-            PrivacySection section; // the Settings dialog opens
+            LinkPreviewsSection section; // the Settings dialog opens
             section.load(Settings());
         }
         QCOMPARE(reads, first); // the dialog only marks it for a new read
         QVERIFY(!ytbackend::runtimePresent());
         QCOMPARE(reads, 2 * first);
-        QVERIFY(PrivacySection::playYouTubeHint().contains(a("has no YouTube player"))); // this test build has no resource
+        QVERIFY(LinkPreviewsSection::playYouTubeHint().contains(a("has no YouTube player"))); // this test build has no resource
         ytbackend::setRegistryReaderForTests(nullptr);
         // The real reader touches no file and no DLL: only the registry (this PC has the runtime or not: either is fine).
         const bool real = ytbackend::runtimePresent();

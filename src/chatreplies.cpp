@@ -1,5 +1,7 @@
 #include "chatreplies.h"
 
+#include "chattextspoilers.h" // 2.7 F1: "Reveal spoiler(s)" in the message menu
+
 #include <QAbstractTextDocumentLayout>
 #include <QAction>
 #include <QApplication>
@@ -562,8 +564,9 @@ ChatReplies::Style ChatReplies::styleOf(QTextBrowser* browser) const
     style.dpr   = chrome.ratio();
     style.font  = previewpaint::fontForRatio(preview.font, style.dpr); // unhinted above R 1 (live test)
     style.scale = chrome.s20;
-    style.base  = browser->viewport()->palette().color(QPalette::Base);
-    if (style.dark != (style.base.lightness() < 128))
+    // 2.7 F6: the chat's effective background (styleFor, chatcolors), consistent with style.dark.
+    style.base  = preview.base.isValid() ? preview.base : browser->viewport()->palette().color(QPalette::Base);
+    if (!preview.base.isValid() && style.dark != (style.base.lightness() < 128))
         style.base = QColor(); // a style sheet colours the chat: the theme's default
     const qreal margin = browser->document()->documentMargin();
     style.maxWidth     = qMax(80, chrome.duFromLogical(m_chat->previewAreaWidth(browser) - 2 * margin) - 6);
@@ -664,6 +667,13 @@ void ChatReplies::pictureSwapped(QTextBrowser* browser, const QString& name)
 
 void ChatReplies::applyChromeScale(QTextBrowser* browser)
 {
+    // 2.7 F4: the reply bar of this chat follows its new scale (Ctrl + wheel, the chat font) in the same pass. Its new
+    // height is applied at once, so the pass's place restore (after this) sees the chat's new height.
+    if (m_bar && m_barInput && !m_bar->isHidden() && m_pending.browser == browser) {
+        applyBarTheme(m_barInput, false);
+        if (m_barOverlay)
+            placeOverlayBar();
+    }
     View* view = viewOf(browser);
     if (!view || view->document != browser->document() || view->lines.isEmpty())
         return;
@@ -1181,6 +1191,11 @@ QList<QAction*> ChatReplies::actionsFor(QMenu* menu, bool chatMenu)
         return actions;
     }
 
+    // 2.7 F1: "Reveal spoiler(s)" for a message with hidden text spoilers: first (the keyboard way to reveal them).
+    if (m_chat->m_textSpoilers) {
+        if (QAction* reveal = m_chat->m_textSpoilers->revealAction(menu, browser, block))
+            actions << reveal;
+    }
     auto* reply = new QAction(replyart::glyphIcon(replyart::Glyph::Reply, menuIconColor(), dpr), i18n::t("&Reply"), menu);
     ChatTarget target;
     if (!m_chat->resolveTarget(browser, &target)) {
@@ -1295,7 +1310,9 @@ void ChatReplies::showReplies(QTextBrowser* browser, int block, const QPoint& gl
     if (m_popup)
         m_popup->close();
     const Style style = styleOf(browser);
-    auto*       popup = new RepliesPopup(style.dark, style.base.isValid() ? style.base : browser->viewport()->palette().color(QPalette::Base), style.font, title, rows);
+    // 2.7 F4: the list follows the chat's chrome scale like the reply lines.
+    auto*       popup = new RepliesPopup(style.dark, style.base.isValid() ? style.base : browser->viewport()->palette().color(QPalette::Base), style.font, title, rows,
+                                         m_chat->scaleOf(browser).chromeRatio());
     m_popup           = popup;
     const QPointer<QTextBrowser> guard(browser);
     connect(popup, &RepliesPopup::activated, this, [this, guard, blocks](int row) {
@@ -1402,7 +1419,7 @@ void ChatReplies::watchPending()
     else if (!shown && m_bar && !m_bar->isHidden())
         hideBar();
     else if (shown && m_bar)
-        applyBarTheme(input); // TeamSpeak's theme switched meanwhile (a no-op otherwise)
+        applyBarTheme(input, true); // TeamSpeak's theme switched meanwhile (a no-op otherwise); a chat at its end stays
 }
 
 bool ChatReplies::barShownFor(QWidget* input) const
@@ -1476,7 +1493,7 @@ void ChatReplies::placeOverlayBar()
     m_bar->raise();
 }
 
-void ChatReplies::applyBarTheme(QWidget* input)
+void ChatReplies::applyBarTheme(QWidget* input, bool keepEnd)
 {
     if (!m_bar || !input)
         return;
@@ -1484,7 +1501,12 @@ void ChatReplies::applyBarTheme(QWidget* input)
     QColor      base  = input->palette().color(QPalette::Base);
     if (style.dark != (base.lightness() < 128))
         base = style.base;
-    m_bar->setTheme(style.dark, base, style.font);
+    // 2.7 F4: the bar follows the chat's chrome scale (Windows scaling x the chat's text size, at least 1), like the
+    // reply lines in the chat. A taller or shorter bar in the input's layout makes the chat above shorter or taller at
+    // once (review fix: a chat at its end was left short of it by the bar's growth after a zoom).
+    const qreal scale = m_pending.browser ? m_chat->scaleOf(m_pending.browser).chromeRatio() : 1.0;
+    replybar::restyleInLayout(m_bar, m_barOverlay, m_pending.browser, keepEnd,
+                              [&] { m_bar->setTheme(style.dark, base, style.font, scale); });
 }
 
 void ChatReplies::showBar(QWidget* input)
@@ -1767,6 +1789,7 @@ void ChatReplies::jumpToPending()
 
 void ChatReplies::jumpTo(QTextBrowser* browser, int block)
 {
+    m_chat->endLoadHold(browser); // 2.7 (R-DEF-1): the reader's own jump; no load hold pulls the chat back
     QTextDocument* doc = browser->document();
     QTextBlock     tb  = doc->findBlockByNumber(block);
     while (tb.isValid() && !tb.isVisible()) // a later message of an album: its grid is in the first one

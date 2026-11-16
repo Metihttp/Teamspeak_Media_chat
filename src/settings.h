@@ -98,6 +98,10 @@ struct Settings {
     bool autoLoadLinkPreviews = true;
     bool makeLinkPreviews     = true;
     bool showWebCards         = true;
+    // 2.7 Only friends: with autoLoadLinkPreviews on, a link without a sender-made preview loads from its website by
+    // itself only when the sender is marked Friend in TeamSpeak's contacts. Needs showLinkPreviews and
+    // autoLoadLinkPreviews. (Contacts marked Blocked never load by themselves, with or without it.)
+    bool autoLoadLinkPreviewsOnlyFriends = false;
     // 2.5 YouTube player (global): "Play YouTube videos in a TS Media window": Play on a YouTube card shows YouTube's own player
     // (Microsoft Edge WebView2, src/ytplayer); off: Play opens the video in the browser as in 2.4. Needs
     // showLinkPreviews. youTubeNoticeShown: the Consent state was answered with Play once (never reset by Restore
@@ -127,6 +131,20 @@ struct Settings {
     bool chatLayoutIntroShown = false; // the one-time line about the new layout was shown
     bool chatBubbles          = true;  // 2.3 chat-visuals: messages in bubbles (Cozy), system rows on pills
     bool chatOwnRight         = true;  // 2.3.1: your messages on the right, like Telegram (Cozy with bubbles)
+    // 2.7 saved chat zoom: tenths of a point added to TeamSpeak's chat font in every chat (Ctrl + mouse wheel = one
+    // step per notch). Written at once by the chat (ChatZoom) and by the Settings row, never by OK / Apply / Cancel;
+    // Restore defaults leaves it alone.
+    static constexpr Range chatZoomRange = {-40, 240};
+    static constexpr int   chatZoomStep  = 10;
+    int chatZoom = 0;
+    // 2.7 colours: the colour of TS Media's own chat lines. "" = Automatic, else one of lineColorChoices.
+    static constexpr const char* const lineColorChoices[] = {"blue", "teal", "green", "orange", "pink", "text"};
+    QString chatLineColor;
+    // A choice from the ini or a form: one of lineColorChoices (any case, trimmed) as a new lower-case string, else "".
+    static QString normalizeLineColor(const QString& choice);
+    // 2.7 dark mode: all of TeamSpeak in TS Media's warm dark theme (darkmode.h). Written at once by the Settings switch,
+    // the Plugins menu pair and the hotkey, never by OK / Apply / Cancel; Restore defaults leaves it alone.
+    bool darkMode = false;
 
     static Settings& instance();
     void             load();

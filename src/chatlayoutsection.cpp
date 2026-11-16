@@ -2,89 +2,65 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
-#include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QRadioButton>
 #include <QVBoxLayout>
 
 #include "i18n.h"
+#include "settingstheme.h"   // 2.7 F3
+#include "settingswidgets.h" // 2.7 F3: tiles and switches
 
 ChatLayoutSection::ChatLayoutSection(QWidget* parent)
     : SettingsSection(parent)
 {
     setObjectName(QString::fromLatin1("tsmediaChatLayoutSection"));
-    auto* group = new QGroupBox(i18n::t("Chat layout"), this);
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(settingstheme::tokensFor(this).px(18));
 
-    // Access keys: the General tab's others are taken (Clear cache, Microphone, ...).
-    m_cozy    = new QRadioButton(i18n::t("Co&zy: names and pictures above messages, like Discord"), group);
-    m_compact = new QRadioButton(i18n::t("Com&pact: one line per message, the time in front"), group);
-    m_classic = new QRadioButton(i18n::t("&TeamSpeak classic: TeamSpeak's own look"), group);
+    // 2.7 F3: the layouts as picture tiles (still radio buttons with their 2.6 texts and access keys z, p, t).
+    QGroupBox* group = card(i18n::t("Chat layout"), this);
+    auto*      tiles = new QWidget(group);
+    auto*      tileRow = new TileLayout(tiles);
+    m_cozy    = new LayoutTile(LayoutTile::Kind::Cozy, i18n::t("Co&zy: names and pictures above messages, like Discord"), tiles);
+    m_compact = new LayoutTile(LayoutTile::Kind::Compact, i18n::t("Com&pact: one line per message, the time in front"), tiles);
+    m_classic = new LayoutTile(LayoutTile::Kind::Classic, i18n::t("&TeamSpeak classic: TeamSpeak's own look"), tiles);
+    tileRow->addWidget(m_cozy);
+    tileRow->addWidget(m_compact);
+    tileRow->addWidget(m_classic);
     auto* choice = new QButtonGroup(group);
     choice->addButton(m_cozy, 1);
     choice->addButton(m_compact, 2);
     choice->addButton(m_classic, 0);
+    customRow(group, tiles);
     QLabel* hintLabel = hint(i18n::t("Only your view changes. Others see the chat as before."), group);
+    customRow(group, hintLabel);
     m_cozy->setAccessibleDescription(hintLabel->text());
     m_compact->setAccessibleDescription(hintLabel->text());
     m_classic->setAccessibleDescription(hintLabel->text());
 
-    m_group = new QCheckBox(i18n::t("Group messages from the same person under one &name"), group);
-    QLabel* groupHint = hint(i18n::t("Messages sent within 7 minutes of each other share one name and time, like in Discord."), group);
-    m_group->setAccessibleDescription(groupHint->text());
-    m_actions = new QCheckBox(i18n::t("Show message act&ions on hover"), group);
-    QLabel* actionsHint = hint(i18n::t("Reply, Copy text and More over the message under the pointer. They are in the chat's right-click menu either way."), group);
-    m_actions->setAccessibleDescription(actionsHint->text());
-
-    // P2. Access keys v, y, r: free on the General tab.
-    m_avatars = new QCheckBox(i18n::t("Show people's a&vatars (Cozy)"), group);
-    QLabel* avatarsHint = hint(i18n::t("TeamSpeak's own pictures of people, yours too; initials otherwise. TS Media downloads nothing."), group); // 2.3 chat-visuals
-    m_avatars->setAccessibleDescription(avatarsHint->text());
-    m_mentions = new QCheckBox(i18n::t("Highlight messages that mention &you"), group);
-    QLabel* mentionsHint = hint(i18n::t("Your name or @name in someone else's message."), group);
-    m_mentions->setAccessibleDescription(mentionsHint->text());
-    m_collapse = new QCheckBox(i18n::t("Fold runs of join and leave events into one &row"), group);
-    QLabel* collapseHint = hint(i18n::t("The same event shows once with a count; four or more in a row show \"+N more events\". Pokes, kicks, bans and errors always show."), group);
-    m_collapse->setAccessibleDescription(collapseHint->text());
-    // 2.3 chat-visuals (access key u: b is the emoji section's "emoji button" on this tab)
-    m_bubbles = new QCheckBox(i18n::t("Show messages in b&ubbles (Cozy)"), group);
-    QLabel* bubblesHint = hint(i18n::t("Each message on its own rounded background, yours tinted, like in Telegram. Events sit centred on small pills."), group);
-    m_bubbles->setAccessibleDescription(bubblesHint->text());
-    // 2.3.1 (access key m: free on the General tab)
-    m_ownRight = new QCheckBox(i18n::t("Show &my messages on the right"), group);
-    QLabel* ownRightHint = hint(i18n::t("Like in Telegram: your messages sit on the right without your name or picture, others' on the left. Cozy with bubbles only."), group);
-    m_ownRight->setAccessibleDescription(ownRightHint->text());
-
-    auto* rows = form(group);
-    rows->addRow(m_cozy);
-    rows->addRow(m_compact);
-    rows->addRow(m_classic);
-    rows->addRow(hintLabel);
-    rows->addRow(m_group);
-    rows->addRow(groupHint);
-    rows->addRow(m_actions);
-    rows->addRow(actionsHint);
-    rows->addRow(m_bubbles); // 2.3 chat-visuals
-    rows->addRow(bubblesHint);
-    rows->addRow(m_ownRight); // 2.3.1
-    rows->addRow(ownRightHint);
-    rows->addRow(m_avatars);
-    rows->addRow(avatarsHint);
-    rows->addRow(m_mentions);
-    rows->addRow(mentionsHint);
-    rows->addRow(m_collapse);
-    rows->addRow(collapseHint);
-    addIndented(groupHint);
-    addIndented(actionsHint);
-    addIndented(bubblesHint); // 2.3 chat-visuals
-    addIndented(ownRightHint); // 2.3.1
-    addIndented(avatarsHint);
-    addIndented(mentionsHint);
-    addIndented(collapseHint);
-
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(group);
+    // What the layout does (Cozy and Compact). Access keys: the Chat page's others are the tiles' and the text size
+    // card's (x, c, s); 2.7: "events" (e) instead of "row" (r, which is the dialog's Restore defaults).
+    QGroupBox* messages = card(i18n::t("Messages"), this);
+    m_group   = switchRow(messages, i18n::t("Group messages from the same person under one &name"),
+                          i18n::t("Messages sent within 7 minutes of each other share one name and time, like in Discord."));
+    m_actions = switchRow(messages, i18n::t("Show message act&ions on hover"),
+                          i18n::t("Reply, Copy text and More over the message under the pointer. They are in the chat's right-click menu either way."));
+    // 2.3 chat-visuals (access key u: b is the emoji button's)
+    m_bubbles = switchRow(messages, i18n::t("Show messages in b&ubbles (Cozy)"),
+                          i18n::t("Each message on its own rounded background, yours tinted, like in Telegram. Events sit centred on small pills."));
+    // 2.3.1, under bubbles (it needs them)
+    m_ownRight = switchRow(messages, i18n::t("Show &my messages on the right"),
+                           i18n::t("Like in Telegram: your messages sit on the right without your name or picture, others' on the left. Cozy with "
+                                   "bubbles only."),
+                           1);
+    m_avatars  = switchRow(messages, i18n::t("Show people's a&vatars (Cozy)"),
+                           i18n::t("TeamSpeak's own pictures of people, yours too; initials otherwise. TS Media downloads nothing.")); // 2.3 chat-visuals
+    m_mentions = switchRow(messages, i18n::t("Highlight messages that mention &you"), i18n::t("Your name or @name in someone else's message."));
+    m_collapse = switchRow(messages, i18n::t("Fold runs of join and leave &events into one row"),
+                           i18n::t("The same event shows once with a count; four or more in a row show \"+N more events\". Pokes, kicks, bans and "
+                                   "errors always show."));
 
     for (QRadioButton* button : {m_cozy, m_compact, m_classic}) {
         connect(button, &QRadioButton::toggled, this, [this](bool on) {
@@ -108,14 +84,15 @@ int ChatLayoutSection::chosen() const
 
 void ChatLayoutSection::updateEnabled()
 {
+    // 2.7 F3: the whole row (title, helper, switch) greys out; the tick is kept.
     const bool modern = chosen() != 0;
-    m_group->setEnabled(modern);
-    m_actions->setEnabled(modern);
-    m_avatars->setEnabled(chosen() == 1); // Cozy only
-    m_bubbles->setEnabled(chosen() == 1); // 2.3 chat-visuals: Cozy only
-    m_ownRight->setEnabled(chosen() == 1 && m_bubbles->isChecked()); // 2.3.1: Cozy with bubbles only
-    m_mentions->setEnabled(modern);
-    m_collapse->setEnabled(modern);
+    setRowEnabled(m_group, modern);
+    setRowEnabled(m_actions, modern);
+    setRowEnabled(m_avatars, chosen() == 1); // Cozy only
+    setRowEnabled(m_bubbles, chosen() == 1); // 2.3 chat-visuals: Cozy only
+    setRowEnabled(m_ownRight, chosen() == 1 && m_bubbles->isChecked()); // 2.3.1: Cozy with bubbles only
+    setRowEnabled(m_mentions, modern);
+    setRowEnabled(m_collapse, modern);
 }
 
 void ChatLayoutSection::load(const Settings& s)

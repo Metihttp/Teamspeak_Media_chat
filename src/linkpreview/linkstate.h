@@ -132,6 +132,9 @@ struct Context {
     bool autoOn        = true;  // Settings::autoLoadLinkPreviews
     bool webCards      = true;  // Settings::showWebCards
     bool senderNothing = false; // the sender's plugin said the page has nothing to show or went elsewhere (LPXNO r=n / r=x)
+    // 2.7 F2: the sender's mark in TeamSpeak's contacts holds the link's automatic load (never one of your own links).
+    using AutoHold    = linkcard::AutoHold;
+    AutoHold autoHold = AutoHold::None;
 };
 
 struct Decision {
@@ -225,7 +228,8 @@ bool stillOverLimit(const LocalState& local, qint64 cap);
 // ---- 2.5: why a slot shows nothing or waits (3.12) ----------------------------------------------------------------
 
 // 2.6: Paused (a load that waits for the route or for a click after a route change).
-enum class HoldReason { None, Hidden, Setting, Waiting, Offscreen, Turn, Budget, Gate, Cap, SenderNothing, Nothing, Failed, Paused };
+// 2.7 F2: NotFriend ("not-friend": Only from friends, or the contacts couldn't be read) and Blocked ("blocked").
+enum class HoldReason { None, Hidden, Setting, Waiting, Offscreen, Turn, Budget, Gate, Cap, SenderNothing, Nothing, Failed, Paused, NotFriend, Blocked };
 const char* holdReasonName(HoldReason reason); // "none", "hidden", "setting", ...
 // turnFree / budgetFree: a free automatic slot / a budget token for the sender; gate: the site's state for its first
 // request (Go: free to ask). Pure.

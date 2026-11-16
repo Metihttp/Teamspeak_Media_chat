@@ -18,6 +18,7 @@
 #include "previewstore.h"
 #include "settings.h"
 #include "textreact.h"
+#include "textspoiler.h" // 2.7 F1: no preview of a link inside a spoiler
 #include "ts3api.h"
 
 namespace linkpreview {
@@ -311,7 +312,7 @@ QVector<Target> SenderPipeline::selectedLinks(const QString& bbcode)
 {
     QVector<Target> found;
     QSet<QString>   keys;
-    for (const QString& href : message::linkHrefs(bbcode, kMaxScannedLinks)) {
+    for (const QString& href : message::linkHrefs(textspoiler::withoutHidden(bbcode), kMaxScannedLinks)) { // 2.7 F1: none inside a spoiler
         const Target t = classify(trimLinkEnd(href));
         if (!t.isValid() || t.key.isEmpty() || keys.contains(t.key))
             continue;

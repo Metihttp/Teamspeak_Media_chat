@@ -43,6 +43,7 @@
 #include <cmath>
 
 #include "composehooks.h"
+#include "darktitlebar.h" // 2.7 dark mode: the own-caption marker
 #include "composewidgets.h" // 2.3 compose-v2: the window's own controls and colours
 #include "filedrag.h" // 2.2 drag-out: the own-drag marker
 #include "i18n.h"
@@ -1145,6 +1146,7 @@ ComposeDialog::ComposeDialog(ComposeHost host, const ChatTarget& target, QWidget
 {
     // fromLatin1: plugin shutdown finds it by this name; it lives among TeamSpeak's windows.
     setObjectName(QString::fromLatin1("tsmediaCompose"));
+    setProperty(darktitlebar::kOwnCaption, true); // 2.7 dark mode: it keeps its own caption (composeui::applyWindowCaption)
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowModality(Qt::WindowModal);
     setLayoutDirection(Qt::LeftToRight);

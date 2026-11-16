@@ -1,6 +1,6 @@
 #pragma once
 
-// The "Diagnostic info" window (/tsmedia diag, Settings → Diagnostic info…): shows exactly the
+// The "Diagnostic info" window (/tsmedia diag, Settings → About & updates → Diagnostic info…): shows exactly the
 // plain-text report it copies for a bug report, with file names hidden unless the user asks for them.
 
 #include <QDialog>

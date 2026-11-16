@@ -531,8 +531,8 @@ class TestYouTubePlayer : public QObject
             QVERIFY(ytpage::consentNotice().contains(a("in a window of its own")));
             QCOMPARE(ytpage::consentQuestion(), a("Play this video in a window?"));
             QCOMPARE(linkcard::toolTip(card, linkcard::Zone::ConsentPlay), a("Play this video in a window with YouTube's own player"));
-            QVERIFY(PrivacySection::playYouTubeHint().contains(a("in a window of its own over TeamSpeak")));
-            QVERIFY(!PrivacySection::playYouTubeHint().contains(a("over the card")));
+            QVERIFY(LinkPreviewsSection::playYouTubeHint().contains(a("in a window of its own over TeamSpeak")));
+            QVERIFY(!LinkPreviewsSection::playYouTubeHint().contains(a("over the card")));
         }
         card.playable = false; // the switch off, no runtime: the whole card opens the browser (2.4)
         QCOMPARE(linkcard::zoneAt(card, l, l.thumb.center(), true), linkcard::Zone::Open);
@@ -1365,7 +1365,7 @@ class TestYouTubePlayer : public QObject
         QVERIFY(t.youTubeNoticeShown);
         QCOMPARE(t.youTubeWindowSize, a("800x450"));
         // Restore defaults never resets the notice (no section stores it); the box goes back on.
-        PrivacySection section;
+        LinkPreviewsSection section;
         section.load(t);
         section.restoreDefaults(Settings());
         Settings target = t;
@@ -1387,8 +1387,8 @@ class TestYouTubePlayer : public QObject
         QVERIFY(!box->isEnabled());
         QVERIFY(box->isChecked());
         // The hint: this test build has no helper resource.
-        QVERIFY(PrivacySection::playYouTubeHint().contains(a("privacy-enhanced mode")));
-        QVERIFY(PrivacySection::playYouTubeHint().contains(a("has no YouTube player")));
+        QVERIFY(LinkPreviewsSection::playYouTubeHint().contains(a("privacy-enhanced mode")));
+        QVERIFY(LinkPreviewsSection::playYouTubeHint().contains(a("has no YouTube player")));
     }
 
     // ---- 2.6 chat proxy (design 9.3 tests 2 and 3) ----

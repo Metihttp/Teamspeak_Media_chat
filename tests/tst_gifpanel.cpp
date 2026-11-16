@@ -732,7 +732,7 @@ void TestGifPanel::removeButtonWording()
         checkBar(panel, a("Remove"));
     }
 
-    // Settings -> General -> Emoji: Remove all GIFs… asks with "Remove" for the one GIF. (QMessageBox::showEvent asks the
+    // Settings -> Emoji & GIFs -> GIFs: Remove all GIFs… asks with "Remove" for the one GIF. (QMessageBox::showEvent asks the
     // platform for the window's system menu, which the offscreen platform doesn't have: its Show event is swallowed.)
     QCOMPARE(GifLibrary::instance(), m_lib.get());
     struct SwallowBoxShow : QObject {

@@ -41,6 +41,7 @@ class ChatScale : public QObject
         std::function<void()>                      after;   // after the place came back: draw what is near the view
         std::function<void(const PreviewScale&)>  changed; // the scale changed (the log line)
         std::function<void()>                      fontEvent; // a FontChange / StyleChange on the chat (may call request())
+        std::function<void()>                      styleEvent; // 2.7 F6: a StyleChange / PaletteChange (never a FontChange): colours
         std::function<void(const QString& name, int module)> swapped; // a picture became the blank stand-in: draw it again near the view
         std::function<void(const QString& line)>   log;
     };
@@ -61,6 +62,9 @@ class ChatScale : public QObject
     // A pass is wanted (a FontChange, a changed key, the Preview size setting).
     void request();
     bool pending() const;
+    // 2.7 dark mode (live test): a pending pass keeps the reader's place as it is now (the theme's own place bracket
+    // just put it back; the place this pass took at the StyleChange was read in the middle of the switch).
+    void retake();
     // The pass now (tests; the settle timer's slot).
     void settle();
     // Unload: timers stopped, the filter removed, nothing pending; no host call after this.

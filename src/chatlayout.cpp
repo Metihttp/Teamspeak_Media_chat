@@ -39,6 +39,7 @@
 #include "chattextreactions.h" // 2.3 text reactions
 #include "chatreplies.h"
 #include "chatscroll.h"
+#include "darkchat.h"    // 2.7 dark mode: keptSerial
 #include "emojirender.h" // pictures the worker drew (emoji in names)
 #include "emojitext.h"   // emoji in names still on their way
 #include "chatavatars.h"   // 2.3 chat-visuals: avatars
@@ -233,6 +234,16 @@ bool ChatLayout::isMutating()
 layoutart::Mode ChatLayout::mode() const
 {
     return m_mode;
+}
+
+bool ChatLayout::hasWork(QTextBrowser* browser) const
+{
+    if (m_mode == layoutart::Mode::Classic)
+        return false;
+    const auto it = m_views.constFind(browser);
+    if (it == m_views.constEnd())
+        return false;
+    return it->historyNext >= 0 || !it->dirty.isEmpty() || !it->restyle.isEmpty() || it->pendingWidth != 0;
 }
 
 ChatLayout::View* ChatLayout::viewFor(QTextBrowser* browser)
@@ -439,6 +450,10 @@ void ChatLayout::watch(View& view)
         if (layoutformat::layoutEditingFlag())
             return; // our own edits
         if (layoutformat::mutating() || ChatEmoji::isMutating() || m_chat->m_mutating) {
+            // 2.7 dark mode mapped the colours of TeamSpeak's lines we keep (review fix): the usual nickname and link
+            // colours are read again on the next step (a chat it recoloured after our last step would keep them).
+            if (v->statsValid && v->statKept != darkchat::keptSerial())
+                schedule(0);
             // Another module's (they tell us what we need). 2.3.1: what it changed in your messages on the right
             // (a preview, a reaction row, HD emoji) is measured again before TeamSpeak paints it.
             // (Every one: a relayout of all previews at once may touch hundreds; one left out would keep its old fit.)
@@ -564,6 +579,11 @@ layoutdoc::Env ChatLayout::envFor(View& v) const
     // What the chat's lines say about the skin (the usual nickname and link colours, AM/PM): read from a few
     // hundred blocks, so only now and then (every step would cost milliseconds).
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // 2.7 dark mode: turning it on or off recolours the chat's own links and names: they are read again, also when it
+    // mapped the colours the layout keeps of TeamSpeak's lines (a hidden chat a turn or more after the toggle).
+    const QColor themeAccent = m_chat->chatColorsOf(b).themeAccent;
+    if (v.statsValid && (v.statAccent != themeAccent || v.statDark != style.dark || v.statKept != darkchat::keptSerial()))
+        v.statsValid = false;
     if (!v.statsValid || (doc->blockCount() != v.statsBlocks && now - v.statsMs > 2000)) {
         v.statNick    = layoutdoc::usualNickColor(doc);
         v.statLink    = layoutdoc::usualLinkColor(doc);
@@ -571,14 +591,20 @@ layoutdoc::Env ChatLayout::envFor(View& v) const
         v.statsValid  = true;
         v.statsBlocks = doc->blockCount();
         v.statsMs     = now;
+        v.statAccent  = themeAccent;
+        v.statDark    = style.dark;
+        v.statKept    = darkchat::keptSerial();
     }
     // 2.3 chat-visuals: message bubbles (Cozy)
     env.tokens = layoutart::tokensFor(m_mode == Mode::Classic ? Mode::Cozy : m_mode, doc->defaultFont(), v.statAmPm, m_mode == Mode::Cozy && Settings::instance().chatBubbles);
-    QColor base = b->viewport()->palette().color(QPalette::Base);
-    if ((base.lightness() < 128) != style.dark)
+    // 2.7 F6: the chat's effective background, text and link (styleFor, chatcolors), consistent with style.dark.
+    QColor base = style.base.isValid() ? style.base : b->viewport()->palette().color(QPalette::Base);
+    if (!style.base.isValid() && (base.lightness() < 128) != style.dark)
         base = QColor(); // a style sheet colours the chat: the theme's default
     const QColor link = v.statLink;
-    env.colors        = layoutart::colorsFor(style.dark, base, b->palette().color(QPalette::Text), link.isValid() ? link : b->palette().color(QPalette::Link));
+    env.colors        = layoutart::colorsFor(style.dark, base, style.text.isValid() ? style.text : b->palette().color(QPalette::Text),
+                                             link.isValid() ? link : (style.link.isValid() ? style.link : b->palette().color(QPalette::Link)),
+                                             themeAccent); // 2.7 dark mode: its accent
     const int margin  = static_cast<int>(2 * doc->documentMargin());
     env.contentWidth  = qMax(120, m_chat->previewAreaWidth(b) - margin);
     env.usualNickColor = v.statNick;
@@ -625,7 +651,8 @@ QString ChatLayout::styleKeyOf(const layoutdoc::Env& env) const
     return QStringList{QString::number(static_cast<int>(env.mode)), QString::number(env.group), env.tokens.body.toString(), QString::number(env.tokens.ampm),
                        c.base.name(), c.text.name(), c.link.name(), QString::number(c.dark), QString::number(env.dpr), QString::number(env.contentWidth),
                        env.today.toString(Qt::ISODate), QString::number(env.mentions), env.ownNick, env.ownUid, QString::number(env.collapse),
-                       QString::number(env.tokens.bubbles), QString::number(env.ownRight)} // 2.3 chat-visuals; 2.3.1
+                       QString::number(env.tokens.bubbles), QString::number(env.ownRight), // 2.3 chat-visuals; 2.3.1
+                       c.accent.name()} // 2.7 dark mode: its accent
         .join(QLatin1Char('|'));
 }
 
@@ -1835,7 +1862,7 @@ void ChatLayout::printIntro(QTextBrowser* browser)
     Settings& s   = Settings::instance();
     s.chatLayoutIntroShown = true;
     s.save();
-    ts3::print(sch, i18n::t("[b]TS Media chat:[/b] new chat layout. Settings > Chat layout switches back to TeamSpeak classic."));
+    ts3::print(sch, i18n::t("[b]TS Media chat:[/b] new chat layout. Settings > Chat switches back to TeamSpeak classic."));
 }
 
 // ============================================================================================

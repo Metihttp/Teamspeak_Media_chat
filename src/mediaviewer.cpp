@@ -45,6 +45,7 @@
 #include <limits>
 
 #include "core.h"
+#include "darktitlebar.h" // 2.7 dark mode: the own-caption marker
 #include "filedrag.h" // 2.2 drag-out
 #include "safeimage.h" // 2.5
 #include "i18n.h"
@@ -3682,6 +3683,7 @@ MediaViewer::MediaViewer(Core* core, const QStringList& keys, int index, std::op
         d->muted = *muted; // instead of Settings::videosStartMuted
     setAttribute(Qt::WA_DeleteOnClose);
     setObjectName(QString::fromLatin1("tsmediaMediaViewer"));
+    setProperty(darktitlebar::kOwnCaption, true); // 2.7 dark mode: it keeps its own dark caption
     setLayoutDirection(Qt::LeftToRight);
     setFocusPolicy(Qt::StrongFocus);
     // fromLatin1, never QStringLiteral: a window with a parent shares the parent's QStyleSheetStyle when

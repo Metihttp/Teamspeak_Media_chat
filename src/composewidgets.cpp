@@ -9,6 +9,8 @@
 
 #include <cmath>
 
+#include "darkmode.h"    // 2.7 dark mode: the theme's accent while it is on
+#include "darkpalette.h"
 #include "uiutil.h"
 
 #include <windows.h>
@@ -103,6 +105,15 @@ Theme themeFor(const QPalette& pal)
     t.primaryHover   = QColor(0x47, 0x52, 0xc4);
     t.primaryPressed = QColor(0x3c, 0x45, 0xa5);
     t.onPrimary      = white;
+    if (t.dark && DarkMode::isActive()) {
+        // 2.7 dark mode (live test): the theme's accent (dark text on it, 5.6:1) instead of the plugin's blurple.
+        const darkpalette::Tokens& d = darkpalette::tokens();
+        t.accent         = d.accent;
+        t.primary        = d.accent;
+        t.primaryHover   = d.accentHover;
+        t.primaryPressed = d.accentPressed;
+        t.onPrimary      = d.onAccent;
+    }
     t.error          = t.dark ? QColor(0xff, 0x8a, 0x8f) : QColor(0xc4, 0x28, 0x2d); // 5.1:1 on TeamSpeak's dark grey
     if (ui::contrastRatio(t.error, t.body) < 4.5)
         t.error = t.text; // the alert glyph still marks it
@@ -733,9 +744,10 @@ void IconButton::paintEvent(QPaintEvent*)
             fill = isDown() ? m_theme.primaryPressed : mixColors(m_theme.primary, m_theme.primaryHover, hover);
         else
             fill = withAlpha(Qt::white, isDown() ? 0.30 : 0.20 * hover);
-        glyph = Qt::white;
-        if (!isEnabled())
-            glyph = withAlpha(Qt::white, 0.4);
+        // Checked: on the theme's primary colour, in its text colour (white on the plugin's blurple; dark on dark mode's
+        // accent, review fix: white was 3.1:1 there, 2.6:1 on hover). Unchecked: white over the picture.
+        const QColor ink = isChecked() ? m_theme.onPrimary : QColor(Qt::white);
+        glyph            = isEnabled() ? ink : withAlpha(ink, 0.4);
     } else {
         if (isChecked())
             fill = mixColors(m_theme.body, m_theme.accent, isDown() ? 0.30 : 0.18);

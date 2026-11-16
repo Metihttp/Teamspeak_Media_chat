@@ -1,6 +1,6 @@
 #pragma once
 
-// 2.4 compress: Settings → Sending → "Videos": compress videos larger than N MB, convert videos that may
+// 2.4 compress: Settings → Sending → Videos: compress videos larger than N MB, convert videos that may
 // not play for others, the quality, and whether the graphics card may be used. Unavailable without Media
 // Foundation (Windows N); the graphics card switch is off when this computer has no video encoder on it.
 

@@ -1,6 +1,6 @@
 // 2.6 chat proxy, I2b (design 9.4): the Chat proxy window and its Settings group, the Plugins menu pair, the hotkey and
 // /tsmedia proxy, the lines and notices (with their links), the failure strips and the card menu, the route-change
-// and health rules of the chat, the player switch's label, the Privacy & updates tab's access keys and height, and the
+// and health rules of the chat, the player switch's label, the Privacy page's access keys and height, and the
 // CRASH RULE in the new files. Offscreen; a real proxy::Control on a temporary settings.ini (its bridge on 127.0.0.1
 // only when a test turns the chat proxy on, nothing contacted), the fake TeamSpeak for the printed lines.
 
@@ -423,7 +423,9 @@ class TestProxyUi : public QObject
         QCOMPARE(fakets3::channelPrints().size(), 1);
         const QString first = fakets3::channelPrints().first();
         QVERIFY(first.contains(a("The chat proxy isn't working: can't reach the proxy at 127.0.0.1:2080. Link previews wait until it works.")));
-        QVERIFY(first.contains(a("[url=https://github.com/Metihttp/Teamspeak_Media_chat/blob/main/docs/FAQ.md#tsmupd-proxy-00112233aabbccdd-off]Turn off chat proxy[/url]")));
+        // 2.7 F6 (M7): our links carry the accent colour inside the tag (ts3::linkBBCode).
+        QVERIFY(first.contains(a("[url=https://github.com/Metihttp/Teamspeak_Media_chat/blob/main/docs/FAQ.md#tsmupd-proxy-00112233aabbccdd-off][color=")));
+        QVERIFY(first.contains(a("]Turn off chat proxy[/color][/url]")));
         // The same episode, and a new one of the same kind within 10 minutes: no second line.
         down(Failure::Unreachable, "i.ytimg.com");
         env.control->reportOk(gen);
@@ -458,7 +460,8 @@ class TestProxyUi : public QObject
         env.control->reportOk(gen);
         down(Failure::PasswordUnreadable, "www.youtube.com");
         QVERIFY(fakets3::channelPrints().last().contains(a("The chat proxy's saved password can't be read on this PC.")));
-        QVERIFY(fakets3::channelPrints().last().contains(a("-set]Proxy settings[/url]")));
+        QVERIFY(fakets3::channelPrints().last().contains(a("-set][color=")));
+        QVERIFY(fakets3::channelPrints().last().contains(a("]Proxy settings[/color][/url]")));
         // The link handler: this load's nonce only; the updater's links are left to it.
         const QString offUrl = env.control->noticeUrl(true), setUrl = env.control->noticeUrl(false);
         QVERIFY(env.control->handleNoticeLink(setUrl, false));
@@ -492,7 +495,7 @@ class TestProxyUi : public QObject
         QVERIFY(fakets3::channelPrints().last().contains(
             a("The proxy in your Windows settings isn't working: can't reach the proxy. Previews that need it load when you click them.")));
         QVERIFY(!fakets3::channelPrints().last().contains(a("corp.example")));
-        QVERIFY(fakets3::channelPrints().last().contains(a("Proxy settings[/url]")));
+        QVERIFY(fakets3::channelPrints().last().contains(a("Proxy settings[/color][/url]")));
         QVERIFY(env.control->admits(false));
         windows(Failure::SocksOnlyWindows);
         QCOMPARE(fakets3::channelPrints().size(), before + 2);
@@ -1135,7 +1138,7 @@ class TestProxyUi : public QObject
         QCOMPARE(group->statusLabel()->palette().color(QPalette::WindowText), darkOk);
     }
 
-    // ---- the Settings group (design 1.3.10, 9.4 test 3) and the Privacy & updates tab (test 4) ---------------------------
+    // ---- the Settings group (design 1.3.10, 9.4 test 3) and the Privacy page (test 4; 2.6: Privacy & updates) ------------
     void proxyGroup()
     {
         Env            env;
@@ -1207,6 +1210,9 @@ class TestProxyUi : public QObject
         QVERIFY(sourceText(a("src/chatlinkpreviews.cpp")).contains(a("proxy::ui::settingsRequest(proxySaved())")));
     }
 
+    // 2.7 F3 (design_settings 5.1, 8): the Privacy page (PrivacySection with its link to Link previews, the Chat proxy group),
+    // the Link previews page and About & updates each have their own access keys, unique with the bar's Apply and Restore
+    // defaults. Only the visible page's keys fire, so uniqueness is per page.
     void privacyTabKeysAndHeight()
     {
         windowsproxy::setIeConfigProviderForTests([] { return manual("socks=127.0.0.1:2080"); }); // the Use it button shown
@@ -1219,26 +1225,40 @@ class TestProxyUi : public QObject
         layout->addWidget(group);
         privacy->load(Settings());
         QVERIFY(!group->useItButton()->isHidden());
-        QStringList texts;
-        for (QAbstractButton* b : page.findChildren<QAbstractButton*>())
-            texts << b->text();
-        for (QLabel* l : page.findChildren<QLabel*>()) {
-            if (l->buddy())
-                texts << l->text();
-        }
-        // The Updates group (built in) and the dialog's Apply and Restore defaults (their sources).
-        const QString updates = sourceText(a("src/update/updatesettingsgroup.cpp"));
-        QVERIFY(updates.contains(a("i18n::t(\"Check for &updates automatically\")")) && updates.contains(a("i18n::t(\"Check &now\")")));
-        texts << a("Check for &updates automatically") << a("Check &now");
+        const auto textsOf = [](QWidget* root) {
+            QStringList texts;
+            for (QAbstractButton* b : root->findChildren<QAbstractButton*>())
+                texts << b->text();
+            for (QLabel* l : root->findChildren<QLabel*>()) {
+                if (l->buddy())
+                    texts << l->text();
+            }
+            return texts;
+        };
         const QString dialog = sourceText(a("src/settingsdialog.cpp"));
         QVERIFY(dialog.contains(a("i18n::t(\"&Apply\")")) && dialog.contains(a("i18n::t(\"&Restore defaults\")")));
-        texts << a("&Apply") << a("&Restore defaults");
-        const QList<QChar> keys = keysOf(texts);
-        QCOMPARE(keys.size(), QSet<QChar>(keys.begin(), keys.end()).size());
-        QCOMPARE(QSet<QChar>(keys.begin(), keys.end()),
-                 QSet<QChar>({'h', 'y', 'o', 'w', 'l', 'm', 'p', 'x', 'c', 'i', 'u', 'n', 'a', 'r'}));
-        // The player switch keeps p.
-        QVERIFY(texts.contains(a("&Play YouTube videos in a TS Media window")));
+        const auto checkKeys = [](QStringList texts, const QSet<QChar>& expected) {
+            texts << a("&Apply") << a("&Restore defaults");
+            const QList<QChar> keys = keysOf(texts);
+            QCOMPARE(keys.size(), QSet<QChar>(keys.begin(), keys.end()).size());
+            QCOMPARE(QSet<QChar>(keys.begin(), keys.end()), expected);
+        };
+        const QStringList privacyTexts = textsOf(&page);
+        QVERIFY(privacyTexts.contains(a("&Link previews and your IP address…"))); // M10
+        checkKeys(privacyTexts, QSet<QChar>({'h', 'y', 'x', 'c', 'i', 'l', 'a', 'r'}));
+        // Link previews: its own page.
+        {
+            LinkPreviewsSection links;
+            links.load(Settings());
+            const QStringList texts = textsOf(&links);
+            QVERIFY(texts.contains(a("&Play YouTube videos in a TS Media window"))); // the player switch keeps p
+            checkKeys(texts, QSet<QChar>({'o', 'w', 'l', 'f', 'm', 'p', 'a', 'r'}));
+        }
+        // About & updates: the Updates group (built in) and Troubleshooting (their sources).
+        const QString updates = sourceText(a("src/update/updatesettingsgroup.cpp"));
+        QVERIFY(updates.contains(a("i18n::t(\"Check for &updates automatically\")")) && updates.contains(a("i18n::t(\"Check &now\")")));
+        QVERIFY(dialog.contains(a("i18n::t(\"&Diagnostic info…\")")));
+        checkKeys({a("Check for &updates automatically"), a("Check &now"), a("&Diagnostic info…")}, QSet<QChar>({'u', 'n', 'd', 'a', 'r'}));
         // The group is about three rows (F9): the title, the status line, the buttons. The dialog grows by at most 100 px
         // with the default settings (the Windows settings, nothing saved), whose status is one line at the Settings dialog's
         // width with TeamSpeak's font (about 520 px of Segoe UI 9 pt). The offscreen platform's fallback font is far wider
@@ -1252,17 +1272,19 @@ class TestProxyUi : public QObject
         const int textLines = group->statusLabel()->heightForWidth(group->statusLabel()->width());
         const int oneLine   = group->statusLabel()->fontMetrics().height();
         QVERIFY2(height - textLines + oneLine <= 100, qPrintable(QString::number(height - textLines + oneLine)));
-        // It sits between the Privacy section and Updates in the dialog (its constructor, before UpdateSettingsGroup).
-        const int at = dialog.indexOf(a("new proxy::ui::ProxyGroup(this)"));
-        QVERIFY(at > 0 && at < dialog.indexOf(a("new upd::UpdateSettingsGroup(this)")));
+        // 2.7 F3: the Chat proxy sits on the Privacy page (below the Privacy section, which plugin.cpp adds at the top),
+        // Updates on About & updates (the dialog's constructor).
+        QVERIFY(dialog.contains(a("addSection(Tab::Privacy, new proxy::ui::ProxyGroup(this));")));
+        QVERIFY(dialog.contains(a("addSection(Tab::About, new upd::UpdateSettingsGroup(this));")));
+        QVERIFY(sourceText(a("src/plugin.cpp")).contains(a("addSection(SettingsDialog::Tab::Privacy, new PrivacySection, true);")));
     }
 
     void playerSwitchLabel()
     {
-        QCOMPARE(PrivacySection::playYouTubeLabel(false), a("&Play YouTube videos in a TS Media window"));
-        QCOMPARE(PrivacySection::playYouTubeLabel(true), a("&Play YouTube videos in the chat"));
-        QCOMPARE(PrivacySection::playYouTubeLabel(ytpage::kAnchoredPlayer), a("&Play YouTube videos in a TS Media window")); // 2.6.0's gate
-        PrivacySection section;
+        QCOMPARE(LinkPreviewsSection::playYouTubeLabel(false), a("&Play YouTube videos in a TS Media window"));
+        QCOMPARE(LinkPreviewsSection::playYouTubeLabel(true), a("&Play YouTube videos in the chat"));
+        QCOMPARE(LinkPreviewsSection::playYouTubeLabel(ytpage::kAnchoredPlayer), a("&Play YouTube videos in a TS Media window")); // 2.6.0's gate
+        LinkPreviewsSection section;
         QCheckBox* box = section.findChild<QCheckBox*>(a("tsmediaPlayYouTube"));
         QVERIFY(box);
         QCOMPARE(box->text(), a("&Play YouTube videos in a TS Media window"));

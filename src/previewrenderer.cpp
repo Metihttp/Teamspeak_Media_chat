@@ -101,6 +101,11 @@ Palette cardPaletteFor(const PreviewStyle& style)
     QVector<QColor> tracks;
     for (const QColor& back : backs)
         tracks.append(ui::flatten(pal.track, back));
+    if (style.accent.isValid()) { // 2.7 dark mode: the theme's accent and link on the bubbles, not the plugin's blurple and cyan
+        pal.progress = style.accent;
+        if (style.link.isValid())
+            pal.link = ui::readableOn(style.link, backs, 4.5);
+    }
     pal.progress = ui::readableOn(pal.progress, tracks, 3.0);
     return pal;
 }
@@ -1216,7 +1221,7 @@ void drawVideoControls(QPainter& p, const QRectF& bounds, const PlaybackOverlay&
     p.setBrush(QColor(255, 255, 255, 72));
     p.drawRoundedRect(track, thickness / 2.0, thickness / 2.0);
     if (fraction > 0) {
-        p.setBrush(kAccent);
+        p.setBrush(style.accent.isValid() ? style.accent : kAccent); // 2.7 dark mode: the theme's accent
         p.drawRoundedRect(QRectF(track.topLeft(), QSizeF(qMax(thickness, track.width() * fraction), thickness)), thickness / 2.0, thickness / 2.0);
     }
     p.setBrush(Qt::white);
@@ -1284,6 +1289,13 @@ void drawInBackground(QPainter& p, const QColor& background, const std::function
     p.restore();
 }
 QColor  accent() { return kAccent; }
+ButtonColors buttonColors(const PreviewStyle& style)
+{
+    if (!style.accent.isValid())
+        return {kAccent, QColor(0x47, 0x52, 0xc4), QColor(0x3c, 0x45, 0xa5), QColor(Qt::white), false};
+    // The dark theme's accent family (darkpalette.h: accent, accentHover, accentPressed; onAccent on it, 5.6:1).
+    return {style.accent, QColor(0xe0, 0x8a, 0x6c), QColor(0xcc, 0x6b, 0x4b), QColor(0x1a, 0x19, 0x18), true};
+}
 qreal   cornerRadius() { return kRadius; }
 QFont   font(const PreviewStyle& style, qreal delta, bool bold) { return fontFor(style, delta, bold); }
 qreal   basePixelSize(const QFont& font) { return ::basePixelSize(font); }
@@ -1461,7 +1473,7 @@ QImage renderVideo(const MediaEntry& entry, const QImage& frame, const MediaStil
             if (durationMs > 0) {
                 const double fraction = qBound(0.0, static_cast<double>(overlay.positionMs) / static_cast<double>(durationMs), 1.0);
                 p.fillRect(QRectF(0, bounds.height() - 3, bounds.width(), 3), QColor(255, 255, 255, 50));
-                p.fillRect(QRectF(0, bounds.height() - 3, bounds.width() * fraction, 3), kAccent);
+                p.fillRect(QRectF(0, bounds.height() - 3, bounds.width() * fraction, 3), style.accent.isValid() ? style.accent : kAccent);
             }
             if (overlay.muted) {
                 const QRectF disc(bounds.width() - 34, bounds.height() - 36, 26, 26);

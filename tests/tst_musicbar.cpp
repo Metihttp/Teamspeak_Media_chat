@@ -47,6 +47,7 @@
 #include "holdstrip.h"
 #include "inputbars.h"
 #include "music/musicbar.h"
+#include "replybar.h" // 2.7 F4: inputScale
 #include "music/musiccontroller.h"
 #include "music/musicmix.h"
 #include "musicfakes.h"
@@ -233,12 +234,14 @@ class TestMusicBar : public QObject
             lastWidth = width;
         }
         QCOMPARE(lastWidth, 220);
-        const MusicBar::Geometry narrow = MusicBar::geometryFor(QSize(260, 40), font, v);
+        // 2.7 F4: the bar's sizes follow the input's text size (this 9 pt font is 12 px: 12/11 of the 100% sizes).
+        const qreal              k      = replybar::inputScale(font);
+        const MusicBar::Geometry narrow = MusicBar::geometryFor(QSize(qRound(260 * k), 40), font, v);
         QVERIFY(!narrow.showVolumeSlider && !narrow.showVolumeButton);
-        const MusicBar::Geometry mid = MusicBar::geometryFor(QSize(380, 40), font, v);
+        const MusicBar::Geometry mid = MusicBar::geometryFor(QSize(qRound(380 * k), 40), font, v);
         QVERIFY(mid.showSeek && mid.showElapsed);
-        // The title isn't cut first (up to 120 px of it).
-        QVERIFY(mid.title.width() >= qMin(120, static_cast<int>(std::ceil(QFontMetricsF(font).horizontalAdvance(v.title)))));
+        // The title isn't cut first (up to 120 px of it at 100%).
+        QVERIFY(mid.title.width() >= qMin(qRound(120 * k), static_cast<int>(std::ceil(QFontMetricsF(font).horizontalAdvance(v.title)))));
         // A notice too long for one line wraps (three lines at most) instead of being cut.
         MusicBar wrap;
         MusicBar::View longNote;

@@ -13,7 +13,7 @@ recover if an update goes wrong.
 - **Off until you agree.** About 45 seconds after the first start of a version with the updater, a small
   window asks *Keep TS Media chat up to date?* Nothing is sent before you click **Turn on**. Closing the
   window asks again at the next start (twice at most). You can change it any time in
-  **Settings → Privacy & updates → Updates**.
+  **Settings → About & updates → Updates**.
 - **About once a day** (first 3 to 8 minutes after TeamSpeak starts) the plugin asks GitHub whether
   there is a new version. If there is, it shows *Update to X?* with what's new, and waits until you
   click **Update**, **Later** (asks again after 20 hours) or **Skip this version**. The exception,
@@ -33,7 +33,7 @@ recover if an update goes wrong.
 From 2.4.0 on, the author can mark a release as an important update (a fix that shouldn't wait for
 everyone to click). Such a release installs without a click:
 
-- **Who gets them:** 2.4.0 and later with automatic checks on (**Settings → Privacy & updates →
+- **Who gets them:** 2.4.0 and later with automatic checks on (**Settings → About & updates →
   Check for updates automatically**). Only the daily automatic check installs them; **Check now**,
   the plugin menu, `/tsmedia update` and the newer-version hint's link always show the normal
   *Update to X?* window. Older versions, and everyone with automatic checks off, get the normal offer.
@@ -64,7 +64,7 @@ everyone to click). Such a release installs without a click:
   (30 by default). After that date (by your PC's clock), the release is offered the normal way.
 - **Once:** with automatic checks on, 2.4.0's first start says in the chat *Important fixes for TS
   Media chat now install automatically when they are signed by its author; they start with the next
-  TeamSpeak start. You can turn automatic updates off in Settings → Privacy & updates.* Until that
+  TeamSpeak start. You can turn automatic updates off in Settings → About & updates.* Until that
   line has been shown (it waits for a server connection), important updates are offered the normal
   way.
 

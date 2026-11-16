@@ -34,6 +34,7 @@
 # -ImportantDays <n>  how long the marker counts after the release date (default 30, 1 to 60)
 # -CaptureReference <dir>  save the exports of TeamSpeak's Qt DLLs in <dir> as reference\ts-exports\<arch>.txt
 #             (once per TeamSpeak version); later builds check every Qt symbol the plugin imports against it
+#             (2.7: Qt5Sql.dll too, which the plugin delay-loads for TeamSpeak's contacts; recapture once)
 # -VerifyPublished  download both manifests of the latest release and every file they list, and check
 #             sizes, SHA-256 and the signature of tsmedia-update.json, that the signed file still serves
 #             2.2.0 users on both architectures (and is the pinned bridge when it is 2.2.1's), that the
@@ -402,6 +403,22 @@ function Get-Imports([string]$dumpbin, [string]$file) {
     return $result
 }
 
+# 2.7 F2 (design H4): module -> names of the delay-load imports (dumpbin's "delay load imports" section): bound only when
+# called (Media Foundation) or behind a guard (Qt5Sql, src/delayload.cpp), so a missing one never stops the plugin loading.
+function Get-DelayImports([string]$dumpbin, [string]$file) {
+    $result = @{}
+    $module = $null
+    $delay  = $false
+    foreach ($line in (& $dumpbin /nologo /imports $file)) {
+        if ($line -match '^\s+Section contains the following delay load imports') { $delay = $true; continue }
+        if (-not $delay) { continue }
+        if ($line -match '^\s+Summary\s*$') { break }
+        if ($line -match '^\s{4}(\S+\.(dll|DLL))\s*$') { $module = $Matches[1]; $result[$module] = New-Object System.Collections.Generic.List[string]; continue }
+        if ($module -and $line -match '^\s+[0-9A-F]{8,16}\s+[0-9A-F]+\s+(\S+)\s*$') { $result[$module].Add($Matches[1]) }
+    }
+    return $result
+}
+
 function Get-Exports([string]$dumpbin, [string]$file) {
     $names = New-Object System.Collections.Generic.HashSet[string]
     foreach ($line in (& $dumpbin /nologo /exports $file)) {
@@ -416,8 +433,10 @@ if ($CaptureReference) {
     $arch = if (Test-Path (Join-Path $CaptureReference "ts3client_win64.exe")) { "win64" } else { "win32" }
     $out = Join-Path $root "reference\ts-exports\$arch.txt"
     New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
-    $lines = foreach ($qt in @("Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll")) {
-        foreach ($name in (Get-Exports $dumpbin (Join-Path $CaptureReference $qt))) { "$qt`t$name" }
+    $lines = foreach ($qt in @("Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll", "Qt5Sql.dll")) { # 2.7 F2: Qt5Sql (delay-loaded)
+        $file = Join-Path $CaptureReference $qt
+        if (-not (Test-Path $file)) { Write-Warning "No $qt in ${CaptureReference}: its symbols can't be checked."; continue }
+        foreach ($name in (Get-Exports $dumpbin $file)) { "$qt`t$name" }
     }
     Set-Content -Path $out -Value $lines -Encoding UTF8
     Write-Host "Saved $($lines.Count) exports of TeamSpeak's Qt DLLs ($arch) to $out"
@@ -429,13 +448,22 @@ if ($CaptureReference) {
 $allowedModules = @("Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll", "KERNEL32.dll", "USER32.dll", "GDI32.dll", "SHELL32.dll", "ADVAPI32.dll",
                     "ole32.dll", "OLEAUT32.dll", "bcrypt.dll", "d3d11.dll", "dxgi.dll", "dwmapi.dll", "propsys.dll",
                     "MSVCP140.dll", "MSVCP140_1.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")
+# 2.7 F2 (design H4): the only DLLs the plugin may delay-load. Qt5Sql.dll is never a hard import: TeamSpeak ships and loads it,
+# but a TeamSpeak without it must still load the plugin (only "Only from friends" and Blocked are lost then).
+$allowedDelayModules = @("mfplat.dll", "mfreadwrite.dll", "Qt5Sql.dll")
 
 function Test-Imports([string]$dumpbin, [string]$dll, [string]$arch) {
     $imports = Get-Imports $dumpbin $dll
     foreach ($m in $imports.Keys) {
+        if ($m -ieq "Qt5Sql.dll") { throw "$dll imports Qt5Sql.dll directly: it must be a delay-load import (CMakeLists.txt tsmedia_delay_load_qtsql)." }
         $ok = $m -like "api-ms-win-*" -or ($allowedModules | Where-Object { $_ -ieq $m })
         if (-not $ok) { throw "$dll imports $m, which is not on the allowlist (scripts\build.ps1). A missing DLL on a user's PC would stop the plugin from loading." }
         if ($m -ieq "winhttp.dll") { throw "$dll imports winhttp.dll: it must be loaded on demand only." }
+    }
+    # 2.7 F2 (design H4): delay-load imports only from the delay-load allowlist; Qt5Sql's names are checked like the others.
+    $delayed = Get-DelayImports $dumpbin $dll
+    foreach ($m in $delayed.Keys) {
+        if (-not ($allowedDelayModules | Where-Object { $_ -ieq $m })) { throw "$dll delay-loads $m, which is not on the delay-load allowlist (scripts\build.ps1)." }
     }
     $reference = Join-Path $root "reference\ts-exports\$arch.txt"
     if (-not (Test-Path $reference)) {
@@ -449,7 +477,14 @@ function Test-Imports([string]$dumpbin, [string]$dll, [string]$arch) {
             if (-not $known.ContainsKey("$($m.ToLower())`t$name")) { throw "$dll imports $m!$name, which TeamSpeak's $m doesn't export ($reference)." }
         }
     }
-    Write-Host "Import check passed for $arch (Qt symbols checked against $reference)."
+    foreach ($m in $delayed.Keys | Where-Object { $_ -like "Qt5*" }) { # 2.7 F2: Qt5Sql (a reference from before 2.7 lacks it: recapture)
+        $any = @($known.Keys | Where-Object { $_.StartsWith("$($m.ToLower())`t") }).Count -gt 0
+        if (-not $any) { throw "$reference has no exports of $m (captured before 2.7): run once with -CaptureReference <TeamSpeak folder>." }
+        foreach ($name in $delayed[$m]) {
+            if (-not $known.ContainsKey("$($m.ToLower())`t$name")) { throw "$dll delay-loads $m!$name, which TeamSpeak's $m doesn't export ($reference)." }
+        }
+    }
+    Write-Host "Import check passed for $arch (Qt symbols checked against $reference; Qt5Sql only as a delay-load import)."
 }
 
 # ---- what this build is ------------------------------------------------------------------------------

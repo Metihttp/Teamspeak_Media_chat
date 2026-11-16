@@ -18,6 +18,8 @@
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
+#include <QVBoxLayout>
 #include <QtTest>
 
 #include "albums.h"
@@ -33,6 +35,10 @@
 #include "previewscale.h"
 #include "reactionart.h"
 #include "replyart.h"
+#include "replybar.h"     // 2.7 F4
+#include "repliespopup.h" // 2.7 F4
+#include "holdstrip.h"    // 2.7 F4
+#include "music/musicbar.h" // 2.7 F4
 #include "settings.h"
 #include "testmain.h"
 #include "tschat.h"
@@ -792,6 +798,44 @@ class TestPreviewScale : public QObject
         }
     }
 
+    // Review fix (2.7 F6): a font change asks for a pass only; a palette change only re-reads the colours (no pass); a
+    // style sheet does both. A zoom notch must never throw the background's sample away.
+    void fontAndStyleEventsApart()
+    {
+        Chat            chat(10);
+        QTextBrowser&   b = chat.browser;
+        ChatScale::Host host;
+        int             fonts = 0, styles = 0;
+        host.fontEvent  = [&] { ++fonts; };
+        host.styleEvent = [&] { ++styles; };
+        ChatScale scaler(&b, host);
+        QFont     f = b.font();
+        f.setPointSizeF(f.pointSizeF() + 1);
+        b.setFont(f);
+        QCoreApplication::processEvents();
+        QCOMPARE(fonts, 1);
+        QCOMPARE(styles, 0);
+        QPalette pal = b.palette();
+        pal.setColor(QPalette::Base, QColor(0x12, 0x12, 0x12));
+        b.setPalette(pal);
+        QCoreApplication::processEvents();
+        QCOMPARE(fonts, 1);
+        QVERIFY(styles >= 1);
+        const int stylesBefore = styles;
+        b.setStyleSheet(QStringLiteral("QTextBrowser { background: #1e2a38; }"));
+        b.ensurePolished();
+        QCoreApplication::processEvents();
+        QVERIFY(fonts >= 2);
+        QVERIFY(styles > stylesBefore);
+        scaler.prepareShutdown();
+        const int fontsDown = fonts, stylesDown = styles;
+        b.setFont(QFont());
+        b.setPalette(QPalette());
+        QCoreApplication::processEvents();
+        QCOMPARE(fonts, fontsDown);
+        QCOMPARE(styles, stylesDown);
+    }
+
     void zoomOnFullChatLaysOutOnce()
     {
         // A chat filled to TeamSpeak's limit (MaxLines): during the gesture no full layout (syncRange) runs; at settle one.
@@ -1109,6 +1153,273 @@ class TestPreviewScale : public QObject
         QVERIFY(refresh.contains(QLatin1String("chatscroll::toBottom(browser);")));
         for (const QString& b : {scan, insert, refresh})
             QVERIFY(!b.contains(QLatin1String("setValue(browser->verticalScrollBar()->maximum())")));
+
+        // 2.7 (R-DEF-1): the unload takes every chat's place once before its first edit (the text reactions' rows) and
+        // puts it back once after the last (the albums, then the players), then leaves the carry on the chat widget.
+        const QString unload = body("ChatIntegration::~ChatIntegration()");
+        QVERIFY(!unload.isEmpty());
+        const int capture = unload.indexOf(QLatin1String("chatscroll::captureReader("));
+        const int restore = unload.indexOf(QLatin1String("chatscroll::restoreReader("));
+        QVERIFY(capture > 0 && capture < unload.indexOf(QLatin1String("delete m_textReactions;")));
+        QVERIFY(capture < unload.indexOf(QLatin1String("delete m_layout;")));
+        QVERIFY(restore > unload.indexOf(QLatin1String("restoreAlbums(it->browser);")));
+        QVERIFY(restore > unload.indexOf(QLatin1String("delete m_media;")));
+        QVERIFY(unload.indexOf(QLatin1String("setProperty(chatscroll::carryName()")) > restore);
+        QCOMPARE(unload.count(QLatin1String("chatscroll::restoreReader(")), 1);
+        // The load reads the place (the carry, else the place now) before anything of ours touches the chat, and its hold
+        // goes on last (its filters see the reader's input first).
+        const QString attach = body("void ChatIntegration::attachBrowser(QTextBrowser* browser)");
+        QVERIFY(!attach.isEmpty());
+        const int scale = attach.indexOf(QLatin1String("attachScale(browser);"));
+        QVERIFY(scale > 0);
+        QVERIFY(attach.indexOf(QLatin1String("chatscroll::resolveCarry(")) > 0 && attach.indexOf(QLatin1String("chatscroll::resolveCarry(")) < scale);
+        QVERIFY(attach.indexOf(QLatin1String("chatscroll::captureReader(")) > 0 && attach.indexOf(QLatin1String("chatscroll::captureReader(")) < scale);
+        QVERIFY(attach.indexOf(QLatin1String("new LoadHold(")) > attach.indexOf(QLatin1String("m_layout->attach(browser);")));
+        QVERIFY(attach.indexOf(QLatin1String("setProperty(chatscroll::carryName(), QVariant())")) < scale);
+        // The reader's own jumps let the hold go before they move the chat.
+        const auto calledFirst = [](const QString& text, const char* signature, const char* call, const char* move) {
+            const int at = text.indexOf(QLatin1String(signature));
+            if (at < 0)
+                return false;
+            const QString b = text.mid(at, text.indexOf(QLatin1String("\n}\n"), at) - at);
+            const int     c = b.indexOf(QLatin1String(call));
+            return c > 0 && c < b.indexOf(QLatin1String(move));
+        };
+        QVERIFY(calledFirst(source("src/chatreplies.cpp"), "void ChatReplies::jumpTo(QTextBrowser* browser, int block)", "m_chat->endLoadHold(browser);", "bar->setValue("));
+        QVERIFY(calledFirst(source("src/chatlinkpreviews.cpp"), "void ChatLinkPreviews::scrollSlotIntoView(const QString& slotId)", "m_chat->endLoadHold(browser);",
+                            "bar->setValue("));
+        const QString selftest = source("src/selftest.cpp");
+        const int     scroll   = selftest.indexOf(QLatin1String("if (cmd == QLatin1String(\"scrollchat\")) {"));
+        QVERIFY(scroll > 0);
+        const QString scrollchat = selftest.mid(scroll, 1200);
+        QVERIFY(scrollchat.contains(QLatin1String("m_chat->endLoadHold(b);")));
+        QVERIFY(scrollchat.indexOf(QLatin1String("m_chat->endLoadHold(b);")) < scrollchat.indexOf(QLatin1String("bar->setValue(")));
+    }
+
+    // ---- 2.7 F4: the reply text on 4K (issue #1) ---------------------------------------------------------------------
+
+    // The reply bar follows the chat's chrome scale: 10 px at 100%, 15 px at 150%, 20 px at 200%, and its height, close
+    // button and glyphs in proportion (it lives at device pixel ratio 1 in TeamSpeak, like every widget).
+    void replyBarFollowsChatScale()
+    {
+        QFont chat(QStringLiteral("Segoe UI"));
+        chat.setPointSizeF(8.25);
+        ReplyBar bar;
+        bar.resize(480, 40);
+        bar.setReply(QStringLiteral("Alice"), QColor(0x5865f2), QStringLiteral("See you at nine"), false);
+        int   lastHeight = 0;
+        qreal lastClose  = 0;
+        for (const auto& step : {std::make_pair(1.0, 10), std::make_pair(1.5, 15), std::make_pair(2.0, 20)}) {
+            bar.setTheme(false, Qt::white, chat, step.first);
+            QCOMPARE(bar.font().pixelSize(), step.second);
+            QCOMPARE(bar.scale(), step.first);
+            const int height = bar.sizeHint().height();
+            QVERIFY2(height > lastHeight, qPrintable(QString::number(height)));
+            QVERIFY(height >= qRound(26 * step.first));
+            bar.resize(480, height);
+            lastHeight = height;
+            // The close button grows with it (hit at its scaled centre, not at 100%'s).
+            QMouseEvent move(QEvent::MouseMove, QPointF(480 - (6 + 11) * step.first, height / 2.0), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&bar, &move);
+            QCOMPARE(bar.cursor().shape(), Qt::PointingHandCursor);
+            QVERIFY(step.first > lastClose);
+            lastClose = step.first;
+        }
+        // 2.6's bar at 100% exactly (no scale given: 1).
+        ReplyBar plain;
+        plain.setTheme(false, Qt::white, chat);
+        QCOMPARE(plain.font().pixelSize(), 10);
+        QCOMPARE(plain.sizeHint().height(), qMax(26, static_cast<int>(std::ceil(QFontMetricsF(plain.font()).height() + 12))));
+        // Out of range: kept between 1 and 4.
+        plain.setTheme(false, Qt::white, chat, 9.0);
+        QCOMPARE(plain.scale(), 4.0);
+        plain.setTheme(false, Qt::white, chat, 0.5);
+        QCOMPARE(plain.scale(), 1.0);
+    }
+
+    // The chat's own scale pass re-themes the bar (Ctrl + wheel, the chat font): ChatReplies::applyChromeScale gives the
+    // bar the chat's chromeRatio (plugin-only module: source checks), and the "View N replies" list gets it too.
+    void replyBarRethemesOnScalePass()
+    {
+        const QString replies = source("src/chatreplies.cpp");
+        const int     at      = replies.indexOf(QLatin1String("void ChatReplies::applyChromeScale(QTextBrowser* browser)"));
+        QVERIFY(at > 0);
+        const QString pass = replies.mid(at, replies.indexOf(QLatin1String("\n}\n"), at) - at);
+        // Inside the pass the bar's new height is applied at once and the pass restores the place itself (keepEnd off).
+        QVERIFY(pass.contains(QLatin1String("applyBarTheme(m_barInput, false);")));
+        QVERIFY(pass.indexOf(QLatin1String("applyBarTheme(m_barInput, false);")) < pass.indexOf(QLatin1String("view->lines.isEmpty()"))); // also without reply lines
+        const int     theme = replies.indexOf(QLatin1String("void ChatReplies::applyBarTheme(QWidget* input, bool keepEnd)"));
+        QVERIFY(theme > 0);
+        const QString body  = replies.mid(theme, replies.indexOf(QLatin1String("\n}\n"), theme) - theme);
+        QVERIFY(body.contains(QLatin1String("m_chat->scaleOf(m_pending.browser).chromeRatio()")));
+        QVERIFY(body.contains(QLatin1String("m_bar->setTheme(style.dark, base, style.font, scale);")));
+        QVERIFY(body.contains(QLatin1String("replybar::restyleInLayout(m_bar, m_barOverlay, m_pending.browser, keepEnd,")));
+        // The periodic re-theme while the bar shows keeps a chat at its end.
+        QVERIFY(replies.contains(QLatin1String("applyBarTheme(input, true);")));
+        QVERIFY(replies.contains(QLatin1String("m_chat->scaleOf(browser).chromeRatio());"))); // the replies list
+        // And the scale a chat at 200% has: c = 2 (the bar's 20 px).
+        const PreviewScale at200 = previewscale::computeScale(22, 100, 600, 4, 0, 1.0);
+        QCOMPARE(at200.chromeRatio(), 2.0);
+    }
+
+    // Review fix: a reply bar in the input's layout that grows with a zoom leaves a chat at its end at its end. In a scale
+    // pass (keepEnd off) its new height is applied at once, so the pass's restore that follows sees the chat's new
+    // height; the periodic re-theme (keepEnd on) keeps the end itself, also after Qt's posted relayout.
+    void replyBarGrowthKeepsTheEnd()
+    {
+        QWidget holder;
+        holder.resize(500, 400);
+        auto* column = new QVBoxLayout(&holder);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(0);
+        auto*   chat = new QTextBrowser(&holder);
+        QString html;
+        for (int i = 0; i < 300; ++i)
+            html += QStringLiteral("<p>&lt;12:00&gt; \"Alice\": line %1 of the chat</p>").arg(i);
+        chat->setHtml(html);
+        auto* bar   = new ReplyBar(&holder);
+        auto* input = new QTextEdit(&holder);
+        input->setFixedHeight(40);
+        column->addWidget(chat, 1);
+        column->addWidget(bar);
+        column->addWidget(input);
+        QFont font(QStringLiteral("Segoe UI"));
+        font.setPointSizeF(8.25);
+        bar->setReply(QStringLiteral("Alice"), QColor(0x2a7a2a), QStringLiteral("hello"), false);
+        bar->setTheme(false, Qt::white, font, 1.0);
+        holder.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&holder));
+        QTest::qWait(50);
+        chatscroll::toBottom(chat);
+        QTest::qWait(50);
+        QVERIFY(chatscroll::atBottom(chat));
+
+        // The scale pass: the place captured (at the end), the bar re-themed at 2x, the place restored right after.
+        const int                barBefore = bar->sizeHint().height();
+        const int                viewBefore = chat->viewport()->height();
+        const chatscroll::Place  place      = chatscroll::capture(chat);
+        QVERIFY(place.bottom);
+        QVERIFY(replybar::restyleInLayout(bar, false, chat, false, [&] { bar->setTheme(false, Qt::white, font, 2.0); }));
+        QVERIFY(bar->sizeHint().height() > barBefore + 4);
+        QVERIFY(chat->viewport()->height() < viewBefore - 4); // applied at once, not after the posted LayoutRequest
+        chatscroll::restore(chat, place);
+        QTest::qWait(50);
+        QVERIFY2(chatscroll::atBottom(chat), qPrintable(QStringLiteral("%1 of %2").arg(chat->verticalScrollBar()->value()).arg(chat->verticalScrollBar()->maximum())));
+
+        // The periodic re-theme with keepEnd: back to 1x and to 2x again, the chat at its end each time.
+        QVERIFY(replybar::restyleInLayout(bar, false, chat, true, [&] { bar->setTheme(false, Qt::white, font, 1.0); }));
+        QTest::qWait(50);
+        QVERIFY(chatscroll::atBottom(chat));
+        QVERIFY(replybar::restyleInLayout(bar, false, chat, true, [&] { bar->setTheme(false, Qt::white, font, 2.0); }));
+        QVERIFY(chatscroll::atBottom(chat));
+        QTest::qWait(50);
+        QVERIFY(chatscroll::atBottom(chat));
+        // Nothing changed: false. A floating bar: never the layout.
+        QVERIFY(!replybar::restyleInLayout(bar, false, chat, true, [&] { bar->setTheme(false, Qt::white, font, 2.0); }));
+        QVERIFY(!replybar::restyleInLayout(bar, true, chat, true, [&] { bar->setTheme(false, Qt::white, font, 1.0); }));
+        // A chat scrolled up stays where it was.
+        chat->verticalScrollBar()->setValue(chat->verticalScrollBar()->maximum() / 2);
+        const int middle = chat->verticalScrollBar()->value();
+        QVERIFY(replybar::restyleInLayout(bar, false, chat, true, [&] { bar->setTheme(false, Qt::white, font, 2.0); }));
+        QTest::qWait(50);
+        QCOMPARE(chat->verticalScrollBar()->value(), middle);
+    }
+
+    void repliesPopupFollowsChatScale()
+    {
+        QFont chat(QStringLiteral("Segoe UI"));
+        chat.setPointSizeF(8.25);
+        QVector<ReplyRow> rows;
+        for (int i = 0; i < 3; ++i)
+            rows.append({QStringLiteral("Bob"), QColor(0x2a7a2a), QStringLiteral("21:1%1").arg(i), QStringLiteral("A reply"), false});
+        RepliesPopup one(false, Qt::white, chat, QStringLiteral("3 replies to Alice"), rows);
+        RepliesPopup two(false, Qt::white, chat, QStringLiteral("3 replies to Alice"), rows, 2.0);
+        QCOMPARE(one.font().pixelSize(), 11);
+        QCOMPARE(two.font().pixelSize(), 22);
+        QCOMPARE(one.width(), 340);
+        QVERIFY(two.width() > one.width()); // 680, or the screen's free width minus 32
+        QVERIFY(two.height() >= 2 * one.height() - 4);
+        QCOMPARE(two.scale(), 2.0);
+    }
+
+    // The voice hold strip and the music bar belong to the input (it never zooms): they follow its text size, i.e. Windows
+    // scaling (an input font of 22 px is 200%).
+    void holdStripFollowsInputFont()
+    {
+        QFont input(QStringLiteral("Segoe UI"));
+        input.setPixelSize(11);
+        QCOMPARE(replybar::inputScale(input), 1.0);
+        const int h100 = HoldStrip::heightFor(input);
+        QCOMPARE(h100, 32);
+        input.setPixelSize(22);
+        QCOMPARE(replybar::inputScale(input), 2.0);
+        const int h200 = HoldStrip::heightFor(input);
+        QVERIFY2(h200 >= 64, qPrintable(QString::number(h200)));
+        // The strip drawn at 200%: text at 20 / 22 px (rendered, not empty).
+        HoldStrip::View view;
+        view.timeMs = 12000;
+        HoldStrip::Look look;
+        look.font  = input;
+        look.scale = replybar::inputScale(input);
+        QImage image(600, h200, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        QPainter p(&image);
+        HoldStrip::render(p, QRectF(0, 0, 600, h200), view, look);
+        p.end();
+        QVERIFY(image.pixelColor(300, h200 / 2).alpha() > 0);
+        QCOMPARE(replybar::widgetFont(input, 0.92, 2.0).pixelSize(), 20);
+        QCOMPARE(replybar::widgetFont(input, 1.0, 2.0).pixelSize(), 22);
+    }
+
+    void musicBarFollowsInputFont()
+    {
+        QFont small(QStringLiteral("Segoe UI"));
+        small.setPixelSize(11);
+        QFont large(QStringLiteral("Segoe UI"));
+        large.setPixelSize(22);
+        QCOMPARE(MusicBar::heightFor(small, false), 38); // 2.6's bar at 100%
+        QVERIFY(MusicBar::heightFor(large, false) >= 76);
+        MusicBar::View v;
+        v.mode       = MusicBar::Mode::Playing;
+        v.title      = QStringLiteral("Holiday Mix");
+        v.durationMs = 180000;
+        v.positionMs = 1000;
+        const MusicBar::Geometry g1 = MusicBar::geometryFor(QSize(900, MusicBar::heightFor(small, false)), small, v);
+        const MusicBar::Geometry g2 = MusicBar::geometryFor(QSize(1800, MusicBar::heightFor(large, false)), large, v);
+        QCOMPARE(g1.play.width(), 28);
+        QCOMPARE(g2.play.width(), 56);
+        QCOMPARE(g2.badge.width(), 2 * g1.badge.width());
+        QVERIFY(g2.stop.right() < 1800 && g2.play.right() < g2.stop.left());
+    }
+
+    // The source rule: the widgets above the input never use the canvas helper (a fixed pixel size at every scaling).
+    void inputWidgetsNeverUseTheCanvasFont()
+    {
+        for (const char* file : {"src/replybar.cpp", "src/repliespopup.cpp", "src/holdstrip.cpp", "src/music/musicbar.cpp"}) {
+            const QString text = source(file);
+            QVERIFY2(!text.isEmpty(), file);
+            QVERIFY2(!text.contains(QLatin1String("replyart::scaledFont(")), file);
+        }
+    }
+
+    // 2.7 F5 (design M3.1): the saved zoom goes on in attachBrowser after R-DEF-1's place was taken and before the scale.
+    void zoomAttachOrder()
+    {
+        const QString ci  = source("src/chatintegration.cpp");
+        const int     at  = ci.indexOf(QLatin1String("void ChatIntegration::attachBrowser(QTextBrowser* browser)"));
+        QVERIFY(at > 0);
+        const QString attach = ci.mid(at, ci.indexOf(QLatin1String("\n}\n"), at) - at);
+        const int     zoom   = attach.indexOf(QLatin1String("m_zoom->attach(browser);"));
+        QVERIFY(zoom > attach.indexOf(QLatin1String("chatscroll::captureReader(")));
+        QVERIFY(zoom < attach.indexOf(QLatin1String("attachScale(browser);")));
+        QVERIFY(zoom < attach.indexOf(QLatin1String("new LoadHold(")));
+        // The zoom from Settings ends the load holds first (chatzoom.cpp, M3.2), and unload sets no font.
+        const QString cz = source("src/chatzoom.cpp");
+        const int     set = cz.indexOf(QLatin1String("void ChatZoom::setChatZoom(int tenths)"));
+        const QString body = cz.mid(set, cz.indexOf(QLatin1String("\n}\n"), set) - set);
+        QVERIFY(body.indexOf(QLatin1String("m_host.endLoadHolds();")) > 0 && body.indexOf(QLatin1String("m_host.endLoadHolds();")) < body.indexOf(QLatin1String("syncVisible();")));
+        const int     down = cz.indexOf(QLatin1String("void ChatZoom::shutdown()"));
+        QVERIFY(!cz.mid(down, cz.indexOf(QLatin1String("\n}\n"), down) - down).contains(QLatin1String("setFont")));
     }
 };
 

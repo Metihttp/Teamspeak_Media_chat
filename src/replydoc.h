@@ -16,6 +16,7 @@
 // giving either back never leaves a picture of the other behind.
 
 #include <QColor>
+#include <QPair>
 #include <QSizeF>
 #include <QString>
 #include <QTextCharFormat>
@@ -74,7 +75,16 @@ Message parseBlock(const QTextBlock& block);
 QString emoticonText(const QString& imageName);
 // What a piece of a block with this format stands for as text: an HD emoji's emoji or smiley code (once
 // per character, each is one picture), an emoticon's code, nothing for other pictures, else text itself.
+// 2.7 F1: a text spoiler's object (textspoilerdoc.h) reads as the text it keeps (once per object character).
 QString textOf(const QString& text, const QTextCharFormat& format);
+// 2.7 F1: a picture, or one of the text spoilers' objects: read with textOf, never as text.
+bool isPicture(const QTextCharFormat& format);
+// 2.7 F1: what parseBlock's text reads for a piece of a message's text (pictures with textOf; text with its line breaks
+// as spaces, without object characters and U+2060). Shared with the text spoilers' objects (their kIdentity).
+QString pieceText(const QString& text, const QTextCharFormat& format);
+// 2.7 F1: a piece of a block as TeamSpeak showed it: an HD emoji goes back to its text (or to TeamSpeak's emoticon
+// picture it replaced), so a piece kept by a module of ours never holds one of ChatEmoji's pictures.
+QPair<QString, QTextFormat> receivedRun(const QString& text, const QTextCharFormat& format);
 
 // ---- edits (the caller keeps ChatIntegration's "mutating" flag set) -------------------------------------
 // Several edits in a row belong in one edit block of the caller's (QTextCursor::beginEditBlock): the

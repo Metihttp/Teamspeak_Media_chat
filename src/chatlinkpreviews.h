@@ -60,6 +60,7 @@
 #include "proxy/control.h" // 2.6 chat proxy
 
 class ChatIntegration;
+class ContactList;   // 2.7 F2: TeamSpeak's contacts (contacts.h)
 class YouTubePlayer; // 2.5 YouTube player (src/ytplayer)
 class QEvent;
 class QJsonObject;
@@ -141,6 +142,8 @@ class ChatLinkPreviews : public QObject
     int  autoRunning() const { return m_autoRuns.size(); }
     // The largest file a click loads for kind (pictures and GIFs 25 MB, videos 50 MB, YouTube's thumbnail 2 MB).
     static qint64 maxBytesFor(linkpreview::Kind kind);
+    // 2.7 F2: TeamSpeak's contacts as the automatic loads read them (tests, the live-test driver; never their content).
+    ContactList* contacts() const { return m_contacts; }
 #ifdef TSMEDIA_TESTHOOKS
     // The live-test driver's "links.*" commands (selftest.cpp): links.log (the visible chat's slots), links.click
     // {"index": n (card in document order, 0-based), "zone": "action|hide|body"} through the chat's real mouse path,
@@ -180,6 +183,8 @@ class ChatLinkPreviews : public QObject
     // 2.4 auto-load: an automatic load that runs (by urlKey).
     struct AutoRun {
         QString sender;        // senderKey(): one running load per sender (autoload::kMaxPerSender)
+        QString senderUid;     // 2.7 F2: the sender's unique ID (TeamSpeak's contacts; senderKey can't be split)
+        bool    own = false;   // 2.7 F2: our own message's link (never held by the contacts)
         QString serverUid;     // the chat's server (its own data saver)
         qint64  maxBytes = 0;  // the automatic limit it started with
         qint64  mediaBytes = 0; // 2.5: its media cap (a page link that answers with media is judged against it)
@@ -303,8 +308,9 @@ class ChatLinkPreviews : public QObject
     QImage       thumbnailFor(const SlotRef& ref, const linkstate::Decision& d, const QSize& pixels);
 
     // serverUid: the chat's server (an automatic load's limit is that server's data saver); sender: senderKey().
+    // 2.7 F2: senderUid / own: an automatic load is refused for a sender TeamSpeak's contacts don't allow (design M1).
     void startFetch(const linkpreview::Target& target, Origin origin = Origin::Click, const QString& serverUid = QString(),
-                    const QString& sender = QString());
+                    const QString& sender = QString(), const QString& senderUid = QString(), bool own = false);
     void cancelFetch(const QString& urlKey);
     // Share links' running loads whose Caps::webCards isn't the switch any more start again (linkstate::restartForWebCards).
     void restartWebCardsLoads();
@@ -396,4 +402,14 @@ class ChatLinkPreviews : public QObject
     void useChatProxy(QTextBrowser* browser, const linkpreview::Target& target); // "Use chat proxy": on, this card as a click
     void openProxyWindow();
     QPointer<proxy::Control> m_proxy; // the plugin's (its signals; never made anew after the unload)
+
+    // 2.7 F2: Only from friends and Blocked (design 6.2). The one gate: autoEligible, startFetch's automatic starts, the
+    // cancel pass and the cards' reason use it. Your own links never reach it.
+    bool         contactAllows(const QString& senderUid) const;
+    linkcard::AutoHold contactHold(const QString& senderUid) const;
+    // Running automatic loads (not clicked, not ours) whose sender isn't allowed any more stop (Only from friends switched
+    // on, a contact changed). Before restartWebCardsLoads in settingsChanged (M1).
+    void         cancelDisallowedAutoRuns();
+    void         contactsChanged(); // ContactList::changed: the decisions again
+    ContactList* m_contacts = nullptr; // child; active while automatic loads are on
 };
