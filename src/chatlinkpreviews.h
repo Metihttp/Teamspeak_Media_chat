@@ -106,6 +106,9 @@ class ChatLinkPreviews : public QObject
 
     void afterScan(QTextBrowser* browser);
     bool filterEvent(QObject* watched, QEvent* event); // true: the event was for a card
+    // 2.7.2 (D8): a chat's Show, its place decided (ShowPlace's hook): the links on screen that may load by themselves start
+    // right after the Show (a posted event: Qt's own move at a chat's first Show is done then), before the first paint.
+    void shown(QTextBrowser* browser);
     void settingsChanged();                            // ChatIntegration::refreshAll, before its own rescan
     // 2.4 auto-load: the automatic limits or a server's data saver changed (also from the Plugins menu or a command,
     // plugin.cpp): a running automatic load that may not go on stops.
@@ -155,6 +158,9 @@ class ChatLinkPreviews : public QObject
     // 2.5 GIFs: a load of the link ended with a result in cache/links (media, a card, or a "nothing to show" record):
     // the GIF library reads it from there (Fetcher::cached). QString only.
     void linkLoaded(const QString& urlKey);
+
+  protected:
+    bool event(QEvent* event) override; // 2.7.2 (D8): the start that shown() posts
 
   private:
     // One slot as the pointer and the drawing need it (read from the document again after every change).
@@ -259,7 +265,7 @@ class ChatLinkPreviews : public QObject
     // ignoreBudget by the rules only (it starts in its turn). Never checks the hold (runAutoLoads' own).
     bool                            autoEligible(const SlotRef& ref, const linkstate::LocalState& local, const linkstate::ServerState& server,
                                                  bool ignoreBudget = false);
-    // runAutoLoads may start it: due now (Wait::Auto), or held back (a click card until its turn).
+    // runAutoLoads may start it: a click card that may load by itself in its turn (2.7.2: drawn so until it starts).
     bool                            autoCandidate(const SlotRef& ref, const linkstate::Decision& d);
     // A load of sender's links may start: fewer than kMaxRunning run, and none of theirs (kMaxPerSender).
     bool                            freeTurn(const QString& sender) const;
@@ -269,6 +275,10 @@ class ChatLinkPreviews : public QObject
     qint64                          shownSize(const SlotRef& ref, const linkstate::LocalState& local) const; // the Click card's size
     static QString                  senderKey(const ChatContext& ctx, const QString& senderUid);
     void                            runAutoLoads();
+    // 2.7.2 (D8): runAutoLoads' work for these wants (its order: the newest first); and the shown chat's on-screen
+    // candidates started at once (the end of reconcile, right after the chat's Show), never in a paint.
+    void                            runAutoWants(const QVector<AutoWant>& wanted);
+    void                            startShownAutoLoads(QTextBrowser* browser);
     void                            applyOwnRecord(const QString& urlKey); // our pipeline's newest record of urlKey
     void                            onOwnLinkChanged(const QString& urlKey);
     void                            onSkipped(const QString& urlKey);
@@ -371,6 +381,8 @@ class ChatLinkPreviews : public QObject
     QHash<int, int>                        m_ownApplied;          // pipeline job id -> the record state applied
     bool                                   m_waitSeen = false;    // a visible slot waited since the last wait tick
     linkpreview::autoload::SenderBudget    m_budget;
+    QVector<QPointer<QTextBrowser>>        m_shownStarts;         // 2.7.2 (D8): chats shown since the posted start (event())
+    bool                                   m_shownPosted = false; // ... and that event waits in Qt's queue
 
     // 2.5
     struct LpxPicture {

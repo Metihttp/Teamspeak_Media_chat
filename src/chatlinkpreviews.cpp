@@ -79,6 +79,9 @@ constexpr int kMaxHeld       = 1024; // ... slots held back at most (more: all f
 constexpr int kMaxOwnApplied = 64;
 constexpr int kMaxLpxPictures = 64;   // 2.5: LPX files waiting to be asked of Core (newest first)
 constexpr int kOnScreenMargin = 400;  // a slot within this of the view is "on screen" (lazy loads, LPX pictures)
+// 2.7.2 (D8): posted to us at a chat's Show (normal priority: before the paint's update request, which Qt posts with a
+// lower one); a plain QEvent of Qt's own class, removed with us or at prepareShutdown.
+constexpr int kShownEvent = QEvent::User + 0x7d38;
 constexpr qint64 kStillCoolingMs = 60000; // a "Site busy" strip over this is still (no ring)
 
 qint64 wallMs()
@@ -591,6 +594,9 @@ void ChatLinkPreviews::prepareShutdown()
     // outlive us) call us no more.
     m_autoTimer->stop();
     m_waitTimer->stop();
+    m_shownStarts.clear(); // 2.7.2 (D8): a Show's start that hasn't run goes with its event
+    m_shownPosted = false;
+    QCoreApplication::removePostedEvents(this, kShownEvent);
     if (m_contacts) // 2.7 F2: no read after this
         m_contacts->shutdown();
     m_autoWanted.clear();
@@ -1001,10 +1007,9 @@ linkstate::Decision ChatLinkPreviews::decisionFor(const SlotRef& ref, bool ensur
         // website is the only source left (race rule R13).
         if (!server.announced)
             wait = toLinkstate(waitOf(ref));
-        // Drawn as Loading, runAutoLoads starts it; one it held back (no free slot, the sender's load or budget) stays a
-        // click card until its turn, so no card turns from the ring to "Load preview" and back.
-        if (wait == linkstate::Wait::None && !m_autoHeld.contains(ref.slotId) && autoEligible(ref, local, server))
-            wait = linkstate::Wait::Auto;
+        // 2.7.2 (D8): a link that may load by itself is the click card until its load starts (runAutoLoads, or at once
+        // for a shown chat: startShownAutoLoads); the ring is only for a load that runs. Before, one whose turn and budget
+        // were free was drawn as the ring before anything had started it, and kept it while its chat got no paint.
     }
     linkstate::Decision d = linkstate::decide(ref.target, hidden, local, server, wait, contextFor(ref));
     d.index               = ref.index;
@@ -1341,6 +1346,8 @@ void ChatLinkPreviews::reconcile(QTextBrowser* browser)
         m_chat->m_replies->documentEdited(browser); // positions inside the blocks moved
     m_chat->scheduleVisibilityUpdate();               // a link's media came or went (GIFs, players)
     browser->viewport()->update();
+    if (!m_chat->m_scaling) // 2.7.2 (D8): a new link's load starts before the chat paints it (a scale pass: its paint does)
+        startShownAutoLoads(browser);
 }
 
 void ChatLinkPreviews::restore(View& view)
@@ -1903,13 +1910,11 @@ void ChatLinkPreviews::renderVisible(QTextBrowser* browser)
                 continue;
             }
             noteHold(ref, d);
-            if (d.wait == linkstate::Wait::Auto && browser->isVisible()) {
-                wanted.append({QPointer<QTextBrowser>(browser), ref.slot.name, ref.slotId});
-            } else if (d.wait == linkstate::Wait::Own || d.wait == linkstate::Wait::Sender || d.wait == linkstate::Wait::Checking
-                       || d.wait == linkstate::Wait::Host) {
+            if (d.wait == linkstate::Wait::Own || d.wait == linkstate::Wait::Sender || d.wait == linkstate::Wait::Checking
+                || d.wait == linkstate::Wait::Host) {
                 m_waitSeen = true; // looked at again in a second (its time, the sender, the busy site)
             } else if (autoOn && browser->isVisible() && autoCandidate(ref, d)) {
-                // Held back, or no budget token yet: runAutoLoads starts it in its turn; looked at again in a second.
+                // A click card until runAutoLoads starts it in its turn (2.7.2); looked at again in a second.
                 wanted.append({QPointer<QTextBrowser>(browser), ref.slot.name, ref.slotId});
                 m_waitSeen = true;
             }
@@ -1933,10 +1938,8 @@ void ChatLinkPreviews::renderVisible(QTextBrowser* browser)
             continue;
         }
         noteHold(ref, d);
-        if (d.underlying == linkcard::Look::Loading && d.wait == linkstate::Wait::Auto && browser->isVisible()) {
-            wanted.append({QPointer<QTextBrowser>(browser), QString(), ref.slotId});
-        } else if (d.wait == linkstate::Wait::Own || d.wait == linkstate::Wait::Sender || d.wait == linkstate::Wait::Checking
-                   || d.wait == linkstate::Wait::Host) {
+        if (d.wait == linkstate::Wait::Own || d.wait == linkstate::Wait::Sender || d.wait == linkstate::Wait::Checking
+            || d.wait == linkstate::Wait::Host) {
             m_waitSeen = true;
         } else if (autoOn && browser->isVisible() && autoCandidate(ref, d)) {
             wanted.append({QPointer<QTextBrowser>(browser), QString(), ref.slotId});
@@ -2934,12 +2937,10 @@ bool ChatLinkPreviews::autoCandidate(const SlotRef& ref, const linkstate::Decisi
 {
     if (d.media || d.fromServer)
         return false;
-    if (d.wait == linkstate::Wait::Auto)
-        return true;
     // 2.5: the look behind a quiet slot's Absent (the web class) counts.
     if (d.underlying != linkcard::Look::Click || d.wait != linkstate::Wait::None)
         return false;
-    // A click card that may load by itself in its turn (held back, or no budget token yet).
+    // A click card that may load by itself in its turn (2.7.2: every automatic load before it starts).
     const linkstate::LocalState  l = slotLocal(ref, localOf(ref.target.key));
     const linkstate::ServerState s = serverOf(ref.messageKey, ref.target, false);
     return autoEligible(ref, l, s, true);
@@ -2972,7 +2973,68 @@ bool ChatLinkPreviews::askPartner(const SlotRef& ref, const ChatContext& ctx)
 
 void ChatLinkPreviews::runAutoLoads()
 {
-    const QVector<AutoWant> wanted = std::exchange(m_autoWanted, {});
+    runAutoWants(std::exchange(m_autoWanted, {}));
+}
+
+void ChatLinkPreviews::startShownAutoLoads(QTextBrowser* browser)
+{
+    // 2.7.2 (D8): what a paint would queue for runAutoLoads 100 ms later, started now for a chat the reader sees (shown,
+    // its window not minimized: never for a chat nobody looks at), before its next paint: a link whose turn is free shows
+    // the ring from its first frame, one that waits shows "Load preview" until its turn starts it. The same rules, order
+    // (newest first), turns and budget as runAutoLoads. Never inside a paint.
+    if (!browser || m_down || m_stopped || !enabled() || !Settings::instance().autoLoadLinkPreviews || !browser->isVisible())
+        return;
+    if (const QWidget* window = browser->window(); window && window->isMinimized())
+        return;
+    View* view = viewOf(browser);
+    if (!view || !view->document || view->document != browser->document())
+        return;
+    const QRectF      shown = QRectF(browser->viewport()->rect()).adjusted(0, -kOnScreenMargin, 0, kOnScreenMargin);
+    QVector<AutoWant> wanted;
+    for (const SlotRef& ref : slotsOf(browser)) {
+        if (!ref.slot.isCard() || !objectRect(browser, ref.slot.object, ref.slot.size).intersects(shown))
+            continue;
+        if (autoCandidate(ref, decisionFor(ref, false)))
+            wanted.append({QPointer<QTextBrowser>(browser), ref.slot.name, ref.slotId});
+    }
+    if (wanted.isEmpty())
+        return;
+    std::reverse(wanted.begin(), wanted.end()); // the newest (bottom) first, as runAutoLoads takes them
+    runAutoWants(wanted);
+}
+
+void ChatLinkPreviews::shown(QTextBrowser* browser)
+{
+    // 2.7.2 (D8): every Show, started from a posted event: by then QTextEdit's own showEvent has run (Qt's move to the text
+    // cursor at a chat's first Show, and ShowPlace's put-back of it), so what is on screen is what the first paint shows;
+    // and that paint comes from an update request Qt posts with a lower priority, after this event. (Before, a Show was
+    // skipped unless TS Media had painted the chat, to stay clear of Qt's first-show move: a chat shown and painted before
+    // TS Media started or scanned it, e.g. after a Reload, was left to its paint's pass 100 ms later.)
+    if (!browser || m_down || m_stopped)
+        return;
+    if (!m_shownStarts.contains(browser))
+        m_shownStarts.append(browser);
+    if (!m_shownPosted) {
+        m_shownPosted = true;
+        QCoreApplication::postEvent(this, new QEvent(static_cast<QEvent::Type>(kShownEvent)));
+    }
+}
+
+bool ChatLinkPreviews::event(QEvent* event)
+{
+    if (event->type() != static_cast<QEvent::Type>(kShownEvent))
+        return QObject::event(event);
+    m_shownPosted                                  = false;
+    const QVector<QPointer<QTextBrowser>> shownNow = std::exchange(m_shownStarts, {});
+    for (const QPointer<QTextBrowser>& browser : shownNow) {
+        if (browser) // startShownAutoLoads: still shown, its window not minimized
+            startShownAutoLoads(browser);
+    }
+    return true;
+}
+
+void ChatLinkPreviews::runAutoWants(const QVector<AutoWant>& wanted)
+{
     if (m_down || m_stopped || !enabled() || !Settings::instance().autoLoadLinkPreviews)
         return;
     if (m_autoHeld.size() > kMaxHeld)

@@ -976,6 +976,56 @@ class TestPreviewScale : public QObject
         QCOMPARE(scaler.pictureBytes(), before);
     }
 
+    // ---- 2.7.2 (D1): the stills a picture keeps while dark mode is on are booked with it: a put with extra bytes books them,
+    // a put without lowers the books again, a swap and a forget free both ---------------------------------------------------
+    void keptStillsAreBooked()
+    {
+        Chat            chat(60, 2); // 30 objects
+        QTextBrowser&   b = chat.browser;
+        QStringList     swappedNames;
+        ChatScale::Host host;
+        host.swapped = [&](const QString& name, int) { swappedNames << name; };
+        ChatScale scaler(&b, host);
+        scaler.setBudget(64LL * 1024 * 1024);
+        QImage big(600, 400, QImage::Format_ARGB32_Premultiplied);
+        big.fill(Qt::darkCyan);
+        const QPixmap pixmap = QPixmap::fromImage(big);
+        const QString name   = QStringLiteral("tsmedia:kept");
+        const qint64  base   = scaler.pictureBytes();
+        scaler.putPicture(name, pixmap, ChatScale::Media, 1000);
+        QCOMPARE(scaler.bookedBytes(name), 600LL * 400 * 4 + 1000);
+        QCOMPARE(scaler.pictureBytes(), base + 600LL * 400 * 4 + 1000);
+        scaler.putPicture(name, pixmap, ChatScale::Media); // drawn for TeamSpeak's look: nothing kept any more
+        QCOMPARE(scaler.bookedBytes(name), 600LL * 400 * 4);
+        QCOMPARE(scaler.pictureBytes(), base + 600LL * 400 * 4);
+        scaler.putPicture(name, pixmap, ChatScale::Media, 2 * 1024 * 1024);
+        scaler.forget(name);
+        QCOMPARE(scaler.pictureBytes(), base);
+        // Over the budget with kept stills alone: the far pictures are swapped, and their kept bytes go with them.
+        scaler.setBudget(4LL * 1024 * 1024);
+        QTextDocument* doc = b.document();
+        QStringList    names;
+        for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                if (it.fragment().charFormat().isImageFormat())
+                    names << it.fragment().charFormat().toImageFormat().name();
+            }
+        }
+        names.removeDuplicates();
+        QVERIFY(names.size() >= 20);
+        for (const QString& n : qAsConst(names))
+            scaler.putPicture(n, pixmap, ChatScale::Media, 1024 * 1024); // 0.9 MiB of picture, 1 MiB kept
+        const qint64 booked = scaler.pictureBytes();
+        QCOMPARE(booked, base + names.size() * (600LL * 400 * 4 + 1024 * 1024));
+        b.verticalScrollBar()->setValue(0);
+        const int swapped = scaler.enforceBudget();
+        QVERIFY(swapped > 0);
+        QCOMPARE(swappedNames.size(), swapped);
+        QCOMPARE(scaler.pictureBytes(), booked - swapped * (600LL * 400 * 4 + 1024 * 1024)); // each swap freed its kept bytes too
+        for (const QString& n : qAsConst(swappedNames))
+            QCOMPARE(scaler.bookedBytes(n), 0LL);
+    }
+
     void pictureBudgetLeftDocument()
     {
         // Pictures that left the document (blocks TeamSpeak's line limit trimmed, previews that went without a forget)

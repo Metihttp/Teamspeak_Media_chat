@@ -94,6 +94,9 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     bool checkDownloadUrl(bool normalize); // shows or hides the message under the field
     void showDownloadUrlError(const QString& text);
     void applyTheme();
+    // 2.7.2 (D7): dark mode switched the look while the window was open: one re-theme now (the palette and the sheet both
+    // in place), then each page laid out once.
+    void themeChangedByDarkMode();
     void rebuildTabOrder();
     void stepPage(int direction); // Ctrl+Tab and friends: the next visible page, around
     void initialSize();
@@ -168,4 +171,13 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     bool                  m_loading       = false;
     bool                  m_keyboardFocus = false; // focus has moved by keyboard: show focus rings
     bool                  m_applyingTheme = false;
+    int                   m_sheetSets     = 0;     // 2.7.2 (D7): the window's own sheet set (tests)
+    QString               m_sheetSetUnder;         // ... and the application sheet when it was set last (tests)
+
+  public:
+    // 2.7.2 (D7), tests: how often the window set its own sheet, under which application sheet the last time, and the
+    // style changes its pages handled (each lays its page out again).
+    int     sheetSets() const { return m_sheetSets; }
+    QString sheetSetUnder() const { return m_sheetSetUnder; }
+    int     pageStyleChanges() const;
 };

@@ -74,6 +74,8 @@ bool ShowPlace::eventFilter(QObject* watched, QEvent* event)
         return false;
     }
     shown(browser);
+    if (m_hooks.settled && !m_stopped)
+        m_hooks.settled(browser);
     return false;
 }
 

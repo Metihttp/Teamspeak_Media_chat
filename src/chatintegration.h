@@ -103,8 +103,9 @@ class ChatIntegration : public QObject
     // 2.7.1: the plugin goes (ts3plugin_shutdown, before dark mode's shutdown). teamSpeakClosing (TeamSpeak's Quit, the
     // test DarkMode::teamSpeakClosing makes): nothing of ours is drawn any more, the pictures that wait for the look are
     // left as they are (the documents go with TeamSpeak). A Disable or Reload: the pictures still in an older look are
-    // drawn for TeamSpeak's look at the unload (they stay in its chats), a cheap decode allowed within a time budget,
-    // and a picture whose still isn't at hand then keeps the one it has (never "Can't preview").
+    // drawn for TeamSpeak's look at the unload (they stay in its chats): a picture drawn while dark mode was on from the
+    // still it was drawn from (2.7.2: kept for that, no decode), any other one with what Core has at hand, a cheap decode
+    // allowed within a time budget; one whose still isn't at hand then keeps the one it has (never "Can't preview").
     void beginUnload(bool teamSpeakClosing);
 
     // 2.7 F5 saved chat zoom (chatzoom.h): Settings::chatZoom; the size as a percentage of TeamSpeak's chat font, on the
@@ -211,6 +212,13 @@ class ChatIntegration : public QObject
         QString key;
     };
 
+    // 2.7.2 dark mode (D1): a still a picture of ours was drawn from while dark mode was on.
+    struct KeptStill {
+        QString    key; // the entry (a single picture: its key; an album: a tile's)
+        QSize      box; // the box it was asked for (Core::still's maxPixels)
+        MediaStill still;
+    };
+
     struct View {
         QPointer<QTextBrowser>  browser;
         QPointer<QTextDocument> document;
@@ -226,6 +234,12 @@ class ChatIntegration : public QObject
         // decode, the unload's budget). They are in stale too: drawn near the view without a stand-in, by the decode's
         // entryChanged, at the chat's Show (near the view) or at a Disable's unload. Any new picture of the key ends it.
         QSet<QString>           lookOld;
+        // 2.7.2 (D1): the stills each picture of ours was drawn from while dark mode was on (a single preview: its still;
+        // an album: its tiles'), shared with Core's cache while Core keeps them, booked with the picture in the chat's
+        // picture budget (ChatScale::putPicture's extra bytes). A redraw for TeamSpeak's look takes Core's still at hand,
+        // else this one, so no picture drawn for the dark look needs a decode to go back (the unload has no time for one).
+        // Dropped when the picture is drawn for TeamSpeak's look, swapped for its blank, or leaves the document.
+        QHash<QString, QVector<KeptStill>> keptStills;
         // 2.5 zoom: the scale every preview object of this chat is laid out for (formats, slots, cards), and the
         // coordinator that changes it in one pass (a child of ChatIntegration, deleted with the view).
         PreviewScale            scale;
@@ -332,11 +346,19 @@ class ChatIntegration : public QObject
     // drawForLook. Every picture is then drawn for this look or in lookOld: lookPending ends. when: the test builds' log
     // ("now", "at show", "at unload"; the timer's: none).
     void         redrawForLook(QTextBrowser* browser, bool themeChange, const char* when = nullptr);
-    // 2.7.1: one picture drawn for the chat's look, never a stand-in where one is drawn (refreshPreview's keepDrawn). Its
-    // still may be decoded when it is near the view of a shown chat (a slow one on a worker: its entryChanged draws it)
-    // or at a Disable's unload (cheap ones only, after a try with what Core has, within kUnloadDecodeMs of such draws in
-    // all); otherwise only a cached still is used. True: drawn.
+    // 2.7.1: one picture drawn for the chat's look, never a stand-in where one is drawn (refreshPreview's keepDrawn). First
+    // with what Core has at hand, then (2.7.2) from the still it was drawn from while dark mode was on (View::keptStills);
+    // else its still may be decoded when it is near the view of a shown chat (a slow one on a worker: its entryChanged
+    // draws it) or at a Disable's unload (cheap ones only, within kUnloadDecodeMs of such draws in all); otherwise it keeps
+    // its picture. True: drawn.
     bool         drawForLook(QTextBrowser* browser, View& view, const QString& key);
+    // 2.7.2 (D1): the still of key for box as a draw asks Core for it: the kept one while a redraw for the look uses it
+    // (m_stillOverride, fitted to box), else Core's. While dark mode is on a draw notes the stills it used (m_recorded).
+    MediaStill   stillFor(const QString& key, const QSize& box);
+    // The kept stills a picture of key has after a draw that put it (dark mode on: the ones it used now, or the ones it had
+    // when it used none, e.g. a video frame; off: none), and their bytes for its booking.
+    QVector<KeptStill> keptAfterDraw(View& view, const QString& key) const;
+    static qint64      keptBytes(const QVector<KeptStill>& kept);
     // 2.7.1: the pictures of lookOld drawn for the look now (near: only those near the view). when: as redrawForLook.
     void         drawOldLooks(QTextBrowser* browser, View& view, bool near, const char* when);
     // ---- 2.5 zoom ------------------------------------------------------------------------------------------
@@ -471,6 +493,11 @@ class ChatIntegration : public QObject
     bool                       m_unloading      = false;
     bool                       m_unloadDraws    = false;
     qint64                     m_unloadDecodeNs = 0; // the unload's draws that decoded a still, so far
+    // 2.7.2 (D1): the stills the draw in progress used (noted while dark mode is on), and the kept ones a redraw for the
+    // look draws from (null: Core's).
+    bool                       m_recordStills  = false;
+    QVector<KeptStill>         m_recorded;
+    const QVector<KeptStill>*  m_stillOverride = nullptr;
     int                        m_activeHolds = 0; // 2.7 (R-DEF-1): load holds still keeping a place (a key in an input ends them)
     int                        m_chatNumbers = 0;
     QList<QPointer<QWidget>>   m_inputs;

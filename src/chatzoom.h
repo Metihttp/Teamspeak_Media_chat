@@ -51,6 +51,13 @@ class ChatZoom : public QObject
         std::function<void()>          endLoadHolds; // before a font change from outside the chat (R-DEF-1, design M3.2)
         std::function<void()>          discover;     // a chat tab widget gained a child: find new chats (0 ms later)
         std::function<QTextBrowser*()> visible;      // the chat the user looks at (the base shown in Settings)
+        // 2.7.2 (D4): the zoom was set at this chat's Show and its place put back at once: a scale pass that the new font
+        // started takes that place again (ChatScale::retake, as after ShowPlace's put-back). Optional.
+        std::function<void(QTextBrowser*)> placed;
+        // 2.7.2 (D4): the chat's look for the new font on screen now (ChatLayout::styleNow), inside the Show's place
+        // bracket: a restyle after the first paint would move the reader's line by the new size of the rows above it in
+        // its message (a few px). Optional.
+        std::function<void(QTextBrowser*)> restyle;
     };
 
     explicit ChatZoom(Host host, QObject* parent = nullptr);
@@ -94,8 +101,8 @@ class ChatZoom : public QObject
     void          queueApply(QTextBrowser* browser);
     void          applyQueued();
     void          syncVisible();
-    void          keepEndSoon(QTextBrowser* browser); // a chat at its end zoomed on Show: at its end before its first paint
-    void          keepEnds();
+    bool          due(QTextBrowser* browser) const; // ensure() would set a font now
+    void          shownZoomed(QTextBrowser* browser); // 2.7.2 (D4): the zoom at the chat's Show, its place kept at once
 
     Host                            m_host;
     QVector<QPointer<QTextBrowser>> m_browsers;
@@ -107,8 +114,6 @@ class ChatZoom : public QObject
     QTimer*                         m_apply        = nullptr; // 0 ms: a new base or a bound put back (never in a font event)
     QTimer*                         m_save         = nullptr; // 500 ms after the last notch
     QTimer*                         m_discoverSoon = nullptr; // 0 ms: a tab widget gained a page
-    QTimer*                         m_endSoon      = nullptr; // 0 ms: the chats of m_endQueue to their end
-    QVector<QPointer<QTextBrowser>> m_endQueue;
     bool                            m_applying = false;       // our own setFont (never taken for TeamSpeak's or a user's)
     bool                            m_down     = false;
     int                             m_fontsSet = 0;

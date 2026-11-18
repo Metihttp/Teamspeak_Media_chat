@@ -63,8 +63,10 @@ enum class Local { Idle, Loading, Loaded, Failed, TooLarge, OverAutoLimit, Nothi
 enum class Pause { None, ChatProxy, WindowsProxy, Click };
 
 // What a slot without anything to show waits for (2.4 auto-load): our own pipeline, the sender's preview, or an
-// automatic website load that is due (about to start; ChatLinkPreviews starts it). Checking: we are still asking
+// automatic website load that may start (ChatLinkPreviews starts it in its turn). Checking: we are still asking
 // whether the sender makes previews (autoload::Wait::Checking). 2.5: Host: the site asked to wait (Cooling).
+// 2.7.2: Auto is drawn as the click card ("Load preview", a click loads it at once) until its load really starts: the
+// loading ring is only for a load that runs, never for one that waits for its turn, a budget token or a paint.
 enum class Wait { None, Own, Sender, Checking, Auto, Host };
 
 // The viewer's own fetch of a link (by Target::key; one per link, shared by every message showing it).
@@ -150,7 +152,7 @@ struct Decision {
 };
 
 // wait: what the slot would wait for when nothing else is to be shown (rule 6). A wait never beats anything
-// shown, loading, failed or too large; Auto only for a link nobody tried here yet (Idle).
+// shown, loading, failed or too large; Auto is the click card (2.7.2: the ring only once the load runs).
 Decision decide(linkpreview::Kind kind, bool hidden, const LocalState& local, const ServerState& server, Wait wait = Wait::None);
 // 2.5: by the link's class (the quiet web class, cards, LPX), with the context above.
 Decision decide(const linkpreview::Target& target, bool hidden, const LocalState& local, const ServerState& server, Wait wait,

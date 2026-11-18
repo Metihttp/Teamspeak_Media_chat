@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Where your files go, what other people learn about you, what stays on your computer, and how the plugin protects you from what others post. This page describes version 2.7.1.
+Where your files go, what other people learn about you, what stays on your computer, and how the plugin protects you from what others post. This page describes version 2.7.2.
 
 ## At a glance
 

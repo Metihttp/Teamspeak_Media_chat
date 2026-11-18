@@ -46,12 +46,16 @@ class ShowPlace : public QObject
         // The chat's place at its Show is the load hold's place or the end it had at its hidden resize (also right after the
         // put-back below): a scale pass that a font set at this Show started (ChatZoom's saved zoom for a chat hidden
         // through a zoom change) read its place before ShowPlace had put that place back, and takes it again
-        // (ChatScale::retake, as after dark mode's place bracket). A reader's place is left to that pass (it read it before
-        // the new font moved the text), also one the new font pushed down to the end.
+        // (ChatScale::retake, as after dark mode's place bracket). A reader's place is ChatZoom's: it puts it back at once
+        // in its own Show filter (2.7.2), before this one reads it, and hands it to that pass the same way.
         std::function<void(QTextBrowser*)> placed;
         // Optional (the live test's log): the place was put back after a Show moved the chat (the value at the Show, the
         // value the Show left, the value now).
         std::function<void(QTextBrowser*, int, int, int)> putBack;
+        // 2.7.2 (D8): optional, after each Show's place is decided (dark mode's and a load hold's are back, the zoom's too).
+        // At a chat's first Show Qt's own move (and its put-back above) comes right after this: link previews start their
+        // loads from an event they post, once the Show is over and before the first paint.
+        std::function<void(QTextBrowser*)> settled;
     };
 
     explicit ShowPlace(Hooks hooks, QObject* parent = nullptr);

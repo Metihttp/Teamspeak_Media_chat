@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.7.1 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.7.2 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")

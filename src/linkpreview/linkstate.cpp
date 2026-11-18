@@ -200,8 +200,9 @@ Decision decide(linkpreview::Kind kind, bool hidden, const LocalState& local, co
     case Local::Loaded:
     case Local::OverAutoLimit:
         // Waiting for our pipeline or the sender: whatever size we learned elsewhere (their preview is small).
-        // An automatic load: only a link nobody tried here yet (a file above the limit stays a click card).
-        if (wait == Wait::Own || wait == Wait::Sender || wait == Wait::Checking || (wait == Wait::Auto && local.state == Local::Idle)) {
+        // 2.7.2: an automatic load that hasn't started (Wait::Auto: its turn, a budget token, no paint yet) is the click
+        // card; the ring is only for a load that runs (Local::Loading above).
+        if (wait == Wait::Own || wait == Wait::Sender || wait == Wait::Checking) {
             d.look = linkcard::Look::Loading;
             d.wait = wait;
         } else {
@@ -302,7 +303,8 @@ Decision decide(const linkpreview::Target& target, bool hidden, const LocalState
     case Local::Loaded:
     case Local::OverAutoLimit:
     case Local::Nothing:
-        if (wait == Wait::Own || wait == Wait::Sender || wait == Wait::Checking || (wait == Wait::Auto && local.state == Local::Idle)) {
+        // 2.7.2: Wait::Auto is the click card until its load starts (see the other decide).
+        if (wait == Wait::Own || wait == Wait::Sender || wait == Wait::Checking) {
             d.look = Look::Loading;
             d.wait = wait;
         } else {

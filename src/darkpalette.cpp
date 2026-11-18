@@ -551,10 +551,26 @@ QString chatSheetTemplate()
     return QString::fromLatin1(kChatSheet);
 }
 
+QString paneRule(const Tokens& t, const Metrics& m)
+{
+    if (m.paneSelector.isEmpty())
+        return QString();
+    return QString::fromLatin1("%1::pane { border-left: %2px solid %4; border-right: %3px solid %4; }\n")
+        .arg(m.paneSelector)
+        .arg(qMax(0, m.paneLeft))
+        .arg(qMax(0, m.paneRight))
+        .arg(cssColor(t.window));
+}
+
 QString appSheet(const Tokens& t, qreal k, const Metrics& m, const QString& glyphDir, QStringList* unknown)
 {
     const qreal scale = k > 0 ? k : 1.0;
-    return expand(scaleSizes(appSheetTemplate(), scale), t, glyphDir, &m, scale, unknown);
+    QString     sheet = expand(scaleSizes(appSheetTemplate(), scale), t, glyphDir, &m, scale, unknown);
+    // 2.7.2 (D3): after the generic pane rule (as specific, later: its side borders win), the chat column's skin width.
+    const QString pane = paneRule(t, m);
+    if (!pane.isEmpty())
+        sheet += QString::fromLatin1("\n/* the chat column keeps the skin's width */\n") + pane;
+    return sheet;
 }
 
 QString chatSheet(const Tokens& t, QStringList* unknown)

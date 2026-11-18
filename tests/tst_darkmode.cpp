@@ -42,6 +42,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -67,25 +68,31 @@
 #include "appearancesection.h"
 #include "chatcolors.h"
 #include "chatscale.h"
+#include "chatlayoutsection.h"
 #include "chatscroll.h"
 #include "chattextsection.h"
+#include "composesettings.h"
 #include "composewidgets.h"
+#include "compresssettings.h"
 #include "darkchat.h"
 #include "darkglyphs.h"
 #include "darkmode.h"
 #include "darkpalette.h"
 #include "darktitlebar.h"
 #include "emojiformat.h"
+#include "emojisection.h"
 #include "fakets3.h"
 #include "layoutart.h"
 #include "layoutdoc.h"
 #include "layoutformat.h"
 #include "polldoc.h"
+#include "privacysection.h"
 #include "replydoc.h"
 #include "settings.h"
 #include "settingsdialog.h"
 #include "settingstheme.h"
 #include "settingswidgets.h"
+#include "spoilersection.h"
 #include "testmain.h"
 #include "textspoilerdoc.h"
 #include "ts3api.h"
@@ -118,7 +125,7 @@ const char kSkinSheet[] = "QTextEdit#ChatTab { background: palette(base); color:
 const char kSkinChat[] = "p { padding: 0px; margin: 0px; }\n"
                          ".TextMessage_UserLink { color: #002f5d; font-weight: bold; text-decoration: none; }\n"
                          ".TextMessage_ChannelLink, .TextMessage_ServerLink, .TextMessage_OfflineLink { color: #002f5d; font-weight: bold; text-decoration: none; }\n"
-                         ".TextMessage_Time { color: #33597d; }\n"
+                         ".TextMessage_Time { color: #33597d; font-weight: normal; }\n" // as TeamSpeak's (2.7.2: its weight too)
                          ".TextMessage_Normal, .TextMessage_ClientJoined, .TextMessage_ClientLeft, .TextMessage_Connected { color: #33597d; }\n"
                          ".TextMessage_Welcome, .TextMessage_Poke { color: #087d22; }\n"
                          ".TextMessage_ClientKicked { color: #c9070a; }\n"
@@ -139,6 +146,57 @@ const char kOtherChat[] = "p { padding: 0px; margin: 0px; }\n"
                           ".TextMessage_Time { color: #6b4a2f; }\n"
                           ".TextMessage_Normal, .TextMessage_ClientJoined, .TextMessage_ClientLeft { color: #6b4a2f; }\n"
                           ".TextMessage_ClientKicked { color: #a00000; }\n";
+
+// 2.7.2: skins whose chat text style isn't dark mode's (synthesized; no skin file is copied). kPlainChat: colours only,
+// the way TeamSpeak's add-on dark chat file is written (names and channels not bold, links underlined by Qt, history neither
+// bold nor italic, no info title size, no label weight; its own paragraph rule here). kCommunityChat: TeamSpeak's weights,
+// a bold welcome, a host name without a colour, every info panel class coloured.
+const char kPlainChat[] = "p { padding: 0px; margin: 0px; }\n"
+                          ".TextMessage_UserLink, .TextMessage_OfflineLink, .TextMessage_ChannelLink, .TextMessage_ServerLink { color: #1f5fbf; }\n"
+                          ".TextMessage_Welcome, .TextMessage_Poke { color: #1d8a3a; }\n"
+                          ".TextMessage_ClientKicked { color: #c4161c; }\n"
+                          ".TextMessage_HostName, .TextMessage_Normal, .TextMessage_ClientJoined, .TextMessage_ClientLeft, .TextMessage_Connected, "
+                          ".TextMessage_Time { color: #4a6f96; }\n"
+                          ".TextMessage_BeginHistory, .TextMessage_EndHistory { color: #6d6d6d; }\n"
+                          ".TextMessage_ServerError { color: #d02a2d; }\n"
+                          ".InfoFrame_Title .TextMessage_UserLink, .InfoFrame_Title .TextMessage_ChannelLink, .InfoFrame_Title .TextMessage_ServerLink { color: #36507a; }\n"
+                          ".InfoFrame_Title .InfoFrame_CustomNick { color: palette(link); }\n"
+                          ".Highlight, .InfoFrame_Table td.Highlight { color: palette(link); }\n"
+                          ".Important, .InfoFrame_Table td.Important { color: #e00000; }\n"
+                          ".Active, .InfoFrame_Table td.Active { color: #2e8b2e; }\n"
+                          ".Inactive, .InfoFrame_Table td.Inactive { color: #8a8a8a; }\n";
+
+const char kCommunityChat[] = "p { padding: 0px; margin: 0px; }\n"
+                              ".TextMessage_UserLink, .TextMessage_ChannelLink, .TextMessage_ServerLink { color: #127fb0; font-weight: bold; text-decoration: none; }\n"
+                              ".TextMessage_OfflineLink { color: #a07d00; font-weight: bold; text-decoration: none; }\n"
+                              ".TextMessage_HostName { font-weight: bold; }\n"
+                              ".TextMessage_Welcome, .TextMessage_Poke { color: #08802b; font-weight: bold; }\n"
+                              ".TextMessage_Normal, .TextMessage_Connected, .TextMessage_ClientJoined, .TextMessage_ClientLeft { color: #4f6773; }\n"
+                              ".TextMessage_ClientKicked { color: #b0060a; }\n"
+                              ".TextMessage_Time { color: #4f6773; font-weight: normal; }\n"
+                              ".TextMessage_BeginHistory, .TextMessage_EndHistory { color: #5d6162; font-weight: bold; font-style: italic; }\n"
+                              ".TextMessage_ServerError { color: #b0060a; font-weight: bold; }\n"
+                              ".InfoFrame_Title { font-size: x-large; }\n"
+                              ".InfoFrame_Title .TextMessage_UserLink, .InfoFrame_Title .TextMessage_ChannelLink, .InfoFrame_Title .TextMessage_ServerLink { color: #127fb0; font-weight: normal; }\n"
+                              ".InfoFrame_Title .InfoFrame_CustomNick { color: #127fb0; }\n"
+                              ".Highlight, .InfoFrame_Table td.Highlight { color: #127fb0; }\n"
+                              ".Important, .InfoFrame_Table td.Important { color: #c62f2e; }\n"
+                              ".Active, .InfoFrame_Table td.Active { color: #2f8a52; }\n"
+                              ".Inactive, .InfoFrame_Table td.Inactive { color: #5a5e64; }\n"
+                              ".InfoFrame_Table td.Label { font-weight: bold; }\n"
+                              "a { color: #127fb0; }\n";
+
+// The test skin with what TeamSpeak's own chat sheet has besides (a host name colour, the info title's links, the custom
+// nickname): the 2.7.2 tests' "TeamSpeak's skin" row.
+QString teamSpeakLikeChat()
+{
+    return QString::fromLatin1(kSkinChat)
+           + QString::fromLatin1(".TextMessage_HostName { color: #33597d; font-weight: bold; }\n"
+                                 ".TextMessage_BeginHistory, .TextMessage_EndHistory { color: #707475; font-weight: bold; font-style: italic; }\n"
+                                 ".InfoFrame_Title .TextMessage_UserLink, .InfoFrame_Title .TextMessage_ChannelLink, .InfoFrame_Title .TextMessage_ServerLink "
+                                 "{ color: #191970; font-weight: normal; }\n"
+                                 ".InfoFrame_Title .InfoFrame_CustomNick { color: palette(link); }\n");
+}
 
 QString chatLine(const QString& time, const QString& cls, const QString& body)
 {
@@ -279,6 +337,94 @@ QString firstDiff(const QString& x, const QString& y)
             return QString::fromLatin1("fragment %1: %2 vs %3, around: %4").arg(i).arg(xs.value(i), ys.value(i), xs.mid(qMax(0, i - 3), 7).join(QLatin1Char(';')));
     }
     return QString();
+}
+
+// 2.7.2 (D6): where kOriginal is in a format or in a format kept inside it (as darkchat looks: any QTextFormat or list of
+// them in a property), as "where" strings.
+void leftoversIn(const QTextFormat& f, const QString& where, int depth, QStringList* out)
+{
+    if (f.hasProperty(darkchat::kOriginal))
+        out->append(where);
+    if (depth >= 6)
+        return;
+    const QMap<int, QVariant> props = f.properties();
+    for (auto it = props.constBegin(); it != props.constEnd(); ++it) {
+        const QString inner = where + QLatin1Char('/') + QString::number(it.key(), 16);
+        if (it.value().userType() == QMetaType::QTextFormat) {
+            leftoversIn(qvariant_cast<QTextFormat>(it.value()), inner, depth + 1, out);
+        } else if (it.value().userType() == QMetaType::QVariantList) {
+            const QVariantList list = it.value().toList();
+            for (int i = 0; i < list.size(); ++i) {
+                if (list.at(i).userType() == QMetaType::QTextFormat)
+                    leftoversIn(qvariant_cast<QTextFormat>(list.at(i)), inner + QString::fromLatin1("[%1]").arg(i), depth + 1, out);
+            }
+        }
+    }
+}
+
+// Every fragment's format, every block's character format (its separator's, block 0 too) and block format.
+QStringList darkLeftovers(QTextDocument* doc)
+{
+    QStringList out;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+        leftoversIn(b.charFormat(), QString::fromLatin1("block %1 char format").arg(b.blockNumber()), 0, &out);
+        leftoversIn(b.blockFormat(), QString::fromLatin1("block %1 format").arg(b.blockNumber()), 0, &out);
+        for (auto it = b.begin(); !it.atEnd(); ++it)
+            leftoversIn(it.fragment().charFormat(), QString::fromLatin1("fragment at %1 \"%2\"").arg(it.fragment().position()).arg(it.fragment().text().left(12)), 0, &out);
+    }
+    return out;
+}
+
+// 2.7.2 (D5): "text => every property" of each fragment from block fromBlock on (one per line); a fragment whose text is
+// skip isn't listed.
+QStringList fragmentsFrom(QTextDocument* doc, int fromBlock, const QString& skip = QString())
+{
+    QStringList out;
+    for (QTextBlock b = doc->findBlockByNumber(fromBlock); b.isValid(); b = b.next()) {
+        for (auto it = b.begin(); !it.atEnd(); ++it) {
+            if (!skip.isEmpty() && it.fragment().text() == skip)
+                continue;
+            out << it.fragment().text() + a(" => ") + describe(it.fragment().charFormat());
+        }
+    }
+    return out;
+}
+
+QString firstListDiff(const QStringList& got, const QStringList& want)
+{
+    for (int i = 0; i < qMax(got.size(), want.size()); ++i) {
+        if (got.value(i) != want.value(i))
+            return QString::fromLatin1("item %1:\n  got  %2\n  want %3").arg(i).arg(got.value(i), want.value(i));
+    }
+    return QString();
+}
+
+// formatsOf() of blocks [from, from + count) only.
+QString formatsOfBlocks(QTextDocument* doc, int from, int count)
+{
+    QString out;
+    for (QTextBlock b = doc->findBlockByNumber(from); b.isValid() && b.blockNumber() < from + count; b = b.next()) {
+        for (auto it = b.begin(); !it.atEnd(); ++it) {
+            const QTextCharFormat f = it.fragment().charFormat();
+            out += QString::fromLatin1("%1:%2:%3;").arg(it.fragment().position()).arg(it.fragment().length()).arg(describe(f));
+        }
+    }
+    return out;
+}
+
+// TeamSpeak's lines of every class whose text style dark mode's sheet sets (2.7.2, D5): a join with a name and a channel,
+// the history marker, a server error, a host name in a status line, a message with a link, the server's welcome (bold in
+// the community dark skin, not in dark mode's sheet).
+QStringList styledLines()
+{
+    return {chatLine(a("21:30:05"), a("TextMessage_ClientJoined"),
+                     user(a("Kai")) + a(" entered channel \"<a class=\"TextMessage_ChannelLink\" href=\"channelid://1\">Home</a>\"")),
+            a("<p class=\"TextMessage_BeginHistory\">*** Chat begins</p>"),
+            a("<p class=\"TextMessage_ServerError\">Error: insufficient client permissions</p>"),
+            chatLine(a("21:31:00"), a("TextMessage_Normal"), a("Trying to connect to server on <span class=\"TextMessage_HostName\">example.org</span>")),
+            chatLine(a("21:31:20"), a("TextMessage_Message Incoming Public"),
+                     user(a("Lea")) + a(": <span class=\"TextMessage_Text\"><a href=\"https://example.com/x\">https://example.com/x</a></span>")),
+            a("<p class=\"TextMessage_Welcome\">Welcome to the test server</p>")};
 }
 
 QTextCharFormat formatAt(QTextDocument* doc, int position)
@@ -506,6 +652,19 @@ tschat::Skin darkEraSkin()
     return s;
 }
 
+} // namespace
+
+// 2.7.2 (D3): TeamSpeak's chat tab widget is a class of its own (ChatTabWidget): dark mode names it to keep the chat
+// column's width (a rule for every QTabWidget would reach Options too).
+class DarkTestChatTabs : public QTabWidget
+{
+    Q_OBJECT
+  public:
+    using QTabWidget::QTabWidget;
+};
+
+namespace {
+
 struct TsWindow {
     QMainWindow*  window  = nullptr;
     QTreeWidget*  tree    = nullptr;
@@ -551,7 +710,7 @@ TsWindow buildWindow(int visibleLines, int hiddenLines, bool wrapping)
     auto* chatWidget = new QWidget;
     chatWidget->setObjectName(a("MainWindowChatWidget"));
     auto* cv = new QVBoxLayout(chatWidget);
-    t.tabs   = new QTabWidget;
+    t.tabs   = new DarkTestChatTabs;
     for (int i = 0; i < 2; ++i) {
         auto* b = new QTextBrowser;
         b->setObjectName(a("ChatTab"));
@@ -774,6 +933,26 @@ class TestDarkMode : public QObject
         return t;
     }
 
+    // 2.7.2 (D7): the Settings window as plugin.cpp builds it (every section), shown.
+    SettingsDialog* settingsWindow()
+    {
+        auto* dialog = new SettingsDialog(nullptr);
+        m_windows << dialog;
+        dialog->addSection(SettingsDialog::Tab::Sending, new ComposeSettingsSection(dialog));
+        dialog->addSection(SettingsDialog::Tab::ReceivingPlayback, new SpoilerSection(dialog));
+        dialog->addSection(SettingsDialog::Tab::Privacy, new PrivacySection, true);
+        dialog->addSection(SettingsDialog::Tab::LinkPreviews, new LinkPreviewsSection);
+        dialog->addSection(SettingsDialog::Tab::Sending, new CompressSettingsSection(dialog, nullptr));
+        dialog->addSection(SettingsDialog::Tab::EmojiGifs, new EmojiSection(dialog));
+        dialog->addSection(SettingsDialog::Tab::Chat, new ChatLayoutSection(dialog), true);
+        dialog->addSection(SettingsDialog::Tab::Chat, new AppearanceSection(dialog, [](bool) {}), true);
+        dialog->addSection(SettingsDialog::Tab::Chat, new ChatTextSection(dialog, ChatTextHooks()));
+        dialog->show();
+        if (!QTest::qWaitForWindowExposed(dialog))
+            qWarning("the Settings window wasn't exposed");
+        pump(50);
+        return dialog;
+    }
     // Where the reader is in b, relative to the place captured before: the offset now minus the offset then (px).
     static qreal drift(QTextBrowser* b, const chatscroll::ReaderPlace& before)
     {
@@ -1151,6 +1330,13 @@ class TestDarkMode : public QObject
         QCOMPARE(colorAt(&doc, oursAt), QColor(0x00, 0x00, 0x8b)); // untouched
         // A second pass changes nothing (tagged fragments are left).
         QCOMPARE(darkchat::recolor(&doc, forward, true), 0);
+        // 2.7.2 (D6): a click on a recoloured nickname, then TeamSpeak's QTextEdit::append: the new block's separator (and the
+        // view's own format) copy that fragment's format, kOriginal included.
+        QTextCursor click(&doc);
+        click.setPosition(bob + 1);
+        view.setTextCursor(click);
+        view.append(chatLine(a("21:15:00"), a("TextMessage_ClientJoined"), user(a("Finn")) + a(" entered your channel")));
+        QVERIFY(!darkLeftovers(&doc).isEmpty());
 
         // Lines added while dark (the dark sheet), then back: the skin's class colours, exactly what it inserts.
         doc.setDefaultStyleSheet(dark);
@@ -1169,6 +1355,8 @@ class TestDarkMode : public QObject
         // The old part is exactly as before.
         QVERIFY(formatsOf(&doc).startsWith(before));
         QCOMPARE(darkchat::taggedCount(&doc), 0);
+        // 2.7.2 (D6): nothing of the way back is left anywhere (the appended block's separator too).
+        QVERIFY2(darkLeftovers(&doc).isEmpty(), qPrintable(darkLeftovers(&doc).join(a("; "))));
     }
 
     // classLooks: a link the sheet doesn't colour takes the palette's link colour given.
@@ -1942,6 +2130,83 @@ class TestDarkMode : public QObject
         }
     }
 
+    // ---- 2.7.2 (D2): every shape of a skin taken over while dark mode is on (a complete palette with the sheet left as it was,
+    // the skin's own palette set again, a sheet and a complete palette in one turn, a sheet only, one role): the snapshot of
+    // the skin's chat is never read under dark mode's look, and the lines printed while dark get the skin's colours back.
+    // 2.7.1 read the visible chat when the merged palette equalled the application's, under dark mode's ChatTab rule ------
+    void fullPaletteAdoptionOwnLines_data()
+    {
+        QTest::addColumn<int>("shape");
+        QTest::newRow("complete palette, sheet kept") << 0;
+        QTest::newRow("the skin's palette again, sheet kept") << 1;
+        QTest::newRow("sheet and complete palette") << 2;
+        QTest::newRow("sheet only") << 3;
+        QTest::newRow("one role") << 4;
+    }
+    void fullPaletteAdoptionOwnLines()
+    {
+        QFETCH(int, shape);
+        const auto    restoreLines = qScopeGuard([] { ts3::setLineColors(chatcolors::lineColors(chatcolors::teamSpeakLight(), QString())); });
+        const QString sheet        = a("QTextEdit#ChatTab { background-color: palette(base); border: 1px solid #a0a0a0; }\n"
+                                       "QTreeView#ServerTreeView { qproperty-rootIsDecorated: false; }\n");
+        const QString otherSheet   = sheet + a("QPushButton { padding: 3px; }\n");
+        for (const char* name : {"text", "", "pink"}) {
+            QApplication::setPalette(m_savedPalette);
+            qApp->setStyleSheet(sheet);
+            TsWindow       t                   = shownWindow(3, 0, false);
+            QTextDocument* doc                 = t.visible->document();
+            const QString  choice              = QString::fromLatin1(name);
+            Settings::instance().chatLineColor = choice;
+            auto dark                          = makeDark();
+            dark->setEnabled(true);
+            pump(30);
+            const int from = appendOwnLines(doc, darkChatColors(), choice);
+            pump(30);
+            QPalette complete = m_savedPalette; // every role the skin's (none of dark mode's)
+            complete.setColor(QPalette::Link, QColor(0x20, 0x60, 0xa0));
+            QString wantSheet = sheet;
+            switch (shape) {
+            case 0:
+                QApplication::setPalette(complete);
+                break;
+            case 1:
+                QApplication::setPalette(m_savedPalette);
+                break;
+            case 2:
+                qApp->setStyleSheet(otherSheet);
+                QApplication::setPalette(complete);
+                wantSheet = otherSheet;
+                break;
+            case 3:
+                qApp->setStyleSheet(otherSheet);
+                wantSheet = otherSheet;
+                break;
+            default: {
+                QPalette p = QApplication::palette(); // dark mode's, one role changed
+                p.setColor(QPalette::Link, QColor(0x20, 0x60, 0xa0));
+                QApplication::setPalette(p);
+                break;
+            }
+            }
+            pump(80);
+            QCOMPARE(dark->stats().adoptions, 1);
+            const chatcolors::Colors snapshot = dark->snapshotChatColors();
+            QVERIFY2(!snapshot.dark, qPrintable(QString::fromLatin1("%1: snapshot base %2 text %3").arg(QString::fromLatin1(name), snapshot.base.name(), snapshot.text.name())));
+            dark->setEnabled(false);
+            pump(30);
+            QCOMPARE(qApp->styleSheet(), wantSheet);
+            const chatcolors::Colors skin = skinColorsOf(t.visible);
+            QVERIFY(!skin.dark);
+            QCOMPARE(snapshot.base, skin.base);
+            QCOMPARE(snapshot.text, skin.text);
+            const QString want = ownLinesReference(QString::fromLatin1(kSkinChat), skin, choice);
+            QVERIFY2(charColors(doc, from) == want, qPrintable(QString::fromLatin1(name) + QLatin1Char(' ') + firstLineDiff(charColors(doc, from), want)));
+            QCOMPARE(colorAt(doc, findText(doc, a("TS Media chat"), doc->findBlockByNumber(from).position())).name(), chatcolors::lineColors(skin, choice).accent);
+            dark.reset();
+            delete t.window;
+        }
+    }
+
     // ---- T-9h (2.7.1): an info panel TeamSpeak rendered while dark mode is on (a client selected), then off before it renders
     // again: its title gets the skin's title colour, not TS Media's text colour --------------------------------------------
     void infoTitleWhileDark()
@@ -1965,6 +2230,505 @@ class TestDarkMode : public QObject
         QCOMPARE(colorAt(t.info->document(), findText(t.info->document(), a("Dex"))), darkpalette::tokens().text);
         dark->setEnabled(false);
         QCOMPARE(colorAt(t.info->document(), findText(t.info->document(), a("Dex"))), QColor(0x19, 0x19, 0x70));
+    }
+
+    // ---- 2.7.2 (D5): lines TeamSpeak printed while dark mode was on get the skin's text style back with its colours (weight,
+    // italic, underline, size), off and at the unload, on TeamSpeak's skin, a skin that sets colours only (names not bold,
+    // links underlined) and a dark community skin; the lines printed before stay byte-exact. 2.7.1 gave back the colour only:
+    // a name printed while dark stayed bold on a skin whose names aren't --------------------------------------------------
+    void fontsBackAfterDark_data()
+    {
+        QTest::addColumn<QString>("sheet");
+        QTest::addColumn<bool>("unload");
+        QTest::addColumn<bool>("hostColored");
+        const QVector<QPair<const char*, QString>> skins{{"TeamSpeak's skin", teamSpeakLikeChat()},
+                                                         {"colours only", QString::fromLatin1(kPlainChat)},
+                                                         {"community dark", QString::fromLatin1(kCommunityChat)}};
+        for (const auto& skin : skins) {
+            for (const bool unload : {false, true})
+                QTest::newRow(qPrintable(QString::fromLatin1("%1, %2").arg(QString::fromLatin1(skin.first), unload ? a("unload") : a("off"))))
+                    << skin.second << unload << !skin.second.contains(a(".TextMessage_HostName { font-weight: bold; }"));
+        }
+    }
+    void fontsBackAfterDark()
+    {
+        QFETCH(QString, sheet);
+        QFETCH(bool, unload);
+        QFETCH(bool, hostColored);
+        installSkin();
+        TsWindow t = shownWindow(0, 0, false);
+        for (QTextEdit* e : {static_cast<QTextEdit*>(t.visible), static_cast<QTextEdit*>(t.hidden), t.info})
+            e->document()->setDefaultStyleSheet(sheet);
+        QTextDocument* doc = t.visible->document();
+        appendLines(t.visible, someLines(25, true));
+        for (const QString& line : styledLines())
+            appendHtml(t.visible, line); // the same classes before dark mode too
+        const int     oldBlocks = doc->blockCount();
+        const QString oldLines  = formatsOfBlocks(doc, 0, oldBlocks);
+        auto          dark      = makeDark();
+        dark->setEnabled(true);
+        pump(30);
+        const int first = doc->blockCount();
+        for (const QString& line : styledLines())
+            appendHtml(t.visible, line);
+        pump(30); // the incremental pass
+        if (unload)
+            dark->shutdown();
+        else
+            dark->setEnabled(false);
+        QTextDocument ref;
+        ref.setDefaultStyleSheet(sheet);
+        for (const QString& line : styledLines())
+            appendTo(&ref, line);
+        // A host name the skin doesn't colour keeps dark mode's grey (2.7.1's rule: it inherits its line's colour in
+        // TeamSpeak's own lines, which the probe can't know).
+        const QString     skip = hostColored ? QString() : a("example.org");
+        const QStringList got  = fragmentsFrom(doc, first, skip);
+        const QStringList want = fragmentsFrom(&ref, 0, skip);
+        QVERIFY2(got == want, qPrintable(firstListDiff(got, want)));
+        QCOMPARE(darkchat::taggedCount(doc), 0);
+        QVERIFY2(formatsOfBlocks(doc, 0, oldBlocks) == oldLines, qPrintable(firstDiff(formatsOfBlocks(doc, 0, oldBlocks), oldLines)));
+    }
+
+    // ---- 2.7.2 (D5): the same lines styled by the chat layout while dark mode is on (Cozy and Compact recolour names and
+    // channels in status lines): after off and TeamSpeak classic the name has the skin's text style; while styled, a property
+    // the layout set itself stays the layout's -----------------------------------------------------------------------------
+    void fontsBackInLayouts_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("Cozy") << int(layoutart::Mode::Cozy);
+        QTest::newRow("Compact") << int(layoutart::Mode::Compact);
+    }
+    void fontsBackInLayouts()
+    {
+        QFETCH(int, mode);
+        installSkin();
+        TsWindow       t     = shownWindow(0, 0);
+        const QString  sheet = QString::fromLatin1(kPlainChat);
+        QTextDocument* doc   = t.visible->document();
+        doc->setDefaultStyleSheet(sheet);
+        // TeamSpeak's status line with a name and a channel (its classes; the info icon the layout knows rows by).
+        QImage icon(13, 13, QImage::Format_ARGB32_Premultiplied);
+        icon.fill(QColor(0x43, 0x8b, 0xe8));
+        const auto line = [] {
+            return a("<p class=\"TextMessage_ClientSwitched\">") + tschat::icon("MESSAGE_INFO")
+                   + a("<span class=\"TextMessage_Time\">&lt;16:06:40&gt;</span> <a class=\"TextMessage_UserLink\" href=\"client://9/") + QString::fromLatin1(tschat::kNoraUid)
+                   + a("~Nora\">\"Nora\"</a> connected to channel <a class=\"TextMessage_ChannelLink\" href=\"channelid://1\">\"Lobby\"</a></p>");
+        };
+        const auto env = [mode] {
+            layoutdoc::Env e = layoutEnv(true);
+            e.mode           = static_cast<layoutart::Mode>(mode);
+            e.tokens         = layoutart::tokensFor(e.mode, QApplication::font(), false);
+            return e;
+        };
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        pump(30);
+        doc->addResource(QTextDocument::ImageResource, QUrl(a("iconpath:MESSAGE_INFO?size=13x13")), icon);
+        for (int i = 0; i < 3; ++i)
+            appendHtml(t.visible, line());
+        pump(30);
+        int styled = 0;
+        {
+            layoutformat::LayoutEditScope editing; // as ChatLayout edits
+            styled = layoutdoc::styleAll(doc, env());
+        }
+        QVERIFY(styled >= 1);
+        const int nora = findText(doc, a("Nora"));
+        QVERIFY(nora >= 0);
+        QVERIFY(formatAt(doc, nora).hasProperty(layoutformat::kApplied)); // the layout coloured the name
+        dark->setEnabled(false);
+        // While styled: the layout's colour stays, the text style is the skin's already.
+        const QTextCharFormat styledName = formatAt(doc, findText(doc, a("Nora")));
+        QVERIFY(styledName.hasProperty(layoutformat::kApplied));
+        QVERIFY2(styledName.fontWeight() <= QFont::Normal, qPrintable(describe(styledName)));
+        {
+            layoutformat::LayoutEditScope editing;
+            layoutdoc::restoreAll(doc); // Settings -> Chat -> TeamSpeak classic
+        }
+        QTextDocument ref;
+        ref.setDefaultStyleSheet(sheet);
+        ref.addResource(QTextDocument::ImageResource, QUrl(a("iconpath:MESSAGE_INFO?size=13x13")), icon);
+        appendTo(&ref, line());
+        const QString got  = describe(formatAt(doc, findText(doc, a("Nora"))));
+        const QString want = describe(formatAt(&ref, findText(&ref, a("Nora"))));
+        QCOMPARE(got, want);
+        QCOMPARE(describe(formatAt(doc, findText(doc, a("Lobby")))), describe(formatAt(&ref, findText(&ref, a("Lobby")))));
+        QVERIFY(darkLeftovers(doc).isEmpty());
+        // A property the layout set itself (a mention pill's weight) stays the layout's on the way back.
+        const darkpalette::Tokens& k     = darkpalette::tokens();
+        const auto                 maps  = darkchat::buildMap(darkchat::classFormats(darkpalette::chatSheet(k), k.link),
+                                                              darkchat::classFormats(sheet, QColor(0x1c, 0x82, 0xcc)), {}, QColor());
+        QTextCharFormat            nick  = darkchat::classFormats(darkpalette::chatSheet(k), k.link).value(1).format; // UserLink
+        QTextCharFormat            pill  = nick;
+        pill.setProperty(layoutformat::kOrigChar, QVariant::fromValue<QTextFormat>(nick));
+        pill.setForeground(QColor(0x11, 0x22, 0x33));
+        pill.setFontWeight(QFont::DemiBold);
+        pill.setProperty(layoutformat::kApplied, QVariantList{int(QTextFormat::ForegroundBrush), QVariant::fromValue(QBrush(QColor(0x11, 0x22, 0x33))), int(QTextFormat::FontWeight),
+                                                              int(QFont::DemiBold)});
+        QVERIFY(darkchat::mapBack(pill, maps));
+        QCOMPARE(pill.fontWeight(), int(QFont::DemiBold));
+        QVERIFY(pill.fontUnderline()); // the skin's (Qt's for a link it doesn't style): not the layout's
+        QCOMPARE(pill.foreground().color(), QColor(0x11, 0x22, 0x33));
+        QVERIFY(!qvariant_cast<QTextFormat>(pill.property(layoutformat::kOrigChar)).hasProperty(QTextFormat::FontWeight)); // its format before: the skin's
+    }
+
+    // ---- 2.7.2 (D5): the text style coming back moves lines (a weight, a size): every chat keeps its reader's place, a chat
+    // at its end stays at its end (in placesKeptScaled's children too: fontsBackKeepsPlaceScaled) ---------------------------
+    void fontsBackKeepsPlace()
+    {
+        const QFont savedFont = QApplication::font();
+        if (!qEnvironmentVariableIsEmpty("QT_QPA_FONTDIR")) {
+            QFont font(a("Segoe UI"));
+            font.setPixelSize(qRound(8.25 * qMax(96, qEnvironmentVariableIntValue("QT_FONT_DPI")) / 72.0));
+            QApplication::setFont(font);
+        }
+        const auto restoreFont = qScopeGuard([&savedFont] { QApplication::setFont(savedFont); });
+        installSkin();
+        TsWindow t = shownWindow(0, 0);
+        t.visible->document()->setDefaultStyleSheet(QString::fromLatin1(kPlainChat));
+        appendLines(t.visible, someLines(30, true));
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        pump(30);
+        // 400 wrapping lines with names, history markers and errors, printed while dark (bold there, not in the skin).
+        QStringList lines;
+        for (int i = 0; i < 40; ++i)
+            lines << styledLines() + someLines(5, true);
+        appendLines(t.visible, lines.mid(0, 400));
+        pump(30);
+        t.visible->verticalScrollBar()->setValue(t.visible->verticalScrollBar()->maximum() / 2);
+        pump(30);
+        qInfo("fontsBackKeepsPlace: font %d px, device pixel ratio %.2f", QFontInfo(QApplication::font()).pixelSize(), t.window->devicePixelRatioF());
+        const chatscroll::ReaderPlace place = chatscroll::captureReader(t.visible);
+        QVERIFY(!place.bottom && !place.cursor.isNull());
+        const int heightBefore = qRound(t.visible->document()->size().height());
+        dark->setEnabled(false);
+        pump(30);
+        QVERIFY2(qAbs(drift(t.visible, place)) <= 2, qPrintable(QString::number(drift(t.visible, place))));
+        qInfo("fontsBackKeepsPlace: document %d -> %d px", heightBefore, qRound(t.visible->document()->size().height()));
+        // At its end, the chat stays at its end.
+        dark->setEnabled(true);
+        pump(30);
+        appendLines(t.visible, lines.mid(0, 100));
+        pump(30);
+        t.visible->verticalScrollBar()->setValue(t.visible->verticalScrollBar()->maximum());
+        pump(20);
+        QVERIFY(chatscroll::atBottom(t.visible));
+        dark->setEnabled(false);
+        pump(30);
+        QVERIFY(chatscroll::atBottom(t.visible));
+    }
+
+    void fontsBackKeepsPlaceScaled_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("value");
+        QTest::newRow("QT_FONT_DPI=192") << a("QT_FONT_DPI") << a("192");
+        QTest::newRow("QT_SCALE_FACTOR=2") << a("QT_SCALE_FACTOR") << a("2");
+    }
+    void fontsBackKeepsPlaceScaled()
+    {
+        QFETCH(QString, name);
+        QFETCH(QString, value);
+        QProcess            child;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.remove(a("QT_FONT_DPI"));
+        env.remove(a("QT_SCALE_FACTOR"));
+        env.insert(name, value);
+        env.insert(a("QT_QPA_FONTDIR"), QDir::fromNativeSeparators(qEnvironmentVariable("WINDIR", a("C:/Windows"))) + a("/Fonts"));
+        child.setProcessEnvironment(env);
+        child.setProcessChannelMode(QProcess::MergedChannels);
+        const QString results = m_dir->filePath(a("fonts.txt"));
+        child.start(QCoreApplication::applicationFilePath(), {a("-platform"), a("offscreen"), a("-o"), results + a(",txt"), a("fontsBackKeepsPlace")});
+        QVERIFY(child.waitForFinished(120000));
+        QFile         file(results);
+        const QString out = file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString::fromLocal8Bit(child.readAll());
+        QVERIFY2(child.exitCode() == 0, qPrintable(out.right(3000)));
+        QVERIFY2(out.contains(a("PASS   : TestDarkMode::fontsBackKeepsPlace()")), qPrintable(out.right(3000)));
+        const QRegularExpressionMatch m = QRegularExpression(a("fontsBackKeepsPlace: font ([0-9]+) px, device pixel ratio ([0-9.]+)")).match(out);
+        QVERIFY2(m.hasMatch(), qPrintable(out.right(2000)));
+        qInfo("%s", qPrintable(m.captured(0)));
+        if (name == a("QT_FONT_DPI"))
+            QVERIFY(m.captured(1).toInt() >= 21);
+        else
+            QVERIFY(m.captured(2).toDouble() >= 1.9);
+    }
+
+    // ---- 2.7.2 (D5, D9): a class's whole format (also one the sheet doesn't colour), the text style a map gives back, and
+    // a "no colour" target for the info panel's classes only ---------------------------------------------------------------
+    void classFormatsFonts()
+    {
+        const darkpalette::Tokens& k     = darkpalette::tokens();
+        const auto                 dark  = darkchat::classFormats(darkpalette::chatSheet(k), k.link);
+        const auto                 plain = darkchat::classFormats(QString::fromLatin1(kPlainChat), QColor(0x1c, 0x82, 0xcc));
+        const auto                 find  = [](const QVector<darkchat::ClassFormat>& list, const char* key) {
+            for (const darkchat::ClassFormat& c : list) {
+                if (c.key == key)
+                    return c;
+            }
+            return darkchat::ClassFormat();
+        };
+        // Every probe yields an entry; the coloured ones are classLooks.
+        QCOMPARE(plain.size(), dark.size());
+        int colored = 0;
+        for (const darkchat::ClassFormat& c : plain)
+            colored += c.colored ? 1 : 0;
+        QCOMPARE(colored, darkchat::classLooks(QString::fromLatin1(kPlainChat), QColor(0x1c, 0x82, 0xcc)).size());
+        const darkchat::ClassFormat userPlain = find(plain, "UserLink");
+        QVERIFY(userPlain.colored);
+        QVERIFY(!userPlain.format.hasProperty(QTextFormat::FontWeight));
+        QVERIFY(userPlain.format.fontUnderline());
+        const darkchat::ClassFormat userDark = find(dark, "UserLink");
+        QCOMPARE(userDark.format.fontWeight(), int(QFont::Bold));
+        // The way back gives a name printed while dark the skin's style: no weight, Qt's underline.
+        const darkchat::ColorMap back = darkchat::buildMap(dark, plain, {}, QColor());
+        const auto               fix  = back.fonts.value(userDark.look);
+        QStringList              ids;
+        for (const auto& p : fix)
+            ids << QString::fromLatin1("%1=%2").arg(p.id, 0, 16).arg(p.value.isValid() ? p.value.toString() : a("none"));
+        QVERIFY2(ids.contains(QString::fromLatin1("%1=none").arg(int(QTextFormat::FontWeight), 0, 16)), qPrintable(ids.join(a(", "))));
+        QTextCharFormat name = userDark.format;
+        name.setAnchorHref(a("client://3/x~Kai"));
+        QVERIFY(darkchat::mapBack(name, back));
+        name.clearProperty(QTextFormat::AnchorHref);
+        QTextCharFormat wantName = userPlain.format;
+        wantName.clearProperty(QTextFormat::AnchorHref);
+        QCOMPARE(describe(name), describe(wantName));
+        // Time and Normal share a dark look; their skin weights disagree on TeamSpeak's skin (normal vs none): no weight fix.
+        const auto skin    = darkchat::classFormats(QString::fromLatin1(kSkinChat), QColor(0x1c, 0x82, 0xcc));
+        const auto skinMap = darkchat::buildMap(dark, skin, {}, QColor());
+        for (const auto& p : skinMap.fonts.value(find(dark, "Time").look))
+            QVERIFY(p.id != QTextFormat::FontWeight);
+        // ... and agree on the colours-only skin (none): the dark sheet's explicit normal goes.
+        bool cleared = false;
+        for (const auto& p : back.fonts.value(find(dark, "Time").look))
+            cleared = cleared || (p.id == QTextFormat::FontWeight && !p.value.isValid());
+        QVERIFY(cleared);
+        // A chat's map has the colours of 2.7.1's (classLooks), the same looks.
+        const darkchat::ColorMap old = darkchat::buildMap(darkchat::classLooks(darkpalette::chatSheet(k), k.link),
+                                                          darkchat::classLooks(QString::fromLatin1(kPlainChat), QColor(0x1c, 0x82, 0xcc)), {}, QColor());
+        QCOMPARE(back.exact, old.exact);
+        QVERIFY(back.uncolored.isEmpty());
+    }
+
+    void classFormatsKnowNoColour()
+    {
+        const darkpalette::Tokens& k     = darkpalette::tokens();
+        const QString              sheet = teamSpeakLikeChat();
+        const auto                 skin  = darkchat::classFormats(sheet, QColor(0x1c, 0x82, 0xcc));
+        const auto                 dark  = darkchat::classFormats(darkpalette::chatSheet(k), k.link);
+        darkchat::ClassFormat      label, darkLabel, host;
+        for (const darkchat::ClassFormat& c : skin) {
+            if (c.key == "Label")
+                label = c;
+            if (c.key == "HostName")
+                host = c;
+        }
+        for (const darkchat::ClassFormat& c : dark) {
+            if (c.key == "Label")
+                darkLabel = c;
+        }
+        QCOMPARE(label.key, QByteArray("Label"));
+        QVERIFY(!label.colored);
+        QCOMPARE(label.format.fontWeight(), int(QFont::Bold));
+        QVERIFY(darkLabel.colored);
+        QCOMPARE(QColor::fromRgba(darkLabel.look.rgb), k.secondary);
+        QVERIFY(darkLabel.look == host.look ? false : true); // the host name's look on the skin side differs (its colour)
+        // The info panel's map: the label's dark look goes to "no colour"; the chats' map gives it the host name's colour.
+        const darkchat::ColorMap info = darkchat::buildMap(dark, skin, {}, QColor(), {}, true);
+        QVERIFY(info.uncolored.contains(darkLabel.look));
+        QVERIFY(!info.exact.contains(darkLabel.look));
+        const darkchat::ColorMap chat = darkchat::buildMap(dark, skin, {}, QColor());
+        QVERIFY(chat.uncolored.isEmpty());
+        QCOMPARE(QColor::fromRgba(chat.exact.value(darkLabel.look)), QColor(0x33, 0x59, 0x7d));
+        QTextCharFormat cell = darkLabel.format;
+        QVERIFY(darkchat::mapBack(cell, info));
+        QVERIFY(!cell.hasProperty(QTextFormat::ForegroundBrush));
+        QCOMPARE(cell.fontWeight(), int(QFont::Bold));
+    }
+
+    // ---- 2.7.2 (D9): an info panel TeamSpeak rendered while dark mode was on shows exactly what TeamSpeak renders in the skin
+    // after off and at the unload: its labels without a colour where the skin sets none (2.7.1: the host name's colour), its
+    // title, custom nickname and value classes as the skin has them; the chats' host names keep their way back ----------
+    void infoPanelWhileDark_data()
+    {
+        QTest::addColumn<QString>("sheet");
+        QTest::addColumn<bool>("unload");
+        const QVector<QPair<const char*, QString>> skins{{"TeamSpeak's skin", teamSpeakLikeChat()},
+                                                         {"colours only", QString::fromLatin1(kPlainChat)},
+                                                         {"community dark", QString::fromLatin1(kCommunityChat)}};
+        for (const auto& skin : skins) {
+            for (const bool unload : {false, true})
+                QTest::newRow(qPrintable(QString::fromLatin1("%1, %2").arg(QString::fromLatin1(skin.first), unload ? a("unload") : a("off"))))
+                    << skin.second << unload;
+        }
+    }
+    void infoPanelWhileDark()
+    {
+        QFETCH(QString, sheet);
+        QFETCH(bool, unload);
+        installSkin();
+        TsWindow t = shownWindow(3, 0, false);
+        for (QTextEdit* e : {static_cast<QTextEdit*>(t.visible), static_cast<QTextEdit*>(t.hidden), t.info})
+            e->document()->setDefaultStyleSheet(sheet);
+        // A client's panel as TeamSpeak's template writes it (made-up values).
+        const QString html = a("<p class=\"InfoFrame_Title\"><a class=\"TextMessage_UserLink\" href=\"client://3/z~Dex\">Dex</a> "
+                               "<span class=\"InfoFrame_CustomNick\">(Dexter)</span></p>"
+                               "<table class=\"InfoFrame_Table\"><tr><td class=\"Bottom Label\">Version:</td><td>3.6.2 on Windows</td></tr>"
+                               "<tr><td class=\"Label\">Online since:</td><td class=\"Highlight\">12 minutes</td></tr>"
+                               "<tr><td class=\"Label Space-Top\">Status:</td><td class=\"Important\">Away</td></tr>"
+                               "<tr><td class=\"Label\">Talk power:</td><td class=\"Active\">granted</td></tr></table>");
+        QTextDocument ref;
+        ref.setDefaultStyleSheet(darkchat::resolvePaletteRefs(sheet, QApplication::palette()));
+        ref.setHtml(html);
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        pump(30);
+        t.info->setHtml(html); // TeamSpeak renders the panel again on a selection
+        appendHtml(t.visible, styledLines().at(3)); // a host name in a chat
+        pump(30);
+        QVERIFY(colorAt(t.info->document(), findText(t.info->document(), a("Status:"))) == darkpalette::tokens().secondary);
+        if (unload)
+            dark->shutdown();
+        else
+            dark->setEnabled(false);
+        const QStringList got  = fragmentsFrom(t.info->document(), 0);
+        const QStringList want = fragmentsFrom(&ref, 0);
+        QVERIFY2(got == want, qPrintable(firstListDiff(got, want)));
+        QVERIFY(!formatAt(t.info->document(), findText(t.info->document(), a("Status:"))).hasProperty(QTextFormat::ForegroundBrush));
+        QVERIFY(darkLeftovers(t.info->document()).isEmpty());
+        // The chats are unchanged: a host name comes back in the skin's colour where it has one.
+        if (!sheet.contains(a(".TextMessage_HostName { font-weight: bold; }"))) {
+            QTextDocument chatRef;
+            chatRef.setDefaultStyleSheet(sheet);
+            appendTo(&chatRef, styledLines().at(3));
+            QCOMPARE(describe(formatAt(t.visible->document(), findText(t.visible->document(), a("example.org")))),
+                     describe(formatAt(&chatRef, findText(&chatRef, a("example.org")))));
+        }
+    }
+
+    // ---- 2.7.2 (D6): no dark-mode bookkeeping (kOriginal) is left on any format of any chat, info panel or poke window after
+    // off or the unload: not on the blocks TeamSpeak appended while dark (QTextEdit::append copies its cursor's format into
+    // them), not in the chat cursor's own format (it copies that into every later line), not on an HD emoji's picture
+    // (ChatEmoji merges the recoloured character's format into it), not on the chat layout's recoloured fragments, not in
+    // documents TeamSpeak swapped out; 2 lines appended after off carry none either ------------------------------------------
+    void noBookkeepingLeft_data()
+    {
+        QTest::addColumn<int>("way");
+        QTest::newRow("off") << 0;
+        QTest::newRow("unload with the window shown") << 1;
+        QTest::newRow("Cozy, off, then TeamSpeak classic") << 2;
+    }
+    void noBookkeepingLeft()
+    {
+        QFETCH(int, way);
+        installSkin();
+        TsWindow t = shownWindow(30, 30);
+        // The hidden tab shows a document TeamSpeak swaps later (both owned here).
+        auto first  = std::make_unique<QTextDocument>();
+        auto second = std::make_unique<QTextDocument>();
+        for (QTextDocument* d : {first.get(), second.get()})
+            d->setDefaultStyleSheet(QString::fromLatin1(kSkinChat));
+        t.hidden->setDocument(first.get());
+        appendLines(t.hidden, someLines(20, false));
+        QTextDocument* doc = t.visible->document();
+        if (way == 2)
+            fillLayoutChat(doc, tschat::lightSkin()); // lines the layout styles
+        // A TS Media warning line before dark mode (ts3api's printWarning: the bold label with U+26A0, in the plugin blue).
+        appendHtml(t.visible, a("<p><span style=\"color:#00008b\"><b>TS Media chat \u26a0</b> Upload failed.</span></p>"));
+        const int oldBlocks = doc->blockCount();
+        t.visible->moveCursor(QTextCursor::End); // TeamSpeak's chat cursor sits at the end
+        t.hidden->moveCursor(QTextCursor::End);
+        // The poke window's text: a nickname in TeamSpeak's blue.
+        auto* poke = new QDialog;
+        m_windows << poke;
+        poke->setObjectName(a("PokeDialog"));
+        auto* pokeText = new QTextBrowser(poke);
+        pokeText->setObjectName(a("msgTextBrowser"));
+        (new QVBoxLayout(poke))->addWidget(pokeText);
+        pokeText->setHtml(a("<p><a href=\"client://4/q~Ola\" style=\"color:#0000ff\">Ola</a> poked you: <b>look at the map</b></p>"));
+        poke->show();
+        pump(30);
+        const QString oldVisible = formatsOfBlocks(doc, 0, oldBlocks - 1);
+
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        pump(100); // the hidden chat by the slice timer
+        QVERIFY(darkchat::taggedCount(first.get()) > 0);
+        QVERIFY(darkchat::taggedCount(pokeText->document()) > 0);
+        // While dark: the warning's U+26A0 becomes an HD emoji's picture as ChatEmoji makes it (the recoloured character's
+        // format merged into the picture's, the text format kept).
+        {
+            layoutformat::MutatingScope scope;
+            QTextCursor                 c = doc->find(QString(QChar(0x26a0)));
+            QVERIFY(!c.isNull());
+            const QTextCharFormat glyph = c.charFormat();
+            QVERIFY(glyph.hasProperty(darkchat::kOriginal));
+            QTextImageFormat image;
+            image.merge(glyph);
+            image.setObjectType(QTextFormat::ImageObject);
+            image.setProperty(emojiformat::kOriginalText, QString(QChar(0x26a0)));
+            image.setProperty(emojiformat::kOriginalFormat, QVariant::fromValue<QTextFormat>(glyph));
+            image.setName(a("tsmedia-emoji:26a0@16"));
+            image.setWidth(16);
+            image.setHeight(16);
+            c.insertText(QString(QChar::ObjectReplacementCharacter), image);
+        }
+        // TeamSpeak's lines (QTextEdit::append, the cursor at the end on a recoloured fragment).
+        for (int i = 0; i < 5; ++i)
+            t.visible->append(chatLine(a("22:00:00"), a("TextMessage_ClientJoined"), user(a("Ivo")) + a(" entered your channel")));
+        for (int i = 0; i < 3; ++i)
+            t.hidden->append(chatLine(a("22:00:10"), a("TextMessage_ClientLeft"), user(a("Uma")) + a(" left your channel")));
+        t.info->setHtml(a("<p class=\"InfoFrame_Title\"><a class=\"TextMessage_UserLink\" href=\"client://3/z~Dex\">Dex</a></p>"
+                          "<table class=\"InfoFrame_Table\"><tr><td class=\"Label\">Version:</td><td>3.6.2</td></tr></table>"));
+        pokeText->append(a("<p><a href=\"client://4/q~Ola\" style=\"color:#0000ff\">Ola</a> poked you again</p>"));
+        pump(30);
+        // TeamSpeak swaps the hidden chat's document (a reconnect's history), the new one filled.
+        t.hidden->setDocument(second.get());
+        appendLines(t.hidden, someLines(10, false));
+        dark->checkDocuments();
+        t.hidden->moveCursor(QTextCursor::End);
+        for (int i = 0; i < 2; ++i)
+            t.hidden->append(chatLine(a("22:00:20"), a("TextMessage_ClientLeft"), user(a("Uma")) + a(" left your channel")));
+        pump(30);
+        if (way == 2) {
+            layoutformat::LayoutEditScope editing;
+            QVERIFY(layoutdoc::styleAll(doc, layoutEnv(true)) >= 3);
+        }
+        // Without the fix there is something to find.
+        QVERIFY(!darkLeftovers(doc).isEmpty());
+        if (way == 1)
+            dark->shutdown();
+        else
+            dark->setEnabled(false);
+        if (way == 2) {
+            layoutformat::LayoutEditScope editing;
+            layoutdoc::restoreAll(doc);
+        }
+        const auto check = [&](const char* when) {
+            const QVector<QPair<const char*, QTextDocument*>> docs{{"visible chat", doc},        {"hidden chat", second.get()},
+                                                                   {"swapped out", first.get()}, {"info panel", t.info->document()},
+                                                                   {"poke window", pokeText->document()}};
+            for (const auto& d : docs) {
+                const QStringList left = darkLeftovers(d.second);
+                QVERIFY2(left.isEmpty(), qPrintable(QString::fromLatin1("%1, %2: %3").arg(QString::fromLatin1(when), QString::fromLatin1(d.first), left.mid(0, 6).join(a("; ")))));
+            }
+            for (QTextEdit* view : {static_cast<QTextEdit*>(t.visible), static_cast<QTextEdit*>(t.hidden), t.info, static_cast<QTextEdit*>(pokeText)})
+                QVERIFY2(!view->currentCharFormat().hasProperty(darkchat::kOriginal), qPrintable(QString::fromLatin1(when) + a(": ") + view->objectName()));
+        };
+        check("after the way back");
+        // The glyph's picture keeps the warning's text format of the skin (what the emoji module gives back).
+        // TeamSpeak's next lines after off copy nothing of dark mode.
+        for (int i = 0; i < 2; ++i) {
+            t.visible->append(chatLine(a("22:10:00"), a("TextMessage_ClientJoined"), user(a("Ivo")) + a(" entered your channel")));
+            t.hidden->append(chatLine(a("22:10:00"), a("TextMessage_ClientLeft"), user(a("Uma")) + a(" left your channel")));
+            pokeText->append(a("<p>and again</p>"));
+        }
+        check("2 lines after");
+        if (way != 2) // (Cozy: the layout's restore gives the lines back in their own formats; compared by layoutAcrossToggle)
+            QVERIFY2(formatsOfBlocks(doc, 0, oldBlocks - 1) == oldVisible, qPrintable(firstDiff(formatsOfBlocks(doc, 0, oldBlocks - 1), oldVisible)));
+        t.hidden->setDocument(nullptr);
     }
 
     // ---- T-9i (2.7.1): a custom skin with a picture as the chat's background (dark here, which the palette doesn't know): the
@@ -2904,10 +3668,25 @@ class TestDarkMode : public QObject
         const QString draw = bodyOf(ci, "bool ChatIntegration::drawForLook(");
         for (const char* needle : {"Core::StillDecode::CachedOnly", "Core::StillDecode::CheapOnly", "Core::StillDecode::Any", "kUnloadDecodeMs",
                                    "onScreen(browser, view, key, true)", "refreshPreview(browser, key, false, true)", "m_core->setStillDecode(before);",
-                                   "if (draw(Core::StillDecode::CachedOnly))\n        return true;", "m_unloadDecodeNs += clock.nsecsElapsed();"})
+                                   "if (draw(Core::StillDecode::CachedOnly) || fromKept())\n        return true;", "m_unloadDecodeNs += clock.nsecsElapsed();",
+                                   "return draw(Core::StillDecode::CachedOnly) || fromKept() || draw(Core::StillDecode::Any);"})
             QVERIFY2(draw.contains(a(needle)), needle);
         QVERIFY(bodyOf(ci, "bool ChatIntegration::refreshPreview(").contains(a("if (keepDrawn && m_core->stillStandIns() != standIns && view->resourced.contains(key)) {")));
-        QVERIFY(ci.contains(a("refreshPreview(b, key, true, view.lookOld.contains(key));")));
+        // 2.7.2 (D1): at the unload what Core has, then the still a picture was drawn from in dark mode, then (only for a picture
+        // never drawn in dark mode) a cheap decode; the stills are noted only while dark mode is on, a draw for TeamSpeak's
+        // look drops them, so does the budget's swap; every draw of ours asks stillFor, not Core.
+        QVERIFY(draw.indexOf(a("fromKept()")) < draw.indexOf(a("Core::StillDecode::CheapOnly")));
+        QVERIFY(draw.contains(a("m_stillOverride  = &kept;")) && draw.contains(a("m_stillOverride  = nullptr;")));
+        QCOMPARE(ci.count(a("m_recordStills = DarkMode::isActive();")), 3);
+        QVERIFY(bodyOf(ci, "QVector<ChatIntegration::KeptStill> ChatIntegration::keptAfterDraw(").contains(a("if (!DarkMode::isActive())\n        return {};")));
+        QVERIFY(bodyOf(ci, "void ChatIntegration::pictureSwapped(").contains(a("view->keptStills.remove(name.mid(kScheme.length()));")));
+        // Review fix: an album grid a new plan frees (renamed as its items arrive) leaves the books, its tiles' stills with it.
+        const QString freed = bodyOf(sourceText(a("src/chatalbums.cpp")), "void ChatIntegration::applyAlbums(");
+        QVERIFY(freed.contains(a("view->scaler->forget(resourceName(id));")));
+        QVERIFY(freed.indexOf(a("view->keptStills.remove(id);")) > freed.indexOf(a("view->scaler->forget(resourceName(id));")));
+        QVERIFY(!bodyOf(ci, "QImage ChatIntegration::renderFor(").contains(a("m_core->still(")));
+        QVERIFY(bodyOf(sourceText(a("src/chatalbums.cpp")), "QImage ChatIntegration::renderAlbumFor(").contains(a("t.still            = stillFor(key, pixels);")));
+        QVERIFY(ci.contains(a("                else\n                    drawForLook(b, view, key);"))); // a stale picture in an older look
         const int show = ci.indexOf(a("case QEvent::Show:"));
         QVERIFY(show > 0 && ci.mid(show, 600).contains(a("lookPending")) && ci.mid(show, 600).contains(a("drawOldLooks(browser, *v, true, \"at show\");")));
         const int holds = ci.indexOf(a("m_activeHolds = 0;"));
@@ -3233,6 +4012,318 @@ class TestDarkMode : public QObject
     }
 
     // ---- the CRASH RULE in the sources --------------------------------------------------------------------------------------
+    // ---- 2.7.2 (D3): the chat column keeps the skin's width ------------------------------------------------------------------
+    // The dark sheet's tab pane had no side insets where the skin's (the native frame) has some: the chat column changed its
+    // width with every toggle, so the visible chat rewrapped inside the toggle and a hidden one at its Show, after which
+    // TS Media's own-right bubbles, dividers and pictures followed on 180-200 ms timers (live: a horizontal scroll bar for
+    // ~200 ms, then a jump). Now the pane keeps the skin's insets in the window colour: the visible chat's column, and the
+    // hidden chat's at its Show, are as wide in both looks; the rule names the chat tab widget's class only.
+    void chatColumnKept()
+    {
+        installSkin();
+        TsWindow t = shownWindow(300, 300);
+        t.tabs->setCurrentIndex(1); // the hidden chat laid out once, as TeamSpeak's tabs are after a while
+        pump(30);
+        t.tabs->setCurrentIndex(0);
+        pump(30);
+        const int visibleWidth = t.visible->viewport()->width();
+        const int hiddenWidth  = t.hidden->viewport()->width();
+        QVERIFY(visibleWidth > 300);
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        const darkpalette::Metrics m = dark->metrics();
+        qInfo("skin pane: %s left %d right %d; column %d px", qPrintable(m.paneSelector), m.paneLeft, m.paneRight, visibleWidth);
+        QCOMPARE(m.paneSelector, a("DarkTestChatTabs"));
+        QVERIFY(qApp->styleSheet().contains(a("DarkTestChatTabs::pane { border-left: %1px solid ").arg(m.paneLeft)));
+        QVERIFY(!qApp->styleSheet().contains(a("QTabWidget::pane { border-left:")));
+        QCOMPARE(t.visible->viewport()->width(), visibleWidth); // no rewrap of the visible chat inside the toggle
+        pump(30);
+        t.tabs->setCurrentIndex(1); // the hidden chat's Show: the size it gets now
+        QCOMPARE(t.hidden->viewport()->width(), hiddenWidth);
+        pump(30);
+        t.tabs->setCurrentIndex(0);
+        pump(30);
+        dark->setEnabled(false);
+        QCOMPARE(t.visible->viewport()->width(), visibleWidth);
+        pump(30);
+        t.tabs->setCurrentIndex(1);
+        QCOMPARE(t.hidden->viewport()->width(), hiddenWidth);
+        t.tabs->setCurrentIndex(0);
+        pump(30);
+        // A tab widget that isn't shown yet (TeamSpeak's start with dark mode on): its style's own answer is the same.
+        auto* lone = new DarkTestChatTabs;
+        m_windows << lone;
+        auto* chat = new QTextBrowser;
+        chat->setObjectName(a("ChatTab"));
+        lone->addTab(chat, a("Lobby"));
+        lone->resize(t.tabs->size());
+        t.window->hide();
+        auto late = makeDark();
+        late->setEnabled(true);
+        QCOMPARE(late->metrics().paneSelector, a("DarkTestChatTabs"));
+        QCOMPARE(late->metrics().paneLeft, m.paneLeft);
+        QCOMPARE(late->metrics().paneRight, m.paneRight);
+        late->setEnabled(false);
+    }
+
+    // 2.7.2 live test: under a dark application palette (dark mode's) TeamSpeak adds its own dark-mode files, after a "\n",
+    // to the sheet of every chat it makes (<style>_chat_darkmode.qss: a new server tab or private chat while dark mode is on,
+    // every chat of a start with dark mode on) and to the application sheet when it puts a skin in place
+    // (<style>_darkmode.qss: a style picked in Options -> Design meanwhile). 2.7.0-2.7.1 gave those sheets back at off and at
+    // the unload: such a chat kept TeamSpeak's dark chat colours for good (light blue times and lines on white, its own
+    // name colour and weight), and the chat tab names were white on the light tab bar. Now the skin's own sheets go back,
+    // and the chat's lines get the skin's look.
+    void teamSpeakDarkFilesGoBack_data()
+    {
+        QTest::addColumn<bool>("unload");
+        QTest::newRow("off") << false;
+        QTest::newRow("unload") << true;
+    }
+    void teamSpeakDarkFilesGoBack()
+    {
+        QFETCH(bool, unload);
+        // TeamSpeak's styles folder (the config folder's here) with its two dark-mode files, written the way TeamSpeak's are.
+        const QString chatDark = a(".TextMessage_UserLink, .TextMessage_ChannelLink { color: #006ad2; font-weight: normal; }\n"
+                                   ".TextMessage_Welcome { color: #11de4d; }\n"
+                                   ".TextMessage_Normal, .TextMessage_ClientJoined, .TextMessage_ClientLeft, .TextMessage_Time { color: #83acd2; }\n");
+        const QString appDark  = a("QTabBar::tab { color: white; }\n");
+        QVERIFY(QDir().mkpath(m_dir->path() + a("/styles")));
+        for (const auto& file : {qMakePair(a("default_chat_darkmode.qss"), chatDark), qMakePair(a("default_darkmode.qss"), appDark)}) {
+            QFile f(m_dir->path() + a("/styles/") + file.first);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(file.second.toUtf8());
+        }
+        installSkin();
+        TsWindow t    = shownWindow(10, 10);
+        auto     dark = makeDark();
+        dark->setEnabled(true);
+        pump(50);
+        // A chat TeamSpeak makes while dark mode is on: its sheet with the dark-mode file, its first lines printed under it
+        // before dark mode sees the chat.
+        const QString skinChat = QString::fromLatin1(kSkinChat);
+        auto*         b        = new QTextBrowser;
+        b->setObjectName(a("ChatTab"));
+        b->setOpenLinks(false);
+        b->document()->setDefaultStyleSheet(skinChat + QLatin1Char('\n') + chatDark);
+        const QStringList lines{chatLine(a("20:00:00"), a("TextMessage_Welcome"), a("Welcome to the test server")),
+                                chatLine(a("20:00:01"), a("TextMessage_Connected"), a("Connected as ") + user(a("Amy"))),
+                                chatLine(a("20:00:05"), a("TextMessage_ClientJoined"), user(a("Zed")) + a(" joined your channel"))};
+        appendHtml(b, lines.at(0));
+        appendHtml(b, lines.at(1));
+        t.tabs->addTab(b, a("New tab"));
+        t.tabs->setCurrentWidget(b);
+        pump(80);
+        QCOMPARE(b->document()->defaultStyleSheet(), dark->chatSheetText()); // dark mode has it
+        appendHtml(b, lines.at(2)); // a line while dark
+        pump(80);
+        // A style picked in Options -> Design meanwhile (the same one): TeamSpeak puts it in place with its dark-mode file.
+        qApp->setStyleSheet(QString::fromLatin1(kSkinSheet) + QLatin1Char('\n') + appDark);
+        pump(80);
+        QCOMPARE(dark->stats().adoptions, 1);
+        QCOMPARE(dark->snapshotSheet(), QString::fromLatin1(kSkinSheet));
+        if (unload)
+            dark->shutdown();
+        else
+            dark->setEnabled(false);
+        pump(30);
+        QVERIFY(!DarkMode::isActive());
+        QCOMPARE(qApp->styleSheet(), QString::fromLatin1(kSkinSheet));
+        QCOMPARE(b->document()->defaultStyleSheet(), skinChat);
+        QCOMPARE(t.visible->document()->defaultStyleSheet(), skinChat); // a chat made before: as it was
+        // Every line as in a chat TeamSpeak made with the skin's palette: the colour and the weight of each piece.
+        QTextDocument reference;
+        reference.setDefaultStyleSheet(skinChat);
+        for (const QString& line : lines) {
+            QTextCursor c(&reference);
+            c.movePosition(QTextCursor::End);
+            if (!reference.isEmpty())
+                c.insertBlock();
+            c.insertHtml(line);
+        }
+        const auto styleAt = [](QTextDocument* doc, int position) {
+            QTextCursor c(doc);
+            c.setPosition(position + 1);
+            const QTextCharFormat f = c.charFormat();
+            return QString::fromLatin1("%1/%2").arg(f.foreground().color().name()).arg(f.fontWeight() > QFont::Normal ? 1 : 0);
+        };
+        for (const char* piece : {"<20:00:00>", "Welcome to", "<20:00:01>", "Connected as", "Amy", "<20:00:05>", "Zed", "joined your channel"}) {
+            const int got  = findText(b->document(), a(piece));
+            const int want = findText(&reference, a(piece));
+            QVERIFY2(got >= 0 && want >= 0, piece);
+            QVERIFY2(styleAt(b->document(), got) == styleAt(&reference, want),
+                     qPrintable(a(piece) + a(": ") + styleAt(b->document(), got) + a(" want ") + styleAt(&reference, want)));
+        }
+        QCOMPARE(colorAt(b->document(), findText(b->document(), a("Welcome to"))), QColor(0x08, 0x7d, 0x22));
+        QCOMPARE(darkchat::taggedCount(b->document()), 0);
+        // A line after off: the skin's look, as TeamSpeak inserts it with the skin's sheet.
+        appendHtml(b, chatLine(a("20:01:00"), a("TextMessage_ClientLeft"), user(a("Kim")) + a(" left your channel")));
+        QCOMPARE(colorAt(b->document(), findText(b->document(), a("Kim"))), QColor(0x00, 0x2f, 0x5d));
+        QCOMPARE(colorAt(b->document(), findText(b->document(), a("<20:01:00>"))), QColor(0x33, 0x59, 0x7d));
+    }
+
+    // Review fix: TeamSpeak starts with dark mode on before it has built any chat (the live logs: "2 widgets"), so there was
+    // nothing to measure: the dark sheet kept a default chat frame and scroll bar and no pane rule until dark mode went off
+    // and on again, and the first off of the session (or a Disable or Reload) changed every chat's column (the D3 rewrap).
+    // Now probes under the skin's sheet measure all three at once; the pane rule names TeamSpeak's chat tab widget class
+    // until the first chat shows its own (another class: the sheet is set again once, with that one).
+    void chatColumnKeptFromStart()
+    {
+        // A skin whose chat frame and scroll bar aren't the defaults (frame 1, the style's scroll bar).
+        const QString sheet = QString::fromLatin1(kSkinSheet).replace(a("border: 1px solid #a0a0a0;"), a("border: 3px solid #a0a0a0;"))
+                              + a("QTextEdit#ChatTab QScrollBar:vertical { width: 11px; }\n");
+        qApp->setStyleSheet(sheet);
+        QPalette p = QApplication::palette();
+        p.setColor(QPalette::Link, QColor(0x1c, 0x82, 0xcc));
+        QApplication::setPalette(p);
+        // The skin's column and chat geometry, measured on a chat (as a toggle does).
+        darkpalette::Metrics skin;
+        int                  visibleWidth = 0, hiddenWidth = 0;
+        {
+            TsWindow ref = shownWindow(300, 300);
+            ref.tabs->setCurrentIndex(1);
+            pump(30);
+            ref.tabs->setCurrentIndex(0);
+            pump(30);
+            visibleWidth  = ref.visible->viewport()->width();
+            hiddenWidth   = ref.hidden->viewport()->width();
+            auto measured = makeDark();
+            measured->setEnabled(true);
+            skin = measured->metrics();
+            measured->setEnabled(false);
+            delete ref.window;
+            pump(30);
+        }
+        qInfo("skin: frame %d, scroll bar %d, pane %s left %d right %d; column %d px", skin.chatFrame, skin.chatBar, qPrintable(skin.paneSelector), skin.paneLeft,
+              skin.paneRight, visibleWidth);
+        QCOMPARE(skin.chatFrame, 3);
+        QCOMPARE(skin.chatBar, 11);
+        QCOMPARE(skin.paneSelector, a("DarkTestChatTabs"));
+        QVERIFY(visibleWidth > 300 && hiddenWidth > 300);
+
+        // TeamSpeak's start: dark mode on before any chat exists.
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        darkpalette::Metrics m = dark->metrics();
+        QCOMPARE(m.chatFrame, skin.chatFrame);
+        QCOMPARE(m.chatBar, skin.chatBar);
+        QCOMPARE(m.paneLeft, skin.paneLeft);
+        QCOMPARE(m.paneRight, skin.paneRight);
+        QCOMPARE(m.paneSelector, a("ChatTabWidget")); // TeamSpeak's chat tab widget
+        QVERIFY(qApp->styleSheet().contains(a("ChatTabWidget::pane { border-left: %1px solid ").arg(skin.paneLeft)));
+        // TeamSpeak builds its window. Its tab widget is another class here: the sheet is set again once, naming it.
+        TsWindow t = shownWindow(300, 300);
+        pump(30);
+        m = dark->metrics();
+        QCOMPARE(m.paneSelector, a("DarkTestChatTabs"));
+        QVERIFY(qApp->styleSheet().contains(a("DarkTestChatTabs::pane { border-left: %1px solid ").arg(skin.paneLeft)));
+        QVERIFY(!qApp->styleSheet().contains(a("\nChatTabWidget::pane")));
+        QCOMPARE(t.visible->viewport()->width(), visibleWidth); // the skin's column in dark mode
+        t.tabs->setCurrentIndex(1);
+        QCOMPARE(t.hidden->viewport()->width(), hiddenWidth);
+        pump(30);
+        t.tabs->setCurrentIndex(0);
+        pump(30);
+        // The session's first off: no chat changes its column (the visible one inside the off, the hidden one at its Show).
+        dark->setEnabled(false);
+        QCOMPARE(t.visible->viewport()->width(), visibleWidth);
+        pump(30);
+        t.tabs->setCurrentIndex(1);
+        QCOMPARE(t.hidden->viewport()->width(), hiddenWidth);
+        QCOMPARE(t.hidden->horizontalScrollBar()->maximum(), 0);
+        t.tabs->setCurrentIndex(0);
+        pump(30);
+        delete t.window;
+        pump(30);
+
+        // A skin with a pane rule of its own for TeamSpeak's chat tab widget class: the start's probe reads that rule too.
+        qApp->setStyleSheet(sheet + a("ChatTabWidget::pane { border-left: 5px solid #808080; border-right: 7px solid #808080; }\n"));
+        auto own = makeDark();
+        own->setEnabled(true);
+        QCOMPARE(own->metrics().paneSelector, a("ChatTabWidget"));
+        QCOMPARE(own->metrics().paneLeft, 5);
+        QCOMPARE(own->metrics().paneRight, 7);
+        own->setEnabled(false);
+    }
+
+    // ---- 2.7.2 (D7): the Settings window open during a toggle --------------------------------------------------------------
+    // The window as plugin.cpp builds it (every section), open, dark mode on and off twice.
+    // Each switch sets the window's own sheet once, after the application sheet is the new one, to exactly what a re-theme
+    // gives afterwards, and lays each page out at most once. 2.7.1 re-themed at every step of the switch (on the palette with
+    // the skin's sheet still in place, then on the sheet; off a third time with a button still polished by the dark sheet)
+    // and each of the 8 pages laid itself out 6-8 times: the switch took 400-580 ms with the window open (live).
+    void settingsWindowThemedOnce()
+    {
+        installSkin();
+        TsWindow        t      = shownWindow(200, 100);
+        SettingsDialog* dialog = settingsWindow();
+        QStackedWidget* stack  = dialog->pageStack();
+        QVERIFY(stack && stack->count() == 8);
+        const QString skin = qApp->styleSheet();
+        auto          dark = makeDark();
+        for (int round = 0; round < 2; ++round) {
+            for (const bool on : {true, false}) {
+                const int sets  = dialog->sheetSets();
+                const int pages = dialog->pageStyleChanges();
+                dark->setEnabled(on);
+                const QString why = QStringLiteral("round %1, dark mode %2").arg(round).arg(QString::fromLatin1(on ? "on" : "off"));
+                QVERIFY2(dialog->sheetSets() - sets == 1, qPrintable(why + QStringLiteral(": %1 sets").arg(dialog->sheetSets() - sets)));
+                QVERIFY2(dialog->sheetSetUnder() == qApp->styleSheet(), qPrintable(why + QStringLiteral(": set under the other sheet")));
+                QCOMPARE(qApp->styleSheet() == skin, !on);
+                const int laidOut = dialog->pageStyleChanges() - pages;
+                QVERIFY2(laidOut <= stack->count(), qPrintable(why + QStringLiteral(": the pages laid out %1 times").arg(laidOut)));
+                // Exact: the tokens it read are the final ones (a re-theme now changes nothing).
+                const settingstheme::Tokens tokens = dialog->themeTokens();
+                QEvent change(QEvent::StyleChange);
+                QCoreApplication::sendEvent(dialog, &change);
+                QCOMPARE(dialog->sheetSets() - sets, 1);
+                QCOMPARE(dialog->themeTokens().window, tokens.window);
+                QCOMPARE(dialog->themeTokens().card, tokens.card);
+                QCOMPARE(dialog->themeTokens().accent, tokens.accent);
+                QCOMPARE(dialog->themeTokens().dark, tokens.dark);
+                QCOMPARE(tokens.dark, on);
+                pump(20);
+            }
+        }
+        Q_UNUSED(t);
+    }
+
+    // The toggle's time with the Settings window open and closed (logged; live 2.7.1: on 402 ms, off 577 ms open on a long
+    // chat, 154 and 233 closed). Open, it costs one repolish of the window by the new application sheet over closed.
+    void timingSettingsOpen()
+    {
+        installSkin();
+        TsWindow t    = shownWindow(600, 400);
+        auto     dark = makeDark();
+        dark->setDeferHiddenPlaces(true);
+        const auto measure = [&](qint64* on, qint64* off) {
+            QVector<qint64> a, b;
+            for (int i = 0; i < 3; ++i) {
+                QElapsedTimer clock;
+                clock.start();
+                dark->setEnabled(true);
+                a << clock.elapsed();
+                pump(20);
+                clock.restart();
+                dark->setEnabled(false);
+                b << clock.elapsed();
+                pump(20);
+            }
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            *on  = a.at(1);
+            *off = b.at(1);
+        };
+        qint64 closedOn = 0, closedOff = 0, openOn = 0, openOff = 0;
+        measure(&closedOn, &closedOff);
+        SettingsDialog* dialog = settingsWindow();
+        measure(&openOn, &openOff);
+        qInfo("dark mode with the Settings window (%d widgets) closed: on %lld ms, off %lld ms; open: on %lld ms, off %lld ms (median of 3)",
+              dialog->findChildren<QWidget*>().size(), static_cast<long long>(closedOn), static_cast<long long>(closedOff), static_cast<long long>(openOn),
+              static_cast<long long>(openOff));
+        QVERIFY2(openOn <= 900 && openOff <= 900, "the toggle with the Settings window open");
+        Q_UNUSED(t);
+    }
+
     void sourceRules()
     {
         for (const char* file : {"src/darkmode.cpp", "src/darkpalette.cpp", "src/darkchat.cpp", "src/darkglyphs.cpp", "src/darktitlebar.cpp",

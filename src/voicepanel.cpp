@@ -21,6 +21,7 @@
 #include <cmath>
 
 #include "audio/waveform.h"
+#include "darkmode.h" // 2.7.2 (D7): one re-theme per dark mode switch
 #include "i18n.h"
 #include "medialink.h"
 #include "previewpaint.h"
@@ -675,7 +676,8 @@ void VoicePanel::closeEvent(QCloseEvent* event)
 void VoicePanel::changeEvent(QEvent* event)
 {
     QDialog::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        && !DarkMode::themeLater(this, &VoicePanel::applyTheme)) // 2.7.2 (D7): once per dark mode switch
         applyTheme();
 }
 

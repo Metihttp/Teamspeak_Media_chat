@@ -108,7 +108,9 @@ constexpr int kGapBottom = 4;
 constexpr int kSeparatorProperty = QTextFormat::UserProperty + 0x7453;
 
 // 2.7.1: at a Disable's or Reload's unload, the pictures still in an older look whose still Core doesn't have at hand get
-// a cheap decode for at most this long in all (ChatIntegration::drawForLook); the rest keep the picture they have.
+// a cheap decode for at most this long in all (ChatIntegration::drawForLook); the rest keep the picture they have. 2.7.2:
+// a picture drawn while dark mode was on is drawn from the still it was drawn from (View::keptStills) and needs none of
+// it; the budget is left for pictures never drawn in dark mode (in the look of a style picked while it was on).
 constexpr qint64 kUnloadDecodeMs = 150;
 
 // Content (drawn picture) size of a preview object in du, without the transparent gaps (2.5 zoom: the du size the
@@ -550,7 +552,23 @@ void ChatIntegration::start()
         zoomHost.endLoadHolds = [this] { endLoadHolds(); };
         zoomHost.discover     = [this] { discover(); };
         zoomHost.visible      = [this] { return visibleChatBrowser(); };
-        m_zoom                = new ChatZoom(zoomHost, this);
+        zoomHost.placed       = [this](QTextBrowser* browser) { // 2.7.2 (D4): the zoom's place at a Show, kept by the pass
+            View* view = viewFor(browser);
+            if (!view || !view->scaler || !view->scaler->pending())
+                return;
+            view->scaler->retake();
+#ifdef TSMEDIA_TESTHOOKS
+            ts3::log(QString::fromLatin1("[test] place: chat %1 shown zoomed: its place kept, the scale pass took it (%2/%3)")
+                         .arg(view->number)
+                         .arg(browser->verticalScrollBar()->value())
+                         .arg(browser->verticalScrollBar()->maximum()));
+#endif
+        };
+        zoomHost.restyle = [this](QTextBrowser* browser) { // 2.7.2 (D4): the layout for the new font, before the first paint
+            if (m_layout)
+                m_layout->styleNow(browser);
+        };
+        m_zoom = new ChatZoom(zoomHost, this);
         connect(m_zoom, &ChatZoom::chatZoomChanged, this, &ChatIntegration::chatZoomChanged);
     }
     // 2.7.1: a chat filled while hidden shows its end at its first Show, also when TS Media's layout hid the line that
@@ -591,6 +609,10 @@ void ChatIntegration::start()
                          .arg(browser->verticalScrollBar()->maximum()));
         };
 #endif
+        hooks.settled = [this](QTextBrowser* browser) { // 2.7.2 (D8): the links on screen that may load by themselves start
+            if (m_links)                                    // right after the Show, before the first paint
+                m_links->shown(browser);
+        };
         m_showPlace = new ShowPlace(hooks, this);
     }
     // 2.7 F6: a chat's style-sheet background sampled outside any paint (design M8), then one restyle if it changed.
@@ -705,6 +727,7 @@ void ChatIntegration::discover()
             v.resourced.clear();
             v.stale.clear();
             v.lookOld.clear();
+            v.keptStills.clear(); // 2.7.2: the old document's pictures went with it
             v.lookPending = false; // 2.7.1: the scan draws the new document's pictures for the look it has
             if (v.scaler) // 2.5 zoom: the old document's pictures went with it; the books start again (review fix)
                 v.scaler->resetLedger();
@@ -1315,8 +1338,13 @@ void ChatIntegration::attachScale(QTextBrowser* browser)
     // A FontChange on the chat (Ctrl + wheel, the chat font, a monitor move): a pass, the place captured now (before
     // Qt lays the chat out with the new font).
     host.fontEvent = [this, b] {
-        if (View* v = b ? viewFor(b) : nullptr; v && v->scaler)
+        if (View* v = b ? viewFor(b) : nullptr; v && v->scaler) {
+#ifdef TSMEDIA_TESTHOOKS // 2.7.2 (D4): the live test's trace of what starts a pass
+            if (!v->scaler->pending())
+                ts3::log(QString::fromLatin1("[test] scale: chat %1 pass from a font event at %2/%3").arg(v->number).arg(b->verticalScrollBar()->value()).arg(b->verticalScrollBar()->maximum()));
+#endif
             v->scaler->request();
+        }
     };
     // 2.7 F6: a new palette or style (a skin, a custom sheet): the chat's colours are read again (its background sampled
     // again later, the last sample in use until then), and TS Media's lines follow the visible chat. Never on a font
@@ -1372,8 +1400,16 @@ void ChatIntegration::checkScale(QTextBrowser* browser, bool force)
     view->keyPreset = preset;
     view->keyIndent = indent;
     view->keyBubble = bubble;
-    if (!computeScaleFor(browser).sameAs(view->scale))
+    if (!computeScaleFor(browser).sameAs(view->scale)) {
+#ifdef TSMEDIA_TESTHOOKS // 2.7.2 (D4): the live test's trace of what starts a pass
+        ts3::log(QString::fromLatin1("[test] scale: chat %1 pass from a %2 check at %3/%4")
+                     .arg(view->number)
+                     .arg(force ? QString::fromLatin1("forced") : QString::fromLatin1("paint"))
+                     .arg(browser->verticalScrollBar()->value())
+                     .arg(browser->verticalScrollBar()->maximum()));
+#endif
         view->scaler->request();
+    }
 }
 
 void ChatIntegration::applyScale(QTextBrowser* browser, const PreviewScale& scale)
@@ -1471,6 +1507,7 @@ void ChatIntegration::pictureSwapped(QTextBrowser* browser, const QString& name,
         if (View* view = viewFor(browser); view && name.startsWith(kScheme)) {
             view->stale.insert(name.mid(kScheme.length())); // drawn again within 400 px of the view
             view->lookOld.remove(name.mid(kScheme.length())); // 2.7.1: a blank is in no look (nothing of it to keep)
+            view->keptStills.remove(name.mid(kScheme.length())); // 2.7.2: nor anything to draw it from again
         }
         break;
     case ChatScale::Links:
@@ -1542,6 +1579,47 @@ void ChatIntegration::logScale(QTextBrowser* browser, const PreviewScale& scale)
                  .arg(scale.ratio(), 0, 'f', 2));
 }
 
+MediaStill ChatIntegration::stillFor(const QString& key, const QSize& box)
+{
+    if (m_stillOverride) {
+        for (const KeptStill& kept : *m_stillOverride) {
+            if (kept.key != key || kept.still.image.isNull())
+                continue;
+            // The kept still for this box, as Core fits a still of another size (otherSizeStill): a still smaller than
+            // the box it was made for is the picture's own size (never upscaled), otherwise it fills the box.
+            MediaStill  s      = kept.still;
+            const QSize size   = s.image.size();
+            const bool  whole  = kept.box.isValid() && size.width() < kept.box.width() && size.height() < kept.box.height();
+            const QSize target = box.isEmpty() || box == kept.box ? size
+                                 : whole                         ? size.scaled(box, Qt::KeepAspectRatio).boundedTo(size).expandedTo(QSize(1, 1))
+                                                                 : size.scaled(box, Qt::KeepAspectRatio).expandedTo(QSize(1, 1));
+            if (target != size)
+                s.image = s.image.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            return s;
+        }
+    }
+    const MediaStill s = m_core->still(key, box);
+    // While dark mode is on: the stills a picture is drawn from (a file's; a blurhash is made again at once at any time).
+    if (m_recordStills && !s.image.isNull() && (s.source == MediaStill::Full || s.source == MediaStill::Preview))
+        m_recorded.append({key, box, s});
+    return s;
+}
+
+QVector<ChatIntegration::KeptStill> ChatIntegration::keptAfterDraw(View& view, const QString& key) const
+{
+    if (!DarkMode::isActive())
+        return {}; // drawn for TeamSpeak's look: nothing to keep
+    return m_recorded.isEmpty() ? view.keptStills.value(key) : m_recorded;
+}
+
+qint64 ChatIntegration::keptBytes(const QVector<KeptStill>& kept)
+{
+    qint64 bytes = 0;
+    for (const KeptStill& k : kept)
+        bytes += k.still.image.sizeInBytes();
+    return bytes;
+}
+
 QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSize* logicalSize)
 {
     if (albums::isObjectId(key))
@@ -1572,7 +1650,7 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
     const InlineMediaController::Mode mode = m_media ? m_media->mode(key) : InlineMediaController::Mode::Still;
     if (mode == InlineMediaController::Mode::Video) {
         const QImage     frame  = m_media->frame(key);
-        const MediaStill poster = frame.isNull() ? m_core->still(key, stillPixels) : MediaStill();
+        const MediaStill poster = frame.isNull() ? stillFor(key, stillPixels) : MediaStill();
         PlaybackOverlay  o      = m_media->overlay(key);
         if (browser != m_hoverBrowser)
             o.hover = VideoZone::None; // the pointer is over this video in another chat
@@ -1598,11 +1676,11 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
         if (!frame.isNull())
             img = renderAnimatedFrame(shown, frame, style, &size);
         else
-            img = renderPreview(shown, m_core->still(key, stillPixels), style, &size);
+            img = renderPreview(shown, stillFor(key, stillPixels), style, &size);
         fromStill = frame.isNull();
     }
     if (img.isNull()) {
-        img       = renderPreview(*e, media ? m_core->still(key, stillPixels) : MediaStill(), style, &size);
+        img       = renderPreview(*e, media ? stillFor(key, stillPixels) : MediaStill(), style, &size);
         fromStill = true;
     }
 
@@ -1625,19 +1703,28 @@ QImage ChatIntegration::renderFor(QTextBrowser* browser, const QString& key, QSi
 
 void ChatIntegration::insertPreview(QTextBrowser* browser, int position, const QString& key, bool keepPlace)
 {
-    QSize        size;
+    QSize size;
+    m_recordStills = DarkMode::isActive(); // 2.7.2 (D1): the stills it is drawn from, while dark mode is on
+    m_recorded.clear();
     const QImage img = renderFor(browser, key, &size);
+    m_recordStills = false;
     if (img.isNull())
         return;
 
-    QTextDocument* doc    = browser->document();
-    const bool     bottom = isAtBottom(browser);
-    const QUrl     url(kScheme + key);
-    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
-        scaler->putPicture(url.toString(), paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media);
+    QTextDocument*           doc    = browser->document();
+    const bool               bottom = isAtBottom(browser);
+    const QUrl               url(kScheme + key);
+    View*                    drawn  = viewFor(browser);
+    const QVector<KeptStill> kept   = drawn ? keptAfterDraw(*drawn, key) : QVector<KeptStill>();
+    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget (2.7.2: its kept stills too)
+        scaler->putPicture(url.toString(), paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media, keptBytes(kept));
     else
         doc->addResource(QTextDocument::ImageResource, url, paddedPixmap(img, scaleOf(browser).displayRatio()));
     if (View* view = viewFor(browser)) {
+        if (kept.isEmpty())
+            view->keptStills.remove(key);
+        else
+            view->keptStills.insert(key, kept);
         view->resourced.insert(key);
         view->lookOld.remove(key); // 2.7.1: drawn for the look the chat has now
         // While a relayout is pending, the older previews still have the width it was queued for:
@@ -1695,7 +1782,10 @@ bool ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
 
     const quint64 standIns = m_core->stillStandIns();
     QSize         size;
-    const QImage  img = renderFor(browser, key, &size);
+    m_recordStills = DarkMode::isActive(); // 2.7.2 (D1): the stills it is drawn from, while dark mode is on
+    m_recorded.clear();
+    const QImage img = renderFor(browser, key, &size);
+    m_recordStills = false;
     if (img.isNull())
         return false;
     if (keepDrawn && m_core->stillStandIns() != standIns && view->resourced.contains(key)) {
@@ -1707,11 +1797,16 @@ bool ChatIntegration::refreshPreview(QTextBrowser* browser, const QString& key, 
         return false;
     }
 
-    QTextDocument* doc = browser->document();
-    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
-        scaler->putPicture(kScheme + key, paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media);
+    QTextDocument*           doc  = browser->document();
+    const QVector<KeptStill> kept = keptAfterDraw(*view, key);
+    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget (2.7.2: its kept stills too)
+        scaler->putPicture(kScheme + key, paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media, keptBytes(kept));
     else
         doc->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img, scaleOf(browser).displayRatio()));
+    if (kept.isEmpty())
+        view->keptStills.remove(key);
+    else
+        view->keptStills.insert(key, kept);
     view->resourced.insert(key);
     view->stale.remove(key);
     view->lookOld.remove(key); // 2.7.1: drawn for the look the chat has now
@@ -1830,6 +1925,7 @@ void ChatIntegration::refreshAll()
             it->resourced.clear();
             it->stale.clear();
             it->lookOld.clear();
+            it->keptStills.clear(); // 2.7.2
             scan(b); // notes stay hidden
             continue;
         }
@@ -1975,12 +2071,29 @@ bool ChatIntegration::drawForLook(QTextBrowser* browser, View& view, const QStri
         m_core->setStillDecode(before);
         return drawn;
     };
-    if (!m_unloadDraws) // near the view of a shown chat: as any draw (a slow still on a worker); else what Core has
-        return draw(onScreen(browser, view, key, true) ? Core::StillDecode::Any : Core::StillDecode::CachedOnly);
-    // A Disable or Reload: nothing comes back after the unload (no worker's result, no Show). What Core has at hand first;
-    // a picture that needs its still decoded again then gets a cheap decode now, within one budget for the whole unload
-    // (only those draws count); a slow one, or any after the budget, keeps its picture.
-    if (draw(Core::StillDecode::CachedOnly))
+    // 2.7.2 (D1): a picture drawn while dark mode was on, drawn again from the still it was drawn from (a copy: the draw
+    // changes the view's list). No decode, no stand-in for that still.
+    const auto fromKept = [&] {
+        const QVector<KeptStill> kept = view.keptStills.value(key);
+        if (kept.isEmpty())
+            return false;
+        m_stillOverride  = &kept;
+        const bool drawn = draw(Core::StillDecode::CachedOnly);
+        m_stillOverride  = nullptr;
+        return drawn;
+    };
+    if (!m_unloadDraws) {
+        // Far from the view of a shown chat (or a hidden one): only what Core has (the rest is drawn when it comes near).
+        // Near: what Core has, else the kept still, else as any draw (a slow still on a worker).
+        if (!onScreen(browser, view, key, true))
+            return draw(Core::StillDecode::CachedOnly);
+        return draw(Core::StillDecode::CachedOnly) || fromKept() || draw(Core::StillDecode::Any);
+    }
+    // A Disable or Reload: nothing comes back after the unload (no worker's result, no Show). What Core has at hand first,
+    // then the kept still; a picture that needs its still decoded again then (never drawn in dark mode: drawn for a style
+    // picked while it was on) gets a cheap decode now, within one budget for the whole unload (only those draws count); a
+    // slow one, or any after the budget, keeps its picture.
+    if (draw(Core::StillDecode::CachedOnly) || fromKept())
         return true;
     if (!view.lookOld.contains(key) || m_unloadDecodeNs >= kUnloadDecodeMs * 1000000)
         return false;
@@ -2207,8 +2320,15 @@ void ChatIntegration::updateVisibleKeys()
             const QSet<QString> stale = view.stale;
             view.stale.clear();
             // 2.7.1: a picture in an older look keeps it rather than show a stand-in (the decode started here draws it).
-            for (const QString& key : stale)
-                refreshPreview(b, key, true, view.lookOld.contains(key));
+            // 2.7.2: it is drawn as a redraw for the look draws it (drawForLook: from its kept still when Core has none).
+            for (const QString& key : stale) {
+                if (!view.lookOld.contains(key))
+                    refreshPreview(b, key, true);
+                else if (!onScreen(b, view, key))
+                    view.stale.insert(key);
+                else
+                    drawForLook(b, view, key);
+            }
         }
         if (view.scaler) // 2.5 zoom: after a scroll ended, the chat's pictures within its budget
             view.scaler->enforceBudget();
@@ -3261,6 +3381,12 @@ bool ChatIntegration::eventFilter(QObject* watched, QEvent* event)
             } else if (v && !v->lookOld.isEmpty()) {
                 drawOldLooks(browser, *v, true, "at show");
             }
+            // 2.7.2 (D3): the scroll range for the document as it is now. Qt laid the hidden chat out again for its size and
+            // for what changed while it was hidden (a new look), and reports a layout it finished outside an edit on a 0 ms
+            // timer: the first paint showed the old range (the scroll bar's handle changed size right after). Nothing
+            // moves (the value stays); a chat laid out already costs nothing. (The places the chat's own Show puts back
+            // sync it again.)
+            chatscroll::syncRange(browser);
 #ifdef TSMEDIA_TESTHOOKS // 2.7.1: the live test's first Show of each chat
             if (View* v = viewFor(browser); v && !v->testShown) {
                 v->testShown    = true;
@@ -4294,16 +4420,26 @@ bool ChatIntegration::isLinkPreviewKey(const QString& key) const
 
 QSizeF ChatIntegration::linkPreviewObject(QTextBrowser* browser, const QString& key)
 {
-    QSize        size;
+    QSize size;
+    m_recordStills = DarkMode::isActive(); // 2.7.2 (D1): the stills it is drawn from, while dark mode is on
+    m_recorded.clear();
     const QImage img = renderFor(browser, key, &size);
+    m_recordStills = false;
     if (img.isNull())
         return {};
-    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget
-        scaler->putPicture(kScheme + key, paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media);
+    View*                    view = viewFor(browser);
+    const QVector<KeptStill> kept = view ? keptAfterDraw(*view, key) : QVector<KeptStill>();
+    if (ChatScale* scaler = chatScale(browser)) // 2.5 zoom: booked for the chat's picture budget (2.7.2: its kept stills too)
+        scaler->putPicture(kScheme + key, paddedPixmap(img, scaleOf(browser).displayRatio()), ChatScale::Media, keptBytes(kept));
     else
         browser->document()->addResource(QTextDocument::ImageResource, QUrl(kScheme + key), paddedPixmap(img, scaleOf(browser).displayRatio()));
-    if (View* view = viewFor(browser))
+    if (view) {
+        if (kept.isEmpty())
+            view->keptStills.remove(key);
+        else
+            view->keptStills.insert(key, kept);
         view->resourced.insert(key);
+    }
     return QSizeF(size.width(), size.height() + kGapTop + kGapBottom); // 2.5 zoom: du (linkdoc makes it du x s)
 }
 

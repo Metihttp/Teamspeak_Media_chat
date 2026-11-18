@@ -2391,6 +2391,32 @@ QString visible(const QString& text)
     return out;
 }
 
+// 2.7.2 live (D6): how many formats nested in f's properties (a module's kept formats, lists and maps of them) carry
+// dark mode's kOriginal.
+int nestedDark(const QTextFormat& f, int depth)
+{
+    if (depth > 8)
+        return 0;
+    int        n     = 0;
+    const auto visit = [&n, depth](const QVariant& v, const auto& self) -> void {
+        if (v.userType() == QMetaType::QTextFormat) {
+            const QTextFormat g = qvariant_cast<QTextFormat>(v);
+            n += (g.hasProperty(darkchat::kOriginal) ? 1 : 0) + nestedDark(g, depth + 1);
+        } else if (v.userType() == QMetaType::QVariantList) {
+            for (const QVariant& e : v.toList())
+                self(e, self);
+        } else if (v.userType() == QMetaType::QVariantMap) {
+            const QVariantMap m = v.toMap();
+            for (auto it = m.cbegin(); it != m.cend(); ++it)
+                self(it.value(), self);
+        }
+    };
+    const QMap<int, QVariant> props = f.properties();
+    for (auto it = props.cbegin(); it != props.cend(); ++it)
+        visit(it.value(), visit);
+    return n;
+}
+
 QString describeFormat(const QTextCharFormat& f)
 {
     QStringList parts;
@@ -2440,14 +2466,25 @@ QString describeFormat(const QTextCharFormat& f)
     }
     if (f.hasProperty(layoutformat::kApplied))
         parts << QString::fromLatin1("APPLIED");
-    if (f.foreground().style() != Qt::NoBrush)
-        parts << QString::fromLatin1("fg=") + f.foreground().color().name();
+    // 2.7.2 live: the text style dark mode maps back (D5/D9): no colour is "fg=-", the weight is always shown ("w=-": none).
+    parts << (f.foreground().style() != Qt::NoBrush ? QString::fromLatin1("fg=") + f.foreground().color().name() : QString::fromLatin1("fg=-"));
     if (f.hasProperty(darkchat::kOriginal)) // 2.7.1: the colour dark mode gives back at off
         parts << QString::fromLatin1("DARKORIG=") + QColor::fromRgba(f.property(darkchat::kOriginal).toUInt()).name();
+    if (const int nested = nestedDark(f, 0)) // 2.7.2 live (D6): kOriginal inside a format a module keeps
+        parts << QString::fromLatin1("NESTED_DARKORIG=%1").arg(nested);
     if (f.fontItalic())
-        parts << QString::fromLatin1("i");
-    if (f.fontWeight() > QFont::Normal)
-        parts << QString::fromLatin1("w=%1").arg(f.fontWeight());
+        parts << QString::fromLatin1("it=1");
+    parts << (f.hasProperty(QTextFormat::FontWeight) ? QString::fromLatin1("w=%1").arg(f.fontWeight()) : QString::fromLatin1("w=-"));
+    if (f.fontUnderline())
+        parts << QString::fromLatin1("ul=1");
+    if (f.hasProperty(QTextFormat::FontPointSize))
+        parts << QString::fromLatin1("sz=%1pt").arg(f.fontPointSize());
+    if (f.hasProperty(QTextFormat::FontPixelSize))
+        parts << QString::fromLatin1("sz=%1px").arg(f.intProperty(QTextFormat::FontPixelSize));
+    if (f.hasProperty(QTextFormat::FontSizeAdjustment))
+        parts << QString::fromLatin1("szadj=%1").arg(f.intProperty(QTextFormat::FontSizeAdjustment));
+    if (f.hasProperty(QTextFormat::TextVerticalAlignment))
+        parts << QString::fromLatin1("va=%1").arg(f.intProperty(QTextFormat::TextVerticalAlignment));
     return parts.join(QLatin1Char(' '));
 }
 
@@ -2571,21 +2608,35 @@ bool SelfTest::runPart3(const QString& cmd, const QJsonObject& c, bool* handled)
         return true;
     }
     if (cmd == QLatin1String("chatdump")) {
-        if (!b) {
-            say(QString::fromLatin1("chatdump: no visible chat"));
+        // 2.7.2 live: object "InfoFrame" (the info panel) or "msgTextBrowser" (a poke window): that view instead of the chat.
+        QTextEdit*    view   = b;
+        const QString object = str("object", "");
+        if (!object.isEmpty()) {
+            view = nullptr;
+            for (QWidget* w : QApplication::allWidgets()) {
+                auto* e = qobject_cast<QTextEdit*>(w);
+                if (e && e->objectName() == object && (!view || (e->isVisible() && !view->isVisible())))
+                    view = e;
+            }
+        }
+        if (!view) {
+            say(QString::fromLatin1("chatdump: no view %1").arg(object.isEmpty() ? QString::fromLatin1("(visible chat)") : object));
             return true;
         }
-        QTextDocument* doc  = b->document();
+        QTextDocument* doc  = view->document();
         const int      last = c.value(QString::fromLatin1("last")).toInt(10);
-        // Chat redesign: the undo stack (never changed by us) and each block's format.
-        QString out = QString::fromLatin1("undo/redo enabled %1, %2 blocks\n").arg(doc->isUndoRedoEnabled() ? 1 : 0).arg(doc->blockCount());
+        // Chat redesign: the undo stack (never changed by us) and each block's format. 2.7.2 live: the view's own char format.
+        QString out = QString::fromLatin1("undo/redo enabled %1, %2 blocks\ncursor format: %3\n")
+                          .arg(doc->isUndoRedoEnabled() ? 1 : 0)
+                          .arg(doc->blockCount())
+                          .arg(describeFormat(view->currentCharFormat()));
         for (QTextBlock tb = doc->findBlockByNumber(qMax(0, doc->blockCount() - last)); tb.isValid(); tb = tb.next()) {
-            out += QString::fromLatin1("== block %1 visible %2 pos %3 len %4 format %5\n")
+            out += QString::fromLatin1("== block %1 visible %2 pos %3 len %4 format %5 | bcf %6\n")
                        .arg(tb.blockNumber())
                        .arg(tb.isVisible() ? 1 : 0)
                        .arg(tb.position())
                        .arg(tb.length())
-                       .arg(describeBlock(tb.blockFormat()));
+                       .arg(describeBlock(tb.blockFormat()), describeFormat(tb.charFormat()));
             for (auto it = tb.begin(); !it.atEnd(); ++it) {
                 const QTextFragment f = it.fragment();
                 if (!f.isValid())

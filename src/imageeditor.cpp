@@ -15,6 +15,7 @@
 
 #include <cmath>
 
+#include "darkmode.h" // 2.7.2 (D7): one re-theme per dark mode switch
 #include "i18n.h"
 #include "imageeditor_p.h"
 
@@ -884,7 +885,8 @@ void ImageEditor::showEvent(QShowEvent* event)
 void ImageEditor::changeEvent(QEvent* event)
 {
     QDialog::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        && !DarkMode::themeLater(this, &ImageEditor::applyTheme)) // 2.7.2 (D7): once per dark mode switch
         applyTheme();
 }
 

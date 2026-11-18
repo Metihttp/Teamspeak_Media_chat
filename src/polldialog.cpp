@@ -15,6 +15,7 @@
 #include <QSet>
 #include <QVBoxLayout>
 
+#include "darkmode.h" // 2.7.2 (D7): one re-theme per dark mode switch
 #include "i18n.h"
 #include "polls.h"
 #include "uiutil.h"
@@ -697,7 +698,8 @@ void PollDialog::showEvent(QShowEvent* event)
 void PollDialog::changeEvent(QEvent* event)
 {
     QDialog::changeEvent(event);
-    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) && m_lock) // once the window is built
+    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) && m_lock // once the window is built
+        && !DarkMode::themeLater(this, &PollDialog::applyTheme))                                     // 2.7.2 (D7): once per switch
         applyTheme();
 }
 

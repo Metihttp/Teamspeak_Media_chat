@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.7.2] - 2026-11-18
+
+### Fixed
+- Dark mode: turning TS Media off in **Options → Addons** (Disable or Reload) while dark mode is on now draws every picture and card it drew in dark mode in your style's colors, also very large pictures and long chats full of pictures. Before, a picture TS Media couldn't read again quickly at that moment kept its dark look in the light chat. The unload doesn't take longer for it.
+- Dark mode: names, channels, history lines, server errors, host names and times that came in while dark mode was on get your style's text style back when it goes off (or TS Media is turned off): bold, italic, underlined and in the size your style gives them, not dark mode's. Before, only their colors came back, so with a style whose names aren't bold a name stayed bold.
+- Dark mode: an info panel TeamSpeak showed while dark mode was on (a client, channel or server you selected) gets your style's look back when dark mode goes off: its labels (*Version:*, *Online since:*, …) without dark mode's color where your style gives them none (they came back in the host name color), its title and the custom nickname in your style's size. With TeamSpeak's default style and the community dark skin it then looks exactly as TeamSpeak shows it; with another style, some of the panel's spacing can stay dark mode's until you select something else.
+- Dark mode: a chat that opened while dark mode was on (a new server tab or private chat, and every chat when TeamSpeak started with dark mode on) now gets your style's look when dark mode goes off (or TS Media is turned off): times, server lines and names in your style's colors, also in the lines that come in later. Before, it kept TeamSpeak's own dark chat colors until TeamSpeak restarted, light blue times and lines on a light chat. And after you picked a style in **Tools → Options → Design** while dark mode was on, the chat tab names no longer turn white on the light tab bar when it goes off.
+- Dark mode: when another program or plugin replaces TeamSpeak's whole color palette while dark mode is on, the *TS Media chat* lines printed meanwhile still get your style's colors back when dark mode goes off (they kept dark mode's light colors).
+- Dark mode: a chat whose tab was in the background while you turned dark mode on or off now opens in its final layout at once. Before, it showed a sideways scroll bar or moved its messages for a moment when you opened it, and in the Cozy layout a chat you had scrolled up could lose your place. The chat column now keeps the width your TeamSpeak style gives it in dark mode too, also when TeamSpeak starts with dark mode on (it was a few pixels wider).
+- Dark mode: turning it on or off with the Settings window open is faster, and the window changes its look once instead of two or three times.
+- After you change the chat zoom (Ctrl + mouse wheel, or **Settings → Chat → Text size and colors**) while a chat is in the background, that chat opens with the message you were reading in the same place from the first moment (before, it showed the message moved for a moment); a chat at its end opens at its end.
+- Link previews: a link that waits for its turn to load by itself (links load 2 at a time, one per person) shows **Load preview** while it waits (a click loads it at once), and the loading ring only once its preview really loads. Before, such links showed the loading ring, also for a long time when many links came in at once, and then turned back into **Load preview**.
+
 ## [2.7.1] - 2026-11-16
 
 ### Fixed
@@ -413,6 +426,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.7.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.5.0...v2.6.0

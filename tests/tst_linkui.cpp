@@ -887,7 +887,7 @@ class TestLinkUi : public QObject
     }
 
     // 2.4 auto-load: what a slot waits for comes last (nothing shown, loading, failed or too large is ever replaced
-    // by a wait), and every wait is the loading strip.
+    // by a wait), and every wait is the loading strip, except an automatic load that hasn't started (2.7.2: the click card).
     void decisionsWithWaits()
     {
         using linkcard::Look;
@@ -895,7 +895,7 @@ class TestLinkUi : public QObject
         using linkstate::Wait;
         linkstate::LocalState  idle;
         linkstate::ServerState none;
-        for (const Wait w : {Wait::Own, Wait::Sender, Wait::Checking, Wait::Auto}) {
+        for (const Wait w : {Wait::Own, Wait::Sender, Wait::Checking}) {
             const linkstate::Decision d = linkstate::decide(Kind::Image, false, idle, none, w);
             QCOMPARE(d.look, Look::Loading);
             QCOMPARE(d.wait, w);
@@ -963,8 +963,61 @@ class TestLinkUi : public QObject
         linkstate::ServerState gone = server;
         gone.state                  = MediaState::Failed;
         gone.error                  = MediaError::NotFound;
-        QCOMPARE(linkstate::decide(Kind::Image, false, idle, gone, Wait::Auto).look, Look::Loading);
-        QCOMPARE(linkstate::decide(Kind::Image, false, idle, gone, Wait::Auto).wait, Wait::Auto);
+        QCOMPARE(linkstate::decide(Kind::Image, false, idle, gone, Wait::Auto).look, Look::Click); // 2.7.2: until it starts
+        QCOMPARE(linkstate::decide(Kind::Image, false, idle, gone, Wait::Auto).wait, Wait::None);
+        QCOMPARE(linkstate::decide(Kind::Image, false, idle, gone).look, Look::Click);
+    }
+
+    // 2.7.2 (D8): the loading ring only for a load that runs. A link that may load by itself but hasn't started (its
+    // sender's turn, a budget token, its chat not painted yet: Wait::Auto) is the "Load preview" click card, by its kind
+    // and class (the quiet web class shows nothing, its look behind is the click card), whatever holds it; once its load
+    // runs (Local::Loading) it is the ring. Before, an Idle link with its turn free was drawn as the ring before anything
+    // had started it, for as long as its chat got no paint (the live link flood: 105 s).
+    void autoWaitNeverDrawnUnstarted()
+    {
+        using linkcard::Look;
+        using linkstate::Local;
+        using linkstate::Wait;
+        linkstate::LocalState  idle;
+        linkstate::ServerState none;
+        linkstate::Context     ctx;
+        ctx.autoOn   = true;
+        ctx.webCards = true;
+        for (const char* url : {"https://cdn.example.com/a.png", "https://media.example.com/clip.mp4", "https://news.example.com/story-1",
+                                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}) {
+            const linkpreview::Target target = linkpreview::classify(QString::fromLatin1(url));
+            QVERIFY2(target.isValid(), url);
+            const linkstate::Decision d = linkstate::decide(target, false, idle, none, Wait::Auto, ctx);
+            QVERIFY2(d.look == Look::Click || d.look == Look::Absent, url);
+            QVERIFY2(d.underlying == Look::Click, url);
+            QCOMPARE(d.wait, Wait::None);
+            QCOMPARE(linkstate::waitingShown(d), linkcard::Waiting::None);
+            // Whatever holds it now, the hold reasons read from that click card (the diagnostics' counts).
+            for (const bool turn : {true, false}) {
+                for (const bool budget : {true, false}) {
+                    for (const bool onScreen : {true, false}) {
+                        const linkstate::HoldReason why = linkstate::holdReason(d, idle, ctx, onScreen, turn, budget, linkpreview::HostGate::Verdict::Go, true);
+                        const linkstate::HoldReason want = !onScreen ? linkstate::HoldReason::Offscreen
+                                                         : !turn     ? linkstate::HoldReason::Turn
+                                                         : !budget   ? linkstate::HoldReason::Budget
+                                                                     : linkstate::HoldReason::None;
+                        QCOMPARE(why, want);
+                    }
+                }
+            }
+            // Its load runs: the ring (a web page's only when the user loaded it: the quiet class).
+            linkstate::LocalState loading = idle;
+            loading.state                 = Local::Loading;
+            const linkstate::Decision run = linkstate::decide(target, false, loading, none, Wait::Auto, ctx);
+            QCOMPARE(run.underlying, Look::Loading);
+            QCOMPARE(run.wait, Wait::None);
+        }
+        // The old one-argument form too.
+        QCOMPARE(linkstate::decide(Kind::Image, false, idle, none, Wait::Auto).look, Look::Click);
+        QCOMPARE(linkstate::decide(Kind::Gif, false, idle, none, Wait::Auto).look, Look::Click);
+        // The real waits are still the ring with their words.
+        QCOMPARE(linkstate::decide(Kind::Image, false, idle, none, Wait::Sender).look, Look::Loading);
+        QCOMPARE(linkstate::decide(Kind::Image, false, idle, none, Wait::Own).look, Look::Loading);
     }
 
     void serverAndWebLinks()

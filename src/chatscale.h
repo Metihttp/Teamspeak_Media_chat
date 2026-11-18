@@ -77,8 +77,10 @@ class ChatScale : public QObject
     static qint64 defaultBudget() { return sizeof(void*) == 8 ? 128LL * 1024 * 1024 : 48LL * 1024 * 1024; }
     void          setBudget(qint64 bytes) { m_budget = bytes; }
     qint64        budget() const { return m_budget; }
-    // name's picture into the chat's document (QTextDocument::addResource) and into the books (w x h x 4 bytes).
-    void putPicture(const QString& name, const QPixmap& pixmap, int module);
+    // name's picture into the chat's document (QTextDocument::addResource) and into the books (w x h x 4 bytes, plus
+    // extraBytes the picture keeps besides: 2.7.2, the stills it was drawn from while dark mode was on).
+    void putPicture(const QString& name, const QPixmap& pixmap, int module, qint64 extraBytes = 0);
+    qint64 bookedBytes(const QString& name) const { return m_pictures.value(name).bytes; } // tests
     // A picture of ours left the document (or became a stand-in the module made itself): 0 bytes.
     void forget(const QString& name);
     // TeamSpeak swapped the chat's document: every booked picture went with the old one (review fix).

@@ -69,6 +69,45 @@ class SnapSpinBox : public QSpinBox
     }
 };
 
+// 2.7.2 (D7): a page's scroll area. While dark mode switches the look (DarkMode::changing()), the style changes and layout
+// requests that reach it are held: the palette, the application sheet and the window's own sheet each sent one, and each
+// computed the whole page's size again (6-8 times per page and toggle with the window open). The window hands it one
+// style change after its one re-theme (release()).
+class PageArea : public QScrollArea
+{
+  public:
+    using QScrollArea::QScrollArea;
+    int styleChanges = 0; // the style changes it handled (tests)
+    void release()
+    {
+        if (!m_held)
+            return;
+        m_held      = false;
+        m_releasing = true;
+        QEvent change(QEvent::StyleChange);
+        QCoreApplication::sendEvent(this, &change);
+        m_releasing = false;
+    }
+
+  protected:
+    bool event(QEvent* event) override
+    {
+        if (event->type() == QEvent::StyleChange || event->type() == QEvent::LayoutRequest) {
+            if (!m_releasing && DarkMode::changing()) {
+                m_held = true;
+                return true;
+            }
+            if (event->type() == QEvent::StyleChange)
+                ++styleChanges;
+        }
+        return QScrollArea::event(event);
+    }
+
+  private:
+    bool m_held      = false;
+    bool m_releasing = false;
+};
+
 // The range comes from Settings, so the dialog never offers a value Settings::load() would clamp.
 QSpinBox* spin(Settings::Range range, int step, const QString& suffix, QWidget* parent)
 {
@@ -588,7 +627,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
 QWidget* SettingsDialog::addPage(Tab tab, const QString& title, const QString& description)
 {
     const settingstheme::Tokens& t    = m_tokens;
-    auto*                        area = new QScrollArea(m_stack);
+    auto*                        area = new PageArea(m_stack); // 2.7.2 (D7): laid out once per dark mode switch
     area->setFrameShape(QFrame::NoFrame);
     area->setWidgetResizable(true);
     area->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); // H1: only a safety net (rows wrap and stack)
@@ -832,9 +871,14 @@ void SettingsDialog::changeEvent(QEvent* event)
     QDialog::changeEvent(event);
     if (!m_ready) // still in the constructor
         return;
-    if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange || event->type() == QEvent::FontChange)
+    if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange || event->type() == QEvent::FontChange) {
+        // 2.7.2 (D7): while dark mode switches the look, once from its themeChanged (both the palette and the sheet in place).
+        if (DarkMode::themeLater(this, &SettingsDialog::themeChangedByDarkMode))
+            return;
         applyTheme(); // also when TeamSpeak's skin changes while the dialog is open
-    else if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
+        for (QScrollArea* area : qAsConst(m_pageAreas))
+            static_cast<PageArea*>(area)->release(); // 2.7.2 (D7): anything a switch held whose themeChanged never came here
+    } else if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
         syncVolume();
         updateGifHint(); // the Windows setting may have changed meanwhile
         // Media may have been downloaded since: an empty cache must not stay "empty" with Clear cache
@@ -1195,6 +1239,23 @@ void SettingsDialog::clearCache()
 // sheet scoped to this dialog, always set: cards, the sidebar, label roles, transparent containers (a dark skin paints
 // every QWidget grey), and the 2.6 dark-skin fixes for fields and buttons. Built with fromLatin1 and arg() only, never
 // QStringLiteral: TeamSpeak's QStyleSheetStyle keeps the parsed text after the plugin is unloaded (see settings.cpp).
+void SettingsDialog::themeChangedByDarkMode()
+{
+    if (!m_ready)
+        return;
+    applyTheme();
+    for (QScrollArea* area : qAsConst(m_pageAreas))
+        static_cast<PageArea*>(area)->release(); // each page laid out once, for the final look
+}
+
+int SettingsDialog::pageStyleChanges() const
+{
+    int n = 0;
+    for (QScrollArea* area : m_pageAreas)
+        n += static_cast<const PageArea*>(area)->styleChanges;
+    return n;
+}
+
 void SettingsDialog::applyTheme()
 {
     if (m_applyingTheme)
@@ -1290,8 +1351,11 @@ void SettingsDialog::applyTheme()
                          .arg(n, t.text.name());
         }
     }
-    if (sheet != styleSheet())
+    if (sheet != styleSheet()) {
         setStyleSheet(sheet);
+        ++m_sheetSets;
+        m_sheetSetUnder = qApp->styleSheet();
+    }
 
     // The sidebar: as wide as its longest page name (semibold when chosen) and the product name.
     if (QWidget* sideWidget = m_nav ? m_nav->parentWidget() : nullptr) {

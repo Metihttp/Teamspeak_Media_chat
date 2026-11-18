@@ -276,7 +276,8 @@ void DiagnosticsDialog::showStatus(const QString& text, bool error)
 void DiagnosticsDialog::changeEvent(QEvent* event)
 {
     QDialog::changeEvent(event);
-    if (m_ready && (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange))
+    if (m_ready && (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange)
+        && !DarkMode::themeLater(this, &DiagnosticsDialog::applyTheme)) // 2.7.2 (D7): once per dark mode switch
         applyTheme(); // also when TeamSpeak's skin changes while the window is open
 }
 
@@ -379,7 +380,8 @@ DiagnosticsButton::DiagnosticsButton(QWidget* parent)
 void DiagnosticsButton::changeEvent(QEvent* event)
 {
     QPushButton::changeEvent(event);
-    if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange)
+    if ((event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange)
+        && !DarkMode::themeLater(this, &DiagnosticsButton::applyTheme)) // 2.7.2 (D7): once per dark mode switch
         applyTheme();
 }
 

@@ -1,4 +1,5 @@
 #include "composedialog.h"
+#include "darkmode.h" // 2.7.2 (D7): one re-theme per dark mode switch
 #include "emojiinput.h" // 2.2 emoji
 
 #include <QAbstractButton>
@@ -2605,7 +2606,8 @@ void ComposeDialog::paintEvent(QPaintEvent*)
 void ComposeDialog::changeEvent(QEvent* event)
 {
     QDialog::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+    if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        && !DarkMode::themeLater(this, &ComposeDialog::applyTheme)) // 2.7.2 (D7): once per dark mode switch
         applyTheme();
 }
 

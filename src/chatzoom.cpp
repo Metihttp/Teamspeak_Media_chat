@@ -78,8 +78,6 @@ ChatZoom::ChatZoom(Host host, QObject* parent)
         if (!m_down && m_host.discover)
             m_host.discover();
     });
-    m_endSoon = ownedTimer(0);
-    connect(m_endSoon, &QTimer::timeout, this, &ChatZoom::keepEnds);
 }
 
 ChatZoom::~ChatZoom()
@@ -96,8 +94,6 @@ void ChatZoom::shutdown()
     m_sync->stop();
     m_apply->stop();
     m_discoverSoon->stop();
-    m_endSoon->stop();
-    m_endQueue.clear();
     if (m_save->isActive()) {
         m_save->stop();
         Settings::instance().save(); // the last wheel's zoom isn't lost
@@ -222,6 +218,17 @@ void ChatZoom::watchTabs(QWidget* tabWidget)
     }
 }
 
+bool ChatZoom::due(QTextBrowser* browser) const
+{
+    if (!browser || m_down || m_applying)
+        return false;
+    const QFont font = browser->font();
+    if (font.pointSizeF() <= 0)
+        return false;
+    const QFont base = hasBase(browser) ? baseOf(browser) : font;
+    return base.pointSizeF() > 0 && !sameSize(font, targetFor(base, zoom()));
+}
+
 bool ChatZoom::ensure(QTextBrowser* browser)
 {
     if (!browser || m_down || m_applying)
@@ -272,22 +279,27 @@ void ChatZoom::syncVisible()
     }
 }
 
-void ChatZoom::keepEndSoon(QTextBrowser* browser)
+void ChatZoom::shownZoomed(QTextBrowser* browser)
 {
-    if (m_down)
+    // 2.7.2 (D4): Qt keeps the scroll value while the new font moves the text, so the reader's line (or the end) is put
+    // back here, before the first paint, with the whole chat laid out once at the new font (the scale pass would do that
+    // 150 ms later anyway). The place is read first: dark mode's place for the Show is back already (its application
+    // filter runs before this one), and ShowPlace (after this filter) still puts a load hold's place or the end the chat
+    // had before its new width. Before, a reader above the end came back only with ChatScale's pass, after the first
+    // paint, and a pass that read the place after the new font (one started by the first paint) kept the moved place
+    // (live: 68 px off after a Reload).
+    if (!due(browser))
         return;
-    if (!m_endQueue.contains(browser))
-        m_endQueue.append(browser);
-    m_endSoon->start(); // a posted event: it runs ahead of the paint (QWidget's UpdateRequest has a lower priority)
-}
-
-void ChatZoom::keepEnds()
-{
-    const QVector<QPointer<QTextBrowser>> queue = std::exchange(m_endQueue, {});
-    for (const QPointer<QTextBrowser>& b : queue) {
-        if (b && !m_down && b->isVisible())
-            chatscroll::toBottom(b); // the whole chat laid out once (ChatScale's settle then finds it done)
+    const chatscroll::ReaderPlace place = chatscroll::captureReader(browser);
+    if (!ensure(browser))
+        return;
+    chatscroll::restoreReader(browser, place);
+    if (m_host.restyle) { // the look for the new font where the reader is now, then the place once more
+        m_host.restyle(browser);
+        chatscroll::restoreReader(browser, place);
     }
+    if (m_host.placed)
+        m_host.placed(browser); // the pass the new font started keeps this place
 }
 
 void ChatZoom::queueApply(QTextBrowser* browser)
@@ -365,14 +377,8 @@ bool ChatZoom::eventFilter(QObject* watched, QEvent* event)
         }
         break;
     case QEvent::Show:
-        if (QTextBrowser* b = browserOf(watched); b && watched == b) {
-            // Before its first paint. A chat at its end that gets the zoom now (a tab hidden through a zoom change) is
-            // put at its end again before that paint too: Qt keeps the scroll value while the chat grows, and ChatScale
-            // restores the end only at its 150 ms settle (review fix: the chat jumped down on its first show).
-            const bool bottom = chatscroll::atBottom(b);
-            if (ensure(b) && bottom)
-                keepEndSoon(b);
-        }
+        if (QTextBrowser* b = browserOf(watched); b && watched == b)
+            shownZoomed(b); // before its first paint, its place (or its end) kept at once
         break;
     case QEvent::ChildAdded:
         if (static_cast<QChildEvent*>(event)->child() && static_cast<QChildEvent*>(event)->child()->isWidgetType()) {

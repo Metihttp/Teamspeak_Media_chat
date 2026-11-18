@@ -667,7 +667,7 @@ QString ChatLayout::styleKeyOf(const layoutdoc::Env& env) const
         .join(QLatin1Char('|'));
 }
 
-void ChatLayout::refreshEnv(View& v)
+void ChatLayout::refreshEnv(View& v, bool widthNow)
 {
     if (!v.browser)
         return;
@@ -675,7 +675,9 @@ void ChatLayout::refreshEnv(View& v)
     const QString  key = styleKeyOf(env);
     if (key == v.styleKey)
         return;
-    if (!v.styleKey.isEmpty()) {
+    if (widthNow)
+        v.pendingWidth = 0;
+    if (!v.styleKey.isEmpty() && !widthNow) {
         // Only the width: applied once resizing pauses (a drag of the window's edge would restyle each pixel).
         layoutdoc::Env same = env;
         same.contentWidth   = v.env.contentWidth;
@@ -793,6 +795,21 @@ void ChatLayout::afterScan(QTextBrowser* browser)
     clock.start();
     if (stepView(*v, kStepMs, false))
         schedule(kStepEveryMs);
+}
+
+bool ChatLayout::styleNow(QTextBrowser* browser)
+{
+    View* v = viewFor(browser);
+    if (!v || !v->browser || v->document != browser->document())
+        return false;
+    const QString before = v->styleKey;
+    refreshEnv(*v, true);
+    if (v->styleKey == before)
+        return false;
+    // The screen first, bottom up, then what the budget leaves (stepView's order); the rest in the usual steps.
+    if (stepView(*v, kStepMs, false))
+        schedule(kStepEveryMs);
+    return true;
 }
 
 void ChatLayout::processNow(QTextBrowser* browser)

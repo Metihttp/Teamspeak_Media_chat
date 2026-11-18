@@ -18,6 +18,7 @@
 #include <QtTest>
 
 #include "chatscale.h"
+#include "chatscroll.h"
 #include "chatzoom.h"
 #include "loadhold.h"
 #include "previewscale.h"
@@ -370,6 +371,114 @@ class TestChatZoom : public QObject
         QTest::qWait(50);
         const int topAfter = a->cursorForPosition(QPoint(10, 10)).block().blockNumber();
         QVERIFY2(qAbs(topAfter - topBefore) <= 1, qPrintable(QStringLiteral("top block %1 -> %2").arg(topBefore).arg(topAfter)));
+        scaler->prepareShutdown();
+        zoom.shutdown();
+    }
+
+    // 2.7.2 (D4): a reader scrolled up in a chat hidden through a zoom change sees their line where it was at once: right
+    // after the Show (no event-loop turn, before the first paint), with the whole chat laid out at the new font, and still
+    // after the scale pass, also when that pass starts only at the first paint (the live loss after a Reload: the pass
+    // read the place as the new font had moved it, block 42 offset 0 -> block 40 offset 7, ~68 px). Each zoom step, up and
+    // down, with the reader in a message's first line and inside a wrapped message. 2.7.1 put the line back only with the
+    // scale pass (a font event's: 3-150 ms after the first paint; a paint's: never).
+    void showKeepsThePlaceSynchronously_data()
+    {
+        QTest::addColumn<int>("tenths");
+        QTest::addColumn<bool>("passAtPaint"); // the pass starts at the first paint, not at the font event
+        QTest::addColumn<bool>("wrapped");     // long messages: the reader inside one (a Line place)
+        for (const int tenths : {10, 30, -20}) {
+            for (const bool atPaint : {false, true}) {
+                for (const bool wrapped : {false, true})
+                    QTest::addRow("zoom %+d, pass from %s, %s", tenths, atPaint ? "the first paint" : "the font event", wrapped ? "wrapped" : "one line")
+                        << tenths << atPaint << wrapped;
+            }
+        }
+    }
+    void showKeepsThePlaceSynchronously()
+    {
+        QFETCH(int, tenths);
+        QFETCH(bool, passAtPaint);
+        QFETCH(bool, wrapped);
+        QWidget window;
+        window.resize(500, 400);
+        QTextBrowser* a = new QTextBrowser(&window);
+        a->setObjectName(QStringLiteral("ChatTab"));
+        a->setFont(chatFont());
+        QString html;
+        for (int i = 0; i < 300; ++i) {
+            html += QStringLiteral("<p>&lt;12:%1&gt; \"Alice\": line %2 of the chat").arg(i % 60, 2, 10, QLatin1Char('0')).arg(i);
+            if (wrapped)
+                html += QStringLiteral(", a longer message that wraps over more than one line in a chat of this width, so the reader's place falls "
+                                       "inside it now and then, and a few more words to make it three lines");
+            html += QStringLiteral("</p>");
+        }
+        a->setHtml(html);
+        a->setGeometry(0, 0, 500, 400);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTest::qWait(50);
+        a->document()->documentLayout()->documentSize();
+        QScrollBar* bar = a->verticalScrollBar();
+        QTRY_VERIFY(bar->maximum() > 2000);
+        bar->setValue(bar->maximum() / 2 + 7); // a few px into a message
+        QTest::qWait(50);
+
+        ChatScale*      scaler = nullptr;
+        ChatScale::Host scaleHost;
+        scaleHost.compute = [a] { return previewscale::computeScale(previewscale::chatPxOf(a->document()), 100, a->viewport()->width(), a->document()->documentMargin(), 0, 1.0); };
+        if (!passAtPaint) {
+            scaleHost.fontEvent = [&scaler] {
+                if (scaler)
+                    scaler->request();
+            };
+        }
+        ChatZoom::Host zoomHost;
+        zoomHost.placed = [&scaler](QTextBrowser*) { // as ChatIntegration wires it
+            if (scaler && scaler->pending())
+                scaler->retake();
+        };
+        ChatZoom zoom(zoomHost);
+        zoom.attach(a);
+        scaler = new ChatScale(a, scaleHost, &window);
+        scaler->setScale(scaleHost.compute());
+        // ChatIntegration::checkScale: a pass started by the chat's first paint (the font reached the document without a
+        // font event the pass saw).
+        struct PaintStart : QObject {
+            ChatScale* scale  = nullptr;
+            bool       armed  = false;
+            bool       eventFilter(QObject* watched, QEvent* event) override
+            {
+                if (event->type() == QEvent::Paint && armed && scale && !scale->pending()) {
+                    armed = false;
+                    scale->request();
+                }
+                return QObject::eventFilter(watched, event);
+            }
+        } paintStart;
+        paintStart.scale = scaler;
+        a->viewport()->installEventFilter(&paintStart);
+
+        // The reader's line before: where the reader is (chatscroll's own reading), its top on screen.
+        const chatscroll::ReaderPlace before = chatscroll::captureReader(a);
+        QVERIFY(!before.cursor.isNull() && !before.bottom);
+        const auto lineOnScreen = [a, &before] {
+            return chatscroll::readerY(a->document(), before) - a->verticalScrollBar()->value();
+        };
+        const qreal y0 = lineOnScreen();
+        a->hide(); // another tab in front
+        zoom.setChatZoom(tenths);
+        QCOMPARE(a->font().pointSizeF(), 8.25); // hidden: when shown
+        paintStart.armed = passAtPaint;
+        a->show();
+        QVERIFY(a->font().pointSizeF() != 8.25);
+        const qreal atShow = lineOnScreen();
+        QVERIFY2(qAbs(atShow - y0) <= 2, qPrintable(QStringLiteral("at the Show: the reader's line at %1, was %2").arg(atShow).arg(y0)));
+        QTRY_VERIFY_WITH_TIMEOUT(!paintStart.armed, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!scaler->pending(), 2000);
+        QTest::qWait(50);
+        const qreal settled = lineOnScreen();
+        QVERIFY2(qAbs(settled - y0) <= 2, qPrintable(QStringLiteral("after the pass: the reader's line at %1, was %2").arg(settled).arg(y0)));
+        a->viewport()->removeEventFilter(&paintStart);
         scaler->prepareShutdown();
         zoom.shutdown();
     }

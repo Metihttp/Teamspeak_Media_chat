@@ -72,6 +72,11 @@ class ChatLayout : public QObject
     // path is TeamSpeak's file (empty: the avatar went), remembered for the client's uid on that server.
     void avatarUpdated(quint64 sch, int clientId, const QString& path = QString());
 
+    // 2.7.2 (D3, D4): a chat's Show after its font or width changed while it was hidden: its look for them on screen now,
+    // before the first paint (a new width at once: a Show is no window drag), the rest in steps as usual. True when this
+    // chat's look changed (the caller keeps the reader's place around it). Nothing to do: false, nothing edited.
+    bool styleNow(QTextBrowser* browser);
+
     // 2.7 (R-DEF-1): something of this chat is still to be styled (the history pass, lines TeamSpeak changed, blocks to
     // style again, a new width); false in "TeamSpeak classic" (ChatIntegration's load hold waits for it).
     bool hasWork(QTextBrowser* browser) const;
@@ -186,7 +191,7 @@ class ChatLayout : public QObject
     void  restoreView(View& view, bool dropPictures);
     layoutdoc::Env envFor(View& view) const;
     QString        styleKeyOf(const layoutdoc::Env& env) const;
-    void  refreshEnv(View& view);
+    void  refreshEnv(View& view, bool widthNow = false); // widthNow (2.7.2): a width-only change applied at once
     QDate dateFor(View& view, int n);
     void   settleBurst(View& view); // the lines appended in a turn that is over: arrivals, or history
     qint64 arrivedFor(View& view, int n, int tag);

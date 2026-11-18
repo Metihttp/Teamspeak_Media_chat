@@ -8,9 +8,16 @@
 //   dark.tip             the visible tool tip: its document's colours (TeamSpeak's template colours remapped), recoloured now
 //   dark.print {kind, text, url, link}  2.7.1: one of TS Media's own lines in the current server tab, as the plugin prints it:
 //                        kind info (default), warning, link (printInfoLink: the channel tab) or raw (ts3::print, BBCode as given)
+//   dark.sheets          2.7.2 live: each text view's document style sheet (length, hash, TeamSpeak's dark-mode chat file in it)
+//   dark.scan            2.7.2 live (D6): every text document of every window (chats, the info panel, poke windows, documents
+//                        TeamSpeak swapped out that a widget still owns): dark mode's kOriginal on fragments, inside the formats
+//                        they keep, on block character formats, block and frame formats, and on each view's own char format
 
 #include <QApplication>
+#include <QFile>
 #include <QFontInfo>
+#include <QTextEdit>
+#include <QTextFrame>
 #include <QJsonObject>
 #include <QSet>
 #include <QTextBlock>
@@ -36,6 +43,38 @@ QString yesNo(bool v)
     return v ? QString::fromLatin1("1") : QString::fromLatin1("0");
 }
 
+// kOriginal on f itself (1) plus inside the formats, lists and maps its properties hold.
+int darkIn(const QTextFormat& f, int depth = 0)
+{
+    if (depth > 8)
+        return 0;
+    int        n     = f.hasProperty(darkchat::kOriginal) ? 1 : 0;
+    const auto visit = [&n, depth](const QVariant& v, const auto& self) -> void {
+        if (v.userType() == QMetaType::QTextFormat) {
+            n += darkIn(qvariant_cast<QTextFormat>(v), depth + 1);
+        } else if (v.userType() == QMetaType::QVariantList) {
+            for (const QVariant& e : v.toList())
+                self(e, self);
+        } else if (v.userType() == QMetaType::QVariantMap) {
+            const QVariantMap m = v.toMap();
+            for (auto it = m.cbegin(); it != m.cend(); ++it)
+                self(it.value(), self);
+        }
+    };
+    const QMap<int, QVariant> props = f.properties();
+    for (auto it = props.cbegin(); it != props.cend(); ++it)
+        visit(it.value(), visit);
+    return n;
+}
+
+QString ownerOf(QObject* o)
+{
+    QStringList path;
+    for (int i = 0; o && i < 3; ++i, o = o->parent())
+        path << QString::fromLatin1("%1#%2").arg(QString::fromLatin1(o->metaObject()->className()), o->objectName());
+    return path.join(QLatin1Char('<'));
+}
+
 } // namespace
 
 bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<void(const QString&)>& say)
@@ -56,6 +95,98 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
         else
             ts3::printInfo(sch, text);
         say(QString::fromLatin1("dark.print: %1 printed").arg(kind));
+        return true;
+    }
+    if (cmd == QLatin1String("dark.sheets")) {
+        // 2.7.2 live: every text view's document style sheet (TeamSpeak's _chat.qss, with its _chat_darkmode.qss when it
+        // made the chat under a dark palette): length, hash and whether it holds the dark-mode file's header; each
+        // distinct sheet to debug/sheet_<hash>.txt.
+        QSet<QTextDocument*> seen;
+        for (QWidget* top : QApplication::topLevelWidgets()) {
+            for (QTextEdit* e : top->findChildren<QTextEdit*>()) {
+                QTextDocument* d = e->document();
+                if (seen.contains(d))
+                    continue;
+                seen.insert(d);
+                const QString sheet = d->defaultStyleSheet();
+                const QString hash  = QString::number(qHash(sheet), 16);
+                say(QString::fromLatin1("dark.sheets: %1 visible %2 sheet %3 chars hash %4 darkmode-file %5")
+                        .arg(ownerOf(e), yesNo(e->isVisible()))
+                        .arg(sheet.size())
+                        .arg(hash, yesNo(sheet.contains(QLatin1String("in dark mode")))));
+                QFile out(ts3::dataDir() + QString::fromLatin1("/debug/sheet_") + hash + QString::fromLatin1(".txt"));
+                if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    out.write(sheet.toUtf8());
+            }
+        }
+        return true;
+    }
+    if (cmd == QLatin1String("dark.scan")) {
+        QSet<QTextDocument*>          docs;
+        QHash<QTextDocument*, QTextEdit*> views;
+        for (QWidget* top : QApplication::topLevelWidgets()) {
+            for (QTextEdit* e : top->findChildren<QTextEdit*>()) {
+                docs.insert(e->document());
+                views.insert(e->document(), e);
+            }
+            for (QTextDocument* d : top->findChildren<QTextDocument*>())
+                docs.insert(d);
+        }
+        int totalFrag = 0, totalNested = 0, totalBlockChar = 0, totalBlock = 0, totalFrame = 0, totalCursor = 0, totalCollection = 0, fragments = 0;
+        for (QTextDocument* d : docs) {
+            int frag = 0, nested = 0, blockChar = 0, block = 0, frame = 0, cursor = 0, collection = 0, n = 0;
+            for (QTextBlock tb = d->begin(); tb.isValid(); tb = tb.next()) {
+                blockChar += darkIn(tb.charFormat());
+                block += darkIn(tb.blockFormat());
+                for (auto it = tb.begin(); !it.atEnd(); ++it) {
+                    const QTextFragment fr = it.fragment();
+                    if (!fr.isValid())
+                        continue;
+                    ++n;
+                    const QTextCharFormat cf = fr.charFormat();
+                    frag += cf.hasProperty(darkchat::kOriginal) ? 1 : 0;
+                    nested += darkIn(cf) - (cf.hasProperty(darkchat::kOriginal) ? 1 : 0);
+                }
+            }
+            frame += darkIn(d->rootFrame()->frameFormat());
+            for (QTextFrame* f : d->rootFrame()->childFrames())
+                frame += darkIn(f->frameFormat());
+            for (const QTextFormat& f : d->allFormats())
+                collection += f.hasProperty(darkchat::kOriginal) ? 1 : 0;
+            QTextEdit* v = views.value(d);
+            if (v)
+                cursor = darkIn(v->currentCharFormat());
+            fragments += n;
+            totalFrag += frag;
+            totalNested += nested;
+            totalBlockChar += blockChar;
+            totalBlock += block;
+            totalFrame += frame;
+            totalCursor += cursor;
+            totalCollection += collection;
+            if (frag || nested || blockChar || block || frame || cursor || collection || c.value(QString::fromLatin1("all")).toBool())
+                say(QString::fromLatin1("dark.scan: %1%2 blocks %3 fragments %4: tagged %5, nested %6, block char %7, block %8, frame %9, cursor %10 (format collection %11)")
+                        .arg(ownerOf(v ? static_cast<QObject*>(v) : d), v ? QString() : QString::fromLatin1(" [no view]"))
+                        .arg(d->blockCount())
+                        .arg(n)
+                        .arg(frag)
+                        .arg(nested)
+                        .arg(blockChar)
+                        .arg(block)
+                        .arg(frame)
+                        .arg(cursor)
+                        .arg(collection));
+        }
+        say(QString::fromLatin1("dark.scan: %1 documents, %2 fragments: tagged %3, nested %4, block char %5, block %6, frame %7, cursor %8 (collection formats with it, used or not: %9)")
+                .arg(docs.size())
+                .arg(fragments)
+                .arg(totalFrag)
+                .arg(totalNested)
+                .arg(totalBlockChar)
+                .arg(totalBlock)
+                .arg(totalFrame)
+                .arg(totalCursor)
+                .arg(totalCollection));
         return true;
     }
     DarkMode* dark = DarkMode::instance();

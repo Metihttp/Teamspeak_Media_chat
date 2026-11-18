@@ -463,6 +463,7 @@ void ChatIntegration::applyAlbums(QTextBrowser* browser, const AlbumPlan& plan)
         if (view->scaler) // 2.5 zoom: out of the chat's picture books too (review fix)
             view->scaler->forget(resourceName(id));
         view->resourced.remove(id);
+        view->keptStills.remove(id); // 2.7.2 review fix: its tiles' stills with it (no longer booked, never swapped)
     }
     view->positionsValid = false;
     refreshUnresourcedAlbums(browser);
@@ -611,7 +612,7 @@ QImage ChatIntegration::renderAlbumFor(QTextBrowser* browser, const QString& id,
         if (!t.entry)
             continue;
         const QSize pixels = albumTileStillPixels(*t.entry, geo.tiles.at(i).size(), style.dpr);
-        t.still            = m_core->still(key, pixels);
+        t.still            = stillFor(key, pixels); // 2.7.2: the kept one in a redraw for the look (D1)
         // 2.2 spoiler: Core's predicate, as for single previews (and the reveal crossfade after a click).
         t.concealed      = m_core->isSpoilerHidden(key);
         t.concealOpacity = t.concealed ? 1.0 : spoilerCoverOpacity(key);

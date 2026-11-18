@@ -160,7 +160,7 @@ QPixmap ChatScale::blankPicture()
     return blank;
 }
 
-void ChatScale::putPicture(const QString& name, const QPixmap& pixmap, int module)
+void ChatScale::putPicture(const QString& name, const QPixmap& pixmap, int module, qint64 extraBytes)
 {
     if (!m_browser || name.isEmpty())
         return;
@@ -169,7 +169,7 @@ void ChatScale::putPicture(const QString& name, const QPixmap& pixmap, int modul
     Picture&   pic    = m_pictures[name];
     const qint64 before = pic.bytes;
     m_total -= pic.bytes;
-    pic.bytes   = pixmap.isNull() ? 0 : static_cast<qint64>(pixmap.width()) * pixmap.height() * 4;
+    pic.bytes   = (pixmap.isNull() ? 0 : static_cast<qint64>(pixmap.width()) * pixmap.height() * 4) + qMax<qint64>(0, extraBytes);
     pic.module  = module;
     pic.swapped = false;
     m_total += pic.bytes;

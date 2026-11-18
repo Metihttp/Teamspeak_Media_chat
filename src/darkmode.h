@@ -61,6 +61,22 @@ class DarkMode : public QObject
     // Applied and not paused (GUI thread). TS Media's own windows and chat colours ask this.
     static bool      isActive();
     static DarkMode* instance(); // the one alive (the live-test driver, diagnostics)
+    // 2.7.2 (D7): dark mode is switching TeamSpeak's look right now (on, off, a skin taken over): the palette and the sheet
+    // change one after the other, and themeChanged comes once both (and the documents) are in place.
+    static bool changing();
+    // 2.7.2 (D7): for a window that re-themes on PaletteChange and StyleChange: while dark mode switches the look, the
+    // window's re-theme waits for themeChanged (connected here, once, the window as its context) and runs there once, with
+    // the palette and the sheet both in place (before, an open window re-themed at every step: two or three passes over its
+    // widgets per toggle). True: deferred, nothing to do now.
+    template <typename Window>
+    static bool themeLater(Window* window, void (Window::*rethemeSlot)())
+    {
+        DarkMode* dark = changing() ? instance() : nullptr;
+        if (!dark || !window)
+            return false;
+        QObject::connect(dark, &DarkMode::themeChanged, window, rethemeSlot, Qt::UniqueConnection);
+        return true;
+    }
 
     bool enabled() const { return m_enabled; }
     bool paused() const { return m_paused; }
@@ -111,6 +127,7 @@ class DarkMode : public QObject
     QString              chatSheetText() const { return m_chatSheet; }
     QString              snapshotSheet() const { return m_snap.sheet; }
     QPalette             snapshotPalette() const { return m_snap.palette; }
+    chatcolors::Colors   snapshotChatColors() const { return m_snap.chat; } // 2.7.2: the skin's chat as TS Media printed for it
     bool                 isTracked(QTextDocument* doc) const;
     bool                 isPending(QTextDocument* doc) const;
     bool                 hasEventFilter() const { return m_filtering; }
@@ -145,9 +162,11 @@ class DarkMode : public QObject
     struct Doc {
         QPointer<QTextEdit>     view;
         QPointer<QTextDocument> doc;
-        QString                 sheet; // its default style sheet before dark mode (the skin's _chat.qss)
+        QString                 sheet; // its default style sheet before dark mode (the skin's _chat.qss; a chat TeamSpeak made
+                                       // while dark mode was on: with TeamSpeak's _chat_darkmode.qss, withoutTeamSpeakDark)
         bool                    recolored = false;
         bool                    pending   = false;
+        bool                    info      = false; // 2.7.2: TeamSpeak's info panel (its own maps)
         int                     dirtyFrom = -1; // lines added while dark, not recoloured yet
         int                     dirtyTo   = -1;
         QMetaObject::Connection changes;
@@ -172,6 +191,7 @@ class DarkMode : public QObject
     void pause();
     void adoptSkin();
     void buildTheme();
+    QString sheetNow() const; // the dark application sheet for the snapshot as it is now (its metrics, the skin's fonts)
     void installFilter(bool on);
     void stopTimers();
     QList<QTextEdit*> findViews() const;
@@ -184,14 +204,26 @@ class DarkMode : public QObject
     void hookTip(QWidget* label);
     void titleBar(QWidget* window);
     void revertTitleBars();
-    Maps mapsFor(const QString& sheet);
+    Maps mapsFor(const QString& sheet, bool info);
     QVector<Place> capturePlaces(const QList<QTextEdit*>& views) const;
     void restorePlaces(const QVector<Place>& places, bool settleHidden = false);
     void settleDeferred(); // every waiting place now (shutdown)
     darkpalette::Metrics measure(const QList<QTextEdit*>& views) const;
+    void                 logPane(); // 2.7.2 (D3): the chat column's measured pane insets, in TeamSpeak's log
+    void                 confirmPane(QTextEdit* chat); // review fix: the first chat's tab widget after a probe's measure
+    void                 repane(); // review fix: the sheet again, with the pane rule the first chat's tab widget needs
     chatcolors::Colors chatColorsNow(const QList<QTextEdit*>& views) const;
     void restorePalette();
     void announceTheme(); // themeChanged, timed (inside the place bracket)
+    // 2.7.2 (live test): TeamSpeak's own dark-mode files (<style>_darkmode.qss and <style>_chat_darkmode.qss in its styles
+    // folders). Under a dark application palette (dark mode's) TeamSpeak adds them, after a "\n", to the application sheet
+    // when it puts a skin in place and to the sheet of every chat (and info panel) it makes; with the skin's own palette it
+    // doesn't on Windows. What dark mode gives back is the skin's sheet without them.
+    void    readTeamSpeakDarkFiles();
+    QString withoutTeamSpeakDark(QString sheet) const;
+    // The way back of a chat TeamSpeak made while dark mode was on: its lines from the look of the sheet they were printed
+    // under (with the dark-mode file) to the skin's own, class by class.
+    darkchat::ColorMap ownSheetMap(const QString& made, const QString& own, bool info) const;
 
     bool m_enabled   = false;
     bool m_applied   = false;
@@ -209,12 +241,14 @@ class DarkMode : public QObject
     qreal    m_k = 1.0;
     QString  m_sheet;     // the application sheet we set (a shared copy of what QApplication keeps)
     QString  m_chatSheet; // the documents' sheet we set
+    QStringList m_teamSpeakDark; // 2.7.2 (live test): the texts of TeamSpeak's dark-mode files (readTeamSpeakDarkFiles)
     QPalette m_palette;   // the application palette we set (as QApplication keeps it)
-    QVector<QPair<QByteArray, darkchat::Look>> m_darkLooks;
+    QVector<darkchat::ClassFormat>             m_darkClasses; // 2.7.2: dark mode's chat sheet's classes (looks and text styles)
     QVector<QPair<darkchat::Look, QRgb>>       m_extrasForward;
     QVector<QPair<darkchat::Look, QRgb>>       m_extrasBack;
     QVector<QPair<darkchat::Look, QRgb>>       m_labelsBack; // 2.7.1: TS Media's line label on the way back
     QHash<QString, Maps>                       m_maps;
+    QHash<QString, Maps>                       m_infoMaps; // 2.7.2 (D9): the info panel's
     darkchat::ColorMap                         m_tipMap;
 
     QHash<QTextDocument*, Doc>        m_docs;
@@ -229,6 +263,7 @@ class DarkMode : public QObject
     QTimer* m_slice = nullptr; // one hidden document per turn
     QTimer* m_fresh = nullptr; // lines added while dark
     QTimer* m_tip   = nullptr; // a tool tip's document
+    QTimer* m_repane = nullptr; // review fix: the first chat's tab widget isn't the one the probe's pane rule names
 
     QElapsedTimer  m_clock;
     QList<qint64>  m_adoptTimes;

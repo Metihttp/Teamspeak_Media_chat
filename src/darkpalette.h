@@ -36,11 +36,23 @@ settingstheme::Tokens settingsTokens(qreal k);
 QPalette palette(const QPalette& base);
 
 // The skin's chat geometry the dark sheet keeps (design_dark 1.5, 2.6): the ChatTab's frame width and the width of its
-// vertical scroll bar.
+// vertical scroll bar. 2.7.2 (D3): and the side insets of the chat tab widget's pane (where the skin puts its pages), so
+// the chat column keeps its width (a hidden chat laid out again at its Show for a column a few px wider or narrower showed
+// a horizontal scroll bar or moved bubbles for ~200 ms). paneSelector names that tab widget in a sheet (its class, or
+// QTabWidget#name); empty: nothing measured, the design's pane. paneProbed (review fix): measured on probes because no chat
+// existed yet (TeamSpeak's start with dark mode on), the selector TeamSpeak's chat tab widget class until a chat shows its own.
 struct Metrics {
-    int chatFrame = 1;
-    int chatBar   = 17;
+    int     chatFrame = 1;
+    int     chatBar   = 17;
+    QString paneSelector;
+    int     paneLeft   = 0;
+    int     paneRight  = 0;
+    bool    paneProbed = false;
 };
+
+// 2.7.2 (D3): the rule that gives the chat tab widget's pane the skin's side insets in the window colour (seamless: the
+// pages' background is the same colour); empty without a selector. Built at run time (CRASH RULE).
+QString paneRule(const Tokens& t, const Metrics& m);
 
 // The size factor of design_dark 2.4: the font's pixel size over 11 (TeamSpeak's 8.25 pt at 100 %), at least 1.
 qreal scaleFactor(const QFont& font);

@@ -27,6 +27,7 @@
 #include <QPainter>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSet>
@@ -36,6 +37,8 @@
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QVBoxLayout>
+#include <QWheelEvent>
+#include <QtMath>
 #include <QtTest>
 
 #include <algorithm>
@@ -43,10 +46,12 @@
 #include <memory>
 
 #include "fakets3.h"
+#include "chatscroll.h"
 #include "layoutdoc.h"
 #include "linkpreview/linkurl.h"
 #include "medialink.h"
 #include "polls.h"
+#include "proxyfakes.h"
 #include "testmain.h"
 #include "ts3api.h"
 #include "tschat.h"
@@ -142,10 +147,28 @@ QByteArray picture(int w, int h, int seed)
     return bytes;
 }
 
-// A TS Media picture on the fake server, and its link as a sender's TS Media writes it.
-MediaLink mediaLink(int seed, int w, int h, quint32 album = 0, int index = 0, int count = 0)
+// 2.7.2: a sticker-like PNG: a disc on a transparent background (the chat's placeholder shows under its clear pixels).
+QByteArray transparentPicture(int w, int h, int seed)
 {
-    const QByteArray bytes = picture(w, h, seed);
+    QImage image(w, h, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QPainter p(&image);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setBrush(QColor::fromHsv((seed * 53) % 360, 200, 220));
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(w * 0.15, h * 0.15, w * 0.7, h * 0.7));
+    p.end();
+    QByteArray bytes;
+    QBuffer    buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return bytes;
+}
+
+// A TS Media picture on the fake server, and its link as a sender's TS Media writes it.
+MediaLink mediaLink(int seed, int w, int h, quint32 album = 0, int index = 0, int count = 0, bool transparent = false)
+{
+    const QByteArray bytes = transparent ? transparentPicture(w, h, seed) : picture(w, h, seed);
     MediaLink        link;
     link.host       = QString::fromLatin1(fakets3::kHost);
     link.port       = fakets3::kPort;
@@ -426,11 +449,14 @@ QHash<QString, QString>& cardKinds()
 // TSMEDIA_DARKCARDS_SETS). Made-up people only. TSMEDIA_DARKCARDS_BIG=1 (2.7.1 review): the picture and the spoiler are
 // 2400 x 1800 PNGs (over 4 MP: Core decodes their stills on a worker), so a long chat at 200 % holds more stills than
 // Core's cache keeps (the album's stay small: a grid off screen isn't drawn again when its tiles arrive later).
+// TSMEDIA_DARKCARDS_HUGE=1 (2.7.2): the picture and the spoiler are 4000 x 3000 (12 MP, never decoded on the GUI thread at
+// the unload), and each set has a transparent 1600 x 1600 sticker too.
 void fillCardChat(QTextDocument* doc, int messages, int cardsAt, int* seed, int sets = 1)
 {
-    const tschat::Skin s   = tschat::lightSkin();
-    const bool         big = qEnvironmentVariableIntValue("TSMEDIA_DARKCARDS_BIG") == 1;
-    const int          w   = big ? 2400 : 640, h = big ? 1800 : 480;
+    const tschat::Skin s    = tschat::lightSkin();
+    const bool         huge = qEnvironmentVariableIntValue("TSMEDIA_DARKCARDS_HUGE") == 1;
+    const bool         big  = huge || qEnvironmentVariableIntValue("TSMEDIA_DARKCARDS_BIG") == 1;
+    const int          w    = huge ? 4000 : big ? 2400 : 640, h = huge ? 3000 : big ? 1800 : 480;
     for (const char* name : {"MESSAGE_INCOMING", "MESSAGE_OUTGOING", "MESSAGE_INFO"}) {
         QImage icon(13, 13, QImage::Format_ARGB32_Premultiplied);
         icon.fill(QColor(0x43, 0x8b, 0xe8));
@@ -454,6 +480,8 @@ void fillCardChat(QTextDocument* doc, int messages, int cardsAt, int* seed, int 
             return tschat::linkHtml(s, link.toUrl(), link.fileName) + note();
         };
         post(1000, card(mediaLink((*seed)++, w, h), "picture"));
+        if (huge)
+            post(1000, card(mediaLink((*seed)++, 1600, 1600, 0, 0, 0, true), "sticker"));
         QString album;
         const quint32 id = 0x5d4c3b00u + static_cast<quint32>(*seed);
         for (int k = 1; k <= 3; ++k) {
@@ -615,6 +643,47 @@ CardMap keysOf(const QString& out)
 //   load at QT_FONT_DPI=192; live 81 and 4849 px);
 // - at every scaling (100%, QT_FONT_DPI=192, QT_SCALE_FACTOR=2), for a chat at its end and a reader scrolled up, and
 //   with the load right after the unload (no event loop between them, TSMEDIA_RELOAD261_GAPMS=0).
+
+// 2.7.2 (D8): a viewport filter installed before the plugin's (so it runs after them): called at each paint, after
+// the plugin drew its pictures for it and before Qt paints.
+class PaintTap : public QObject
+{
+  public:
+    std::function<void()> onPaint;
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::Paint && onPaint)
+            onPaint();
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+// 2.7.2 (D8): each link card's picture in a chat ("tsmedia-link:..." resources): name -> SHA-1 of its pixels ("blank" for
+// the 1 x 1 stand-in a slot has before its first paint).
+QMap<QString, QString> linkCards(QTextBrowser* b)
+{
+    QMap<QString, QString> out;
+    for (QTextBlock block = b->document()->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextCharFormat f = it.fragment().charFormat();
+            if (!f.isImageFormat() || !f.toImageFormat().name().startsWith(QLatin1String("tsmedia-link:")))
+                continue;
+            const QString  name = f.toImageFormat().name();
+            const QVariant v    = b->document()->resource(QTextDocument::ImageResource, QUrl(name));
+            QImage         img  = v.userType() == QMetaType::QPixmap ? qvariant_cast<QPixmap>(v).toImage() : qvariant_cast<QImage>(v);
+            if (img.isNull() || img.width() <= 1) {
+                out.insert(name, QStringLiteral("blank"));
+                continue;
+            }
+            img = img.convertToFormat(QImage::Format_ARGB32);
+            const QByteArray bits(reinterpret_cast<const char*>(img.constBits()), img.sizeInBytes());
+            out.insert(name, QString::fromLatin1(QCryptographicHash::hash(bits, QCryptographicHash::Sha1).toHex().left(12)));
+        }
+    }
+    return out;
+}
 
 } // namespace
 
@@ -1141,10 +1210,107 @@ class TestReload261 : public QObject
                 kept += asBefore;
             }
         }
-        // How many kept their picture (a still not at hand, or the unload's budget spent): the count depends on what Core's
-        // cache still has, so it is reported, not checked. (The 2.7.1 code before the review fix put a stand-in for a photo
-        // of the visible chat at the Disable of this row.)
+        // How many kept their picture (a still not at hand): the count depends on what Core's cache still has, so for the
+        // toggles it is reported, not checked. (The 2.7.1 code before the review fix put a stand-in for a photo of the visible
+        // chat at the Disable of this row.) 2.7.2 (D1): at the unload none is kept: every picture drawn while dark mode was on
+        // is drawn again from the still it was drawn from (2.7.1 left one here in its dark drawing).
         qInfo("pictures kept as they were: %d", kept);
+        if (scenario == "disable")
+            QCOMPARE(kept, 0);
+    }
+
+    // ---- 2.7.2 (D1): Options -> Addons -> Disable with dark mode on in long chats of big pictures (more stills than Core's
+    // cache keeps, files it never decodes at the unload: over 4 MP, 12 MP PNGs, a transparent sticker), at 200 % and 300 %,
+    // on a light and a dark skin: every picture TeamSpeak's chats keep is the one a Disable with dark mode off leaves, none
+    // has a dark-drawn pixel or dark mode's accent, the reader keeps their line; the unload's time is reported (U0 off, U1
+    // on). 2.7.1 kept a picture whose still wasn't at hand in its dark drawing ----------------------------------------------
+    void darkDisableKeepsNoDarkPicture_data()
+    {
+        QTest::addColumn<QByteArray>("extra");
+        QTest::addColumn<int>("minimum");
+        QTest::newRow("Cozy, light skin, 300 %, 12 sets")
+            << QByteArray("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_BIG=1;TSMEDIA_DARKCARDS_SETS=12;QT_SCALE_FACTOR=3") << 25;
+        QTest::newRow("Compact, light skin, QT_FONT_DPI=192, 12 MP and transparent pictures")
+            << QByteArray("TSMEDIA_DARKCARDS_LAYOUT=2;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_SETS=10;QT_FONT_DPI=192") << 25;
+        QTest::newRow("Cozy, dark skin, 200 %, 10 sets")
+            << QByteArray("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=dark;TSMEDIA_DARKCARDS_BIG=1;TSMEDIA_DARKCARDS_SETS=10;QT_SCALE_FACTOR=2") << 25;
+    }
+    void darkDisableKeepsNoDarkPicture()
+    {
+        QFETCH(QByteArray, extra);
+        QFETCH(int, minimum);
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_DARKCARDS_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        QString out;
+        QVERIFY(runCardsChild("disable", extra, &out));
+        const CardMap cards = cardsOf(out);
+        for (int chat : {1, 2}) {
+            const auto& u0 = cards["U0"][chat];
+            const auto& u1 = cards["U1"][chat];
+            QVERIFY2(cardsDiffer(cards["R"][chat], cards["D"][chat]), qPrintable(QStringLiteral("chat %1: dark mode drew nothing differently").arg(chat)));
+            if (chat == 1) { // the unload's own times first (reported whatever comes next)
+                static const QRegularExpression timeRe(QStringLiteral("^reload261: unload (U[01]) (\\d+) ms"), QRegularExpression::MultilineOption);
+                auto                            times = timeRe.globalMatch(out);
+                while (times.hasNext()) {
+                    const QRegularExpressionMatch m = times.next();
+                    qInfo("unload %s (dark mode %s): %s ms", qPrintable(m.captured(1)), m.captured(1) == QLatin1String("U0") ? "off" : "on", qPrintable(m.captured(2)));
+                }
+            }
+            int compared = 0;
+            for (auto it = u1.constBegin(); it != u1.constEnd(); ++it) {
+                const QString want = u0.value(it.key());
+                if (it.value() == QLatin1String("blank"))
+                    continue;
+                // No picture TeamSpeak's chat keeps has dark mode's accent, nor (on a light skin, whose cards have none) a pixel of
+                // the dark card; on a dark skin the cards are dark in TeamSpeak's own look too (compared with U0 below).
+                const QString wantFlags = extra.contains("SKIN=dark") ? QStringLiteral("accent=0") : QStringLiteral("dark=0 accent=0");
+                QVERIFY2(it.value().endsWith(wantFlags), qPrintable(QStringLiteral("chat %1: %2 %3").arg(chat).arg(it.key(), it.value())));
+                if (want.isEmpty() || want == QLatin1String("blank"))
+                    continue;
+                ++compared;
+                QVERIFY2(it.value() == want, qPrintable(QStringLiteral("chat %1: %2 %3, want %4").arg(chat).arg(it.key(), it.value(), want)));
+            }
+            qInfo("chat %d: %d pictures compared", chat, compared);
+            if (chat == 1)
+                QVERIFY2(compared >= minimum, qPrintable(QStringLiteral("only %1 pictures to compare").arg(compared)));
+        }
+        static const QRegularExpression placeRe(QStringLiteral("^reload261: place U1 dy (-?[0-9.]+) hidden gap (-?\\d+) -> (-?\\d+)"), QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch   m = placeRe.match(out);
+        QVERIFY2(m.hasMatch(), qPrintable(out.right(2000)));
+        qInfo("%s", qPrintable(m.captured(0)));
+        QVERIFY2(qAbs(m.captured(1).toDouble()) <= 2, qPrintable(m.captured(0)));
+        if (m.captured(2).toInt() <= 2)
+            QVERIFY2(m.captured(3).toInt() >= 0 && m.captured(3).toInt() <= 2, qPrintable(m.captured(0)));
+        QVERIFY2(out.contains(QLatin1String("reload261: sheet back 1")), qPrintable(out.right(2000)));
+    }
+
+    // ---- 2.7.2 (D1, a guard): dark mode off with the chat at its end after every card was seen in the dark look (Core's
+    // cache has lost most of their stills at 200 %), then up a screen at a time: every picture that came near is drawn for
+    // TeamSpeak's look (the one it had before dark mode), none keeps its dark drawing --------------------------------------
+    void darkOffDrawsNearFromKeptStill()
+    {
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_DARKCARDS_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        QString out;
+        QVERIFY(runCardsChild("offnear", "TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_BIG=1;TSMEDIA_DARKCARDS_SETS=8;QT_SCALE_FACTOR=2", &out));
+        const CardMap cards = cardsOf(out);
+        const auto&   up    = cards["Up"][1];
+        const auto&   light = cards["R"][1];
+        QVERIFY2(cardsDiffer(light, cards["Dsettled"][1]), "dark mode drew nothing differently");
+        int compared = 0;
+        for (auto it = up.constBegin(); it != up.constEnd(); ++it) {
+            const QString want = light.value(it.key());
+            if (it.value() == QLatin1String("blank") || want.isEmpty() || want == QLatin1String("blank"))
+                continue;
+            ++compared;
+            QVERIFY2(it.value() == want, qPrintable(QStringLiteral("%1: %2, want %3").arg(it.key(), it.value(), want)));
+        }
+        qInfo("%d pictures compared", compared);
+        QVERIFY(compared >= 20);
     }
 
     // The child of the darkCards tests: two chats with cards (the second in a hidden tab), the plugin loaded with dark mode
@@ -1328,6 +1494,33 @@ class TestReload261 : public QObject
             QTest::qWait(100);
             return;
         }
+        if (scenario == "offnear") {
+            // 2.7.2 (D1): dark mode on, every card seen in the dark look, the chat at its end, off; then up a screen at a time,
+            // one visibility pass per step: each picture that came near is drawn for TeamSpeak's look (from its kept still
+            // when Core's cache has lost it), none keeps its dark drawing.
+            place();
+            record("R");
+            plugin.menuItem(fakets3::kConnection, PLUGIN_MENU_TYPE_GLOBAL, 10, 0);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+            settleBoth(3000);
+            visitCards();
+            tabs->setCurrentIndex(0);
+            bar->setValue(bar->maximum());
+            settleBoth(2000);
+            record("Dsettled");
+            plugin.menuItem(fakets3::kConnection, PLUGIN_MENU_TYPE_GLOBAL, 11, 0);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+            for (int step = 0; step < 400 && bar->value() > 0; ++step) {
+                bar->setValue(qMax(0, bar->value() - chats[0]->viewport()->height()));
+                pump(chats[0], 300);
+            }
+            record("Up");
+            printDark();
+            plugin.unload();
+            m_plugin = nullptr;
+            QTest::qWait(100);
+            return;
+        }
         if (scenario == "toggle") {
             place();
             record("R");
@@ -1359,7 +1552,10 @@ class TestReload261 : public QObject
         const qreal lightY   = lineY(chats[0], marker);
         const int   lightGap = trueMaximum(chats[1]) - chats[1]->verticalScrollBar()->value();
         report(QStringLiteral("before U0: ") + describe(whereOf(chats[0])));
+        QElapsedTimer unloadClock; // 2.7.2: the unload's own time (this DLL has no test hooks to say it)
+        unloadClock.start();
         plugin.unload();
+        report(QStringLiteral("unload U0 %1 ms").arg(unloadClock.elapsed()));
         m_plugin = nullptr;
         report(QStringLiteral("after U0: ") + describe(whereOf(chats[0])));
         printDark();
@@ -1375,7 +1571,9 @@ class TestReload261 : public QObject
         const qreal placedY   = lineY(chats[0], marker);
         const int   hiddenGap = trueMaximum(chats[1]) - chats[1]->verticalScrollBar()->value();
         report(QStringLiteral("before U1: ") + describe(whereOf(chats[0])));
+        unloadClock.start();
         plugin.unload();
+        report(QStringLiteral("unload U1 %1 ms").arg(unloadClock.elapsed()));
         m_plugin = nullptr;
         report(QStringLiteral("after U1: ") + describe(whereOf(chats[0])));
         printDark();
@@ -1394,6 +1592,651 @@ class TestReload261 : public QObject
             plugin.unload();
             m_plugin = nullptr;
         }
+        QTest::qWait(100);
+    }
+
+    // ---- 2.7.2 (D3): a chat hidden while dark mode was toggled is laid out for the new look at its first paint ----------
+    // The real plugin under a TeamSpeak-like window: a ChatTabWidget with six chats (TS Media pictures, albums, replies, polls,
+    // your own messages on the right, day lines), the reader scrolled up in one of the hidden ones. Dark mode on from the
+    // visible chat ("on"), or on, that chat shown once in the dark look and hidden again, then off ("off"); then the hidden
+    // chat is opened. Its first paint (a grab at its Show, no event-loop turn) must be its settled look: the same pixels 1.5 s
+    // later, no horizontal scroll bar, a column as wide as before the toggle, the reader's line where it was. 2.7.1: the
+    // dark sheet's pane changed the column's width by a few px, so the chat was laid out again at its Show and TS Media's
+    // width-dependent rows followed 180-200 ms later (a horizontal scroll bar dark -> light, a shift light -> dark). The
+    // toggle's time with the five hidden chats is reported.
+    static QVector<QPair<QByteArray, QByteArray>> darkShowRows() // row name, the child's environment
+    {
+        QVector<QPair<QByteArray, QByteArray>> rows;
+        for (const char* scenario : {"on", "off"}) {
+            const QByteArray child = QByteArray("TSMEDIA_DARKSHOW_CHILD=") + scenario;
+            rows.append({QByteArray(scenario) + ", Cozy", child + ";TSMEDIA_DARKSHOW_LAYOUT=1"});
+            rows.append({QByteArray(scenario) + ", Compact", child + ";TSMEDIA_DARKSHOW_LAYOUT=2"});
+            rows.append({QByteArray(scenario) + ", TeamSpeak classic", child + ";TSMEDIA_DARKSHOW_LAYOUT=0"});
+            for (const char* dpi : {"144", "192"})
+                rows.append({QByteArray(scenario) + ", Cozy, QT_FONT_DPI=" + dpi, child + ";TSMEDIA_DARKSHOW_LAYOUT=1;QT_FONT_DPI=" + dpi});
+        }
+        return rows;
+    }
+    void darkHiddenChatFirstPaint_data()
+    {
+        QTest::addColumn<QByteArray>("extra");
+        for (const auto& row : darkShowRows())
+            QTest::newRow(row.first.constData()) << row.second;
+    }
+    void darkHiddenChatFirstPaint()
+    {
+        QFETCH(QByteArray, extra);
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_DARKSHOW_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        runRowsSideBySide("darkHiddenChatFirstPaint", "darkShowChild", darkShowRows(), QByteArray());
+        QString out;
+        QVERIFY(runNamedChild("darkShowChild", extra, &out));
+        static const QRegularExpression re(QStringLiteral("^reload261: darkshow width (\\d+) -> (\\d+) hbar (\\d+) document (\\d+) dy (-?[0-9.]+) settled dy (-?[0-9.]+) "
+                                                          "first paint (\\d+) px differ \\(of (\\d+)\\)"),
+                                           QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch m = re.match(out);
+        QVERIFY2(m.hasMatch(), qPrintable(out.right(3000)));
+        qInfo("%s", qPrintable(m.captured(0).mid(11)));
+        static const QRegularExpression times(QStringLiteral("^reload261: darkshow (toggle|differ) .*$"), QRegularExpression::MultilineOption);
+        for (auto it = times.globalMatch(out); it.hasNext();)
+            qInfo("%s", qPrintable(it.next().captured(0).mid(11).trimmed()));
+        QCOMPARE(m.captured(2).toInt(), m.captured(1).toInt()); // the column as wide as before the toggle
+        QCOMPARE(m.captured(3).toInt(), 0);                     // no horizontal scroll bar at the first paint
+        QVERIFY2(m.captured(4).toInt() <= m.captured(2).toInt(), qPrintable(m.captured(0)));
+        QVERIFY2(qAbs(m.captured(5).toDouble()) <= 2, qPrintable(m.captured(0)));
+        QVERIFY2(qAbs(m.captured(6).toDouble()) <= 2, qPrintable(m.captured(0)));
+        QVERIFY2(m.captured(7).toInt() == 0, qPrintable(m.captured(0) + QStringLiteral(" (the first paint isn't the settled look)")));
+    }
+
+    void darkShowChild()
+    {
+        const QByteArray scenario = qgetenv("TSMEDIA_DARKSHOW_CHILD");
+        if (scenario.isEmpty())
+            QSKIP("runs as a child of darkHiddenChatFirstPaint");
+        const QString dll = pluginPath();
+        QVERIFY2(!dll.isEmpty() && QFile::exists(dll), qPrintable(dll));
+        QCoreApplication::setAttribute(Qt::AA_Use96Dpi, false); // TeamSpeak's DPI (zoomShowChild)
+        const auto use96  = qScopeGuard([] { QCoreApplication::setAttribute(Qt::AA_Use96Dpi, true); });
+        const int  layout = qBound(0, qEnvironmentVariableIntValue("TSMEDIA_DARKSHOW_LAYOUT"), 2);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        fakets3::install(dir.path());
+        fakets3::setConnected(true);
+        fakets3::setOwnUid(kMe);
+        QDir().mkpath(dir.path() + QStringLiteral("/plugins/tsmedia"));
+        {
+            QFile ini(dir.path() + QStringLiteral("/plugins/tsmedia/settings.ini"));
+            QVERIFY(ini.open(QIODevice::WriteOnly));
+            ini.write("[General]\nvideoVolume=0\nvideosStartMuted=true\nvoiceSounds=false\nupdateCheck=2\nupdateConsentAsked=2\n"
+                      "autoLoadLinkPreviews=false\nmakeLinkPreviews=false\nsharePresence=false\nchatBubbles=true\ndarkMode=false\n");
+            ini.write("chatLayout=" + QByteArray::number(layout) + "\n");
+        }
+        const QString skin = QStringLiteral("QTextEdit#ChatTab { background-color: palette(base); }\n");
+        qApp->setStyleSheet(skin);
+        QMainWindow window;
+        window.setObjectName(QStringLiteral("MainWindow"));
+        auto* central = new QWidget(&window);
+        auto* column  = new QVBoxLayout(central);
+        auto* tabs    = new ChatTabWidget(central);
+        QFont font(QStringLiteral("Segoe UI"));
+        font.setPointSizeF(9.0);
+        const tschat::Skin s = tschat::darkSkin();
+        QVector<QTextBrowser*> chats;
+        for (int i = 0; i < 6; ++i) {
+            auto* b = new QTextBrowser;
+            b->setObjectName(QStringLiteral("ChatTab"));
+            b->setOpenLinks(false);
+            b->setFont(font);
+            if (i == 0) {
+                for (int k = 1; k <= 30; ++k)
+                    b->append(tschat::messageHtml(s, QStringLiteral("19:%1:00").arg(k, 2, 10, QLatin1Char('0')), 17, kAlice, QStringLiteral("Alice"),
+                                                  QStringLiteral("server %1 a line in the server chat").arg(k)));
+            } else {
+                fillChat(b->document(), i == 1 ? 90 : 50, "mixed");
+            }
+            tabs->addTab(b, i == 0 ? QStringLiteral("Fake server") : QStringLiteral("Chat %1").arg(i));
+            chats << b;
+        }
+        column->addWidget(tabs);
+        window.setCentralWidget(central);
+        window.resize(1000, 760);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+        PluginDll plugin;
+        m_logFrom = fakets3::logLines().size();
+        QCOMPARE(plugin.load(dll), QString());
+        m_plugin = &plugin;
+        QTextBrowser* chat = chats[1];
+        for (int i = 5; i >= 0; --i) { // every chat laid out once with the plugin (the downloads in)
+            tabs->setCurrentIndex(i);
+            settle(chats[i], i == 1 ? 15000 : 6000);
+        }
+        tabs->setCurrentIndex(1);
+        QScrollBar*   bar    = chat->verticalScrollBar();
+        const QString marker = QStringLiteral("r261 41 ");
+        QVERIFY(lineY(chat, marker) < 1e8);
+        bar->setValue(bar->value() + qRound(lineY(chat, marker)) - 5);
+        settle(chat, 8000);
+        const chatscroll::ReaderPlace reader   = chatscroll::captureReader(chat);
+        const auto                    readerAt = [&] { return chatscroll::readerY(chat->document(), reader) - bar->value(); };
+        const qreal                   y0       = readerAt();
+        const int                     before   = chat->viewport()->width();
+        const auto                    toggle   = [&](bool on) {
+            plugin.menuItem(fakets3::kConnection, PLUGIN_MENU_TYPE_GLOBAL, on ? 10 : 11, 0);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        };
+        QVERIFY(plugin.menuItem);
+        tabs->setCurrentIndex(0); // the chat hidden; the server chat in front
+        settle(chats[0], 3000);
+        if (scenario == "off") { // shown once in the dark look, hidden again, then dark mode off
+            toggle(true);
+            settle(chats[0], 3000);
+            tabs->setCurrentIndex(1);
+            settle(chat, 4000);
+            tabs->setCurrentIndex(0);
+            settle(chats[0], 3000);
+            toggle(false);
+        } else {
+            toggle(true);
+        }
+        settle(chats[0], 3000);
+        QElapsedTimer           since;
+        QMetaObject::Connection ranges;
+        if (qEnvironmentVariableIntValue("TSMEDIA_DARKSHOW_LOG") == 1) { // every range change after the Show
+            since.start();
+            ranges = connect(bar, &QScrollBar::rangeChanged, this, [&](int, int max) {
+                report(QStringLiteral("  range %1 ms: max %2 value %3 (log %4)").arg(since.elapsed()).arg(max).arg(bar->value()).arg(fakets3::logLines().size()));
+            });
+        }
+        tabs->setCurrentIndex(1); // the Show; no event-loop turn before the first paint (the grab paints it)
+        const int   width  = chat->viewport()->width();
+        const int   hbar   = chat->horizontalScrollBar()->maximum();
+        const int   docW   = qCeil(chat->document()->size().width());
+        const qreal showDy = readerAt() - y0;
+        const QImage first = chat->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        settle(chat, 6000);
+        QObject::disconnect(ranges);
+        const QImage later = chat->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        int   differ = 0;
+        QRect where; // what differs (the log names it)
+        if (first.size() != later.size()) {
+            differ = first.width() * first.height();
+        } else {
+            for (int y = 0; y < first.height(); ++y) {
+                const QRgb* a = reinterpret_cast<const QRgb*>(first.constScanLine(y));
+                const QRgb* b = reinterpret_cast<const QRgb*>(later.constScanLine(y));
+                for (int x = 0; x < first.width(); ++x) {
+                    if (a[x] != b[x]) {
+                        ++differ;
+                        where |= QRect(x, y, 1, 1);
+                    }
+                }
+            }
+        }
+        if (differ > 0)
+            report(QStringLiteral("darkshow differ in %1,%2 %3x%4 of %5x%6").arg(where.x()).arg(where.y()).arg(where.width()).arg(where.height()).arg(first.width()).arg(first.height()));
+        if (differ > 0 && !qEnvironmentVariableIsEmpty("TSMEDIA_DARKSHOW_SHOTS")) {
+            first.save(qEnvironmentVariable("TSMEDIA_DARKSHOW_SHOTS") + QStringLiteral("/first.png"));
+            later.save(qEnvironmentVariable("TSMEDIA_DARKSHOW_SHOTS") + QStringLiteral("/later.png"));
+        }
+        report(QStringLiteral("darkshow width %1 -> %2 hbar %3 document %4 dy %5 settled dy %6 first paint %7 px differ (of %8)")
+                   .arg(before)
+                   .arg(width)
+                   .arg(hbar)
+                   .arg(docW)
+                   .arg(showDy, 0, 'f', 1)
+                   .arg(readerAt() - y0, 0, 'f', 1)
+                   .arg(differ)
+                   .arg(first.width() * first.height()));
+        static const QRegularExpression timeRe(QStringLiteral("\\[dark\\] (on|off) in (\\d+) ms"));
+        QStringList                     toggles;
+        const QStringList               lines = fakets3::logLines();
+        for (int i = m_logFrom; i < lines.size(); ++i) {
+            const QRegularExpressionMatch t = timeRe.match(lines.at(i));
+            if (t.hasMatch())
+                toggles << t.captured(1) + QLatin1Char(' ') + t.captured(2);
+            if (lines.at(i).contains(QLatin1String("[dark] chat column")))
+                report(QStringLiteral("  plugin ") + lines.at(i));
+        }
+        report(QStringLiteral("darkshow toggle with 5 hidden chats (ms): %1").arg(toggles.join(QStringLiteral(", "))));
+        plugin.unload();
+        m_plugin = nullptr;
+        QTest::qWait(100);
+    }
+
+    // ---- 2.7.2 (D4): a chat-zoom change before a hidden chat is opened keeps its reader's line ---------------------------
+    // The live sequence: the channel chat scrolled up (its reader at message 42) and hidden behind the server chat,
+    // Options -> Addons -> Reload (or none), Ctrl + wheel in the server chat, then the channel chat opened. Its reader's
+    // line must be where it was at once (the Show, no event-loop turn: the first paint) and after everything settled; a
+    // chat at its end stays at its end. 2.7.1: 54 px off at the Show at 100 % (109 px at QT_FONT_DPI=144, 352 at 192),
+    // put back by the scale pass after the first paint (live: never, 68 px).
+    static QVector<QPair<QByteArray, QByteArray>> zoomShowRows() // row name, the child's environment (after TSMEDIA_ZOOMSHOW_CHILD=1;)
+    {
+        QVector<QPair<QByteArray, QByteArray>> rows;
+        for (const char* layout : {"1", "2"}) {
+            for (const char* scaling : {"", "QT_FONT_DPI=144", "QT_FONT_DPI=192"}) {
+                rows.append({QByteArray("Reload, ") + (layout[0] == '1' ? "Cozy" : "Compact") + ", " + (scaling[0] ? scaling : "100%"),
+                             QByteArray("TSMEDIA_ZOOMSHOW_RELOAD=1;TSMEDIA_ZOOMSHOW_LAYOUT=") + layout + ";" + scaling});
+            }
+        }
+        rows.append({"no Reload, Cozy, 100%", "TSMEDIA_ZOOMSHOW_RELOAD=0;TSMEDIA_ZOOMSHOW_LAYOUT=1"});
+        rows.append({"no Reload, Cozy, QT_FONT_DPI=192", "TSMEDIA_ZOOMSHOW_RELOAD=0;TSMEDIA_ZOOMSHOW_LAYOUT=1;QT_FONT_DPI=192"});
+        rows.append({"at its end, Reload, Cozy, 100%", "TSMEDIA_ZOOMSHOW_RELOAD=1;TSMEDIA_ZOOMSHOW_LAYOUT=1;TSMEDIA_ZOOMSHOW_END=1"});
+        rows.append({"at its end, Reload, Compact, QT_FONT_DPI=192", "TSMEDIA_ZOOMSHOW_RELOAD=1;TSMEDIA_ZOOMSHOW_LAYOUT=2;TSMEDIA_ZOOMSHOW_END=1;QT_FONT_DPI=192"});
+        return rows;
+    }
+    void zoomAtShowKeepsTheReader_data()
+    {
+        QTest::addColumn<QByteArray>("extra");
+        for (const auto& row : zoomShowRows())
+            QTest::newRow(row.first.constData()) << row.second;
+    }
+    void zoomAtShowKeepsTheReader()
+    {
+        QFETCH(QByteArray, extra);
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_ZOOMSHOW_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        runRowsSideBySide("zoomAtShowKeepsTheReader", "zoomShowChild", zoomShowRows(), "TSMEDIA_ZOOMSHOW_CHILD=1;");
+        QString out;
+        QVERIFY(runNamedChild("zoomShowChild", "TSMEDIA_ZOOMSHOW_CHILD=1;" + extra, &out));
+        static const QRegularExpression re(QStringLiteral("^reload261: zoomshow font (\\S+) -> (\\S+) show dy (-?[0-9.]+) gap (-?\\d+) settled dy (-?[0-9.]+) gap (-?\\d+)"),
+                                           QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch m = re.match(out);
+        QVERIFY2(m.hasMatch(), qPrintable(out.right(3000)));
+        qInfo("%s", qPrintable(m.captured(0).mid(11)));
+        QVERIFY2(m.captured(1) != m.captured(2), qPrintable(m.captured(0))); // the zoom changed in the server chat
+        if (extra.contains("END=1")) {
+            QVERIFY2(m.captured(4).toInt() >= 0 && m.captured(4).toInt() <= 2, qPrintable(m.captured(0) + QStringLiteral(" (not at its end at the Show)")));
+            QVERIFY2(m.captured(6).toInt() >= 0 && m.captured(6).toInt() <= 2, qPrintable(m.captured(0) + QStringLiteral(" (not at its end after)")));
+            return;
+        }
+        QVERIFY2(qAbs(m.captured(3).toDouble()) <= 2, qPrintable(m.captured(0) + QStringLiteral(" (the reader's line moved at the Show)")));
+        QVERIFY2(qAbs(m.captured(5).toDouble()) <= 2, qPrintable(m.captured(0) + QStringLiteral(" (the reader's line moved)")));
+    }
+
+    void zoomShowChild()
+    {
+        if (qEnvironmentVariableIsEmpty("TSMEDIA_ZOOMSHOW_CHILD"))
+            QSKIP("runs as a child of zoomAtShowKeepsTheReader");
+        const QString dll = pluginPath();
+        QVERIFY2(!dll.isEmpty() && QFile::exists(dll), qPrintable(dll));
+        // TeamSpeak's DPI: this executable assumes 96 DPI (testmain), so Qt would draw every picture of a chat twice as big
+        // as TeamSpeak does at QT_FONT_DPI=192 (its image handler scales by the viewport's DPI over the default DPI), and a
+        // picture's new size above the view would move the text by twice what the plugin keeps the place for.
+        QCoreApplication::setAttribute(Qt::AA_Use96Dpi, false);
+        const auto use96 = qScopeGuard([] { QCoreApplication::setAttribute(Qt::AA_Use96Dpi, true); });
+        const int  layout = qBound(0, qEnvironmentVariableIntValue("TSMEDIA_ZOOMSHOW_LAYOUT"), 2);
+        const bool reload = qEnvironmentVariableIntValue("TSMEDIA_ZOOMSHOW_RELOAD") == 1;
+        const bool atEnd  = qEnvironmentVariableIntValue("TSMEDIA_ZOOMSHOW_END") == 1;
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        fakets3::install(dir.path());
+        fakets3::setConnected(true);
+        fakets3::setOwnUid(kMe);
+        QDir().mkpath(dir.path() + QStringLiteral("/plugins/tsmedia"));
+        {
+            QFile ini(dir.path() + QStringLiteral("/plugins/tsmedia/settings.ini"));
+            QVERIFY(ini.open(QIODevice::WriteOnly));
+            ini.write("[General]\nvideoVolume=0\nvideosStartMuted=true\nvoiceSounds=false\nupdateCheck=2\nupdateConsentAsked=2\n"
+                      "autoLoadLinkPreviews=false\nmakeLinkPreviews=false\nsharePresence=false\nchatBubbles=true\n");
+            ini.write("chatLayout=" + QByteArray::number(layout) + "\n");
+        }
+        QMainWindow window;
+        window.setObjectName(QStringLiteral("MainWindow"));
+        auto* central = new QWidget(&window);
+        auto* column  = new QVBoxLayout(central);
+        auto* tabs    = new ChatTabWidget(central);
+        QFont font(QStringLiteral("Segoe UI"));
+        font.setPointSizeF(9.0);
+        const tschat::Skin s       = tschat::darkSkin();
+        auto*              server  = new QTextBrowser;
+        auto*              channel = new QTextBrowser;
+        for (QTextBrowser* b : {server, channel}) {
+            b->setObjectName(QStringLiteral("ChatTab"));
+            b->setOpenLinks(false);
+            b->setFont(font); // TeamSpeak's chat font is the widget's (the zoom's base); QTextEdit gives it to its document
+        }
+        for (int i = 1; i <= 40; ++i)
+            server->append(tschat::messageHtml(s, QStringLiteral("19:%1:00").arg(i, 2, 10, QLatin1Char('0')), 17, kAlice, QStringLiteral("Alice"),
+                                               QStringLiteral("server %1 a line in the server chat").arg(i)));
+        fillChat(channel->document(), 120, "mixed");
+        tabs->addTab(server, QStringLiteral("Fake server"));
+        tabs->addTab(channel, QStringLiteral("Fake channel"));
+        column->addWidget(tabs);
+        window.setCentralWidget(central);
+        window.resize(1000, 760);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        tabs->setCurrentIndex(1);
+        QTest::qWait(50);
+        tabs->setCurrentIndex(0);
+        QTest::qWait(50);
+
+        PluginDll plugin;
+        m_logFrom = fakets3::logLines().size();
+        QCOMPARE(plugin.load(dll), QString());
+        m_plugin = &plugin;
+        settle(server, 8000);
+        tabs->setCurrentIndex(1);
+        settle(channel, 20000);
+        QScrollBar*   bar    = channel->verticalScrollBar();
+        const QString marker = QStringLiteral("r261 42 ");
+        if (atEnd) {
+            bar->setValue(bar->maximum());
+        } else {
+            QVERIFY(lineY(channel, marker) < 1e8);
+            bar->setValue(bar->value() + qRound(lineY(channel, marker)) - 5);
+        }
+        settle(channel, 8000);
+        // The reader's line as TS Media reads it (its message's top, or the line of TeamSpeak's text at the view's top; the
+        // cursor follows the edits): where it is on screen.
+        const chatscroll::ReaderPlace reader   = chatscroll::captureReader(channel);
+        const auto                    readerAt = [&] { return chatscroll::readerY(channel->document(), reader) - bar->value(); };
+        const qreal                   y0       = atEnd ? lineY(channel, marker) : readerAt();
+        report(QStringLiteral("zoomshow placed: ") + describe(whereOf(channel)) + QStringLiteral(" reader line %1 (%2)").arg(y0).arg(reader.line ? "a line" : "a message"));
+        tabs->setCurrentIndex(0); // the channel chat hidden behind the server chat
+        settle(server, 3000);
+        if (reload) {
+            plugin.unload();
+            m_plugin = nullptr;
+            QTest::qWait(300); // TeamSpeak's event loop (the Options dialog) between the unload and the load
+            QCOMPARE(plugin.load(dll), QString());
+            m_plugin = &plugin;
+            settle(server, 8000);
+        }
+        // Ctrl + wheel in the server chat: one notch up (the zoom TS Media keeps for every chat).
+        const qreal before = server->font().pointSizeF();
+        {
+            QWidget*      vp = server->viewport();
+            const QPointF pos(vp->width() / 2.0, vp->height() / 2.0);
+            QWheelEvent   wheel(pos, QPointF(vp->mapToGlobal(pos.toPoint())), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(vp, &wheel);
+        }
+        settle(server, 3000);
+        const qreal after = server->font().pointSizeF();
+        report(QStringLiteral("zoomshow hidden before the Show: ") + describe(whereOf(channel)));
+        QElapsedTimer           since;
+        QMetaObject::Connection trace;
+        if (qEnvironmentVariableIntValue("TSMEDIA_ZOOMSHOW_LOG") == 1) { // every move after the Show, with the plugin's log so far
+            since.start();
+            trace = connect(bar, &QScrollBar::valueChanged, this, [&, channel](int value) {
+                QString blocks; // the blocks around the reader's: number:height (a change there moves the reader)
+                QTextBlock tb = channel->document()->lastBlock();
+                while (tb.isValid() && !tb.text().contains(marker))
+                    tb = tb.previous();
+                for (int k = 0; k < 6 && tb.isValid(); ++k, tb = tb.previous())
+                    blocks += QStringLiteral(" %1:%2").arg(tb.blockNumber()).arg(channel->document()->documentLayout()->blockBoundingRect(tb).height(), 0, 'f', 0);
+                const layoutdoc::Anchor a = layoutdoc::anchorAt(channel->document(), value);
+                report(QStringLiteral("  move %1 ms: %2/%3 line top %9 dy %4 (log %5) anchor %6+%7 blocks%8")
+                           .arg(since.elapsed())
+                           .arg(value)
+                           .arg(channel->verticalScrollBar()->maximum())
+                           .arg((atEnd ? lineY(channel, marker) : readerAt()) - y0, 0, 'f', 1)
+                           .arg(fakets3::logLines().size())
+                           .arg(a.block)
+                           .arg(a.offset, 0, 'f', 0)
+                           .arg(blocks)
+                           .arg(lineY(channel, marker) + value, 0, 'f', 0));
+            });
+        }
+        tabs->setCurrentIndex(1); // the Show; no event-loop turn before the measure (what the first paint shows)
+        const qreal showDy  = (atEnd ? lineY(channel, marker) : readerAt()) - y0;
+        const int   showGap = trueMaximum(channel) - bar->value();
+        settle(channel, 8000);
+        QObject::disconnect(trace);
+        report(QStringLiteral("zoomshow settled: ") + describe(whereOf(channel)));
+        report(QStringLiteral("zoomshow font %1 -> %2 show dy %3 gap %4 settled dy %5 gap %6")
+                   .arg(before)
+                   .arg(after)
+                   .arg(showDy, 0, 'f', 1)
+                   .arg(showGap)
+                   .arg((atEnd ? lineY(channel, marker) : readerAt()) - y0, 0, 'f', 1)
+                   .arg(trueMaximum(channel) - bar->value()));
+        if (qEnvironmentVariableIntValue("TSMEDIA_ZOOMSHOW_LOG") == 1) { // every plugin line since the load (a TESTHOOKS DLL says more)
+            const QStringList lines = fakets3::logLines();
+            for (int i = m_logFrom; i < lines.size(); ++i)
+                report(QStringLiteral("  plugin %1 ").arg(i + 1) + lines.at(i));
+            m_logFrom = lines.size();
+        }
+        printPluginSteps();
+        plugin.unload();
+        m_plugin = nullptr;
+        QTest::qWait(100);
+    }
+
+    // ---- 2.7.2 (D8): a link that waits for its automatic-load turn shows "Load preview", never the loading ring ----------
+    // The real plugin with automatic loading on and the chat proxy pointed at a fake SOCKS5 proxy on 127.0.0.1 that accepts
+    // and never answers (nothing leaves this PC: every load that starts stays loading for the whole test). A flood of 8
+    // picture links from one sender into the visible chat, then 8 from another while that chat's tab is hidden, shown a
+    // few seconds later. At the first paint of the cards (after the plugin drew them, before Qt paints) only a card whose
+    // load has started may look other than it looks a second and a half later (one load per sender: the rest wait as
+    // "Load preview" click cards all along). 2.7.1 drew every waiting card as the loading ring until a paint's pass 100 ms
+    // later started one and turned the others into click cards (live: the ring for 105 s while the chat got no paint).
+    // The hidden chat comes to its Show three ways: painted with TS Media before (shown once after the load); shown and
+    // painted before TS Media loaded and hidden since (as after Options > Addons > Reload: TS Media never painted it); and
+    // a new chat filled while hidden (its first Show, with Qt's own move to the text cursor). The first 2.7.2 code started
+    // the shown chat's loads only in the first way (a slow plugin start that painted the chat before its first scan failed
+    // the whole suite the same way).
+    void autoLinksWaitAsClickCards_data()
+    {
+        QTest::addColumn<QByteArray>("how");
+        QTest::newRow("hidden chat painted with TS Media before") << QByteArray("painted");
+        QTest::newRow("hidden chat shown before TS Media loaded") << QByteArray("reload");
+        QTest::newRow("a new chat's first Show") << QByteArray("new");
+    }
+    void autoLinksWaitAsClickCards()
+    {
+        QFETCH(QByteArray, how);
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_LINKFLOOD_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.remove(QStringLiteral("QT_FONT_DPI"));
+        env.remove(QStringLiteral("QT_SCALE_FACTOR"));
+        env.insert(QStringLiteral("TSMEDIA_LINKFLOOD_CHILD"), QStringLiteral("1"));
+        env.insert(QStringLiteral("TSMEDIA_LINKFLOOD_CASE"), QString::fromLatin1(how));
+        const QString fonts = QDir(qEnvironmentVariable("WINDIR", QStringLiteral("C:/Windows"))).filePath(QStringLiteral("Fonts"));
+        if (QDir(fonts).exists() && !env.contains(QStringLiteral("QT_QPA_FONTDIR")))
+            env.insert(QStringLiteral("QT_QPA_FONTDIR"), fonts);
+        QProcess child;
+        child.setProcessEnvironment(env);
+        child.setProcessChannelMode(QProcess::MergedChannels);
+        child.start(QCoreApplication::applicationFilePath(), {QStringLiteral("-platform"), QStringLiteral("offscreen"), QStringLiteral("linkFloodChild")});
+        QVERIFY(child.waitForStarted());
+        const bool finished = child.waitForFinished(120000);
+        if (!finished)
+            child.kill();
+        const QString out = QString::fromUtf8(child.readAll());
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_SHOW"))
+            std::fprintf(stdout, "%s\n", out.toUtf8().constData());
+        QVERIFY2(finished && child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, qPrintable(out.right(3000)));
+        static const QRegularExpression re(QStringLiteral("^reload261: flood (\\w+) cards (\\d+) drawn (\\d+) started (\\d+) changed (\\d+) final starts (\\d+)"),
+                                           QRegularExpression::MultilineOption);
+        int  phases = 0;
+        auto it     = re.globalMatch(out);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            ++phases;
+            qInfo("%s", qPrintable(m.captured(0).mid(11)));
+            const int cards = m.captured(2).toInt(), drawn = m.captured(3).toInt(), started = m.captured(4).toInt(), changed = m.captured(5).toInt(),
+                      final = m.captured(6).toInt();
+            QCOMPARE(cards, 8);
+            QCOMPARE(drawn, 8);       // the first paint drew every card
+            QCOMPARE(final, started); // one load for that sender all along (the others wait for its turn)
+            QVERIFY2(started <= 1, qPrintable(m.captured(0)));
+            // Only a started load's card may look different later (its ring turns): no card went from the ring to "Load
+            // preview", nor from "Load preview" to the ring.
+            QVERIFY2(changed <= started, qPrintable(m.captured(0) + QStringLiteral(" (a card drawn as the ring before its load started)")));
+        }
+        QVERIFY2(phases == 2, qPrintable(out.right(3000)));
+        // The load that could start did, before the first paint (the visible chat: right after the plugin put the cards
+        // in; the hidden one: at its Show).
+        QVERIFY2(out.contains(QLatin1String("reload261: flood visible cards 8 drawn 8 started 1")), qPrintable(out.right(2000)));
+        QVERIFY2(out.contains(QLatin1String("reload261: flood shown cards 8 drawn 8 started 1")), qPrintable(out.right(2000)));
+        QVERIFY2(out.contains(QLatin1String("reload261: flood shown hidden starts 0")), qPrintable(out.right(2000))); // nothing for a hidden chat
+    }
+
+    void linkFloodChild()
+    {
+        if (qEnvironmentVariableIsEmpty("TSMEDIA_LINKFLOOD_CHILD"))
+            QSKIP("runs as a child of autoLinksWaitAsClickCards");
+        const QString dll = pluginPath();
+        QVERIFY2(!dll.isEmpty() && QFile::exists(dll), qPrintable(dll));
+        proxyfakes::SocksScript script;
+        script.silent = true; // accepts and never answers: a load through it stays loading
+        proxyfakes::FakeSocks tarpit(script);
+        QVERIFY(tarpit.port() != 0);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        fakets3::install(dir.path());
+        fakets3::setConnected(true);
+        fakets3::setOwnUid(kMe);
+        QDir().mkpath(dir.path() + QStringLiteral("/plugins/tsmedia"));
+        {
+            QFile ini(dir.path() + QStringLiteral("/plugins/tsmedia/settings.ini"));
+            QVERIFY(ini.open(QIODevice::WriteOnly));
+            ini.write("[General]\nvideoVolume=0\nvideosStartMuted=true\nvoiceSounds=false\nupdateCheck=2\nupdateConsentAsked=2\n"
+                      "autoLoadLinkPreviews=true\nmakeLinkPreviews=false\nsharePresence=false\n");
+            ini.write("proxyOn=true\nproxyType=socks5\nproxyHost=127.0.0.1\nproxyPort=" + QByteArray::number(tarpit.port()) + "\n");
+        }
+
+        const QByteArray how = qgetenv("TSMEDIA_LINKFLOOD_CASE"); // painted (default), reload, new (autoLinksWaitAsClickCards_data)
+
+        QMainWindow window;
+        window.setObjectName(QStringLiteral("MainWindow"));
+        auto* central = new QWidget(&window);
+        auto* column  = new QVBoxLayout(central);
+        auto* tabs    = new ChatTabWidget(central);
+        QFont font(QStringLiteral("Segoe UI"));
+        font.setPointSizeF(9.0);
+        const tschat::Skin s        = tschat::lightSkin();
+        QTextBrowser*      chats[3] = {nullptr, nullptr, nullptr};
+        PaintTap           taps[3];
+        const auto         makeChat = [&](int i, const QString& title) {
+            chats[i] = new QTextBrowser;
+            chats[i]->setObjectName(QStringLiteral("ChatTab"));
+            chats[i]->setOpenLinks(false);
+            chats[i]->document()->setDefaultFont(font);
+            for (int k = 1; k <= 30; ++k)
+                chats[i]->append(tschat::messageHtml(s, QStringLiteral("20:%1:00").arg(k, 2, 10, QLatin1Char('0')), 17, kAlice, QStringLiteral("Alice"),
+                                                     QStringLiteral("flood %1 a plain line before the links").arg(k)));
+            chats[i]->viewport()->installEventFilter(&taps[i]); // before the plugin's filters: runs after them
+            tabs->addTab(chats[i], title);
+        };
+        makeChat(0, QStringLiteral("Fake channel"));
+        makeChat(1, QStringLiteral("Server"));
+        column->addWidget(tabs);
+        window.setCentralWidget(central);
+        window.resize(1000, 760);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        if (how == "reload") { // shown and painted before the plugin loads, hidden when it does (TS Media never paints it)
+            tabs->setCurrentIndex(1);
+            QTest::qWait(300);
+            tabs->setCurrentIndex(0);
+            QTest::qWait(300);
+        }
+
+        PluginDll plugin;
+        QCOMPARE(plugin.load(dll), QString());
+        m_plugin = &plugin;
+        if (how != "reload") {
+            tabs->setCurrentIndex(1); // both painted once with the plugin
+            pump(chats[1], 500);
+            tabs->setCurrentIndex(0);
+        }
+        pump(chats[0], 500);
+        for (QTextBrowser* b : chats) {
+            if (b)
+                b->verticalScrollBar()->setValue(b->verticalScrollBar()->maximum());
+        }
+        pump(chats[0], 300);
+
+        // The automatic loads of one site so far. Each phase's links are on a site of their own: a load through the silent
+        // proxy ends after about 6 s (the proxy's greeting never comes), and the visible chat's next link then starts in its
+        // turn, which is no load of the later phase (the new chat's row, the longest, met it now and then).
+        const auto startsOf = [](const QString& host) {
+            const QString what = QStringLiteral(" from %1 (automatic)").arg(host);
+            int           n    = 0;
+            for (const QString& line : fakets3::logLines())
+                n += line.contains(what) ? 1 : 0;
+            return n;
+        };
+        // One phase: the first paint that draws all 8 new cards (what it drew, the loads started by then), then the
+        // same cards 1.5 s later (a paint of their own).
+        const auto phase = [&](const char* name, int chat, int clid, const QString& uid, const QString& nick, bool showLater) {
+            const QString                host   = qstrcmp(name, "visible") == 0 ? QStringLiteral("cdn.example.com") : QStringLiteral("cdn.example.net");
+            const auto                   starts = [&] { return startsOf(host); };
+            const int                    before = starts();
+            QMap<QString, QString>       first;
+            int                          startedAtFirst = -1;
+            const QMap<QString, QString> old            = linkCards(chats[chat]);
+            taps[chat].onPaint                          = [&] {
+                if (startedAtFirst >= 0)
+                    return;
+                QMap<QString, QString> now = linkCards(chats[chat]);
+                for (const QString& key : old.keys())
+                    now.remove(key);
+                if (now.size() < 8)
+                    return;
+                for (const QString& v : qAsConst(now)) {
+                    if (v == QLatin1String("blank"))
+                        return;
+                }
+                first          = now;
+                startedAtFirst = starts() - before;
+            };
+            for (int k = 1; k <= 8; ++k)
+                chats[chat]->append(tschat::messageHtml(s, QStringLiteral("21:00:%1").arg(k, 2, 10, QLatin1Char('0')), clid, uid, nick,
+                                                        QStringLiteral("flood %1 %2 ").arg(QLatin1String(name)).arg(k)
+                                                            + tschat::linkHtml(s, QStringLiteral("https://%1/flood/%2-%3.png").arg(host, QLatin1String(name)).arg(k))));
+            if (showLater) {
+                pump(chats[chat], 2500); // the hidden chat gets its cards (no paint, no load)
+                report(QStringLiteral("flood %1 hidden starts %2").arg(QLatin1String(name)).arg(starts() - before));
+                tabs->setCurrentIndex(chat);
+            }
+            QElapsedTimer t;
+            t.start();
+            while (startedAtFirst < 0 && t.elapsed() < 10000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            taps[chat].onPaint = nullptr;
+            pump(chats[chat], 1500);
+            chats[chat]->viewport()->repaint(); // the cards drawn again for this paint
+            const QMap<QString, QString> later   = linkCards(chats[chat]);
+            int                          changed = 0, drawn = 0;
+            for (auto it = first.constBegin(); it != first.constEnd(); ++it) {
+                drawn += it.value() != QLatin1String("blank") ? 1 : 0;
+                if (later.value(it.key()) != it.value())
+                    ++changed;
+                report(QStringLiteral("flood %1 card %2 first %3 later %4").arg(QLatin1String(name), it.key().right(6), it.value(), later.value(it.key())));
+            }
+            report(QStringLiteral("flood %1 cards %2 drawn %3 started %4 changed %5 final starts %6")
+                       .arg(QLatin1String(name))
+                       .arg(first.size())
+                       .arg(drawn)
+                       .arg(startedAtFirst)
+                       .arg(changed)
+                       .arg(starts() - before));
+        };
+        phase("visible", 0, 1, QStringLiteral("serveradmin"), QStringLiteral("serveradmin"), false);
+        int shownChat = 1;
+        if (how == "new") { // a third chat added and filled while hidden: its Show below is its first
+            makeChat(2, QStringLiteral("Bob"));
+            pump(chats[0], 2000); // found and styled by the plugin while hidden
+            shownChat = 2;
+        }
+        phase("shown", shownChat, 19, kBob, QStringLiteral("Bob"), true);
+        plugin.unload();
+        m_plugin = nullptr;
         QTest::qWait(100);
     }
 
@@ -1731,6 +2574,112 @@ class TestReload261 : public QObject
         }
         return false;
     }
+    // 2.7.2: the environment of a child of this executable: NAME=value pairs ("A=1;B=2"), Windows' fonts, no scaling of ours.
+    static QProcessEnvironment namedChildEnv(const QByteArray& extra)
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.remove(QStringLiteral("QT_FONT_DPI"));
+        env.remove(QStringLiteral("QT_SCALE_FACTOR"));
+        for (const QByteArray& pair : extra.split(';')) {
+            if (pair.contains('='))
+                env.insert(QString::fromLatin1(pair.left(pair.indexOf('='))), QString::fromLatin1(pair.mid(pair.indexOf('=') + 1)));
+        }
+        const QString fonts = QDir(qEnvironmentVariable("WINDIR", QStringLiteral("C:/Windows"))).filePath(QStringLiteral("Fonts"));
+        if (QDir(fonts).exists() && !env.contains(QStringLiteral("QT_QPA_FONTDIR")))
+            env.insert(QStringLiteral("QT_QPA_FONTDIR"), fonts);
+        return env;
+    }
+    static QString namedChildKey(const char* function, const QByteArray& extra)
+    {
+        return QString::fromLatin1(function) + QLatin1Char('|') + QString::fromLatin1(extra);
+    }
+    // 2.7.2: one test function of this executable as a child (namedChildEnv); its output. A row whose child already ran
+    // beside the others (runRowsSideBySide) gets that child's output.
+    bool runNamedChild(const char* function, const QByteArray& extra, QString* out)
+    {
+        bool ok = false;
+        const auto ran = m_sideBySide.find(namedChildKey(function, extra));
+        if (ran != m_sideBySide.end()) {
+            ok   = ran->first;
+            *out = ran->second;
+            m_sideBySide.erase(ran);
+        } else {
+            QProcess child;
+            child.setProcessEnvironment(namedChildEnv(extra));
+            child.setProcessChannelMode(QProcess::MergedChannels);
+            child.start(QCoreApplication::applicationFilePath(), {QStringLiteral("-platform"), QStringLiteral("offscreen"), QString::fromLatin1(function)});
+            if (!child.waitForStarted())
+                return false;
+            const bool finished = child.waitForFinished(240000);
+            if (!finished)
+                child.kill();
+            *out = QString::fromUtf8(child.readAll());
+            ok   = finished && child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0;
+        }
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_SHOW"))
+            std::fprintf(stdout, "%s\n", out->toUtf8().constData());
+        if (!ok)
+            qWarning("%s", qPrintable(out->right(3000)));
+        return ok;
+    }
+    // Stabilize fix (the suite's time): the children of a data-driven test whose rows are independent and time nothing
+    // (darkHiddenChatFirstPaint, zoomAtShowKeepsTheReader: places and pixels; each child waits mostly for its chats to be
+    // quiet) run side by side, at most 5 at once (TSMEDIA_RELOAD261_SIDE: another number, 1 one by one): the function's
+    // first row starts every row's child, and each row then checks its own child's output exactly as before
+    // (runNamedChild). A command line that names rows of the function ("function:row") runs each named row's own child.
+    void runRowsSideBySide(const char* function, const char* child, const QVector<QPair<QByteArray, QByteArray>>& rows, const QByteArray& prefix)
+    {
+        if (m_sideBySideRan.contains(QString::fromLatin1(function)))
+            return;
+        m_sideBySideRan.insert(QString::fromLatin1(function));
+        const QString named = QString::fromLatin1(function) + QLatin1Char(':');
+        for (const QString& arg : QCoreApplication::arguments()) {
+            if (arg.startsWith(named))
+                return;
+        }
+        const int most = qEnvironmentVariableIsSet("TSMEDIA_RELOAD261_SIDE") ? qMax(1, qEnvironmentVariableIntValue("TSMEDIA_RELOAD261_SIDE")) : 5;
+        if (most <= 1)
+            return;
+        struct Run {
+            std::unique_ptr<QProcess> process;
+            QByteArray                extra;
+            QElapsedTimer             clock;
+        };
+        std::vector<Run> running;
+        int              next = 0;
+        while (next < rows.size() || !running.empty()) {
+            while (next < rows.size() && static_cast<int>(running.size()) < most) {
+                Run run;
+                run.extra   = prefix + rows.at(next++).second;
+                run.process = std::make_unique<QProcess>();
+                run.process->setProcessEnvironment(namedChildEnv(run.extra));
+                run.process->setProcessChannelMode(QProcess::MergedChannels);
+                run.process->start(QCoreApplication::applicationFilePath(), {QStringLiteral("-platform"), QStringLiteral("offscreen"), QString::fromLatin1(child)});
+                if (!run.process->waitForStarted()) {
+                    m_sideBySide.insert(namedChildKey(child, run.extra), {false, QStringLiteral("the child did not start")});
+                    continue;
+                }
+                run.clock.start();
+                running.push_back(std::move(run));
+            }
+            QTest::qWait(50); // the children's output read as it comes, their ends seen
+            for (auto it = running.begin(); it != running.end();) {
+                const bool done = it->process->state() == QProcess::NotRunning;
+                const bool late = !done && it->clock.elapsed() > 240000;
+                if (!done && !late) {
+                    ++it;
+                    continue;
+                }
+                if (late) {
+                    it->process->kill();
+                    it->process->waitForFinished(5000);
+                }
+                const bool ok = !late && it->process->exitStatus() == QProcess::NormalExit && it->process->exitCode() == 0;
+                m_sideBySide.insert(namedChildKey(child, it->extra), {ok, QString::fromUtf8(it->process->readAll())});
+                it = running.erase(it);
+            }
+        }
+    }
     bool runCardsChild(const QByteArray& scenario, const QByteArray& extra, QString* out)
     {
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -1917,6 +2866,8 @@ class TestReload261 : public QObject
     PluginDll*                                    m_plugin = nullptr;
     QSet<anyID>                                   m_delivered;
     int                                           m_logFrom = 0;
+    QHash<QString, QPair<bool, QString>>          m_sideBySide;    // runRowsSideBySide: function|environment -> ok, output
+    QSet<QString>                                 m_sideBySideRan; // ... the functions whose children it started
     QElapsedTimer                                 m_loadClock; // reloadNormalUse: the load's timed actions
     QVector<QPair<qint64, std::function<void()>>> m_due;
 };

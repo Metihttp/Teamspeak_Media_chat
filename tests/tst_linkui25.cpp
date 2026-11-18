@@ -134,7 +134,8 @@ class TestLinkUi25 : public QObject
         row("web idle: absent, click underneath", 0, Local::Idle, Kind::None, false, 0, W::None, true, false, Look::Absent, Look::Click, false);
         row("web waits for the sender: absent", 0, Local::Idle, Kind::None, false, 0, W::Sender, true, false, Look::Absent, Look::Loading, false);
         row("web own: absent", 0, Local::Idle, Kind::None, false, 0, W::Own, true, false, Look::Absent, Look::Loading, false);
-        row("web auto due: absent", 0, Local::Idle, Kind::None, false, 0, W::Auto, true, false, Look::Absent, Look::Loading, false);
+        // 2.7.2 (D8): an automatic load before it starts is the click card underneath (the ring only once it runs).
+        row("web auto due: absent", 0, Local::Idle, Kind::None, false, 0, W::Auto, true, false, Look::Absent, Look::Click, false);
         row("web loading: absent", 0, Local::Loading, Kind::None, false, 0, W::None, true, false, Look::Absent, Look::Loading, false);
         row("web failed: absent", 0, Local::Failed, Kind::None, false, 0, W::None, true, false, Look::Absent, Look::Error, false);
         row("web cooling: absent", 0, Local::Cooling, Kind::None, false, 0, W::None, true, false, Look::Absent, Look::Loading, false);
