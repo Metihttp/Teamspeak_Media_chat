@@ -32,6 +32,9 @@
 #include "update/updatemanifest.h"
 #include "update/updatepolicy.h"
 #include "update/updatesettings.h"
+#include "update/updater.h"
+#include "version.h"
+#include "fakets3.h"
 #include "testmain.h"
 
 using namespace upd;
@@ -1627,6 +1630,61 @@ class TestUpdater : public QObject
         notice = onStarted(box.layout, to, 9);
         QCOMPARE(notice.kind, StartupNotice::Updated);
         QVERIFY(!notice.automatic);
+    }
+
+    // 2.7.3 (M11): the first start of a new version prints its "Updated to ..." line with the "What's new in X" link in
+    // the SAME line (one TS Media row: a centred notice in Cozy and Compact, one line in classic), into the tab in front.
+    // Before, the link was a line of its own, which the chat layout showed alone at the left under the notice.
+    void updatedNoticeIsOneLine()
+    {
+        const Version current = Version::parse(QString::fromLatin1(TSMEDIA_VERSION));
+        QVERIFY(current.isValid());
+        const QString url = releaseNotesUrl(QStringLiteral("v") + current.toString()).toString();
+        for (const bool automatic : {false, true}) {
+            QTemporaryDir dir;
+            fakets3::install(dir.path());
+            fakets3::setConnected(true);
+            const QString data = dir.path() + QStringLiteral("/plugins/tsmedia");
+            QVERIFY(fs::ensureDir(data + QStringLiteral("/update")));
+            {
+                // What an applied install of this version leaves for its first start.
+                StateFile st(data + QStringLiteral("/update/state.ini"));
+                QVERIFY(st.setValue("install", "status", QStringLiteral("applied")));
+                QVERIFY(st.setValue("install", "from", QStringLiteral("2.7.1")));
+                QVERIFY(st.setValue("install", "to", current.toString()));
+                if (automatic)
+                    QVERIFY(st.setValue("install", "automatic", current.toString()));
+            }
+            {
+                Updater updater(data, Updater::Hooks{});
+                updater.start();
+            }
+            const QString text = automatic ? QStringLiteral("Updated to TS Media chat %1 (an important update, installed automatically).").arg(current.toString())
+                                           : QStringLiteral("Updated to TS Media chat %1.").arg(current.toString());
+            QStringList chat;
+            for (const QString& line : fakets3::logLines())
+                if (line.startsWith(QLatin1String("[chat] ")))
+                    chat.append(line);
+            QStringList updated;
+            for (const QString& line : qAsConst(chat))
+                if (line.contains(QLatin1String("Updated to TS Media chat")))
+                    updated.append(line);
+            QVERIFY2(updated.size() == 1, qPrintable(chat.join(QLatin1Char('\n'))));
+            const QString& line = updated.first();
+            QVERIFY2(line.contains(text), qPrintable(line));
+            QVERIFY2(line.contains(QStringLiteral("[url=") + url + QLatin1Char(']')), qPrintable(line));
+            QVERIFY2(line.contains(QStringLiteral("What's new in %1").arg(current.toString())), qPrintable(line));
+            // The text first, then the link, in that one line.
+            QVERIFY2(line.indexOf(text) < line.indexOf(QStringLiteral("[url=")), qPrintable(line));
+            // No line of its own for the link (nor any other line with that address).
+            for (const QString& other : qAsConst(chat))
+                QVERIFY2(other == line || !other.contains(url), qPrintable(other));
+            // Not into the channel tab when another tab is in front: the tab the user is looking at (print()).
+            for (const QString& print : fakets3::channelPrints())
+                QVERIFY2(!print.contains(QLatin1String("Updated to TS Media chat")), qPrintable(print));
+            // Said: not again at the next start.
+            QCOMPARE(StateFile(data + QStringLiteral("/update/state.ini")).value("install", "notice"), QStringLiteral("shown"));
+        }
     }
 
     void handDowngradeWithoutTheUpdater()

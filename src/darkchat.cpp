@@ -54,7 +54,10 @@ const Probe kProbes[] = {
     {"Kicked", "<p class=\"TextMessage_ClientKicked\">x</p>"},
     {"ServerError", "<p class=\"TextMessage_ServerError\">x</p>"},
     {"History", "<p class=\"TextMessage_BeginHistory\">x</p>"},
-    {"HostName", "<p><span class=\"TextMessage_HostName\">x</span></p>"},
+    // 2.7.3 (X1): in the paragraph TeamSpeak 3.6.2 prints host names in ("Trying to connect to server on ..." and "Trying to
+    // resolve hostname ...": TextMessage_Normal lines), so a style without a host name colour yields the colour the name
+    // inherits from its line there.
+    {"HostName", "<p class=\"TextMessage_Normal\"><span class=\"TextMessage_HostName\">x</span></p>"},
     {"InfoTitleLink", "<p class=\"InfoFrame_Title\"><a class=\"TextMessage_ServerLink\" href=\"x\">x</a></p>"},
     {"Highlight", "<p class=\"Highlight\">x</p>"},
     {"Important", "<p class=\"Important\">x</p>"},
@@ -68,13 +71,20 @@ const Probe kProbes[] = {
     // The bottom-aligned cells of TeamSpeak's client panel (the first row: its label and its value).
     {"BottomLabel", "<table class=\"InfoFrame_Table\"><tr><td class=\"Bottom Label\">x</td></tr></table>"},
     {"Bottom", "<table class=\"InfoFrame_Table\"><tr><td class=\"Bottom\">x</td></tr></table>"},
+    // 2.7.3 (M10): the value classes in a table cell too, for a style whose own dark chat file colours them there only
+    // (.InfoFrame_Table td.Active): an info panel TeamSpeak made and filled while dark mode was on gets them back. (TeamSpeak
+    // 3.6.2's own dark chat file colours both forms, which the paragraph probes above read.)
+    {"HighlightCell", "<table class=\"InfoFrame_Table\"><tr><td class=\"Highlight\">x</td></tr></table>"},
+    {"ImportantCell", "<table class=\"InfoFrame_Table\"><tr><td class=\"Important\">x</td></tr></table>"},
+    {"ActiveCell", "<table class=\"InfoFrame_Table\"><tr><td class=\"Active\">x</td></tr></table>"},
+    {"InactiveCell", "<table class=\"InfoFrame_Table\"><tr><td class=\"Inactive\">x</td></tr></table>"},
 };
 
-// The info panel's classes (they never occur in a chat). Label, CustomNick, Title, BottomLabel and Bottom (2.7.2) take part in
-// the info panel's maps only.
+// The info panel's classes (they never occur in a chat). Label, CustomNick, Title, BottomLabel and Bottom (2.7.2) and the value
+// cells (2.7.3) take part in the info panel's maps only.
 bool isInfoOnly(const QByteArray& key)
 {
-    return key == "Label" || key == "CustomNick" || key == "Title" || key == "BottomLabel" || key == "Bottom";
+    return key == "Label" || key == "CustomNick" || key == "Title" || key == "BottomLabel" || key == "Bottom" || key.endsWith("Cell");
 }
 
 bool isInfoClass(const QByteArray& key)
@@ -96,21 +106,25 @@ QVariant valueOf(const QTextFormat& format, int id)
 }
 
 // The text style of a class on the way back (map.fonts): each property whose value is one dark mode's sheet gave that look,
-// except the properties in skip (id, value, id, value, ...: what the chat layout set itself). False: unchanged.
+// except the properties in skip (id, value, id, value, ...: what the chat layout set itself). A property is set once (review
+// fix, 2.7.3: a property may have several fixes, one per target value; the value one sets may be another's from). False:
+// unchanged.
 bool applyStyle(QTextFormat& format, const QVector<StyleFix>& style, const QVariantList& skip = {})
 {
-    bool changed = false;
+    bool         changed = false;
+    QVector<int> done;
     for (const StyleFix& fix : style) {
         bool layouts = false;
         for (int i = 0; i + 1 < skip.size(); i += 2)
             layouts = layouts || skip.at(i).toInt() == fix.id;
         const QVariant now = valueOf(format, fix.id);
-        if (layouts || now == fix.value || !fix.from.contains(now))
+        if (layouts || done.contains(fix.id) || now == fix.value || !fix.from.contains(now))
             continue;
         if (fix.value.isValid())
             format.setProperty(fix.id, fix.value);
         else
             format.clearProperty(fix.id);
+        done.append(fix.id);
         changed = true;
     }
     return changed;
@@ -183,7 +197,13 @@ bool mapOwn(QTextFormat& format, const ColorMap& map, bool forward, bool label)
         const auto style = map.fonts.constFind(uncoloredLook(format.toCharFormat()));
         return style != map.fonts.constEnd() && applyStyle(format, style.value());
     }
-    if (!format.isCharFormat() || format.isImageFormat() || format.objectType() != QTextFormat::NoObject)
+    // 2.7.3 (M5): on the way back also TeamSpeak's own pictures (a message icon, an emoticon: Qt gives an <img> its
+    // paragraph's colour, so one printed while dark holds dark mode's) and a table cell's format (TeamSpeak's info panel
+    // cells: setHtml gives the cell its class's colour too), by their look like text: never drawn, but text typed or
+    // inserted next to them takes their format. The way there never touches them (an old one has a skin colour: no key).
+    const int  object  = format.objectType();
+    const bool allowed = object == QTextFormat::NoObject || (!forward && (object == QTextFormat::ImageObject || object == QTextFormat::TableCellObject));
+    if (!format.isCharFormat() || !allowed)
         return false;
     if (!format.hasProperty(QTextFormat::ForegroundBrush) || format.brushProperty(QTextFormat::ForegroundBrush).style() != Qt::SolidPattern)
         return false;
@@ -445,7 +465,7 @@ bool isLineLabel(const QString& text)
 namespace {
 
 ColorMap buildMapOf(const QVector<ClassFormat>& from, const QVector<ClassFormat>& to, const QVector<QPair<Look, QRgb>>& extras, const QColor& base,
-                    const QVector<QPair<Look, QRgb>>& labels, bool infoPanel, bool withStyle)
+                    const QVector<QPair<Look, QRgb>>& labels, bool infoPanel, bool withStyle, bool sameColors)
 {
     ColorMap map;
     map.base = base;
@@ -472,6 +492,8 @@ ColorMap buildMapOf(const QVector<ClassFormat>& from, const QVector<ClassFormat>
                 if (t->look.rgb != f.look.rgb) {
                     map.exact.insert(f.look, t->look.rgb);
                     won.insert(f.look);
+                } else if (sameColors && withStyle) {
+                    won.insert(f.look); // review fix (2.7.3): its text style only (no colour to change, and the look stays free)
                 }
             } else if (infoPanel && info) {
                 // 2.7.2 (D9): an info panel class the target doesn't colour (TeamSpeak's labels): its colour goes. Never a
@@ -509,6 +531,9 @@ ColorMap buildMapOf(const QVector<ClassFormat>& from, const QVector<ClassFormat>
     // alone: no class's style goes on another class's text. The classes are those whose text the map's documents hold: a
     // chat's, the chat classes (an info panel class sharing a look, e.g. Active with Welcome, never occurs in a chat); the
     // info panel's, all of them.
+    // Review fix (2.7.3): where they disagree on the target side, each value this side that only one target value goes with
+    // gets that one (several fixes of one property, their values here apart; the info panel's title text and its plain
+    // cells share a look, the title's size isn't the cells'). A value here that goes with two target values is left alone.
     using Sharing     = QVector<QPair<const ClassFormat*, const ClassFormat*>>;
     const auto styleOf = [](const Sharing& sharing) {
         QSet<int> ids;
@@ -524,23 +549,44 @@ ColorMap buildMapOf(const QVector<ClassFormat>& from, const QVector<ClassFormat>
         for (int id : qAsConst(sorted)) {
             if (!isStyleProperty(id))
                 continue;
-            StyleFix fix;
-            fix.id       = id;
-            fix.value    = valueOf(sharing.first().second->format, id);
-            bool agree   = true;
-            bool differs = false;
+            QVector<QPair<QVariant, QVariant>> pairs; // a value this side -> its target value
+            QVariantList                       twoWays;
             for (const auto& s : sharing) {
-                if (valueOf(s.second->format, id) != fix.value) {
-                    agree = false;
-                    break;
+                const QVariant mine = valueOf(s.first->format, id), target = valueOf(s.second->format, id);
+                bool           seen = false;
+                for (const auto& p : qAsConst(pairs)) {
+                    if (p.first != mine)
+                        continue;
+                    seen = true;
+                    if (p.second != target && !twoWays.contains(mine))
+                        twoWays.append(mine);
                 }
-                const QVariant mine = valueOf(s.first->format, id);
-                differs             = differs || mine != fix.value;
-                if (!fix.from.contains(mine))
-                    fix.from.append(mine);
+                if (!seen)
+                    pairs.append({mine, target});
             }
-            if (agree && differs)
-                style.append(fix);
+            QVector<StyleFix> fixes; // one per target value (all the values here that go with it)
+            for (const auto& p : qAsConst(pairs)) {
+                if (twoWays.contains(p.first))
+                    continue;
+                int at = -1;
+                for (int i = 0; i < fixes.size() && at < 0; ++i)
+                    at = fixes.at(i).value == p.second ? i : -1;
+                if (at < 0) {
+                    StyleFix fix;
+                    fix.id    = id;
+                    fix.value = p.second;
+                    fixes.append(fix);
+                    at = fixes.size() - 1;
+                }
+                fixes[at].from.append(p.first);
+            }
+            for (const StyleFix& fix : qAsConst(fixes)) {
+                bool differs = false;
+                for (const QVariant& mine : fix.from)
+                    differs = differs || mine != fix.value;
+                if (differs)
+                    style.append(fix);
+            }
         }
         return style;
     };
@@ -597,13 +643,13 @@ ColorMap buildMap(const QVector<QPair<QByteArray, Look>>& from, const QVector<QP
         }
         return out;
     };
-    return buildMapOf(formats(from), formats(to), extras, base, labels, false, false);
+    return buildMapOf(formats(from), formats(to), extras, base, labels, false, false, false);
 }
 
 ColorMap buildMap(const QVector<ClassFormat>& from, const QVector<ClassFormat>& to, const QVector<QPair<Look, QRgb>>& extras, const QColor& base,
-                  const QVector<QPair<Look, QRgb>>& labels, bool infoPanel)
+                  const QVector<QPair<Look, QRgb>>& labels, bool infoPanel, bool sameColors)
 {
-    return buildMapOf(from, to, extras, base, labels, infoPanel, true);
+    return buildMapOf(from, to, extras, base, labels, infoPanel, true, sameColors);
 }
 
 bool isModuleFormat(const QTextCharFormat& format)
@@ -616,32 +662,6 @@ bool isModuleFormat(const QTextCharFormat& format)
     }
     return false;
 }
-
-namespace {
-
-// kOriginal in format or in any format kept inside it (2.7.2).
-bool holdsOriginal(const QTextFormat& format, int depth)
-{
-    if (format.hasProperty(kOriginal))
-        return true;
-    if (depth >= kMaxDepth)
-        return false;
-    const QMap<int, QVariant> properties = format.properties();
-    for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
-        if (it.value().userType() == QMetaType::QTextFormat) {
-            if (holdsOriginal(qvariant_cast<QTextFormat>(it.value()), depth + 1))
-                return true;
-        } else if (it.value().userType() == QMetaType::QVariantList) {
-            for (const QVariant& item : it.value().toList()) {
-                if (item.userType() == QMetaType::QTextFormat && holdsOriginal(qvariant_cast<QTextFormat>(item), depth + 1))
-                    return true;
-            }
-        }
-    }
-    return false;
-}
-
-} // namespace
 
 int recolor(QTextDocument* doc, const ColorMap& map, bool forward, int from, int to)
 {
@@ -656,12 +676,14 @@ int recolor(QTextDocument* doc, const ColorMap& map, bool forward, int from, int
     bool           kept = false;
     for (QTextBlock b = start > 0 ? doc->findBlock(start) : doc->begin(); b.isValid() && b.position() < end; b = b.next()) {
         if (!forward) {
-            // The block's own character format (its separator's): QTextEdit::append gives each new block its cursor's format,
-            // a recoloured fragment's when the cursor sits on one (TeamSpeak's at the end): one that holds kOriginal is mapped
-            // like a fragment, so no block keeps it or dark mode's colour (and no later append copies it from there). The
-            // others are left as they are (never drawn; an old line's stays byte-exact), and so is every one on the way there.
+            // The block's own character format (its separator's; a table cell's first block: the cell's format): QTextEdit::
+            // append gives each new block its cursor's format, a recoloured fragment's when the cursor sits on one
+            // (TeamSpeak's at the end), and after a click on a line printed while dark that line's format, which has dark
+            // mode's colour without kOriginal (2.7.3, M5): every one is mapped like a fragment, so no block keeps kOriginal or
+            // a dark look (and no later append, plain text typed or inserted into an empty block, copies it from there). An
+            // old line's has a skin colour, no key of the way back: it stays byte-exact. The way there leaves them all.
             QTextFormat format = b.charFormat();
-            if (holdsOriginal(format, 0) && mapFormat(format, map, false, 0, false))
+            if (mapFormat(format, map, false, 0, false))
                 blocks.append({b.position(), b.position(), format.toCharFormat()});
         }
         for (auto it = b.begin(); !it.atEnd(); ++it) {

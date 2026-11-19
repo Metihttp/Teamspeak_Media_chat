@@ -357,6 +357,13 @@ void printInfo(uint64 sch, const QString& text)
     print(sch, QString::fromLatin1("[color=%1][b]TS Media chat[/b][/color] ").arg(currentLines().accent) + escapeBBCode(text));
 }
 
+void printInfo(uint64 sch, const QString& text, const QString& url, const QString& linkText)
+{
+    const QString link = linkBBCode(url, linkText);
+    print(sch, QString::fromLatin1("[color=%1][b]TS Media chat[/b][/color] ").arg(currentLines().accent) + escapeBBCode(text)
+                   + (link.isEmpty() ? QString() : QLatin1Char(' ') + link));
+}
+
 void printWarning(uint64 sch, const QString& text)
 {
     // Chat warnings put names in curly quotes; the plugin log marks those (logtext.h).

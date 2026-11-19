@@ -1745,6 +1745,24 @@ MediaStill Core::still(const QString& key, const QSize& maxPixels)
     return tagged(MediaStill());
 }
 
+MediaStill Core::blurHashStill(const QString& key, const QSize& maxPixels)
+{
+    auto it = m_entries.constFind(key);
+    if (it == m_entries.constEnd() || maxPixels.isEmpty() || it.value().link.blurHash.isEmpty())
+        return {};
+    // still()'s cache key for this source and size, so both share one image.
+    const QString cacheKey = key + QLatin1Char('@') + QString::number(maxPixels.width()) + QLatin1Char('x') + QString::number(maxPixels.height())
+                             + QLatin1Char('#') + QString::number(static_cast<int>(MediaStill::BlurHash));
+    if (const MediaStill* cached = m_stills.object(cacheKey))
+        return *cached;
+    MediaStill result;
+    result.image = decodeBlurHash(it.value().link, maxPixels);
+    if (!result.image.isNull())
+        result.source = MediaStill::BlurHash;
+    m_stills.insert(cacheKey, new MediaStill(result), qMax(1, static_cast<int>(result.image.sizeInBytes() / 1024)));
+    return result;
+}
+
 void Core::startStillDecode(const QString& key, const QString& cacheKey, MediaStill::Source source, const QString& path, const QSize& maxPixels)
 {
     if (m_stillJobs.contains(cacheKey))

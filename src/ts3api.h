@@ -86,6 +86,10 @@ chatcolors::LineColors lineColors();
 // (text escaped). Empty when url has '[', ']', quotes, spaces or control characters (it could leave the tag).
 QString linkBBCode(const QString& url, const QString& text);
 void printInfo(uint64 sch, const QString& text);
+// 2.7.3: printInfo's line with one link at its end, in ONE line (TS Media's own row: in Cozy and Compact the link is inside
+// the notice, not a line of its own under it), into the tab print() chooses. text and linkText are escaped; a url that
+// linkBBCode refuses leaves the text alone.
+void printInfo(uint64 sch, const QString& text, const QString& url, const QString& linkText);
 void printWarning(uint64 sch, const QString& text);
 // 2.3.4: printInfo's line plus one link, in ONE line (so the link is part of TS Media's own row,
 // layoutdoc's ownPrint), always into sch's channel tab. text and linkText are escaped; url goes in as it

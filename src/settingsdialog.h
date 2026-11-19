@@ -40,6 +40,7 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     enum class Tab { Chat, EmojiGifs, Sending, ReceivingPlayback, LinkPreviews, Privacy, Servers, About };
 
     SettingsDialog(Core* core, QWidget* parent = nullptr);
+    ~SettingsDialog() override;
 
     // 2.2: a feature's settings, added below the page's cards in the order of the calls (the dialog
     // takes ownership and shows the page). A SettingsSection is loaded, checked and stored with the rest
@@ -65,7 +66,21 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     // Tests and the live-test driver.
     QListWidget*    pageList() const { return m_nav; }
     QStackedWidget* pageStack() const { return m_stack; }
-    QScrollArea*    pageArea(Tab tab) const { return m_pageAreas.value(static_cast<int>(tab)); }
+    QScrollArea*    pageArea(Tab tab); // 2.7.3 (M2): the page attached first, as when it is shown
+    QWidget*        page(Tab tab) const { return m_pages.value(static_cast<int>(tab)); }
+    // 2.7.3 (M2): a page goes into the window when it is first shown (until then it waits, mostly unpolished, in a window
+    // that is never shown: Qt's repolish for a new application sheet polishes a widget once per styled ancestor, and the
+    // hidden pages made up most of the dark mode switch with the window open; review fix: a switch takes the pages not on
+    // screen out again, and they come back when shown). pageAttached: it is in the window now. controls and
+    // control: the window's widgets of a type (by object name), on every page (findChildren sees the attached pages only).
+    // attachAllPages: tests that need every page's geometry.
+    bool pageAttached(Tab tab) const;
+    void attachAllPages();
+    template <class T>
+    QList<T*> controls() const;
+    template <class T>
+    T*   control(const QString& name) const;
+    void showTabOf(QWidget* widget); // the page a widget is on becomes the current one
     QLabel*         unsavedNote() const { return m_unsaved; }
     // H1: the size the window opens at on a screen with this available area (900 x 640 times k, within 92 % of it).
     QSize initialSizeFor(const QSize& available) const;
@@ -78,6 +93,7 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void changeEvent(QEvent* event) override;
+    bool event(QEvent* event) override; // review fix (2.7.3, M2): a dark mode switch takes the pages not on screen out
     void keyPressEvent(QKeyEvent* event) override;
     bool focusNextPrevChild(bool next) override; // 2.7 live: Tab leaves the button bar
 
@@ -103,14 +119,15 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     QWidget*     addPage(Tab tab, const QString& title, const QString& description);
     QVBoxLayout* pageLayout(Tab tab) const;
     void         insertCard(Tab tab, QWidget* card, bool last = false); // last: stays below what sections add later
-    void         showTabOf(QWidget* widget); // the page a widget is on becomes the current one
+    void         attachPage(int index); // 2.7.3 (M2)
+    void         detachPage(int index); // review fix: back into the window that holds the pages not shown (a switch)
 
     Core* m_core;
 
     QListWidget*              m_nav   = nullptr;
     QStackedWidget*           m_stack = nullptr;
     QVector<QWidget*>         m_pages;     // by Tab: the parent of its cards
-    QVector<QScrollArea*>     m_pageAreas; // by Tab: the page scrolls on its own
+    QVector<QScrollArea*>     m_pageAreas; // by Tab: the page scrolls on its own (2.7.3: nullptr until first shown)
     QVector<QWidget*>         m_lastCards; // by Tab: a card that stays last (Media cache, the note), or nullptr
     QVector<SettingsSection*> m_sections;  // added by features
 
@@ -173,6 +190,7 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     bool                  m_applyingTheme = false;
     int                   m_sheetSets     = 0;     // 2.7.2 (D7): the window's own sheet set (tests)
     QString               m_sheetSetUnder;         // ... and the application sheet when it was set last (tests)
+    QPointer<QWidget>     m_unshown;               // 2.7.3 (M2): holds the pages not shown yet (never shown; deleted with the window)
 
   public:
     // 2.7.2 (D7), tests: how often the window set its own sheet, under which application sheet the last time, and the
@@ -181,3 +199,20 @@ class SettingsDialog : public QDialog, public settingstheme::TokenSource
     QString sheetSetUnder() const { return m_sheetSetUnder; }
     int     pageStyleChanges() const;
 };
+
+template <class T>
+QList<T*> SettingsDialog::controls() const
+{
+    QList<T*> all = findChildren<T*>();
+    if (m_unshown)
+        all += m_unshown->findChildren<T*>();
+    return all;
+}
+
+template <class T>
+T* SettingsDialog::control(const QString& name) const
+{
+    if (T* found = findChild<T*>(name))
+        return found;
+    return m_unshown ? m_unshown->findChild<T*>(name) : nullptr;
+}

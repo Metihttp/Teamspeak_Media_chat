@@ -26,6 +26,7 @@
 #include <QTextCursor>
 #include <QVector>
 
+#include "chatscroll.h"
 #include "layoutdoc.h"
 
 class ActionBar;
@@ -125,6 +126,19 @@ class ChatLayout : public QObject
         QVector<QPair<QTextCursor, qint64>> burst;    // ... in the current turn of the event loop (settleBurst)
         QVector<QPair<QTextCursor, QTextCursor>> dirty; // ranges TeamSpeak changed
         QSet<int>               restyle;       // block numbers to style again
+        // 2.7.3 (M1): a shown chat got a new font (a zoom). Its reader as the user saw it before (zoomReader) is put back
+        // after every step that restyles it for the new font (zoomKeep, until that restyle is done or the user scrolls;
+        // zoomFresh: the first step, before which the zoom itself moved the text). The next zoom with the reader still
+        // where it was put keeps the same reader (a new read of a rewrapped message would drift by a line).
+        chatscroll::ReaderPlace zoomReader;
+        bool                    zoomKeep  = false;
+        bool                    zoomFresh = false;
+        // Review fix: the rest of that restyle waits while the zoom's scale pass is pending; the step that left it waiting
+        // with the screen done (the look's epoch, else -1; the scroll value and the viewport's size then): the next ones
+        // with nothing new do nothing.
+        int                     zoomWaitEpoch = -1;
+        int                     zoomWaitValue = -1;
+        QSize                   zoomWaitSize;
         QSet<int>               fitDirty;      // 2.3.1: your messages on the right another module changed (measured again)
         qreal                   ownMargin = -1; // 2.3.1: the right margin of yours on the right for the chat's width (alignOwnRight), -1: not yet
         int                     historyNext = -1; // the next block going backwards (-1: done)
@@ -186,6 +200,8 @@ class ChatLayout : public QObject
     void  step();
     bool  stepView(View& view, qint64 budgetMs, bool all);
     bool  needsWork(View& view, int n) const;
+    bool  zoomReaderThere(const View& view) const; // 2.7.3 (M1): the zoom's reader is where it was put (no scroll since)
+    void  restoreZoomReader(View& view);           // ... put back (cheaply while the zoom's scale pass is pending)
     bool  isCopy(View& view, const QTextBlock& block) const;
     bool  processBlock(View& view, int n);
     void  restoreView(View& view, bool dropPictures);

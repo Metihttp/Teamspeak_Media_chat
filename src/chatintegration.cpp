@@ -909,6 +909,26 @@ void ChatIntegration::endLoadHolds()
     }
 }
 
+bool ChatIntegration::zoomPending(QTextBrowser* browser)
+{
+    View* view = viewFor(browser);
+    return view && view->scaler && view->scaler->pending();
+}
+
+void ChatIntegration::zoomRestyled(QTextBrowser* browser)
+{
+    View* view = viewFor(browser);
+    if (!view || !view->scaler || !view->scaler->pending())
+        return;
+    view->scaler->retake();
+#ifdef TSMEDIA_TESTHOOKS
+    ts3::log(QString::fromLatin1("[test] place: chat %1 zoomed: the layout for the new font, the reader kept, the scale pass took it (%2/%3)")
+                 .arg(view->number)
+                 .arg(browser->verticalScrollBar()->value())
+                 .arg(browser->verticalScrollBar()->maximum()));
+#endif
+}
+
 void ChatIntegration::retakeScalePlaces()
 {
     for (auto it = m_views.begin(); it != m_views.end(); ++it) {
@@ -1583,8 +1603,18 @@ MediaStill ChatIntegration::stillFor(const QString& key, const QSize& box)
 {
     if (m_stillOverride) {
         for (const KeptStill& kept : *m_stillOverride) {
-            if (kept.key != key || kept.still.image.isNull())
+            if (kept.key != key)
                 continue;
+            // 2.7.3 (M3): drawn from nothing while dark mode was on (the placeholder): nothing now too, Core not asked (it
+            // would count a stand-in for a still still being read, and the picture would keep its dark drawing). 2.7.3 review:
+            // drawn from its blurhash (kept without its image): that blurhash for this box, as Core makes it.
+            if (kept.still.image.isNull()) {
+                if (kept.still.source != MediaStill::BlurHash)
+                    return kept.still;
+                MediaStill s  = m_core->blurHashStill(key, box);
+                s.notAPicture = kept.still.notAPicture;
+                return s;
+            }
             // The kept still for this box, as Core fits a still of another size (otherSizeStill): a still smaller than
             // the box it was made for is the picture's own size (never upscaled), otherwise it fills the box.
             MediaStill  s      = kept.still;
@@ -1598,10 +1628,20 @@ MediaStill ChatIntegration::stillFor(const QString& key, const QSize& box)
             return s;
         }
     }
-    const MediaStill s = m_core->still(key, box);
-    // While dark mode is on: the stills a picture is drawn from (a file's; a blurhash is made again at once at any time).
-    if (m_recordStills && !s.image.isNull() && (s.source == MediaStill::Full || s.source == MediaStill::Preview))
-        m_recorded.append({key, box, s});
+    const quint64    standIns = m_core->stillStandIns();
+    const MediaStill s        = m_core->still(key, box);
+    // While dark mode is on: the stills a picture is drawn from. 2.7.3 (M3): every one, a stand-in too (a blurhash, a smaller
+    // copy, a preview) and nothing (a null image: the placeholder), so a picture first drawn in dark mode while its file's
+    // still was being read on a worker is drawn again from exactly that for TeamSpeak's look (2.7.2 kept no still for it and
+    // the unload left its dark drawing). A stand-in: Core counted one, or it isn't the file's own still. 2.7.3 review: a
+    // blurhash is kept without its image (Core makes it again at once from the link, and caches it): it books nothing in the
+    // chat's picture budget, where its bytes swapped far cards for blanks while dark mode was on.
+    if (m_recordStills) {
+        KeptStill kept{key, box, s, m_core->stillStandIns() != standIns || s.image.isNull() || s.source != MediaStill::Full};
+        if (s.source == MediaStill::BlurHash)
+            kept.still.image = QImage();
+        m_recorded.append(kept);
+    }
     return s;
 }
 
@@ -2072,11 +2112,15 @@ bool ChatIntegration::drawForLook(QTextBrowser* browser, View& view, const QStri
         return drawn;
     };
     // 2.7.2 (D1): a picture drawn while dark mode was on, drawn again from the still it was drawn from (a copy: the draw
-    // changes the view's list). No decode, no stand-in for that still.
+    // changes the view's list). No decode, no stand-in for that still. 2.7.3 (M3): standIn says whether that was a stand-in
+    // (or nothing).
+    bool       standIn  = false;
     const auto fromKept = [&] {
         const QVector<KeptStill> kept = view.keptStills.value(key);
         if (kept.isEmpty())
             return false;
+        for (const KeptStill& k : kept)
+            standIn = standIn || k.standIn;
         m_stillOverride  = &kept;
         const bool drawn = draw(Core::StillDecode::CachedOnly);
         m_stillOverride  = nullptr;
@@ -2084,15 +2128,25 @@ bool ChatIntegration::drawForLook(QTextBrowser* browser, View& view, const QStri
     };
     if (!m_unloadDraws) {
         // Far from the view of a shown chat (or a hidden one): only what Core has (the rest is drawn when it comes near).
-        // Near: what Core has, else the kept still, else as any draw (a slow still on a worker).
+        // Near: what Core has, else the kept still, else as any draw (a slow still on a worker). 2.7.3 (M3): one drawn from a
+        // kept stand-in is asked for as any draw too, so its own still comes (Core starts or goes on reading it; a draw
+        // that would put a stand-in again keeps this one until the still's entryChanged draws it).
         if (!onScreen(browser, view, key, true))
             return draw(Core::StillDecode::CachedOnly);
-        return draw(Core::StillDecode::CachedOnly) || fromKept() || draw(Core::StillDecode::Any);
+        if (draw(Core::StillDecode::CachedOnly))
+            return true;
+        const bool kept = fromKept();
+        if (kept && !standIn)
+            return true;
+        return draw(Core::StillDecode::Any) || kept;
     }
     // A Disable or Reload: nothing comes back after the unload (no worker's result, no Show). What Core has at hand first,
-    // then the kept still; a picture that needs its still decoded again then (never drawn in dark mode: drawn for a style
-    // picked while it was on) gets a cheap decode now, within one budget for the whole unload (only those draws count); a
-    // slow one, or any after the budget, keeps its picture.
+    // then the kept still (2.7.3 (M3): a stand-in or nothing too, as a Disable with dark mode off leaves such a picture); a
+    // picture that needs its still decoded again then (never drawn in dark mode: drawn for a style picked while it was on)
+    // gets a cheap decode now, within one budget for the whole unload (only those draws count); a slow one, or any after the
+    // budget, keeps its picture. Such a picture is in lookOld by then: the CachedOnly draw just before put it there (Core
+    // counted a stand-in: refreshPreview's keepDrawn), whether a toggle's redraw had listed it already or not (2.7.3 review:
+    // also a chat hidden since a style was picked while dark mode was on and unloaded before its relayout timer).
     if (draw(Core::StillDecode::CachedOnly) || fromKept())
         return true;
     if (!view.lookOld.contains(key) || m_unloadDecodeNs >= kUnloadDecodeMs * 1000000)

@@ -84,7 +84,9 @@ SettingsDialog* buildDialog(const ChatTextHooks& hooks = ChatTextHooks())
 
 QCheckBox* switchNamed(QWidget* root, const QString& text)
 {
-    for (QCheckBox* box : root->findChildren<QCheckBox*>()) {
+    // 2.7.3 (M2): the Settings window's pages not shown yet too (they join the window when shown).
+    auto* settings = qobject_cast<SettingsDialog*>(root);
+    for (QCheckBox* box : settings ? settings->controls<QCheckBox>() : root->findChildren<QCheckBox*>()) {
         if (box->text() == text)
             return box;
     }
@@ -756,10 +758,17 @@ private slots:
                 QVERIFY(seen.contains(lateBox));
             }
         }
-        // Then the bar: Restore defaults, OK, Cancel, Apply.
-        QCOMPARE(restore->nextInFocusChain(), static_cast<QWidget*>(ok));
-        QCOMPARE(ok->nextInFocusChain(), static_cast<QWidget*>(cancel));
-        QCOMPARE(cancel->nextInFocusChain(), static_cast<QWidget*>(apply));
+        // Then the bar: Restore defaults, OK, Cancel, Apply (2.7.3: the next Tab stop; a page shown after the window was
+        // built joins the chain later, so a button box, which takes no focus, can sit between two of them).
+        const auto nextStop = [](QWidget* w) {
+            do
+                w = w->nextInFocusChain();
+            while ((w->focusPolicy() & Qt::TabFocus) != Qt::TabFocus);
+            return w;
+        };
+        QCOMPARE(nextStop(restore), static_cast<QWidget*>(ok));
+        QCOMPARE(nextStop(ok), static_cast<QWidget*>(cancel));
+        QCOMPARE(nextStop(cancel), static_cast<QWidget*>(apply));
         delete dialog;
     }
 
@@ -843,7 +852,7 @@ private slots:
         dialog->show();
         QVERIFY(QTest::qWaitForWindowExposed(dialog));
         dialog->showTab(SettingsDialog::Tab::Servers);
-        QWidget* section = dialog->findChild<QWidget*>(QStringLiteral("tsmediaServersSection"));
+        QWidget* section = dialog->control<QWidget>(QStringLiteral("tsmediaServersSection")); // 2.7.3 (M2)
         QVERIFY(section);
         QComboBox* downloads = nullptr;
         QComboBox* note      = nullptr;
@@ -1083,7 +1092,7 @@ private slots:
         SettingsDialog* dialog = buildDialog(chat.hooks());
         dialog->show();
         QVERIFY(QTest::qWaitForWindowExposed(dialog));
-        auto* text = dialog->findChild<ChatTextSection*>();
+        auto* text = dialog->control<ChatTextSection>(QString()); // 2.7.3 (M2): on a page not shown yet too
         QVERIFY(text);
         QCOMPARE(text->colorBox()->currentText(), a("Pink"));
         QCOMPARE(text->sizeLabel()->text(), a("136%"));

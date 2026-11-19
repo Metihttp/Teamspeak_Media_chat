@@ -205,6 +205,7 @@ Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int 
 #include "proxy/router.h"
 #include "proxy/testrun.h"
 #include "selftestecho.h"     // 2.6: the echo shows a password as ***
+#include "settingsdialog.h" // 2.7.3 (M2): the Settings window's pages
 
 // plugin.cpp's entry points, called the way TeamSpeak calls them (same DLL).
 extern "C" int  ts3plugin_processCommand(uint64 serverConnectionHandlerID, const char* command);
@@ -895,9 +896,22 @@ QPushButton* settingsButton(QWidget* dialog, QDialogButtonBox::StandardButton wh
     return nullptr;
 }
 
+// 2.7.3 (M2): the Settings window's controls of a type on every page (a page isn't in the window until first shown).
+template <class T>
+QList<T*> settingsControls(QWidget* dialog)
+{
+    if (auto* settings = qobject_cast<SettingsDialog*>(dialog))
+        return settings->controls<T>();
+    return dialog->findChildren<T*>();
+}
+
 // The page holding w becomes the current one (so a grab shows it).
 void showSettingsPageOf(QWidget* dialog, QWidget* w)
 {
+    if (auto* settings = qobject_cast<SettingsDialog*>(dialog)) {
+        settings->showTabOf(w); // 2.7.3 (M2): also a page not shown yet
+        return;
+    }
     QListWidget* nav   = settingsNav(dialog);
     auto*        stack = dialog ? dialog->findChild<QStackedWidget*>(QString::fromLatin1("tsmediaSettingsPages")) : nullptr;
     if (!nav || !stack || !w)
@@ -4540,13 +4554,13 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
         if (cmd == QLatin1String("settings.spin")) {
             const QString want = str("text", "");
             QSpinBox*     spin = nullptr;
-            for (QSpinBox* box : dialog->findChildren<QSpinBox*>()) {
+            for (QSpinBox* box : settingsControls<QSpinBox>(dialog)) {
                 if (!want.isEmpty() && box->accessibleName().contains(want, Qt::CaseInsensitive)) {
                     spin = box;
                     break;
                 }
             }
-            for (QLabel* label : dialog->findChildren<QLabel*>()) {
+            for (QLabel* label : settingsControls<QLabel>(dialog)) {
                 if (spin || want.isEmpty())
                     break;
                 if (auto* buddy = qobject_cast<QSpinBox*>(label->buddy()); buddy && withoutMnemonic(label->text()).contains(want, Qt::CaseInsensitive))
@@ -4569,7 +4583,7 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
         if (cmd == QLatin1String("settings.combo")) {
             const QString want  = str("text", "");
             QComboBox*    combo = nullptr;
-            for (QComboBox* box : dialog->findChildren<QComboBox*>()) {
+            for (QComboBox* box : settingsControls<QComboBox>(dialog)) {
                 if (!want.isEmpty() && box->accessibleName().contains(want, Qt::CaseInsensitive)) {
                     combo = box;
                     break;
@@ -4593,7 +4607,7 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
                 }
             }
             // 2.7 live (L-F6-4): the Chat page's preview of TS Media's lines, as it paints them now.
-            if (const auto* preview = dialog->findChild<LinePreview*>())
+            if (const auto* preview = settingsControls<LinePreview>(dialog).value(0))
                 out += QString::fromLatin1("; preview base %1 accent %2 warning %3").arg(preview->base().name(), preview->accent().name(), preview->warning().name());
             say(out);
             return true;
@@ -4634,7 +4648,7 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
         if (cmd == QLatin1String("settings.click")) {
             const QString want   = str("name", "");
             QPushButton*  button = nullptr;
-            for (QPushButton* candidate : dialog->findChildren<QPushButton*>()) {
+            for (QPushButton* candidate : settingsControls<QPushButton>(dialog)) {
                 if (!want.isEmpty() && (candidate->accessibleName().compare(want, Qt::CaseInsensitive) == 0
                                         || withoutMnemonic(candidate->text()).compare(want, Qt::CaseInsensitive) == 0)) {
                     button = candidate;
@@ -4661,7 +4675,7 @@ bool SelfTest::runPart7(const QString& cmd, const QJsonObject& c, bool* handled)
         if (!want.isEmpty()) {
             QList<QCheckBox*> prefixed;
             QCheckBox*        contains = nullptr;
-            for (QCheckBox* box : dialog->findChildren<QCheckBox*>()) {
+            for (QCheckBox* box : settingsControls<QCheckBox>(dialog)) {
                 const QString text = withoutMnemonic(box->text());
                 if (text.compare(want, Qt::CaseInsensitive) == 0) {
                     found = box;

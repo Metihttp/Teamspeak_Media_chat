@@ -555,11 +555,82 @@ QString paneRule(const Tokens& t, const Metrics& m)
 {
     if (m.paneSelector.isEmpty())
         return QString();
-    return QString::fromLatin1("%1::pane { border-left: %2px solid %4; border-right: %3px solid %4; }\n")
+    QString vertical;
+    if (m.paneTop >= 0 && m.paneBottom >= 0) {
+        // 2.7.3 (M6): the pages as far from the top and the bottom as in the skin (top: 0px; the tab bars are as tall as the
+        // skin's: barRules). The design's line along the pane's top stays when the skin leaves room for it (its rest is
+        // padding); the bottom edge in the window colour.
+        if (m.paneTop >= 1)
+            vertical = QString::fromLatin1(" border-top: 1px solid %1; padding-top: %2px;").arg(cssColor(t.border)).arg(m.paneTop - 1);
+        else
+            vertical = QString::fromLatin1(" border-top: 0px; padding-top: 0px;");
+        vertical += QString::fromLatin1(" border-bottom: %1px solid %2; padding-bottom: 0px; top: 0px;").arg(m.paneBottom).arg(cssColor(t.window));
+    }
+    return QString::fromLatin1("%1::pane { border-left: %2px solid %4; border-right: %3px solid %4;%5 }\n")
         .arg(m.paneSelector)
         .arg(qMax(0, m.paneLeft))
         .arg(qMax(0, m.paneRight))
-        .arg(cssColor(t.window));
+        .arg(cssColor(t.window), vertical);
+}
+
+QString barRules(qreal k, const Metrics& m)
+{
+    const qreal scale = k > 0 ? k : 1.0;
+    QString     out;
+    // Tabs: no vertical padding, the content as tall as the skin's tab without the design's accent line ({2}).
+    const auto tabs = [&](const char* area, int height) {
+        if (height > 0)
+            out += QString::fromLatin1("QWidget#%1 QTabBar::tab { padding-top: 0px; padding-bottom: 0px; min-height: %2px; max-height: %2px; }\n")
+                       .arg(QString::fromLatin1(area))
+                       .arg(qMax(1, height - px(2, scale)));
+    };
+    tabs("MainWindowServerTabsWidget", m.serverTab);
+    tabs("MainWindowChatWidget", m.chatTab);
+    // The menu bar: the skin's frame and margin around its items as its padding (the design's has no border), its items as
+    // tall as the skin's (the text's line plus their paddings).
+    if (m.menuItem > 0 && m.menuText > 0) {
+        const int pad = qMax(0, m.menuItem - m.menuText);
+        out += QString::fromLatin1("QMainWindow > QMenuBar { padding: %1px %2px; }\nQMainWindow > QMenuBar::item { padding: %3px %4px %5px %4px; }\n")
+                   .arg(qMax(0, m.menuMargin))
+                   .arg(px(4, scale))
+                   .arg(pad / 2)
+                   .arg(px(10, scale))
+                   .arg(pad - pad / 2);
+    }
+    // Tool buttons: the vertical padding that gives the skin's height around their contents (QStyleSheetStyle adds 3 px to
+    // a tool button's contents, the design's borders are 1 px). A tool bar's padding is one margin on every side: an odd
+    // rest goes to its buttons (1 px taller), so the bar is the skin's height.
+    const auto toolPad = [](int button, int content) { return qMax(0, button - content - 5); };
+    if (m.toolBar > 0 && m.toolButton > 0 && m.toolContent > 0) {
+        const int margin = qMax(0, m.toolBar - m.toolButton);
+        const int pad    = toolPad(m.toolButton, m.toolContent) + margin % 2;
+        out += QString::fromLatin1("QMainWindow > QToolBar { padding: %1px; }\nQMainWindow > QToolBar > QToolButton { padding: %2px %3px %4px %3px; }\n")
+                   .arg(margin / 2)
+                   .arg(pad / 2)
+                   .arg(px(3, scale))
+                   .arg(pad - pad / 2);
+        // A separator taller than the buttons would make the bar taller (its margins are the design's otherwise).
+        if (1 + 2 * px(6, scale) > m.toolButton)
+            out += QString::fromLatin1("QMainWindow > QToolBar::separator { margin: %1px %2px; }\n").arg(qMax(0, (m.toolButton - 1) / 2)).arg(px(5, scale));
+    }
+    if (m.inputButton > 0 && m.inputContent > 0) {
+        const int pad = toolPad(m.inputButton, m.inputContent);
+        out += QString::fromLatin1("QWidget#MainWindowChatWidget > QToolButton { padding: %1px %2px %3px %2px; }\n").arg(pad / 2).arg(px(3, scale)).arg(pad - pad / 2);
+    }
+    if (m.splitterV > 0)
+        out += QString::fromLatin1("QMainWindow QSplitter::handle:vertical { height: %1px; }\n").arg(m.splitterV);
+    if (m.splitterH > 0)
+        out += QString::fromLatin1("QMainWindow QSplitter::handle:horizontal { width: %1px; }\n").arg(m.splitterH);
+    // The status bar keeps the design's 1 px line at its top.
+    if (m.status > 1)
+        out += QString::fromLatin1("QMainWindow > QStatusBar { min-height: %1px; max-height: %1px; }\n").arg(m.status - 1);
+    // Review fix: the main splitter's areas as small as in the skin (a minimum of their own: QSplitter takes it over the
+    // smallest size their contents ask for, which dark mode's scroll bars and frames made another).
+    for (const QPair<QString, int>& area : m.areas) {
+        if (!area.first.isEmpty() && area.second > 0)
+            out += QString::fromLatin1("QMainWindow QSplitter > QWidget#%1 { min-height: %2px; }\n").arg(area.first).arg(area.second);
+    }
+    return out;
 }
 
 QString appSheet(const Tokens& t, qreal k, const Metrics& m, const QString& glyphDir, QStringList* unknown)
@@ -570,6 +641,10 @@ QString appSheet(const Tokens& t, qreal k, const Metrics& m, const QString& glyp
     const QString pane = paneRule(t, m);
     if (!pane.isEmpty())
         sheet += QString::fromLatin1("\n/* the chat column keeps the skin's width */\n") + pane;
+    // 2.7.3 (M6): and its height: TeamSpeak's main window bars as tall as in the skin.
+    const QString bars = barRules(scale, m);
+    if (!bars.isEmpty())
+        sheet += QString::fromLatin1("\n/* the main window's bars keep the skin's heights */\n") + bars;
     return sheet;
 }
 
@@ -578,7 +653,38 @@ QString chatSheet(const Tokens& t, QStringList* unknown)
     return expand(chatSheetTemplate(), t, QString(), nullptr, 1.0, unknown);
 }
 
-QString fontRules(const QString& sheet)
+namespace {
+
+bool isFontProperty(const QString& name)
+{
+    return name == QLatin1String("font") || name.startsWith(QLatin1String("font-"));
+}
+
+// 2.7.3 (M9): what places text in a chat or info panel document: margins, paddings, table spacing, alignment, line height,
+// indent, white space and the font's size and family (also the font shorthand, which carries them). Review fix: borders too
+// (their width takes room; each with the style's own colour and line, so a table or cell made while dark mode is on is the
+// style's after off), and the rest of the layout Qt's text documents read: block and list indents, empty paragraphs, floats,
+// widths and heights, letter and word spacing, list styles, page breaks. Never a text or background colour, a weight, an
+// italic, a decoration or capitals (dark mode's own: the looks and their way back).
+bool isSpacingProperty(const QString& name)
+{
+    static const char* const kExact[] = {"vertical-align", "line-height", "-qt-line-height-type", "text-indent", "text-align", "white-space",
+                                         "font-size", "font-family", "font", "letter-spacing", "word-spacing", "float", "width", "height",
+                                         "min-width", "min-height", "max-width", "max-height", "-qt-block-indent", "-qt-list-indent",
+                                         "-qt-paragraph-type", "-qt-table-type", "list-style", "list-style-type", "-qt-list-number-prefix",
+                                         "-qt-list-number-suffix", "page-break-before", "page-break-after"};
+    if (name.startsWith(QLatin1String("margin")) || name.startsWith(QLatin1String("padding")) || name.startsWith(QLatin1String("border")))
+        return true;
+    for (const char* exact : kExact) {
+        if (name == QLatin1String(exact))
+            return true;
+    }
+    return false;
+}
+
+// Every rule of sheet with only the declarations keep() takes (by their lower-case property name), each rule with its
+// selector as written ("selector { declaration; declaration; }"); comments dropped, a rule left without a declaration too.
+QString rulesWith(const QString& sheet, bool (*keep)(const QString& name), bool keepIt = true)
 {
     // A small reader of Qt's style sheet syntax: comments, quoted strings (selectors' [name="value"], font families,
     // url("...")) and parentheses never end a selector, a rule or a declaration.
@@ -623,7 +729,7 @@ QString fontRules(const QString& sheet)
             continue;
         }
         // The rule's body: its declarations, split at ';' outside strings and parentheses.
-        QStringList fonts;
+        QStringList kept;
         QString     declaration;
         int         depth = 0;
         ++i;
@@ -646,11 +752,8 @@ QString fontRules(const QString& sheet)
             if (depth == 0 && (d == QLatin1Char(';') || d == QLatin1Char('}'))) {
                 const QString decl  = declaration.trimmed();
                 const int     colon = decl.indexOf(QLatin1Char(':'));
-                if (colon > 0) {
-                    const QString name = decl.left(colon).trimmed().toLower();
-                    if (name == QLatin1String("font") || name.startsWith(QLatin1String("font-")))
-                        fonts << decl;
-                }
+                if (colon > 0 && keep(decl.left(colon).trimmed().toLower()) == keepIt)
+                    kept << decl;
                 declaration.clear();
                 ++i;
                 if (d == QLatin1Char('}'))
@@ -661,11 +764,34 @@ QString fontRules(const QString& sheet)
             ++i;
         }
         const QString which = selector.simplified();
-        if (!fonts.isEmpty() && !which.isEmpty())
-            out += which + QString::fromLatin1(" { ") + fonts.join(QString::fromLatin1("; ")) + QString::fromLatin1("; }\n");
+        if (!kept.isEmpty() && !which.isEmpty())
+            out += which + QString::fromLatin1(" { ") + kept.join(QString::fromLatin1("; ")) + QString::fromLatin1("; }\n");
         selector.clear();
     }
     return out;
+}
+
+} // namespace
+
+QString fontRules(const QString& sheet)
+{
+    return rulesWith(sheet, isFontProperty);
+}
+
+QString chatSheet(const Tokens& t, const QString& skinChat, QStringList* unknown)
+{
+    // 2.7.3 (M9): the template's colours and text styles (weight, italic, decoration), none of its spacing, then the style's
+    // own spacing and layout rules with their selectors (isSpacingProperty): lines TeamSpeak prints while dark mode is on get
+    // the style's margins, paddings, borders, indents, text sizes and fonts, so their block, table and cell formats are the
+    // style's and none of that changes with a toggle (an info panel or a chat that was empty when dark mode saw it kept dark
+    // mode's paragraph and table spacing after off before). The text styles are dark mode's: the way back gives the style's
+    // (darkchat's fonts).
+    QString sheet = QString::fromLatin1("/* TS Media chat: Dark mode (chat document style sheet for new lines) */\n")
+                    + rulesWith(expand(chatSheetTemplate(), t, QString(), nullptr, 1.0, unknown), isSpacingProperty, false);
+    const QString spacing = rulesWith(skinChat, isSpacingProperty);
+    if (!spacing.isEmpty())
+        sheet += QString::fromLatin1("/* the style's spacing */\n") + spacing;
+    return sheet;
 }
 
 } // namespace darkpalette

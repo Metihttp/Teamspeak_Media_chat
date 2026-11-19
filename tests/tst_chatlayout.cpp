@@ -6,6 +6,7 @@
 // QTextBrowser), and the contrast of every colour pair.
 
 #include <QAbstractTextDocumentLayout>
+#include <algorithm>
 #include <cmath>
 #include <QDir>
 #include <QDirIterator>
@@ -364,6 +365,47 @@ class TestChatLayout : public QObject
                 for (int n = own + 1; n < doc.blockCount(); ++n)
                     QVERIFY2(!layoutdoc::ownPrintLink(doc.findBlockByNumber(n), href), qPrintable(where + QStringLiteral(" block %1").arg(n)));
                 QVERIFY(!layoutdoc::ownPrintLink(QTextBlock(), href));
+            }
+        }
+    }
+
+    // 2.7.3 (M11): the update's first-start notice with its "What's new" link in the same line (Updater::flushNotices) is one
+    // TS Media row: centred, the link inside it. As two lines (2.7.2) the link-only line reads as a plain row and sits alone
+    // at the left under the notice: why the updater prints them together.
+    void ownPrintWithLinkIsOneRow()
+    {
+        const QString href  = QStringLiteral("https://github.com/Metihttp/Teamspeak_Media_chat/releases/tag/v2.7.3");
+        const QString text  = QStringLiteral("Updated to TS Media chat 2.7.3 (an important update, installed automatically).");
+        const QString label = QStringLiteral("What's new in 2.7.3");
+        for (const bool dark : {true, false}) {
+            const tschat::Skin s = dark ? tschat::darkSkin() : tschat::lightSkin();
+            for (const Mode mode : {Mode::Cozy, Mode::Compact}) {
+                const QString where = QStringLiteral("%1 %2").arg(dark ? QStringLiteral("dark") : QStringLiteral("light")).arg(static_cast<int>(mode));
+                QTextDocument one;
+                fillChat(one, s);
+                tschat::append(&one, tschat::printLinkHtml(s, text, href, label));
+                const int notice = one.blockCount() - 1;
+                QVERIFY(layoutdoc::styleAll(&one, envFor(mode, dark)) > 0);
+                const QTextBlock b = one.findBlockByNumber(notice);
+                QVERIFY2(layoutdoc::read(b).ownPrint, qPrintable(where));
+                QCOMPARE(b.blockFormat().intProperty(layoutformat::kKind), int(layoutformat::RowSystem));
+                QVERIFY2(b.blockFormat().alignment() & Qt::AlignHCenter, qPrintable(where));
+                bool linked = false;
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                    linked = linked || (it.fragment().charFormat().isAnchor() && it.fragment().charFormat().anchorHref() == href);
+                QVERIFY2(linked, qPrintable(where));
+                QCOMPARE(notice, one.blockCount() - 1); // nothing after it
+
+                // 2.7.2's two lines: the link alone is a plain row at the left.
+                QTextDocument two;
+                fillChat(two, s);
+                tschat::append(&two, tschat::printHtml(s, text));
+                tschat::append(&two, QStringLiteral("<span style=\"color:%1\">").arg(s.dark ? QStringLiteral("#dcddde") : QStringLiteral("#00008b"))
+                                         + tschat::linkHtml(s, href, label) + QStringLiteral("</span>"));
+                QVERIFY(layoutdoc::styleAll(&two, envFor(mode, dark)) > 0);
+                const QTextBlock link = two.lastBlock();
+                QCOMPARE(layoutdoc::read(link).type, RowType::Other);
+                QVERIFY2(!(link.blockFormat().alignment() & Qt::AlignHCenter), qPrintable(where));
             }
         }
     }
@@ -1487,6 +1529,33 @@ class TestChatLayout : public QObject
         }
     }
 
+    // 2.7.3 (M1): a new font on a chat (a zoom) restyles its rows at once: ChatLayout's filter on the chat posts its quick
+    // step on FontChange, with the posted-call pattern of new lines (dropped with the object; no delayed functor), and the
+    // quick step puts a shown chat's reader back after it. The behaviour itself: TestReload261::zoomLayoutFollowsTheFont
+    // (the real plugin).
+    void zoomRestylesAtOnce()
+    {
+        QFile file(QStringLiteral(TSMEDIA_SOURCE_DIR "/src/chatlayout.cpp"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QString code  = QString::fromUtf8(file.readAll());
+        const int     start = code.indexOf(QLatin1String("bool ChatLayout::eventFilter(QObject* watched, QEvent* event)"));
+        QVERIFY(start > 0);
+        const QString filter = code.mid(start, code.indexOf(QLatin1String("\n}\n"), start) - start);
+        const int     font   = filter.indexOf(QLatin1String("QEvent::FontChange"));
+        QVERIFY(font > 0);
+        QVERIFY(filter.indexOf(QLatin1String("QMetaObject::invokeMethod(this, [this] { quickStep(); }, Qt::QueuedConnection)"), font) > font);
+        QVERIFY(filter.contains(QLatin1String("m_mode != Mode::Classic")));
+        QVERIFY(!filter.contains(QLatin1String("singleShot")));
+        QVERIFY(filter.indexOf(QLatin1String("chatscroll::captureReader(browser)"), font) > font); // the reader as the user saw it
+        // ... put back by every step that restyles it for the new font, instead of the step's own anchor.
+        const int     step = code.indexOf(QLatin1String("bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)"));
+        QVERIFY(step > 0);
+        const QString body = code.mid(step, code.indexOf(QLatin1String("\n}\n"), step) - step);
+        QVERIFY(body.contains(QLatin1String("restoreZoomReader(v);")));
+        QVERIFY(body.contains(QLatin1String("if (!keepReader)\n            chatscroll::restore(browser, anchor);")));
+        QVERIFY(!body.contains(QLatin1String("singleShot")));
+    }
+
     // ---- 11. performance -------------------------------------------------------------------------------------------
     void fourThousandBlocks()
     {
@@ -1520,27 +1589,35 @@ class TestChatLayout : public QObject
         QCOMPARE(compare(before, snapshot(doc)), QString());
         layoutdoc::styleAll(&doc, envFor(Mode::Cozy));
         // A new line on a styled chat of 4000: what ChatLayout does for it (sanitize, read, plan, apply, its day).
+        // Seven new lines, one after the other, each measured alone; the best of them is the work's own cost (a busy
+        // machine only adds time to a sample), so a loaded run doesn't flake it while a pass over the whole chat per line
+        // (several ms each time) still fails it.
         {
-            QVector<QDate> dates = layoutdoc::datesOf(&doc, QDate(2026, 10, 10));
-            tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("23:59:00"), 17, kUidAlice, QStringLiteral("Alice"), QStringLiteral("a new one")));
-            const layoutdoc::Env cozy = envFor(Mode::Cozy);
-            QElapsedTimer        one;
-            one.start();
-            const int   n = doc.blockCount() - 1;
-            QTextCursor batch(&doc);
-            batch.beginEditBlock(); // as ChatLayout's step: one relayout
-            layoutdoc::extendDates(&doc, QDate(2026, 10, 10), &dates, n);
-            layoutdoc::sanitize(&doc, n);
-            const QTextBlock      b    = doc.findBlockByNumber(n);
-            const layoutdoc::Row  row  = layoutdoc::read(b);
-            const layoutdoc::Plan plan = layoutdoc::plan(cozy, b, row, layoutdoc::previousOf(b), dates.value(n), 0, 99999);
-            const bool            styled = layoutdoc::apply(&doc, n, plan, cozy);
-            batch.endEditBlock();
-            doc.documentLayout()->documentSize();
-            const qint64 us = one.nsecsElapsed() / 1000;
-            QVERIFY(styled);
-            qInfo("a new line: %lld us", us);
-            QVERIFY2(us < 1500, qPrintable(QString::number(us))); // about 0.4 ms here, layout included
+            QVector<QDate>       dates = layoutdoc::datesOf(&doc, QDate(2026, 10, 10));
+            const layoutdoc::Env cozy  = envFor(Mode::Cozy);
+            QVector<qint64>      samples;
+            for (int k = 0; k < 7; ++k) {
+                tschat::append(&doc, tschat::messageHtml(s, QStringLiteral("23:59:0%1").arg(k), 17, kUidAlice, QStringLiteral("Alice"), QStringLiteral("a new one %1").arg(k)));
+                QElapsedTimer one;
+                one.start();
+                const int   n = doc.blockCount() - 1;
+                QTextCursor batch(&doc);
+                batch.beginEditBlock(); // as ChatLayout's step: one relayout
+                layoutdoc::extendDates(&doc, QDate(2026, 10, 10), &dates, n);
+                layoutdoc::sanitize(&doc, n);
+                const QTextBlock      b      = doc.findBlockByNumber(n);
+                const layoutdoc::Row  row    = layoutdoc::read(b);
+                const layoutdoc::Plan plan   = layoutdoc::plan(cozy, b, row, layoutdoc::previousOf(b), dates.value(n), 0, 99999);
+                const bool            styled = layoutdoc::apply(&doc, n, plan, cozy);
+                batch.endEditBlock();
+                doc.documentLayout()->documentSize();
+                samples.append(one.nsecsElapsed() / 1000);
+                QVERIFY(styled);
+            }
+            QVector<qint64> sorted = samples;
+            std::sort(sorted.begin(), sorted.end());
+            qInfo("a new line: best %lld us, median %lld us, worst %lld us", sorted.first(), sorted.at(sorted.size() / 2), sorted.last());
+            QVERIFY2(sorted.first() < 1500, qPrintable(QString::number(sorted.first()))); // about 0.4 ms here, layout included
         }
     }
 };

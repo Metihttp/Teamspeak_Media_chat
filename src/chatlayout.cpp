@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <climits>
 #include <functional>
+#include <utility>
 
 #include "actionbar.h"
 #include "chatemoji.h"
@@ -785,6 +786,37 @@ void ChatLayout::quickStep()
     step();
 }
 
+bool ChatLayout::zoomReaderThere(const View& v) const
+{
+    const chatscroll::ReaderPlace& place = v.zoomReader;
+    if (!v.browser || place.bottom || place.cursor.isNull() || place.cursor.document() != v.browser->document())
+        return false;
+    const qreal y = chatscroll::readerY(v.browser->document(), place);
+    return y >= 0 && qAbs(v.browser->verticalScrollBar()->value() - y - place.offset) <= 1.0;
+}
+
+void ChatLayout::restoreZoomReader(View& v)
+{
+    QTextBrowser* browser = v.browser;
+    // During the zoom's gesture (its scale pass pending) without laying the whole chat out (a wheel notch each: that pass
+    // lays it out once at its end, keeping this place); after it, with the range synced. Review fix: a zoom in puts the
+    // reader below the range Qt has taken so far (its layout of the new font reports the laid-out part as it goes, and the
+    // reader's message is laid out up to there): the range reaches the reader's line now, not by laying out the rest of the
+    // chat at every notch (Qt's own range follows as its layout goes on, and the settle's full restore syncs it).
+    if (m_chat->zoomPending(browser)) {
+        const qreal y = chatscroll::readerTarget(browser->document(), v.zoomReader);
+        if (y >= 0) {
+            QScrollBar* bar = browser->verticalScrollBar();
+            if (qRound(y) > bar->maximum())
+                bar->setMaximum(qRound(y));
+            bar->setValue(qRound(y));
+        }
+    } else {
+        chatscroll::restoreReader(browser, v.zoomReader);
+    }
+    m_chat->zoomRestyled(browser);
+}
+
 void ChatLayout::afterScan(QTextBrowser* browser)
 {
     View* v = viewFor(browser);
@@ -958,6 +990,13 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
         return false;
     }
     refreshEnv(v);
+    // Review fix (2.7.3, M1): while a zoom's scale pass is pending the rest of the restyle for the new font waits (4.); a
+    // step with nothing else to do (the whole screen restyled for this look at this place, nothing asked for or changed)
+    // does nothing at all: it asked the layout what is on screen every 16 ms through the gesture.
+    const bool waitForZoom = v.historyNext >= 0 && m_chat->zoomPending(browser);
+    if (waitForZoom && !v.zoomFresh && v.restyle.isEmpty() && v.dirty.isEmpty() && v.zoomWaitEpoch == v.epoch
+        && v.zoomWaitValue == browser->verticalScrollBar()->value() && v.zoomWaitSize == browser->viewport()->size())
+        return true;
     const int count = doc->blockCount();
     const int floor = qMax(0, count - replydoc::kMaxBlocks);
 
@@ -965,12 +1004,32 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
     clock.start();
     const auto timeLeft = [&] { return all || budgetMs < 0 || clock.elapsed() < budgetMs; };
 
+    // 2.7.3 (M1): a zoomed shown chat keeps its reader's line through the restyle for the new font (the new look rewraps
+    // the reader's message, which the anchor below, a share of a block, follows only to a few pixels), while the reader
+    // is where the zoom put it: the first step after the zoom always (the zoom itself moved the text).
+    bool keepReader = false;
+    if (v.zoomKeep) {
+        v.zoomKeep = browser->isVisible() && (v.zoomFresh || zoomReaderThere(v));
+        keepReader = v.zoomKeep;
+    }
+    const bool zoomFresh = std::exchange(v.zoomFresh, false) && keepReader;
+
+    bool changed = false;
+    // Review fix (2.7.3, M1): while a zoom's scale pass is pending the room under the chat's last line (8.) comes first,
+    // while the chat is still to be laid out for the new font anyway: a new end gap is a new frame format, for which Qt
+    // lays the whole chat out again (after the query below, or after the pass: the whole chat in one turn).
+    if (waitForZoom) {
+        layoutformat::LayoutEditScope editing;
+        if (layoutdoc::applyEndGap(doc, v.env))
+            changed = true;
+    }
+
     // What is on screen (a layout query: before the edits).
     const QPair<int, int> shown  = browser->isVisible() ? blocksShown(browser, 0.0) : QPair<int, int>(-1, -2);
     const chatscroll::Place anchor = chatscroll::capture(browser);
 
-    bool         changed = false;
-    bool         more    = false;
+    bool         more       = false;
+    bool         screenDone = false;
     QVector<int> styled; // blocks this step styled: their runs of events are planned again
     {
         layoutformat::LayoutEditScope editing; // 2.3.1: ours (not another module's)
@@ -1001,9 +1060,14 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
                 run(asked.at(i));
             }
         }
-        // 2. the screen, bottom up
-        for (int n = shown.second; n >= shown.first && n >= 0 && timeLeft(); --n)
-            run(n);
+        // 2. the screen, bottom up. Review fix (2.7.3, M1): while a zoom's scale pass is pending, all of it in this step,
+        // which has laid the chat out down to the screen's bottom for the new font (the query above): a screen left for the
+        // next step was restyled after Qt's own layout had gone on in larger steps, and that step's reader restore made it
+        // lay out up to 150 ms of the chat in one turn (Compact, a 1000-line chat, zooming in).
+        int screenNext = shown.second;
+        for (; screenNext >= shown.first && screenNext >= 0 && (waitForZoom || timeLeft()); --screenNext)
+            run(screenNext);
+        screenDone = screenNext < shown.first || screenNext < 0;
         // 3. what TeamSpeak changed, newest first
         while (!v.dirty.isEmpty() && timeLeft()) {
             QPair<QTextCursor, QTextCursor>& range = v.dirty.last();
@@ -1018,8 +1082,12 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
                 range.second.setPosition(at.position());
             }
         }
-        // 4. the history, backwards
-        while (v.historyNext >= floor && v.historyNext >= 0 && timeLeft())
+        // 4. the history, backwards. Review fix (2.7.3, M1): not while a zoom's scale pass is pending on the chat (the gesture
+        // and the 150 ms after it): Qt lays a chat out for a new font in steps of its own, and a restyled block below what
+        // it has laid out made it lay out everything up to there at once (the history starts at the end: the whole chat,
+        // at each wheel notch and once more after it, 65-350 ms in a 1000-line chat). The screen is restyled at once (2.),
+        // the rest once the zoom's pass has laid the chat out.
+        while (!waitForZoom && v.historyNext >= floor && v.historyNext >= 0 && timeLeft())
             run(v.historyNext--);
         if (v.historyNext < floor)
             v.historyNext = -1;
@@ -1046,14 +1114,20 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
             if (layoutdoc::settle(doc, styled, v.env, refit) > 0)
                 changed = true;
         }
-        // 8. 2.3.1: room under the chat's last line (and a little over its first)
-        if (layoutdoc::applyEndGap(doc, v.env))
+        // 8. 2.3.1: room under the chat's last line (and a little over its first); while a zoom's pass is pending, first
+        // (above).
+        if (!waitForZoom && layoutdoc::applyEndGap(doc, v.env))
             changed = true;
     }
     more = !v.restyle.isEmpty() || !v.dirty.isEmpty() || v.historyNext >= 0;
+    if (keepReader && (changed || zoomFresh))
+        restoreZoomReader(v);
+    if (!more)
+        v.zoomKeep = false; // the restyle for the new font is done (its reader is kept for the next zoom)
     if (changed) {
         ++v.renderStamp;
-        chatscroll::restore(browser, anchor);
+        if (!keepReader)
+            chatscroll::restore(browser, anchor);
         emit documentEdited(browser);
         if (v.repliesTouched && m_chat->m_replies) {
             v.repliesTouched = false;
@@ -1066,6 +1140,9 @@ bool ChatLayout::stepView(View& v, qint64 budgetMs, bool all)
             placeBar(v);
         printIntro(browser);
     }
+    v.zoomWaitEpoch = waitForZoom && screenDone ? v.epoch : -1;
+    v.zoomWaitValue = browser->verticalScrollBar()->value();
+    v.zoomWaitSize  = browser->viewport()->size();
     return more;
 }
 
@@ -2240,6 +2317,35 @@ bool ChatLayout::eventFilter(QObject* watched, QEvent* event)
             }
         }
         return false;
+    }
+    // 2.7.3 (M1): a new font on a chat (Ctrl + mouse wheel, the zoom's sync of the other chats, TeamSpeak's chat font): the
+    // rows' geometry (layoutart::tokensFor of the document's font) follows at once, not with the next line TeamSpeak adds
+    // (a chat zoomed while hidden kept the larger geometry after a zoom back while shown). QTextEdit gives its document the
+    // font after this filter (its changeEvent), so the step that reads it is posted, as for new lines (before TeamSpeak's
+    // low-priority paint): refreshEnv sees the new key, the screen is restyled first and the rest in steps. A shown chat's
+    // reader is read here, before Qt lays the chat out for the new font (what the user sees), and put back after that step
+    // (quickStep): the new look rewraps the reader's message, which a share of a block (stepView's and ChatScale's place)
+    // follows only to a few pixels. A chat still where the last zoom left it keeps that zoom's reader.
+    if (event->type() == QEvent::FontChange && m_mode != Mode::Classic) {
+        auto* browser = qobject_cast<QTextBrowser*>(watched);
+        View* v       = viewFor(browser);
+        if (v && v->document == browser->document() && browser->font() != browser->document()->defaultFont()) {
+            if (browser->isVisible() && !v->zoomFresh) {
+                // Live test fix (2.7.3): a gesture that began at the chat's end keeps the end. After its first notch the chat
+                // is laid out for the new font past where the view is (ChatScale puts the end back at its settle), so the next
+                // notch read the line at the top as the reader and the scale pass took it: 700-1900 px above the end after 8
+                // notches in, also after zooming back (2.7.2 kept the end).
+                const bool endHeld = v->zoomReader.bottom && m_chat->zoomPending(browser);
+                if (!endHeld && !zoomReaderThere(*v))
+                    v->zoomReader = chatscroll::captureReader(browser);
+                v->zoomKeep  = !v->zoomReader.bottom && !v->zoomReader.cursor.isNull(); // the end: ChatScale's settle keeps it
+                v->zoomFresh = v->zoomKeep;
+            }
+            if (!m_quickPosted) {
+                m_quickPosted = true;
+                QMetaObject::invokeMethod(this, [this] { quickStep(); }, Qt::QueuedConnection);
+            }
+        }
     }
     if (event->type() == QEvent::ContextMenu) {
         auto* ce = static_cast<QContextMenuEvent*>(event);

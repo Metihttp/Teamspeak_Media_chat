@@ -212,11 +212,15 @@ class ChatIntegration : public QObject
         QString key;
     };
 
-    // 2.7.2 dark mode (D1): a still a picture of ours was drawn from while dark mode was on.
+    // 2.7.2 dark mode (D1): a still a picture of ours was drawn from while dark mode was on. 2.7.3 (M3): a stand-in too (a
+    // blurhash, a smaller copy, a preview while the file's own still was still being read), and "drawn from nothing" (a null
+    // image: the placeholder), so a picture first drawn in dark mode before its still was at hand is drawn again from that.
+    // 2.7.3 review: a blurhash without its image (source BlurHash, made again by Core::blurHashStill: never booked).
     struct KeptStill {
         QString    key; // the entry (a single picture: its key; an album: a tile's)
         QSize      box; // the box it was asked for (Core::still's maxPixels)
         MediaStill still;
+        bool       standIn = false; // 2.7.3 (M3): less than the file's own still (Core counted a stand-in, or no Full still)
     };
 
     struct View {
@@ -322,6 +326,10 @@ class ChatIntegration : public QObject
     void onOpenRequested(const QString& key);
 
     View*        viewFor(QTextBrowser* browser);
+    // 2.7.3 (M1): ChatLayout restyled a chat zoomed while shown and put its reader back: the zoom's pending scale pass keeps
+    // that place (zoomRestyled); zoomPending: that pass is still to come (the zoom's gesture goes on).
+    void         zoomRestyled(QTextBrowser* browser);
+    bool         zoomPending(QTextBrowser* browser);
     void         ensurePositions(View& view);
     // 2.5 zoom: size is the content's du size (View::formatSizes, contentSizeOf); the rect is logical px.
     QRectF       previewRect(QTextBrowser* browser, int position, const QSizeF& size) const;
@@ -349,11 +357,14 @@ class ChatIntegration : public QObject
     // 2.7.1: one picture drawn for the chat's look, never a stand-in where one is drawn (refreshPreview's keepDrawn). First
     // with what Core has at hand, then (2.7.2) from the still it was drawn from while dark mode was on (View::keptStills);
     // else its still may be decoded when it is near the view of a shown chat (a slow one on a worker: its entryChanged
-    // draws it) or at a Disable's unload (cheap ones only, within kUnloadDecodeMs of such draws in all); otherwise it keeps
-    // its picture. True: drawn.
+    // draws it) or at a Disable's unload (cheap ones only, within kUnloadDecodeMs of such draws in all: the pictures of
+    // lookOld, where the draw with what Core has puts a picture whose still isn't at hand); otherwise it keeps its picture.
+    // 2.7.3 (M3): near the view, one drawn from a kept stand-in is asked for again as any draw, so its own still still comes.
+    // True: drawn.
     bool         drawForLook(QTextBrowser* browser, View& view, const QString& key);
     // 2.7.2 (D1): the still of key for box as a draw asks Core for it: the kept one while a redraw for the look uses it
-    // (m_stillOverride, fitted to box), else Core's. While dark mode is on a draw notes the stills it used (m_recorded).
+    // (m_stillOverride, fitted to box; 2.7.3: a kept "nothing" answers nothing, a kept blurhash Core's blurhash for box),
+    // else Core's. While dark mode is on a draw notes the stills it used (m_recorded; 2.7.3 (M3): stand-ins and nothing too).
     MediaStill   stillFor(const QString& key, const QSize& box);
     // The kept stills a picture of key has after a draw that put it (dark mode on: the ones it used now, or the ones it had
     // when it used none, e.g. a video frame; off: none), and their bytes for its booking.

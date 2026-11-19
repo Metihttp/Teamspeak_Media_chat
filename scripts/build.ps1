@@ -27,7 +27,7 @@
 #             C:\dev\tsmedia-devtools\signing), DPAPI, no prompt.
 # -KeyId <n>, -RevokeKeys <ids>  the signing key, and key ids a signed release revokes for good
 # -BridgeManifest <file>  the signed tsmedia-update.json of v2.2.1 to reuse, instead of downloading it
-# -Important  a release (implies -Release) that 2.3.4 and later with automatic checks on install without a
+# -Important  a release (implies -Release) that 2.4.0 and later with automatic checks on install without a
 #             click: also writes TSMedia-<ver>-important.json (the format 1 envelope around a format 3
 #             payload), always signed with key 1. tsmedia-update.json stays the bridge. Refused for 2.3.4
 #             and older, with -RevokeKeys and with a -KeyId other than 1.
@@ -82,8 +82,9 @@ $bridgeVersion = [version]"2.2.1"
 $bridgeSha256 = '6e6d802c71a89762f00b2d5da6dc50240f122e18ce25348b122ea238321a58fc'
 $v2Name = "tsmedia-update-v2.json"
 $legacyName = "tsmedia-update.json"
-# Important updates (-Important): 2.3.4 is the first version that reads the marker, so the first release
-# one makes sense for is 2.3.5. The marker is always signed with the daily key 1, never the recovery key.
+# Important updates (-Important): the marker reader came with 2.3.4 (never released: 2.4.0 is the first release
+# that reads the marker), so the first release one makes sense for is 2.3.5. The marker is always signed with the
+# daily key 1, never the recovery key.
 $lastWithoutMarker = [version]"2.3.4"
 $importantKeyId = 1
 $maxImportantDays = 60 # kMaxImportantDays in src\update\updatemanifest.h

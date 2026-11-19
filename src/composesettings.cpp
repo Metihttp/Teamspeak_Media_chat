@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 
 #include "i18n.h"
+#include "settingsdialog.h" // 2.7.3 (M2)
 
 ComposeSettingsSection::ComposeSettingsSection(QWidget* dialog)
     : SettingsSection(dialog)
@@ -25,8 +26,11 @@ ComposeSettingsSection::ComposeSettingsSection(QWidget* dialog)
             emit changed();
     });
 
-    // The dialog's own switch for dropping files (SettingsDialog names it): this only matters while it is on.
-    if (dialog)
+    // The dialog's own switch for dropping files (SettingsDialog names it): this only matters while it is on. 2.7.3 (M2): on
+    // its page, which isn't in the window until it is first shown.
+    if (auto* settings = qobject_cast<SettingsDialog*>(dialog))
+        m_dropSwitch = settings->control<QCheckBox>(QString::fromLatin1("dropSendsFiles"));
+    else if (dialog)
         m_dropSwitch = dialog->findChild<QCheckBox*>(QString::fromLatin1("dropSendsFiles"));
     if (m_dropSwitch)
         connect(m_dropSwitch, &QCheckBox::toggled, this, [this] { followDropSwitch(); });

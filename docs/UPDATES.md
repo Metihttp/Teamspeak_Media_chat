@@ -36,7 +36,9 @@ everyone to click). Such a release installs without a click:
 - **Who gets them:** 2.4.0 and later with automatic checks on (**Settings → About & updates →
   Check for updates automatically**). Only the daily automatic check installs them; **Check now**,
   the plugin menu, `/tsmedia update` and the newer-version hint's link always show the normal
-  *Update to X?* window. Older versions, and everyone with automatic checks off, get the normal offer.
+  *Update to X?* window. Older versions get the normal offer. With automatic checks off nothing is
+  checked by itself: the normal window comes when you check (**Check now**, the plugin menu,
+  `/tsmedia update` or the newer-version hint's link).
 - **Only with the author's signature.** The release must carry a marker file signed with the author's
   daily release key (key 1), for exactly that release: the same version and the same files, sizes and
   SHA-256 as its `tsmedia-update-v2.json` ([format](#important-marker-tsmedia-x-importantjson-payload-format-3)).
@@ -46,7 +48,8 @@ everyone to click). Such a release installs without a click:
   **Update**. The chat then says *TS Media chat X is an important update and was installed
   automatically. It starts the next time you open TeamSpeak; to restart now, use Check for updates in
   the TS Media chat plugin menu.*, with a *What's new in X* link. After the next start: *Updated to TS
-  Media chat X (an important update, installed automatically).*
+  Media chat X (an important update, installed automatically).*, with its *What's new in X* link in the
+  same line.
 - **TeamSpeak is never restarted for it.** The new version starts with your next TeamSpeak start; to
   start it now, **Check for updates…** in the plugin menu opens the window with **Restart TeamSpeak
   now**.
@@ -62,11 +65,11 @@ everyone to click). Such a release installs without a click:
   checks off) stops silent installs for the rest of that TeamSpeak session.
 - **Markers expire.** A marker counts until a date the author sets, at most 60 days after the release
   (30 by default). After that date (by your PC's clock), the release is offered the normal way.
-- **Once:** with automatic checks on, 2.4.0's first start says in the chat *Important fixes for TS
-  Media chat now install automatically when they are signed by its author; they start with the next
-  TeamSpeak start. You can turn automatic updates off in Settings → About & updates.* Until that
-  line has been shown (it waits for a server connection), important updates are offered the normal
-  way.
+- **Once:** with automatic checks on, the first start of 2.4.0 or later says in the chat *Important
+  fixes for TS Media chat now install automatically when they are signed by its author; they start
+  with the next TeamSpeak start. You can turn automatic updates off in Settings → About & updates.*
+  (2.4.0 to 2.6.0 name it *Settings → Privacy & updates*). Until that line has been shown (it waits
+  for a server connection), important updates are offered the normal way.
 
 ### Someone in this channel has a newer version
 
@@ -179,7 +182,7 @@ needs both: the release on GitHub and a marker signed with the release key.
 | `tsmedia-update.json` | a signed manifest (format 1), the only file 2.2.0 reads: see [the bridge](#the-bridge-for-220) |
 | `TSMedia-X-win64.update`, `TSMedia-X-win32.update` | the raw plugin DLLs |
 | `TSMedia-X-helper-win64.update`, `TSMedia-X-helper-win32.update` | the raw restart helper (`tools/update_helper`) |
-| `TSMedia-X-important.json` | only in a release marked important (`build.ps1 -Important`): the signed marker that lets 2.3.4 and later install it without a click ([format](#important-marker-tsmedia-x-importantjson-payload-format-3)) |
+| `TSMedia-X-important.json` | only in a release marked important (`build.ps1 -Important`): the signed marker that lets 2.4.0 and later install it without a click ([format](#important-marker-tsmedia-x-importantjson-payload-format-3)) |
 
 Both manifests have fixed names, so `/releases/latest/download/` finds them. The marker has the
 version in its name and is only fetched from its own release (`/releases/download/vX/`), so a marker
@@ -242,7 +245,7 @@ for good (`state.ini [trust]`). A daily key can never revoke the recovery key or
 
 ### Important marker (`TSMedia-X-important.json`, payload format 3)
 
-Read by 2.3.4 and later. The outer file is the format 1 envelope exactly as above (at most 64 KiB,
+Read by 2.4.0 and later. The outer file is the format 1 envelope exactly as above (at most 64 KiB,
 `"key"`, `"payload"`, `"sig"`); only its payload is new, format 3:
 
 ```json
@@ -255,7 +258,7 @@ Read by 2.3.4 and later. The outer file is the format 1 envelope exactly as abov
   `importantUntil` are required `yyyy-MM-dd` dates with `published <= importantUntil <= published + 60
   days`, and the PC's UTC date must not be past `importantUntil`. `revokeKeys` is never read.
 - **The payload format keeps the files apart.** No format 1 payload (the 2.2.1 bridge, or any signed
-  `tsmedia-update.json`) is ever accepted as a marker, and versions before 2.3.4 refuse a format 3
+  `tsmedia-update.json`) is ever accepted as a marker, and versions before 2.4.0 refuse a format 3
   payload, so a marker can't be served as `tsmedia-update.json` either (`build.ps1` refuses that too).
   Format 3 is taken: a future format of the unsigned manifest becomes 4, with a new asset name.
 - The signer must be a trusted, not revoked daily key: a marker signed with the recovery key counts
@@ -290,7 +293,7 @@ defaults* never touches them.
   start never finished (a crash in init), the next start restores the previous DLLs (only the two
   plugin names, each checked against its recorded SHA-256 and CPU), marks the update `rolledBack` and
   returns 1, so TeamSpeak unloads the plugin and keeps working. The previous version then warns once
-  and skips that version. From 2.3.4 on it also puts that version on the never-auto list (`[auto]
+  and skips that version. From 2.4.0 on it also puts that version on the never-auto list (`[auto]
   never`), whoever recorded the rollback (the boot counter, the helper or an older version), and so
   does a version replaced by hand with an older one.
 - **Restart now:** the plugin writes the verified helper, starts it with only a job file, closes its
@@ -328,7 +331,7 @@ the build refuses it unless its SHA-256 is the pinned
 `dist\upload-<ver>\TSMedia-<ver>-important.json`: the format 3 payload (the same version, files,
 package and notes as `tsmedia-update-v2.json`, `"important":true`, `importantUntil` = the release date
 plus `-ImportantDays`, default 30, 1 to 60), wrapped in the format 1 envelope and signed with key 1.
-Use it only for a fix that shouldn't wait: 2.3.4 and later with automatic checks on install it
+Use it only for a fix that shouldn't wait: 2.4.0 and later with automatic checks on install it
 without a click.
 
 - It is always signed with key 1, never the recovery key, and refused for 2.3.4 and older (no
@@ -440,6 +443,8 @@ offers them (then the files of a published release can't be swapped).
 ### Still to measure on a real TeamSpeak (not possible in the automated tests)
 
 - The rename trick on FAT32/exFAT and redirected AppData; the 32-bit client end to end; Windows Defender
-  and AppLocker behaviour toward the helper; GitHub's real redirect hosts.
+  and AppLocker behaviour toward the helper. (GitHub's redirect host for release files was measured in a
+  real TeamSpeak's log, the latest on 2026-11-18: release-assets.githubusercontent.com, which the allow
+  list of every version from 2.2.0 on accepts.)
 - An important update end to end from GitHub; the newer-version hint's link click in TeamSpeak's chat
   (Cozy, Compact and TeamSpeak classic, light and dark).

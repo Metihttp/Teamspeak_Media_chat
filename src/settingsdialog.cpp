@@ -69,6 +69,16 @@ class SnapSpinBox : public QSpinBox
     }
 };
 
+// 2.7.3 (M2): Qt posts every new widget a request to polish it on the next turn of the event loop; for a page that waits
+// outside the window (not shown yet) those requests are dropped, so it stays unpolished until it is shown (showing
+// polishes it and everything in it).
+void forgetPolishRequests(QWidget* root)
+{
+    QCoreApplication::removePostedEvents(root, QEvent::PolishRequest);
+    for (QWidget* w : root->findChildren<QWidget*>())
+        QCoreApplication::removePostedEvents(w, QEvent::PolishRequest);
+}
+
 // 2.7.2 (D7): a page's scroll area. While dark mode switches the look (DarkMode::changing()), the style changes and layout
 // requests that reach it are held: the palette, the application sheet and the window's own sheet each sent one, and each
 // computed the whole page's size again (6-8 times per page and toggle with the window open). The window hands it one
@@ -275,6 +285,14 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     // 2.7 F3 (H1): every size follows TeamSpeak's font (11 px at 100 %, 22 px at 200 %); the colours come in applyTheme().
     m_tokens = settingstheme::tokens(palette(), QColor(), settingstheme::sizeFactor(font(), this));
     const settingstheme::Tokens& t = m_tokens;
+
+    // 2.7.3 (M2): the pages are built in a window that is never shown (no native window, never polished, not in Qt's style
+    // caches; deleted with this one) and go into this window when each is first shown (attachPage). Qt's repolish for a
+    // new application sheet (a dark mode switch, a skin) polishes a widget once per styled ancestor, every polished one,
+    // shown or not: the hidden pages made up most of a switch with this window open (3011 style changes for its 423
+    // widgets offscreen; its frame and the shown page alone a fraction of it).
+    m_unshown = new QWidget(nullptr, Qt::Window);
+    m_unshown->setObjectName(QString::fromLatin1("tsmediaSettingsUnshown"));
 
     // ---- the frame: the sidebar of pages, the page, the bar -----------------------------------------------------------
     auto* side = new QWidget(this);
@@ -549,6 +567,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     connect(m_nav, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row < 0)
             return;
+        attachPage(row); // 2.7.3 (M2): first shown now
         m_stack->setCurrentIndex(row);
         g_lastTab = row;
     });
@@ -561,9 +580,9 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
         if (!m_loading)
             setDirty(true);
     };
-    for (QCheckBox* box : findChildren<QCheckBox*>())
+    for (QCheckBox* box : controls<QCheckBox>()) // 2.7.3 (M2): every page's (none is in the window yet)
         connect(box, &QCheckBox::toggled, this, changed);
-    for (QSpinBox* box : findChildren<QSpinBox*>())
+    for (QSpinBox* box : controls<QSpinBox>())
         connect(box, QOverload<int>::of(&QSpinBox::valueChanged), this, changed);
     connect(m_volume, &QSlider::valueChanged, this, changed);
     connect(m_downloadUrl, &QLineEdit::textChanged, this, changed);
@@ -603,7 +622,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
         if (!now || now->window() != this)
             return;
         for (QScrollArea* area : qAsConst(m_pageAreas)) {
-            if (area->widget() && area->widget()->isAncestorOf(now))
+            if (area && area->widget() && area->widget()->isAncestorOf(now))
                 area->ensureWidgetVisible(now, m_tokens.px(16), m_tokens.px(16));
         }
         if (m_keyboardFocus || !testAttribute(Qt::WA_KeyboardFocusChange))
@@ -619,6 +638,7 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
     reloadServers(); // 2.2 per-server settings
     updateGifHint();
     setDirty(false);
+    forgetPolishRequests(m_unshown); // 2.7.3 (M2): its own request would polish every page in it
     m_ready = true;
     applyTheme();
     rebuildTabOrder();
@@ -626,15 +646,8 @@ SettingsDialog::SettingsDialog(Core* core, QWidget* parent)
 
 QWidget* SettingsDialog::addPage(Tab tab, const QString& title, const QString& description)
 {
-    const settingstheme::Tokens& t    = m_tokens;
-    auto*                        area = new PageArea(m_stack); // 2.7.2 (D7): laid out once per dark mode switch
-    area->setFrameShape(QFrame::NoFrame);
-    area->setWidgetResizable(true);
-    area->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); // H1: only a safety net (rows wrap and stack)
-    area->setFocusPolicy(Qt::NoFocus); // no Tab stop of its own
-    area->setAccessibleName(title);    // a screen reader names the page when the focus enters it
-    area->viewport()->setAutoFillBackground(false);
-    auto* page = new QWidget(area);
+    const settingstheme::Tokens& t = m_tokens;
+    auto* page = new QWidget(m_unshown); // 2.7.3 (M2): into its scroll area when first shown (attachPage)
     page->setObjectName(QString::fromLatin1("tsmediaSettingsPage")); // matched by the style sheet
     auto* pageLayout = new QVBoxLayout(page);
     pageLayout->setContentsMargins(t.px(28), t.px(22), t.px(28), t.px(24));
@@ -652,11 +665,9 @@ QWidget* SettingsDialog::addPage(Tab tab, const QString& title, const QString& d
     headerLayout->addWidget(hint(description, header));
     pageLayout->addWidget(header);
     pageLayout->addStretch(1); // cards go above it
-    area->setWidget(page);
-    page->setAutoFillBackground(false); // setWidget() turned it on
-    m_stack->addWidget(area);
+    m_stack->addWidget(new QWidget(m_stack)); // 2.7.3 (M2): its place until it is first shown (attachPage)
     m_pages.append(page);
-    m_pageAreas.append(area);
+    m_pageAreas.append(nullptr);
     m_lastCards.append(nullptr);
 
     auto* item = new QListWidgetItem(title, m_nav);
@@ -693,6 +704,8 @@ void SettingsDialog::addSection(Tab tab, QWidget* widget, bool atTop)
     } else {
         insertCard(tab, widget);
     }
+    if (m_unshown && m_unshown->isAncestorOf(widget))
+        forgetPolishRequests(widget); // 2.7.3 (M2): its page isn't shown yet
     if (auto* section = qobject_cast<SettingsSection*>(widget)) {
         m_sections.append(section);
         m_loading = true;
@@ -745,6 +758,88 @@ void SettingsDialog::showTabOf(QWidget* widget)
     }
 }
 
+// 2.7.3 (M2): the window's pages and the window that holds those not shown yet.
+SettingsDialog::~SettingsDialog()
+{
+    delete m_unshown.data(); // the pages never shown (an attached page is the window's own child)
+}
+
+bool SettingsDialog::pageAttached(Tab tab) const
+{
+    const QScrollArea* area = m_pageAreas.value(static_cast<int>(tab));
+    return area && area->parentWidget() == m_stack; // review fix: a switch takes it out again (detachPage)
+}
+
+QScrollArea* SettingsDialog::pageArea(Tab tab)
+{
+    attachPage(static_cast<int>(tab));
+    return m_pageAreas.value(static_cast<int>(tab));
+}
+
+// A page into the window: its scroll area (made now: an empty one in the stack would be polished at every switch too) in
+// its place in the stack, the page in it (shown, so polished, under the window's sheet), the fits that depend on it.
+void SettingsDialog::attachPage(int index)
+{
+    if (index < 0 || index >= m_pages.size() || pageAttached(static_cast<Tab>(index)))
+        return;
+    if (QScrollArea* kept = m_pageAreas.at(index)) {
+        // Review fix: a page a dark mode switch took out (detachPage) goes back with its scroll area (scrolled as it was),
+        // into its place in the stack (polished there for the look in place now).
+        QWidget* place = m_stack->widget(index);
+        m_stack->insertWidget(index, kept);
+        m_stack->removeWidget(place);
+        delete place;
+        if (m_ready) {
+            applyTheme();
+            rebuildTabOrder();
+        }
+        return;
+    }
+    auto* area = new PageArea(m_stack); // 2.7.2 (D7): laid out once per dark mode switch
+    area->setFrameShape(QFrame::NoFrame);
+    area->setWidgetResizable(true);
+    area->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); // H1: only a safety net (rows wrap and stack)
+    area->setFocusPolicy(Qt::NoFocus);                         // no Tab stop of its own
+    area->setAccessibleName(m_nav->item(index)->text());       // a screen reader names the page when the focus enters it
+    area->viewport()->setAutoFillBackground(false);
+    QWidget* place = m_stack->widget(index);
+    m_stack->insertWidget(index, area);
+    m_pageAreas[index] = area;
+    QWidget* page = m_pages.at(index);
+    area->setWidget(page);
+    page->setAutoFillBackground(false); // setWidget() turned it on
+    m_stack->removeWidget(place);
+    delete place;
+    if (m_ready) {
+        applyTheme(); // its combo boxes' and number fields' widths
+        rebuildTabOrder();
+    }
+}
+
+// Review fix (2.7.3, M2): a page shown before goes back, with its scroll area (scrolled as it is), into the window that
+// holds the pages not shown; a stand-in takes its place in the stack. Qt's repolish for a new application sheet polishes
+// every polished widget once per styled ancestor: the pages shown once stayed in the window, and a switch after the user
+// had looked through every page cost as much as in 2.7.2 (offscreen 3011 style changes, on 101-105 ms, off 71-75). Out of
+// the window a page is still restyled (Qt keeps it in its style caches), but under the application sheet alone and with
+// a few styled ancestors: on 56-58 ms, off 33-34 (the window on its Chat page alone: 53 / 36). A dark mode switch takes
+// the pages not on screen out (event()). Nothing is deleted here: it runs inside QApplication's walk over every widget
+// (its palette change).
+void SettingsDialog::detachPage(int index)
+{
+    QScrollArea* area = m_pageAreas.value(index);
+    if (!area || area->parentWidget() != m_stack || !m_unshown || index == m_stack->currentIndex())
+        return;
+    m_stack->insertWidget(index, new QWidget(m_stack)); // its place until it is shown again
+    m_stack->removeWidget(area);
+    area->setParent(m_unshown);
+}
+
+void SettingsDialog::attachAllPages()
+{
+    for (int i = 0; i < m_pages.size(); ++i)
+        attachPage(i);
+}
+
 void SettingsDialog::stepPage(int direction)
 {
     const int count = m_nav->count();
@@ -764,8 +859,10 @@ void SettingsDialog::rebuildTabOrder()
 {
     QList<QWidget*> chain;
     chain << m_nav;
-    for (QWidget* page : qAsConst(m_pages))
-        collectFocusable(page->layout(), chain);
+    for (int i = 0; i < m_pages.size(); ++i) {
+        if (pageAttached(static_cast<Tab>(i))) // 2.7.3 (M2): a page not shown yet joins when it is
+            collectFocusable(m_pages.at(i)->layout(), chain);
+    }
     chain << m_restoreBox->button(QDialogButtonBox::RestoreDefaults) << m_buttons->button(QDialogButtonBox::Ok)
           << m_buttons->button(QDialogButtonBox::Cancel) << m_applyButton;
     for (int i = 1; i < chain.size(); ++i)
@@ -866,6 +963,25 @@ void SettingsDialog::keyPressEvent(QKeyEvent* event)
     QDialog::keyPressEvent(event);
 }
 
+// Review fix (2.7.3, M2): dark mode switches the palette first (on, off): before its sheet, the pages not on screen leave
+// the window (detachPage), so the sheet's repolish restyles the window's frame and the shown page under the window's
+// sheet, the others outside it; each comes back when shown.
+bool SettingsDialog::event(QEvent* event)
+{
+    if (event->type() == QEvent::ApplicationPaletteChange && m_ready && DarkMode::changing()) {
+        bool detached = false;
+        for (int i = 0; i < m_pages.size(); ++i) {
+            if (i != m_stack->currentIndex() && pageAttached(static_cast<Tab>(i))) {
+                detachPage(i);
+                detached = true;
+            }
+        }
+        if (detached)
+            rebuildTabOrder();
+    }
+    return QDialog::event(event);
+}
+
 void SettingsDialog::changeEvent(QEvent* event)
 {
     QDialog::changeEvent(event);
@@ -876,8 +992,10 @@ void SettingsDialog::changeEvent(QEvent* event)
         if (DarkMode::themeLater(this, &SettingsDialog::themeChangedByDarkMode))
             return;
         applyTheme(); // also when TeamSpeak's skin changes while the dialog is open
-        for (QScrollArea* area : qAsConst(m_pageAreas))
-            static_cast<PageArea*>(area)->release(); // 2.7.2 (D7): anything a switch held whose themeChanged never came here
+        for (int i = 0; i < m_pageAreas.size(); ++i) {
+            if (pageAttached(static_cast<Tab>(i))) // review fix: one taken out is laid out when it comes back
+                static_cast<PageArea*>(m_pageAreas.at(i))->release(); // 2.7.2 (D7): anything a switch held whose themeChanged never came here
+        }
     } else if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
         syncVolume();
         updateGifHint(); // the Windows setting may have changed meanwhile
@@ -1132,7 +1250,7 @@ bool SettingsDialog::apply()
     form.servers = s.servers;
     s.save();
     m_loaded = form;
-    if (auto* updates = findChild<upd::UpdateSettingsGroup*>()) // 2.2 updater: its own keys; Restore defaults leaves them alone
+    if (auto* updates = control<upd::UpdateSettingsGroup>(QString())) // 2.2 updater: its own keys; Restore defaults leaves them alone
         updates->apply();
 
     // After Apply the dialog stays open: show what was saved ("/tsmedia" for an empty folder, the
@@ -1244,15 +1362,19 @@ void SettingsDialog::themeChangedByDarkMode()
     if (!m_ready)
         return;
     applyTheme();
-    for (QScrollArea* area : qAsConst(m_pageAreas))
-        static_cast<PageArea*>(area)->release(); // each page laid out once, for the final look
+    for (int i = 0; i < m_pageAreas.size(); ++i) {
+        if (pageAttached(static_cast<Tab>(i))) // review fix: one taken out stays out of Qt's style caches
+            static_cast<PageArea*>(m_pageAreas.at(i))->release(); // each page laid out once, for the final look
+    }
 }
 
 int SettingsDialog::pageStyleChanges() const
 {
     int n = 0;
-    for (QScrollArea* area : m_pageAreas)
-        n += static_cast<const PageArea*>(area)->styleChanges;
+    for (QScrollArea* area : m_pageAreas) {
+        if (area)
+            n += static_cast<const PageArea*>(area)->styleChanges;
+    }
     return n;
 }
 
@@ -1379,12 +1501,17 @@ void SettingsDialog::applyTheme()
             w->update();
     }
 
-    // The number fields share one width, so they line up.
+    // The number fields share one width, so they line up. 2.7.3 (M2): those of the pages shown so far (a spin box's size
+    // hint polishes it; a page not shown yet gets its fields' width when it is).
     int fieldWidth = 0;
-    for (QSpinBox* box : qAsConst(m_numberFields))
-        fieldWidth = qMax(fieldWidth, box->sizeHint().width());
-    for (QSpinBox* box : qAsConst(m_numberFields))
-        box->setMinimumWidth(fieldWidth);
+    for (QSpinBox* box : qAsConst(m_numberFields)) {
+        if (box->window() == this)
+            fieldWidth = qMax(fieldWidth, box->sizeHint().width());
+    }
+    for (QSpinBox* box : qAsConst(m_numberFields)) {
+        if (box->window() == this)
+            box->setMinimumWidth(fieldWidth);
+    }
 
     // Live test 2.7 (F3-1): every combo box wide enough for its longest item. At 200 % (TeamSpeak's font 22 px) the
     // Windows style's arrow grows with the DPI more than QComboBox's size hint allows for, which cut "Open the send
@@ -1394,7 +1521,7 @@ void SettingsDialog::applyTheme()
         if (!m_servers || !m_servers->isAncestorOf(combo))
             fitComboText(combo);
     }
-    if (m_servers)
+    if (m_servers && m_servers->window() == this) // 2.7.3 (M2): when its page is shown
         m_servers->updateWidths();
 
     m_applyingTheme = false;

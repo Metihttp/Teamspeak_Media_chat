@@ -11,7 +11,9 @@
 //   dark.sheets          2.7.2 live: each text view's document style sheet (length, hash, TeamSpeak's dark-mode chat file in it)
 //   dark.scan            2.7.2 live (D6): every text document of every window (chats, the info panel, poke windows, documents
 //                        TeamSpeak swapped out that a widget still owns): dark mode's kOriginal on fragments, inside the formats
-//                        they keep, on block character formats, block and frame formats, and on each view's own char format
+//                        they keep, on block character formats, block and frame formats, and on each view's own char format;
+//                        2.7.3 (M5): "dark looks", a dark token's colour on block character formats, table cells, TeamSpeak's
+//                        own pictures and each view's own format (after off: 0)
 
 #include <QApplication>
 #include <QFile>
@@ -23,6 +25,7 @@
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFragment>
+#include <QTextTable>
 #include <QWidget>
 
 #include <functional>
@@ -41,6 +44,20 @@ namespace {
 QString yesNo(bool v)
 {
     return v ? QString::fromLatin1("1") : QString::fromLatin1("0");
+}
+
+// 2.7.3 (M5): f's own colour is one of dark mode's text tokens (after off: a dark look left behind).
+int darkLook(const QTextFormat& f)
+{
+    if (!f.hasProperty(QTextFormat::ForegroundBrush))
+        return 0;
+    const QRgb                 rgb = f.brushProperty(QTextFormat::ForegroundBrush).color().rgba();
+    const darkpalette::Tokens& t   = darkpalette::tokens();
+    for (const QColor& c : {t.text, t.secondary, t.muted, t.link, t.success, t.error, t.warning, t.accent}) {
+        if (c.rgba() == rgb)
+            return 1;
+    }
+    return 0;
 }
 
 // kOriginal on f itself (1) plus inside the formats, lists and maps its properties hold.
@@ -133,11 +150,16 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                 docs.insert(d);
         }
         int totalFrag = 0, totalNested = 0, totalBlockChar = 0, totalBlock = 0, totalFrame = 0, totalCursor = 0, totalCollection = 0, fragments = 0;
+        int totalLooks = 0;
         for (QTextDocument* d : docs) {
             int frag = 0, nested = 0, blockChar = 0, block = 0, frame = 0, cursor = 0, collection = 0, n = 0;
+            // 2.7.3 (M5): dark looks (a dark token's colour) on block character formats, table cell formats, TeamSpeak's own
+            // pictures and the view's own format: 0 after off.
+            int looks = 0;
             for (QTextBlock tb = d->begin(); tb.isValid(); tb = tb.next()) {
                 blockChar += darkIn(tb.charFormat());
                 block += darkIn(tb.blockFormat());
+                looks += darkLook(tb.charFormat());
                 for (auto it = tb.begin(); !it.atEnd(); ++it) {
                     const QTextFragment fr = it.fragment();
                     if (!fr.isValid())
@@ -146,17 +168,34 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                     const QTextCharFormat cf = fr.charFormat();
                     frag += cf.hasProperty(darkchat::kOriginal) ? 1 : 0;
                     nested += darkIn(cf) - (cf.hasProperty(darkchat::kOriginal) ? 1 : 0);
+                    if (cf.isImageFormat() && !darkchat::isModuleFormat(cf))
+                        looks += darkLook(cf);
                 }
             }
             frame += darkIn(d->rootFrame()->frameFormat());
+            const std::function<void(QTextFrame*)> cells = [&looks, &cells](QTextFrame* parent) {
+                for (QTextFrame* f : parent->childFrames()) {
+                    if (auto* table = qobject_cast<QTextTable*>(f)) {
+                        for (int r = 0; r < table->rows(); ++r) {
+                            for (int col = 0; col < table->columns(); ++col)
+                                looks += darkLook(table->cellAt(r, col).format());
+                        }
+                    }
+                    cells(f);
+                }
+            };
+            cells(d->rootFrame());
             for (QTextFrame* f : d->rootFrame()->childFrames())
                 frame += darkIn(f->frameFormat());
             for (const QTextFormat& f : d->allFormats())
                 collection += f.hasProperty(darkchat::kOriginal) ? 1 : 0;
             QTextEdit* v = views.value(d);
-            if (v)
+            if (v) {
                 cursor = darkIn(v->currentCharFormat());
+                looks += darkLook(v->currentCharFormat());
+            }
             fragments += n;
+            totalLooks += looks;
             totalFrag += frag;
             totalNested += nested;
             totalBlockChar += blockChar;
@@ -164,8 +203,8 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
             totalFrame += frame;
             totalCursor += cursor;
             totalCollection += collection;
-            if (frag || nested || blockChar || block || frame || cursor || collection || c.value(QString::fromLatin1("all")).toBool())
-                say(QString::fromLatin1("dark.scan: %1%2 blocks %3 fragments %4: tagged %5, nested %6, block char %7, block %8, frame %9, cursor %10 (format collection %11)")
+            if (frag || nested || blockChar || block || frame || cursor || collection || (looks && !DarkMode::isActive()) || c.value(QString::fromLatin1("all")).toBool())
+                say(QString::fromLatin1("dark.scan: %1%2 blocks %3 fragments %4: tagged %5, nested %6, block char %7, block %8, frame %9, cursor %10 (format collection %11), dark looks %12")
                         .arg(ownerOf(v ? static_cast<QObject*>(v) : d), v ? QString() : QString::fromLatin1(" [no view]"))
                         .arg(d->blockCount())
                         .arg(n)
@@ -175,9 +214,10 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                         .arg(block)
                         .arg(frame)
                         .arg(cursor)
-                        .arg(collection));
+                        .arg(collection)
+                        .arg(looks));
         }
-        say(QString::fromLatin1("dark.scan: %1 documents, %2 fragments: tagged %3, nested %4, block char %5, block %6, frame %7, cursor %8 (collection formats with it, used or not: %9)")
+        say(QString::fromLatin1("dark.scan: %1 documents, %2 fragments: tagged %3, nested %4, block char %5, block %6, frame %7, cursor %8 (collection formats with it, used or not: %9); dark looks on separators, cells, TeamSpeak's pictures and view formats %10")
                 .arg(docs.size())
                 .arg(fragments)
                 .arg(totalFrag)
@@ -186,7 +226,8 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                 .arg(totalBlock)
                 .arg(totalFrame)
                 .arg(totalCursor)
-                .arg(totalCollection));
+                .arg(totalCollection)
+                .arg(totalLooks));
         return true;
     }
     DarkMode* dark = DarkMode::instance();

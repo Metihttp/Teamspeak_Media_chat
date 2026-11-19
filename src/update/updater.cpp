@@ -1360,16 +1360,20 @@ void Updater::flushNotices()
     bool startup   = false;
     bool announced = false;
     for (const Notice& n : qAsConst(m_notices)) {
-        if (n.warning)
-            ts3::printWarning(sch, n.text);
-        else
-            ts3::printInfo(sch, n.text);
         // The address is built from a validated version; the text is the plugin's own. 2.7 F6 (M7): in the accent colour of
-        // TS Media's lines (ts3::linkBBCode, the one place for our links' tags).
-        if (!n.linkUrl.isEmpty()) {
-            const QString link = ts3::linkBBCode(n.linkUrl, n.linkText);
-            if (!link.isEmpty())
-                ts3::print(sch, link);
+        // TS Media's lines (ts3::linkBBCode, the one place for our links' tags). 2.7.3: a notice's link is in its line (one
+        // TS Media row; as a line of its own the chat layout showed it alone at the left under the notice).
+        if (n.warning) {
+            ts3::printWarning(sch, n.text);
+            if (!n.linkUrl.isEmpty()) {
+                const QString link = ts3::linkBBCode(n.linkUrl, n.linkText);
+                if (!link.isEmpty())
+                    ts3::print(sch, link);
+            }
+        } else if (!n.linkUrl.isEmpty()) {
+            ts3::printInfo(sch, n.text, n.linkUrl, n.linkText);
+        } else {
+            ts3::printInfo(sch, n.text);
         }
         startup   = startup || n.startupNotice;
         announced = announced || n.announcement;

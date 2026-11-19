@@ -252,6 +252,10 @@ class Core : public QObject
     // (chat files are untrusted) are decoded on a worker thread: until then the next best still
     // is returned, and entryChanged(key) is emitted once the better one is available.
     MediaStill still(const QString& key, const QSize& maxPixels);
+    // 2.7.3 review: the blurhash still of key for maxPixels exactly as still() gives it when it falls back to it (from its
+    // cache, else made from the link's blurhash and cached: no file read, no worker), without trying the file or its preview
+    // first and without counting a stand-in. Null without a blurhash.
+    MediaStill blurHashStill(const QString& key, const QSize& maxPixels);
     // 2.7.1 (the chat's look redraws: dark mode on or off): how still() gets a source it hasn't cached. Any (the
     // default): cheap files decoded at once, slow ones on a worker. CheapOnly: never a worker (the unload: nothing would
     // come back). CachedOnly: no file decoded at all. Each time still() answers with less than the best still this size

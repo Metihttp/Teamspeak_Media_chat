@@ -6,8 +6,9 @@
 // are computed at run time from the two document sheets (a scratch document per class, the parser TeamSpeak's insertions
 // use), so any skin's sheet works with no colour table here. Every recoloured fragment keeps its colour before in
 // kOriginal, so the way back is exact; lines added while dark (no kOriginal) get the skin's colour of their class back,
-// and since 2.7.2 its text style too (weight, italic, underline, size: where the two sheets differ for a look, and every
-// class of that look agrees on the skin's value). The info panel has maps of its own (its classes first; a class the skin
+// and since 2.7.2 its text style too (weight, italic, underline, size: where the two sheets differ for a look, and the
+// classes of that look agree on the skin's value, or, since 2.7.3, for each of their values on the dark side that goes
+// with one skin value only). The info panel has maps of its own (its classes first; a class the skin
 // doesn't colour loses dark mode's colour on the way back). kOriginal never survives the way back: it is also taken off
 // what copied a recoloured fragment's format (an HD emoji's picture, the chat layout's recoloured fragment, the block
 // separators QTextEdit::append copies from its cursor, the chat cursor's own format: DarkMode).
@@ -18,7 +19,9 @@
 //
 // Never recoloured: pictures, objects (spoiler bars, previews, poll cards), and the colours TS Media's own modules set
 // (a property in 0x7450-0x74ff: the chat layout's pictures and the colours it sets itself, replies, emoji, text spoilers,
-// reactions, polls): they take their colours from the chat's palette themselves. A link the chat layout only gave its
+// reactions, polls): they take their colours from the chat's palette themselves. (2.7.3: on the way back TeamSpeak's own
+// pictures and table cell formats, which hold their paragraph's or class's colour, get it by look like text: never drawn,
+// but text inserted next to them takes their format.) A link the chat layout only gave its
 // underline colour keeps TeamSpeak's colour, which is recoloured; so do an album's collapsed item link (2.7.1: its text
 // is kept as a string, its colour is TeamSpeak's link colour), a text spoiler's revealed text and a link's space in a hidden
 // one, and the reply line's and the poll card's line breaks. What the modules keep of TeamSpeak's text to give it
@@ -91,7 +94,8 @@ struct ColorMap {
     double            minimum = 4.5;
     // 2.7.2, the way back only. uncolored: a look of an info panel class the target sheet doesn't colour (its colour goes,
     // TeamSpeak's panel shows its text colour there). fonts: for a look a class won, the properties other than the colour
-    // where the two sheets differ and every class of that look agrees on the target's value (StyleFix); in the info panel's
+    // where the two sheets differ and every class of that look agrees on the target's value (StyleFix; 2.7.3, review fix: or,
+    // where they don't, one fix per target value for the values on this side that go with it only); in the info panel's
     // map also for the uncolored look (uncoloredLook) of its title's text, which neither side colours.
     QSet<Look>                     uncolored;
     QHash<Look, QVector<StyleFix>> fonts;
@@ -104,8 +108,12 @@ ColorMap buildMap(const QVector<QPair<QByteArray, Look>>& from, const QVector<QP
 // 2.7.2: the same from whole class formats, with the fonts. infoPanel false (a chat): the colours exactly as above (the info
 // panel's Label and CustomNick take no part). infoPanel true (TeamSpeak's info panel): its classes win their looks first,
 // then the chat classes, then the extras; an info panel class the target doesn't colour goes to uncolored.
+// sameColors (review fix, 2.7.3: one style's sheet to another's, DarkMode::ownSheetMap): a class both sides colour alike gets
+// the target's text style too (fonts, no colour): TeamSpeak's dark chat file used as a style has the colours of the sheet a
+// chat was made with under dark mode, not its weights and underlines. Never between dark mode's sheet and a style's (the
+// colours always differ there).
 ColorMap buildMap(const QVector<ClassFormat>& from, const QVector<ClassFormat>& to, const QVector<QPair<Look, QRgb>>& extras, const QColor& base,
-                  const QVector<QPair<Look, QRgb>>& labels = {}, bool infoPanel = false);
+                  const QVector<QPair<Look, QRgb>>& labels = {}, bool infoPanel = false, bool sameColors = false);
 // 2.7.1: text is TS Media's line label: exactly "TS Media chat" or "TS Media chat" + a space + U+26A0 (ts3api's printInfo / printWarning;
 // layoutdoc reads the same label). Not the chat layout's notice "TS Media chat:" (printed as text).
 bool isLineLabel(const QString& text);
