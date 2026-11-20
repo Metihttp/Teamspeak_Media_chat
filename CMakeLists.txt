@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tsmedia VERSION 2.7.3 LANGUAGES CXX RC)
+project(tsmedia VERSION 2.7.4 LANGUAGES CXX RC)
 
 set(PLUGIN_NAME        "TS Media chat")
 set(PLUGIN_AUTHOR      "MehdiHttp")
@@ -106,6 +106,7 @@ add_library(tsmedia SHARED
     src/darkchat.cpp          src/darkchat.h
     src/darkglyphs.cpp        src/darkglyphs.h
     src/darktitlebar.cpp      src/darktitlebar.h
+    src/darkfirstframe.cpp    src/darkfirstframe.h  # 2.7.4 (F1): the main window's first frame at a dark start
     src/appearancesection.cpp src/appearancesection.h
     src/uploadtoast.cpp       src/uploadtoast.h
     src/mediaviewer.cpp       src/mediaviewer.h
@@ -749,7 +750,8 @@ if(TSMEDIA_BUILD_TESTS)
     # 2.7 dark mode: the tokens and sheets, the exact restore, skin changes, the chats' colours and places, title bars, glyphs,
     # the Settings card and key (settingstheme.cpp asks DarkMode::isActive(), so the engine is in every test build)
     target_sources(tsmedia_tests PRIVATE tests/tst_darkmode.cpp src/darkmode.cpp src/darkpalette.cpp src/darkchat.cpp src/darkglyphs.cpp
-        src/darktitlebar.cpp src/appearancesection.cpp)
+        src/darktitlebar.cpp src/darkfirstframe.cpp src/appearancesection.cpp
+        tests/firstframewin.cpp)
     get_target_property(_qmake Qt5::qmake IMPORTED_LOCATION)
     get_filename_component(_qtbin "${_qmake}" DIRECTORY)
     add_test(NAME tsmedia_tests COMMAND tsmedia_tests)

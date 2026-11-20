@@ -234,6 +234,10 @@ class DarkMode : public QObject
     void hookTip(QWidget* label);
     void titleBar(QWidget* window);
     void revertTitleBars();
+    void firstFramePainted(); // 2.7.4 (F1): the guard ends at the main window's first paint (logged as [dark] first frame)
+    // 2.7.4 (F1): no guard any more (off, pause, shutdown); unload: the plugin goes, so a guard left for its uncloak
+    // (darkfirstframe::disarm) goes too (darkfirstframe::release).
+    void endFirstFrame(bool unload = false);
     // The maps between a document's own sheet (skin) and the dark sheet it has or had (dark): forward skin -> dark, back
     // dark -> skin (2.7.3: per dark sheet, M9).
     Maps mapsFor(const QString& skin, const QString& dark, bool info);
@@ -321,6 +325,11 @@ class DarkMode : public QObject
     // repane measures in the skin's sheet (measureInStyle).
     bool                 m_barsGuessed = false;
     QPointer<QMainWindow> m_styleMeasure;
+    // 2.7.4 (F1): on at TeamSpeak's start with dark mode on (its main window not shown yet): the main window's next Show
+    // arms darkfirstframe (held back until its first erase, its erases filled with the window colour until its first paint),
+    // and its first paint ends it (m_firstFrameWindow). Off, pause and shutdown end it too (endFirstFrame).
+    bool                 m_firstFrame = false;
+    QPointer<QWidget>    m_firstFrameWindow;
 
     QElapsedTimer  m_clock;
     QList<qint64>  m_adoptTimes;

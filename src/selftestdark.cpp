@@ -14,6 +14,9 @@
 //                        they keep, on block character formats, block and frame formats, and on each view's own char format;
 //                        2.7.3 (M5): "dark looks", a dark token's colour on block character formats, table cells, TeamSpeak's
 //                        own pictures and each view's own format (after off: 0)
+//   dark.widgets         2.7.4 live (S4): every widget of the application by class#name < parent < parent's parent, with
+//                        a count per kind (hidden ones and windows marked): two of them around Options > Addons > Reload
+//                        show whose widget a Reload adds
 
 #include <QApplication>
 #include <QFile>
@@ -21,6 +24,7 @@
 #include <QTextEdit>
 #include <QTextFrame>
 #include <QJsonObject>
+#include <QMap>
 #include <QSet>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -136,6 +140,22 @@ bool selfTestDark(const QString& cmd, const QJsonObject& c, const std::function<
                     out.write(sheet.toUtf8());
             }
         }
+        return true;
+    }
+    if (cmd == QLatin1String("dark.widgets")) {
+        QMap<QString, int> kinds;
+        const QWidgetList  all = QApplication::allWidgets();
+        for (QWidget* w : all) {
+            QString kind = ownerOf(w);
+            if (w->isWindow())
+                kind += QString::fromLatin1(" (window)");
+            if (w->isHidden())
+                kind += QString::fromLatin1(" (hidden)");
+            ++kinds[kind];
+        }
+        say(QString::fromLatin1("dark.widgets: %1 widgets, %2 kinds").arg(all.size()).arg(kinds.size()));
+        for (auto it = kinds.cbegin(); it != kinds.cend(); ++it)
+            say(QString::fromLatin1("dark.widgets: %1x %2").arg(it.value()).arg(it.key()));
         return true;
     }
     if (cmd == QLatin1String("dark.scan")) {

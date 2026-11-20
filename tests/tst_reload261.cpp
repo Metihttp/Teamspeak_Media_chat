@@ -22,8 +22,10 @@
 #include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLibrary>
 #include <QMainWindow>
+#include <QMenuBar>
 #include <QPainter>
 #include <QProcess>
 #include <QRegularExpression>
@@ -31,11 +33,13 @@
 #include <QScreen>
 #include <QScrollBar>
 #include <QSet>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextDocument>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -62,6 +66,10 @@
 #include "tschat.h"
 
 #include "teamspeak/public_errors.h"
+
+#include <windows.h> // 2.7.4 (S4): the plugin DLL's address range (PluginDll::reserveAtUnload)
+#undef near // windows.h's empty near and far: this file has variables with those names
+#undef far
 
 // TeamSpeak's chat tabs (ChatIntegration attaches to a QTextBrowser below one of these class names).
 class ChatTabWidget : public QTabWidget
@@ -101,6 +109,14 @@ struct PluginDll {
         if (!setFunctionPointers || !init || !shutdown || !transferStatus)
             return QStringLiteral("exports missing");
         setFunctionPointers(ts3::funcs);
+        HMODULE module = nullptr; // where the DLL is (its image: SizeOfImage bytes)
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(init), &module)
+            && module) {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+            const auto* nt  = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const char*>(module) + dos->e_lfanew);
+            base            = reinterpret_cast<quintptr>(module);
+            size            = nt->OptionalHeader.SizeOfImage;
+        }
         if (init() != 0)
             return QStringLiteral("init failed");
         if (registerPluginID)
@@ -118,8 +134,20 @@ struct PluginDll {
         lib.reset();
         transferStatus = nullptr;
         menuItem       = nullptr;
+        reserved       = reserveAtUnload && base && size && VirtualAlloc(reinterpret_cast<void*>(base), size, MEM_RESERVE, PAGE_NOACCESS) != nullptr;
+        base           = 0;
     }
     bool loaded() const { return lib != nullptr; }
+
+    // 2.7.4 (S4): the loaded DLL's address and size. With reserveAtUnload (TSMEDIA_RELOAD261_MOVEDLL=1 in the environment, which
+    // every child gets), unload() keeps that address range reserved, without access, for the rest of the process (`reserved`
+    // says whether it could). The next load then goes to another address, so anything of this load that runs or is used after its unload (a
+    // posted call, an object or a vtable that a later load or Qt reaches) faults at once. Without it Windows mostly loads the
+    // DLL at the same address again, where such a leftover runs the new load's identical code and goes unseen.
+    quintptr base            = 0;
+    quintptr size            = 0;
+    bool     reserveAtUnload = !qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_MOVEDLL");
+    bool     reserved        = false;
 };
 
 QString pluginPath()
@@ -692,6 +720,28 @@ class PaintTap : public QObject
     }
 };
 
+// 2.7.4 (S2): an application filter that counts the posted calls (QEvent::MetaCall) delivered to the plugin's chat layout:
+// it finds the layout by its class name while the plugin is loaded (find), and afterwards compares addresses only.
+class LayoutCallSpy : public QObject
+{
+  public:
+    bool     find      = true;
+    QObject* layout    = nullptr;
+    int      delivered = 0;
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::MetaCall) {
+            if (find && !layout && qstrcmp(watched->metaObject()->className(), "ChatLayout") == 0)
+                layout = watched;
+            if (watched == layout)
+                ++delivered;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
 // 2.7.2 (D8): each link card's picture in a chat ("tsmedia-link:..." resources): name -> SHA-1 of its pixels ("blank" for
 // the 1 x 1 stand-in a slot has before its first paint).
 QMap<QString, QString> linkCards(QTextBrowser* b)
@@ -854,6 +904,51 @@ class TestReload261 : public QObject
             QVERIFY2(qAbs(loaded.dy) <= 4, qPrintable(what));
     }
 
+    // ---- 2.7.4 (S4): Options > Addons > Reload leaves no widget of TS Media behind --------------------------------------
+    // The live 2.7.3 runs saw TeamSpeak's widget count grow by 1 with each Reload (dark mode on; 2.7.2 the same). The real
+    // plugin in a fake TeamSpeak window (a chat, a menu bar, a status bar), loaded and reloaded 3 times and unloaded, each
+    // unload followed by TeamSpeak's event loop: no widget made while the plugin was loaded is left, with dark mode off and
+    // on (it measures TeamSpeak's bars, also on a probe window of its own, at its load). So the live one isn't made by
+    // what these cover; the live test lists the widgets around a Reload (dark.widgets). Each load is at another address
+    // (TSMEDIA_RELOAD261_MOVEDLL, PluginDll::reserveAtUnload), so nothing of an earlier load that a later one or Qt still
+    // reaches goes unseen: a plain QWidget made at ts3plugin_init and never deleted fails both rows (tried): it is left after
+    // the unload, and the load after the Reload faults.
+    void reloadLeavesNoWidget_data()
+    {
+        QTest::addColumn<QByteArray>("extra");
+        QTest::newRow("dark mode off") << QByteArray("TSMEDIA_RELOAD261_WIDGETS=1;TSMEDIA_RELOAD261_MOVEDLL=1");
+        QTest::newRow("dark mode on") << QByteArray("TSMEDIA_RELOAD261_WIDGETS=1;TSMEDIA_RELOAD261_DARK=1;TSMEDIA_RELOAD261_MOVEDLL=1");
+    }
+    void reloadLeavesNoWidget()
+    {
+        QFETCH(QByteArray, extra);
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        QString out;
+        QVERIFY(runChild("mixed", "end", "100%", extra, 3, &out));
+        static const QRegularExpression re(QStringLiteral("^reload261: widgets (\\d+) unloaded: (\\d+) \\((\\d+) before the first load\\) left (\\d+): ([^\\r\\n]*)"),
+                                           QRegularExpression::MultilineOption);
+        QStringList unloads;
+        for (auto it = re.globalMatch(out); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            qInfo("%s", qPrintable(m.captured(0).mid(11)));
+            unloads.append(m.captured(1));
+            QVERIFY2(m.captured(4).toInt() == 0 && m.captured(2) == m.captured(3), qPrintable(m.captured(0)));
+        }
+        QCOMPARE(unloads.join(QLatin1Char(' ')), QStringLiteral("1 2 3 4"));
+        static const QRegularExpression moved(QStringLiteral("^reload261: moved: [^\\r\\n]*"), QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch   where = moved.match(out);
+        QVERIFY2(where.hasMatch(), qPrintable(out.right(2000)));
+        qInfo("%s", qPrintable(where.captured(0).mid(11)));
+        QCOMPARE(where.captured(0).mid(18), QStringLiteral("4 loads at 4 addresses, 4 unloads reserved the range they left"));
+        static const QRegularExpression sheet(QStringLiteral("^reload261: widgets loaded: application sheet (\\d+) chars"), QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch   applied = sheet.match(out);
+        QVERIFY2(applied.hasMatch(), qPrintable(out.right(2000)));
+        QVERIFY2(extra.contains("DARK=1") ? applied.captured(1).toInt() > 0 : applied.captured(1).toInt() == 0, qPrintable(applied.captured(0)));
+    }
+
     // The child: one chat, the plugin loaded, settled, the reader placed (end, or scrolled up), then Reload as TeamSpeak
     // does it, `reloads` times. Runs only when the parent starts it (TSMEDIA_RELOAD261_CHILD=end|up).
     void reload261Child()
@@ -892,6 +987,8 @@ class TestReload261 : public QObject
                       "autoLoadLinkPreviews=false\nmakeLinkPreviews=false\nsharePresence=false\n");
             if (zoom != 0)
                 ini.write(QByteArray("chatZoom=") + QByteArray::number(zoom) + QByteArray("\n"));
+            if (!qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_DARK")) // 2.7.4 (S4): dark mode on at every load
+                ini.write("darkMode=true\n");
         }
         if (kind == "cards" || kind == "album")
             QVERIFY(seedCards(dir.path() + QStringLiteral("/plugins/tsmedia/cache/links"), messages));
@@ -909,6 +1006,10 @@ class TestReload261 : public QObject
         tabs->addTab(browser, QStringLiteral("Fake channel"));
         column->addWidget(tabs);
         window.setCentralWidget(central);
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_WIDGETS")) { // 2.7.4 (S4): TeamSpeak's bars, which dark mode measures
+            window.menuBar()->addMenu(QStringLiteral("&Plugins"))->addAction(QStringLiteral("Fake plugin"));
+            window.statusBar()->addPermanentWidget(new QLabel(QStringLiteral("Connected")));
+        }
         window.resize(1000, 760);
         fillChat(browser->document(), messages, kind);
         window.show();
@@ -925,10 +1026,49 @@ class TestReload261 : public QObject
                    .arg(browser->document()->blockCount()));
 
         const qreal basePoints = browser->font().pointSizeF(); // 2.7 F5: TeamSpeak's chat font
-        PluginDll plugin;
+        // 2.7.4 (S4): the widgets TeamSpeak had before the first load; what each load added (named while the DLL is loaded),
+        // and what is left of them after each unload and TeamSpeak's event loop.
+        const bool countWidgets = !qEnvironmentVariableIsEmpty("TSMEDIA_RELOAD261_WIDGETS");
+        if (countWidgets)
+            QTest::qWait(gapMs); // what the window's show left to do
+        const QWidgetList    widgetsAtStart = QApplication::allWidgets();
+        const QSet<QWidget*> widgetsBefore(widgetsAtStart.begin(), widgetsAtStart.end());
+        QHash<QWidget*, QString> made;
+        auto                     noteMade = [&] {
+            for (QWidget* w : QApplication::allWidgets()) {
+                if (!widgetsBefore.contains(w)) // again each time: an address can come back with another widget
+                    made.insert(w, QStringLiteral("%1#%2 in %3%4").arg(QLatin1String(w->metaObject()->className()), w->objectName(),
+                                                                       w->parentWidget() ? QLatin1String(w->parentWidget()->metaObject()->className()) : QLatin1String("(no parent)"),
+                                                                       w->isWindow() ? QStringLiteral(" window") : QString()));
+            }
+        };
+        auto widgetsLeft = [&](int r) {
+            QStringList left;
+            for (QWidget* w : QApplication::allWidgets()) {
+                if (!widgetsBefore.contains(w))
+                    left.append(made.value(w, QStringLiteral("made at the unload #%1").arg(w->objectName())));
+            }
+            left.sort();
+            report(QStringLiteral("widgets %1 unloaded: %2 (%3 before the first load) left %4: %5")
+                       .arg(r)
+                       .arg(QApplication::allWidgets().size())
+                       .arg(widgetsBefore.size())
+                       .arg(left.size())
+                       .arg(left.join(QStringLiteral("; "))));
+        };
+        // 2.7.4 (S4): with TSMEDIA_RELOAD261_MOVEDLL, the addresses of the loads and the unloads that reserved the range they left.
+        QSet<quintptr> bases;
+        int            loads = 0, reservedRanges = 0;
+        PluginDll      plugin;
         QCOMPARE(plugin.load(dll), QString());
+        bases.insert(plugin.base);
+        ++loads;
         m_plugin = &plugin;
         settle(browser, 30000);
+        if (countWidgets) {
+            noteMade();
+            report(QStringLiteral("widgets loaded: application sheet %1 chars").arg(qApp->styleSheet().size())); // dark mode's, when on
+        }
         report(QStringLiteral("loaded: ") + describe(whereOf(browser)) + QStringLiteral(" true max %1").arg(trueMaximum(browser)));
         const qreal zoomedPoints = basePoints + zoom / 10.0;
         if (zoom != 0) // the first load zoomed the chat
@@ -967,12 +1107,15 @@ class TestReload261 : public QObject
             m_logFrom = fakets3::logLines().size();
             plugin.unload(); // ts3plugin_shutdown, then the DLL freed
             m_plugin = nullptr;
+            reservedRanges += plugin.reserved ? 1 : 0;
             printPluginSteps();
             report(QStringLiteral("reload %1 unloaded: ").arg(r) + describe(whereOf(browser)));
             if (gapMs > 0) {
                 QTest::qWait(gapMs); // TeamSpeak's event loop runs (the Options dialog) before the DLL is loaded again
                 report(QStringLiteral("reload %1 unloaded+events: ").arg(r) + describe(whereOf(browser)) + QStringLiteral(" true max %1").arg(trueMaximum(browser)));
             }
+            if (countWidgets)
+                widgetsLeft(r);
             if (move != 0) { // the reader scrolls while TS Media is off
                 bar->setValue(bar->value() + move);
                 report(QStringLiteral("moved %1 block %2: ").arg(r).arg(whereOf(browser).block) + describe(whereOf(browser)));
@@ -980,6 +1123,8 @@ class TestReload261 : public QObject
             measure(r, "unloaded");
             m_logFrom = fakets3::logLines().size();
             QCOMPARE(plugin.load(dll), QString());
+            bases.insert(plugin.base);
+            ++loads;
             m_plugin = &plugin;
             // Normal use while the load runs: timed from the load (pump runs them).
             m_loadClock.start();
@@ -1020,6 +1165,8 @@ class TestReload261 : public QObject
             }
             const Where after = whereOf(browser);
             report(QStringLiteral("reload %1 loaded: ").arg(r) + describe(after) + QStringLiteral(" true max %1").arg(trueMaximum(browser)));
+            if (countWidgets)
+                noteMade();
             measure(r, "loaded");
             if (zoom != 0) // 2.7 F5: kept across the unload, found as it is at the load (no font set)
                 QCOMPARE(browser->font().pointSizeF(), zoomedPoints);
@@ -1030,7 +1177,12 @@ class TestReload261 : public QObject
         }
         plugin.unload();
         m_plugin = nullptr;
-        QTest::qWait(100);
+        reservedRanges += plugin.reserved ? 1 : 0;
+        QTest::qWait(countWidgets ? qMax(100, gapMs) : 100);
+        if (countWidgets)
+            widgetsLeft(reloads + 1);
+        if (plugin.reserveAtUnload)
+            report(QStringLiteral("moved: %1 loads at %2 addresses, %3 unloads reserved the range they left").arg(loads).arg(bases.size()).arg(reservedRanges));
     }
 
     // ---- 2.7.1 (dark mode, issue 2): the cards TS Media drew while dark mode was on ------------------------------------
@@ -1351,20 +1503,60 @@ class TestReload261 : public QObject
     // leaves (U0), or (a card the load drew a moment later or sooner) its settled look (R); a picture drawn from a stand-in
     // there (U0 not R) is that same stand-in drawing. 2.7.2 kept the stand-in's dark drawing (no still was kept for it). The
     // unload's time is reported (U0 off, U1 on) ----------------------------------------------------------------------------
-    void darkStandInsAtUnload_data()
+    // 2.7.4 (S5): one function per case (they were the three rows of darkStandInsAtUnload), each with QtTest's 300 s of its
+    // own (see watchdogTurn): the rows shared the first row's 300 s, and under load the third one ran out of it and aborted
+    // the suite.
+    void darkStandInsAtUnload_data() { watchdogTurn(); }
+    void darkStandInsAtUnload() // Cozy, light skin, 12 MP pictures with a blurhash
     {
-        QTest::addColumn<QByteArray>("extra");
-        QTest::newRow("Cozy, light skin, 12 MP pictures with a blurhash")
-            << QByteArray("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_BLURHASH=1;TSMEDIA_DARKCARDS_SETS=3");
-        QTest::newRow("Cozy, light skin, 12 MP pictures without a blurhash")
-            << QByteArray("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_SETS=3");
-        QTest::newRow("Compact, light skin, QT_FONT_DPI=192, 12 MP pictures with a blurhash")
-            << QByteArray("TSMEDIA_DARKCARDS_LAYOUT=2;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_BLURHASH=1;TSMEDIA_DARKCARDS_SETS=3;"
-                          "QT_FONT_DPI=192");
+        standInsAtUnload("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_BLURHASH=1;TSMEDIA_DARKCARDS_SETS=3");
     }
-    void darkStandInsAtUnload()
+    void darkStandInsAtUnloadNoBlurHash_data() { watchdogTurn(); }
+    void darkStandInsAtUnloadNoBlurHash() // Cozy, light skin, 12 MP pictures without a blurhash
     {
-        QFETCH(QByteArray, extra);
+        standInsAtUnload("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_SETS=3");
+    }
+    void darkStandInsAtUnloadCompact192_data() { watchdogTurn(); }
+    void darkStandInsAtUnloadCompact192() // Compact, light skin, QT_FONT_DPI=192, 12 MP pictures with a blurhash
+    {
+        standInsAtUnload("TSMEDIA_DARKCARDS_LAYOUT=2;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_BLURHASH=1;TSMEDIA_DARKCARDS_SETS=3;"
+                         "QT_FONT_DPI=192");
+    }
+
+  private:
+    // 2.7.4 (S5): darkStandInsBooked's load (hash: with blurhashes), its blank cards kept in m_bookedBlanks.
+    void bookedLoad(bool hash)
+    {
+        QString out;
+        QVERIFY(runCardsChild("standin",
+                              QByteArray("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_SETS=10;"
+                                         "QT_SCALE_FACTOR=3")
+                                  + (hash ? QByteArray(";TSMEDIA_DARKCARDS_BLURHASH=1") : QByteArray()),
+                              &out));
+        const CardMap cards = cardsOf(out);
+        int           found[2] = {0, 0};
+        for (int phase = 0; phase < 2; ++phase) {
+            const auto& chat = cards[phase == 0 ? QStringLiteral("U0") : QStringLiteral("U1")][1];
+            QVERIFY2(chat.size() >= 60, qPrintable(out.right(3000)));
+            for (const QString& card : chat)
+                found[phase] += card == QLatin1String("blank") ? 1 : 0;
+        }
+        m_bookedBlanks[hash ? 1 : 0][0] = found[0];
+        m_bookedBlanks[hash ? 1 : 0][1] = found[1];
+        m_bookedLoaded[hash ? 1 : 0]    = true;
+        qInfo("%s: blank cards in chat 1 after the Disable: U0 %d, U1 %d of %d", hash ? "with blurhashes" : "without", found[0], found[1],
+              cards[QStringLiteral("U1")][1].size());
+    }
+    // 2.7.4 (S5): QtTest 5.15's watchdog (300 s a row) starts a new deadline only when its thread runs between the end of one
+    // row and the start of the next; a row that starts before that thread woke up keeps the deadline it had. Between two
+    // rows of a function QtTest does almost nothing, so darkStandInsAtUnload's three rows shared the first row's 300 s
+    // (measured with QTEST_FUNCTION_TIMEOUT=35000: its third row was aborted 1 s after it began, 35.0 s after the first row
+    // began, each row taking about 17 s alone). Between two functions QtTest does little more. A function's _data() runs in
+    // that gap: 100 ms there let the watchdog's thread wake up, so each case gets 300 s of its own (its child has 200 s,
+    // finishChild).
+    static void watchdogTurn() { QThread::msleep(100); }
+    void standInsAtUnload(const QByteArray& extra)
+    {
         if (!qEnvironmentVariableIsEmpty("TSMEDIA_DARKCARDS_CHILD"))
             QSKIP("inside a child");
         if (pluginPath().isEmpty())
@@ -1402,35 +1594,40 @@ class TestReload261 : public QObject
         QVERIFY2(standIns > 0, "no picture was drawn from a stand-in: the case wasn't made");
     }
 
+  private slots:
     // ---- 2.7.3 review (M3): a picture drawn in dark mode from its blurhash keeps no image of it (Core makes the blurhash again at
     // once, Core::blurHashStill), so its stand-in books nothing in the chat's picture budget: the dark load swaps no more far
     // cards for blanks with blurhashes in the links than without them (drawn from nothing then). 80 cards with 12 MP pictures
     // at 300 %, the standin child (a Disable as soon as the load drew every picture; U0 dark mode off, U1 on). f69282b kept
     // and booked the blurhash's image: 63 blank cards of 80 with blurhashes against 56 without (2.7.2 and this: 56 both) -----
-    void darkStandInsBooked()
+    // 2.7.4 (S5): the two loads are functions of their own, each with QtTest's 300 s (watchdogTurn): one function took 79 s
+    // alone for both, and could share its deadline with the function before it. The second compares (it makes the first's
+    // load itself when it runs alone).
+    void darkStandInsBooked_data() { watchdogTurn(); }
+    void darkStandInsBooked() // without blurhashes
     {
         if (!qEnvironmentVariableIsEmpty("TSMEDIA_DARKCARDS_CHILD"))
             QSKIP("inside a child");
         if (pluginPath().isEmpty())
             QSKIP("this test build has no plugin DLL");
-        int blanks[2][2] = {{0, 0}, {0, 0}}; // [with blurhashes][U0, U1]: chat 1's blank cards
-        for (const bool hash : {false, true}) {
-            QString out;
-            QVERIFY(runCardsChild("standin",
-                                  QByteArray("TSMEDIA_DARKCARDS_LAYOUT=1;TSMEDIA_DARKCARDS_SKIN=light;TSMEDIA_DARKCARDS_HUGE=1;TSMEDIA_DARKCARDS_SETS=10;"
-                                             "QT_SCALE_FACTOR=3")
-                                      + (hash ? QByteArray(";TSMEDIA_DARKCARDS_BLURHASH=1") : QByteArray()),
-                                  &out));
-            const CardMap cards = cardsOf(out);
-            for (int phase = 0; phase < 2; ++phase) {
-                const auto& chat = cards[phase == 0 ? QStringLiteral("U0") : QStringLiteral("U1")][1];
-                QVERIFY2(chat.size() >= 60, qPrintable(out.right(3000)));
-                for (const QString& card : chat)
-                    blanks[hash ? 1 : 0][phase] += card == QLatin1String("blank") ? 1 : 0;
-            }
-            qInfo("%s: blank cards in chat 1 after the Disable: U0 %d, U1 %d of %d", hash ? "with blurhashes" : "without", blanks[hash ? 1 : 0][0], blanks[hash ? 1 : 0][1],
-                  cards[QStringLiteral("U1")][1].size());
+        bookedLoad(false);
+    }
+    void darkStandInsBookedBlurHash_data() { watchdogTurn(); }
+    void darkStandInsBookedBlurHash() // with blurhashes, and the comparison
+    {
+        if (!qEnvironmentVariableIsEmpty("TSMEDIA_DARKCARDS_CHILD"))
+            QSKIP("inside a child");
+        if (pluginPath().isEmpty())
+            QSKIP("this test build has no plugin DLL");
+        if (!m_bookedLoaded[0]) {
+            bookedLoad(false);
+            if (QTest::currentTestFailed())
+                return;
         }
+        bookedLoad(true);
+        if (QTest::currentTestFailed())
+            return;
+        const int(&blanks)[2][2] = m_bookedBlanks; // [with blurhashes][U0, U1]: chat 1's blank cards
         // The same loads with dark mode off swap the same cards (the stand-ins' cards have one size): the two are comparable.
         QVERIFY2(qAbs(blanks[1][0] - blanks[0][0]) <= 2, "with dark mode off the loads with and without blurhashes swapped other cards");
         QVERIFY2(blanks[0][0] > 0, "the budget swapped nothing: the case wasn't made");
@@ -2318,7 +2515,9 @@ class TestReload261 : public QObject
     // the server chat while the channel chat is hidden and its Show, -1 there, a new line, Reload. After each step (and at
     // the Show for the rows on screen, before any event-loop turn) every message row has the geometry of the chat's current
     // font, and the reader's line is where it was (a chat at its end stays at its end). Classic: nothing styled, the place
-    // kept.
+    // kept. 2.7.4 (S2, the crash rule): then a new chat font with the unload right after it (S7): the step the font change
+    // posts to the chat layout is dropped with the layout and never runs after the DLL is gone (a functor posted anywhere
+    // else, such as to qApp, crashes this child after the unload: tried).
     static QVector<QPair<QByteArray, QByteArray>> zoomLayoutRows() // row name, the child's environment (after TSMEDIA_ZOOMLAYOUT_CHILD=1;)
     {
         QVector<QPair<QByteArray, QByteArray>> rows;
@@ -2390,6 +2589,17 @@ class TestReload261 : public QObject
             if (whileOn ? m.captured(2).toInt() == 0 : m.captured(2).toInt() != 0)
                 failures.append(m.captured(0).mid(11) + (whileOn ? QStringLiteral(" (no dark-mode colours while on)") : QStringLiteral(" (dark-mode colours)")));
         }
+        // S7 (2.7.4, S2): a font change posts a step to the layout (not in Classic: no step there), and the one pending at
+        // the unload was dropped with the layout (it ran neither during the unload nor after it), and the child lived on.
+        static const QRegularExpression pending(QStringLiteral("^reload261: zoomlayout-pending S7 layout (\\d+) posted by a font change (\\d+), "
+                                                               "during the unload (\\d+), after it (\\d+)"),
+                                                QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch   p = pending.match(out);
+        QVERIFY2(p.hasMatch(), qPrintable(out.right(2000)));
+        qInfo("%s", qPrintable(p.captured(0).mid(11)));
+        if (!classic)
+            QVERIFY2(p.captured(1).toInt() == 1 && p.captured(2).toInt() >= 1, qPrintable(p.captured(0)));
+        QVERIFY2(p.captured(3).toInt() == 0 && p.captured(4).toInt() == 0, qPrintable(p.captured(0)));
         QVERIFY2(failures.isEmpty(), qPrintable(failures.join(QLatin1Char('\n'))));
         QCOMPARE(checked.join(QLatin1Char(' ')), dark ? QStringLiteral("S5 S5off S6unload") : QStringLiteral("S5"));
         QCOMPARE(steps.join(QLatin1Char(' ')), dark ? QStringLiteral("S0 S1 S2 S3show S3 S4 S5 S5off S6") : QStringLiteral("S0 S1 S2 S3show S3 S4 S5 S6"));
@@ -2627,9 +2837,39 @@ class TestReload261 : public QObject
         settle(channel, 20000);
         measure("S6", false);
         printPluginSteps();
+        // S7 (2.7.4, S2): the unload with the step a new chat font posts (QEvent::FontChange, ChatLayout::eventFilter) still
+        // pending. It is posted to the chat layout itself, which the shutdown deletes, so Qt drops it with it: it must never
+        // run after the DLL is gone (the child would crash). A font change and the event loop (the layout is found by the
+        // calls it gets); one whose posted calls to the layout are delivered at once (the step is there); one with the
+        // unload right after it; then TeamSpeak's event loop.
+        LayoutCallSpy spy;
+        qApp->installEventFilter(&spy);
+        const QFont base   = channel->font();
+        QFont       bigger = base;
+        bigger.setPointSizeF(base.pointSizeF() + 1);
+        channel->setFont(bigger);
+        settle(channel, 8000);
+        spy.find   = false;
+        int posted = 0;
+        if (spy.layout) {
+            const int before = spy.delivered;
+            channel->setFont(base);
+            QCoreApplication::sendPostedEvents(spy.layout, QEvent::MetaCall);
+            posted = spy.delivered - before;
+        }
+        channel->setFont(bigger); // no event-loop turn from here to the unload
+        const int beforeUnload = spy.delivered;
         plugin.unload();
-        m_plugin = nullptr;
-        QTest::qWait(100);
+        m_plugin               = nullptr;
+        const int duringUnload = spy.delivered - beforeUnload;
+        QTest::qWait(300);
+        const int afterUnload = spy.delivered - beforeUnload - duringUnload;
+        qApp->removeEventFilter(&spy);
+        report(QStringLiteral("zoomlayout-pending S7 layout %1 posted by a font change %2, during the unload %3, after it %4")
+                   .arg(spy.layout ? 1 : 0)
+                   .arg(posted)
+                   .arg(duringUnload)
+                   .arg(afterUnload));
     }
 
     // ---- review fix (2.7.3, M1): a zoom gesture in a long chat holds the GUI thread only briefly ----------------------------
@@ -3733,6 +3973,8 @@ class TestReload261 : public QObject
     QSet<QString>                                 m_sideBySideRan; // ... the functions whose children it started
     QElapsedTimer                                 m_loadClock; // reloadNormalUse: the load's timed actions
     QVector<QPair<qint64, std::function<void()>>> m_due;
+    int                                           m_bookedBlanks[2][2] = {{0, 0}, {0, 0}}; // darkStandInsBooked: [with blurhashes][U0, U1]
+    bool                                          m_bookedLoaded[2]    = {false, false};
 };
 
 TSMEDIA_REGISTER_TEST(TestReload261)

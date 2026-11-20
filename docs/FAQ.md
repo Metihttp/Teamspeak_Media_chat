@@ -24,7 +24,7 @@ Windows considers the plugin DLL damaged. Usually an antivirus product quarantin
 
 ### The plugin doesn't show up in TeamSpeak
 
-Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.7.3 loaded`.
+Check that you run TeamSpeak 3.6.x and that the plugin is enabled in **Tools → Options → Addons**. The TeamSpeak log (`%APPDATA%\TS3Client\logs`) should contain a line like `TS Media chat 2.7.4 loaded`.
 
 ### How do I update?
 
@@ -161,7 +161,7 @@ TeamSpeak adds its dark-mode files (such as `default_chat_darkmode.qss`) to a st
 
 ### Some names in the channel tree keep their colors in dark mode
 
-TeamSpeak draws a few names in the channel tree in colors it reads from its style files when it starts: friends in green, blocked people in red, someone recording in dark red. A plugin can't change those colors, so they stay as your TeamSpeak style sets them (the recording icon next to the name still shows it). Web pages shown inside TeamSpeak (the Addons browser, myTeamSpeak) and the YouTube player's page also keep their own look. Everything else (menus, the chat, dialogs, tool tips, scroll bars, title bars and TS Media's windows) turns dark. One thing goes the other way: when TeamSpeak started with dark mode on, the news line at the bottom of its window keeps dark mode's text and link colors after you turn dark mode off (or turn TS Media off) until TeamSpeak draws it anew (TeamSpeak's next start with dark mode off shows it in your style's colors).
+TeamSpeak draws a few names in the channel tree in colors it reads from its style files when it starts: friends in green, blocked people in red, someone recording in dark red. A plugin can't change those colors, so they stay as your TeamSpeak style sets them (the recording icon next to the name still shows it). Web pages shown inside TeamSpeak (the Addons browser, myTeamSpeak) and the YouTube player's page also keep their own look. Everything else (menus, the chat, dialogs, tool tips, scroll bars, title bars and TS Media's windows) turns dark. The news line at the bottom of TeamSpeak's window keeps the colors it had when TeamSpeak showed the news: TeamSpeak draws it once when it shows the news (when it starts, or when news comes in later) and keeps that drawing, and a plugin can't make it draw it again. So news that TeamSpeak showed while dark mode was on (for example when it started with dark mode on) keeps dark mode's light text and link colors after you turn dark mode off (or turn TS Media off), and news it showed before you turned dark mode on keeps your style's colors in dark mode (with a light style, its dark text on the dark status bar). It gets the colors of that moment the next time TeamSpeak shows the news, at the latest when TeamSpeak starts again.
 
 ### Does dark mode change Windows or other programs?
 

@@ -274,7 +274,9 @@ Read by 2.4.0 and later. The outer file is the format 1 envelope exactly as abov
 
 `<TeamSpeak config>/plugins/tsmedia/update/`: `state.ini` (`[check]` schedule and last result,
 `[install]` status `applied`/`done`/`rolledBack`/`unverified`, journal and the SHA-256 of each rollback
-copy, `automatic=1` after an important update installed without a click, `[trust]` revoked keys,
+copy, `automatic=<version>` after an important update installed without a click (the version it
+installed, for the next start's line in the chat: removed once that line is shown, and by an install
+with a click), `[trust]` revoked keys,
 `[auto]` the important updates: `never` the versions never installed without a click again (at most
 16), `attemptVersion` and `attempts` the silent attempts, `announced` the one-time notice; *Skip*,
 *Undo* and *Restore defaults* never touch it), `download/` (`*.part`), `staging/<ver>/*.new`,

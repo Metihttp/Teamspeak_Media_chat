@@ -352,7 +352,7 @@ if ($VerifyPublished) {
                 try {
                     $marker = Read-ImportantMarker (Read-Utf8 $markerFile) $keys $v2
                     $until = $marker.Until.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
-                    Write-Host "  signed with key $($marker.KeyId), important until ${until}: 2.3.4 and later with automatic checks on install $($v2.Version) without a click (it starts with their next TeamSpeak start); older versions and manual checks get the normal offer."
+                    Write-Host "  signed with key $($marker.KeyId), important until ${until}: 2.4.0 and later with automatic checks on install $($v2.Version) without a click (it starts with their next TeamSpeak start); older versions and manual checks get the normal offer."
                     if ($marker.Expired) { Write-Host "  note: the marker expired after ${until}: $($v2.Version) is now offered the normal way." }
                     if ($marker.Payload.PSObject.Properties.Name -contains "revokeKeys") { Write-Host "  note: the marker lists revokeKeys; the plugin never reads them from a marker." }
                 } catch {
@@ -496,10 +496,10 @@ $description = (Select-String -Path (Join-Path $root "CMakeLists.txt") -Pattern 
 if (-not $description) { throw "PLUGIN_DESCRIPTION not found in CMakeLists.txt" }
 
 if ($Important) {
-    # The marker makes 2.3.4 and later install this release without a click: refused when it can't help
+    # The marker makes 2.4.0 and later install this release without a click: refused when it can't help
     # or would be signed with anything but the daily key 1.
     if ($ImportantDays -lt 1 -or $ImportantDays -gt $maxImportantDays) { throw "-ImportantDays must be 1 to $maxImportantDays (the plugin refuses a longer marker)." }
-    if ([version]$version -le $lastWithoutMarker) { throw "-Important: $version can't be marked important (2.3.4 is the first version that reads a marker, so only releases after $lastWithoutMarker can be)." }
+    if ([version]$version -le $lastWithoutMarker) { throw "-Important: $version can't be marked important (the marker reader came with 2.3.4, which was never released: 2.4.0 is the first release that reads a marker, so only releases after $lastWithoutMarker can be)." }
     if ($RevokeKeys.Count -gt 0) { throw "-Important can't be combined with -RevokeKeys: a marker never revokes keys, and -RevokeKeys would sign tsmedia-update.json again." }
     if ($KeyId -ne $importantKeyId) { throw "-Important: the marker is always signed with key $importantKeyId (the daily key); -KeyId $KeyId is refused." }
     $Release = $true # but not -Sign: tsmedia-update.json stays the bridge, byte for byte
@@ -532,7 +532,7 @@ if ($Release) {
     if ($Important) {
         $haveKey = (Test-Path $signTool) -and ((Test-Path (Join-Path $SigningDir "release-key-$importantKeyId.dpapi")) -or (Test-Path (Join-Path $SigningDir "release-key-$importantKeyId.pkey")))
         if (-not $haveKey) { throw "-Important: release key $importantKeyId or tsmedia-keys.ps1 not found in $SigningDir. The marker is always signed with key $importantKeyId." }
-        Write-Host "Release $version`: an important update (TSMedia-$version-important.json, signed with key $importantKeyId, counts for $ImportantDays days): 2.3.4 and later with automatic checks on install it without a click."
+        Write-Host "Release $version`: an important update (TSMedia-$version-important.json, signed with key $importantKeyId, counts for $ImportantDays days): 2.4.0 and later with automatic checks on install it without a click."
     }
     if ($signNow) {
         $haveKey = (Test-Path $signTool) -and ((Test-Path (Join-Path $SigningDir "release-key-$KeyId.dpapi")) -or (Test-Path (Join-Path $SigningDir "release-key-$KeyId.pkey")))
@@ -787,7 +787,7 @@ if ($Release) {
     }
 
     # TSMedia-<ver>-important.json (-Important): the same format 1 envelope around a format 3 payload,
-    # signed with key 1. 2.3.4 and later with automatic checks on install this release without a click.
+    # signed with key 1. 2.4.0 and later with automatic checks on install this release without a click.
     if ($Important) {
         $markerFile = Join-Path $upload (Get-ImportantAssetName $version)
         $marker = New-SignedEnvelope (New-Payload 3) $importantKeyId "tsmedia-important"
@@ -830,7 +830,7 @@ if ($Release) {
     $legacyText = if ($signNow) { "signed with key $KeyId" } else { "the signed manifest of $($legacy.Version), unchanged" }
     Write-Host "Manifests: $v2Name (unsigned, $($notes.Count) highlights) and $legacyName ($legacyText); self-check passed."
     if ($Important) {
-        Write-Host "Marker: $(Split-Path -Leaf $markerFile) (signed with key $importantKeyId, valid until $importantUntil): 2.3.4 and later with automatic checks on install it by themselves; it starts with their next TeamSpeak start. It must be in the release before the release is published."
+        Write-Host "Marker: $(Split-Path -Leaf $markerFile) (signed with key $importantKeyId, valid until $importantUntil): 2.4.0 and later with automatic checks on install it by themselves; it starts with their next TeamSpeak start. It must be in the release before the release is published."
     }
 
     $uploadRel = "dist\upload-$version"

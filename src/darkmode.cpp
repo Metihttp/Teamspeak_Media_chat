@@ -30,6 +30,7 @@
 #include <QWidget>
 
 #include "chatscroll.h"
+#include "darkfirstframe.h"
 #include "darkglyphs.h"
 #include "darktitlebar.h"
 #include "i18n.h"
@@ -1077,11 +1078,17 @@ void DarkMode::apply()
     m_stats.sheetChars  = m_sheet.size();
     m_stats.widgets     = QApplication::allWidgets().size();
     m_stats.lastApplyMs = clock.elapsed();
-    QWidget* main = nullptr;
+    QWidget* main      = nullptr;
+    bool     mainShown = false;
     for (QWidget* top : QApplication::topLevelWidgets()) {
-        if (top->inherits("QMainWindow"))
+        if (top->inherits("QMainWindow")) {
             main = top;
+            mainShown = mainShown || (top->isVisible() && !top->objectName().startsWith(QLatin1String("tsmedia")));
+        }
     }
+    // 2.7.4 (F1): TeamSpeak's start with dark mode on (its main window not shown yet, also one hidden in the tray): its next
+    // Show arms the first-frame guard.
+    m_firstFrame = !mainShown;
     logLine(QString::fromLatin1("[dark] on in %1 ms (sheet %2 ms, chats %3 ms, cards %4 ms, %5 widgets; sheet %6 chars, scale %7%, main window %8)")
                 .arg(m_stats.lastApplyMs)
                 .arg(m_stats.lastSheetMs)
@@ -1105,6 +1112,7 @@ void DarkMode::announceTheme()
 
 void DarkMode::remove()
 {
+    endFirstFrame(); // 2.7.4 (F1)
     if (!m_applied && !m_paused) {
         stopTimers();
         installFilter(false);
@@ -1251,6 +1259,7 @@ void DarkMode::restorePalette()
 
 void DarkMode::pause()
 {
+    endFirstFrame(); // 2.7.4 (F1)
     m_paused = true;
     g_active = false;
     stopTimers();
@@ -1300,6 +1309,7 @@ void DarkMode::shutdown()
                     .arg(mainShown ? 1 : 0)
                     .arg(othersShown));
         installFilter(false);
+        endFirstFrame(true); // 2.7.4 (F1)
         for (auto it = m_docs.begin(); it != m_docs.end(); ++it)
             QObject::disconnect(it->changes);
         for (const QMetaObject::Connection& c : qAsConst(m_tipConnections))
@@ -1322,9 +1332,10 @@ void DarkMode::shutdown()
     if (m_applied)
         logLine(QString::fromLatin1("[dark] the plugin goes: TeamSpeak's style comes back (main window 1, other windows %1)").arg(othersShown));
     m_deferHidden = false; // the plugin goes: every hidden chat laid out and placed now
-    remove(); // everything back (nothing to do when it is off), the filter removed, the title bars reverted
+    remove(); // everything back (nothing to do when it is off), the filter removed, the title bars reverted, the guard gone
     settleDeferred();
     installFilter(false);
+    endFirstFrame(true); // 2.7.4 (F1): remove() ended the guard; one left for its uncloak goes now
     for (const QMetaObject::Connection& c : qAsConst(m_tipConnections))
         QObject::disconnect(c);
     m_tipConnections.clear();
@@ -1916,6 +1927,56 @@ void DarkMode::recolorTips()
     m_applying = false;
 }
 
+// ---- the first frame at a dark start (2.7.4, F1; darkfirstframe.h) ----------------------------------------------------
+
+void DarkMode::firstFramePainted()
+{
+    const int  fills     = darkfirstframe::fills();
+    m_firstFrameWindow   = nullptr;
+    const bool uncloaked = darkfirstframe::disarm();
+    if (!uncloaked) {
+        // Never seen: DWM refused the uncloak; the guard tries again every 300 ms (darkfirstframe::disarm).
+        logLine(QString::fromLatin1("[dark] first frame: the main window's client area filled %1 time(s) before its first paint; still cloaked: "
+                                    "Windows refused the uncloak, tried again every 300 ms")
+                    .arg(fills));
+        return;
+    }
+    const char* how = "never";
+    switch (darkfirstframe::lastUncloak()) {
+    case darkfirstframe::Uncloak::None:
+        break;
+    case darkfirstframe::Uncloak::Erase:
+        how = "at the erase";
+        break;
+    case darkfirstframe::Uncloak::Shown:
+        how = "when shown";
+        break;
+    case darkfirstframe::Uncloak::Hidden:
+        how = "when hidden";
+        break;
+    case darkfirstframe::Uncloak::Timer:
+        how = "by the timer";
+        break;
+    case darkfirstframe::Uncloak::Disarm:
+        how = "at the end";
+        break;
+    }
+    logLine(QString::fromLatin1("[dark] first frame: the main window's client area filled %1 time(s) before its first paint; cloaked %2 ms, uncloaked %3")
+                .arg(fills)
+                .arg(darkfirstframe::lastCloakMs(), 0, 'f', 1)
+                .arg(QString::fromLatin1(how)));
+}
+
+void DarkMode::endFirstFrame(bool unload)
+{
+    m_firstFrame       = false;
+    m_firstFrameWindow = nullptr;
+    if (unload)
+        darkfirstframe::release();
+    else
+        darkfirstframe::disarm();
+}
+
 // ---- title bars (design_dark 1.7) --------------------------------------------------------------------------------------
 
 void DarkMode::titleBar(QWidget* window)
@@ -1965,6 +2026,15 @@ bool DarkMode::eventFilter(QObject* watched, QEvent* event)
             auto* w = static_cast<QWidget*>(watched);
             if (w->isWindow())
                 titleBar(w); // before Windows shows it: no light caption flashes
+            if (m_firstFrame && m_applied && !m_paused && w->isWindow() && qobject_cast<QMainWindow*>(w)
+                && !w->objectName().startsWith(QLatin1String("tsmedia"))) {
+                // 2.7.4 (F1): TeamSpeak's main window at its first Show after a start with dark mode on: Windows shows it
+                // right after this event, white until Qt's first paint; the guard holds it back until its first erase and
+                // fills its erases with the window colour until that paint.
+                m_firstFrame       = false;
+                m_firstFrameWindow = w;
+                darkfirstframe::arm(w, darkpalette::tokens().panel);
+            }
             if (m_barsGuessed && m_applied && !m_paused && w->isWindow()) {
                 // Live test fix (2.7.3, M6): TeamSpeak's main window at its first Show after a start with dark mode on: its
                 // own bars measured in the skin on the next turn (before its first paint), not the probe's.
@@ -1988,6 +2058,12 @@ bool DarkMode::eventFilter(QObject* watched, QEvent* event)
                     recolorDoc(it.value()); // before its first paint
             }
         }
+        break;
+    case QEvent::Paint:
+        // 2.7.4 (F1): the main window's first paint after a dark start: Qt paints it now (its WM_PAINT never reaches the
+        // native filters), so the guard ends; a later erase goes to Qt as before.
+        if (m_firstFrameWindow && watched->isWidgetType() && static_cast<QWidget*>(watched)->window() == m_firstFrameWindow.data())
+            firstFramePainted();
         break;
     case QEvent::WinIdChange:
         if (!m_applying && watched->isWidgetType() && static_cast<QWidget*>(watched)->isWindow())

@@ -86,6 +86,7 @@
 #include "composewidgets.h"
 #include "compresssettings.h"
 #include "darkchat.h"
+#include "darkfirstframe.h" // 2.7.4 (F1)
 #include "darkglyphs.h"
 #include "darkmode.h"
 #include "darkpalette.h"
@@ -93,6 +94,7 @@
 #include "emojiformat.h"
 #include "emojisection.h"
 #include "fakets3.h"
+#include "firstframewin.h" // 2.7.4 (F1)
 #include "layoutart.h"
 #include "layoutdoc.h"
 #include "layoutformat.h"
@@ -1271,6 +1273,7 @@ class TestDarkMode : public QObject
         fakets3::install(m_dir->path()); // the Settings window asks TeamSpeak (servers, the config folder)
         Settings::instance() = Settings();
         darktitlebar::setSetAttributeForTests(nullptr);
+        darkfirstframe::setCloakHookForTests(nullptr);
         g_dwm.clear();
         g_dwmRefuse20 = false;
     }
@@ -1288,6 +1291,11 @@ class TestDarkMode : public QObject
         darktitlebar::setSetAttributeForTests(nullptr);
         m_dir.reset();
         QVERIFY(!DarkMode::isActive());
+        // 2.7.4 (F1): no test leaves the first-frame guard armed (its native filter installed) or a window cloaked.
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(!darkfirstframe::cloaked());
+        QCOMPARE(darkfirstframe::leftOver(), 0); // (review) nor a guard left for its uncloak
+        darkfirstframe::setCloakHookForTests(nullptr);
     }
 
     // ---- T-1: every text pair >= 4.5:1, every boundary, indicator and focus >= 3:1 ----------------------------------
@@ -5605,6 +5613,447 @@ class TestDarkMode : public QObject
             pump(30);
             QCOMPARE(sizes(), off);
         }
+    }
+
+    // ---- 2.7.4 (F1): the first frame of TeamSpeak's main window at a start with dark mode on -----------------------------
+    // At a start with dark mode on, TeamSpeak's main window is guarded from its first Show (Qt sends it before Windows shows
+    // the window): an erase Windows sends that window before its first paint is filled with dark mode's window colour and
+    // answered, another window's isn't, and its first paint (Qt's Paint event: TeamSpeak's Qt does not hand the window's
+    // WM_PAINT to the native filters) ends the guard: a later erase goes to Qt as before. An off, the plugin's unload
+    // (Disable or Reload: the main window shown) and TeamSpeak's Quit (its main window hidden) before that paint end it too,
+    // and an on while the window is shown arms nothing. (Offscreen: no DWM call, the fill alone.)
+    void firstFrameGuard_data()
+    {
+        QTest::addColumn<QString>("end");
+        QTest::newRow("first paint") << a("paint");
+        QTest::newRow("off before the paint") << a("off");
+        QTest::newRow("unload before the paint") << a("unload");
+        QTest::newRow("quit before the paint") << a("quit");
+    }
+
+    void firstFrameGuard()
+    {
+        QFETCH(QString, end);
+        installSkin();
+        auto* teamSpeaks = new QMainWindow; // TeamSpeak's, still empty at the plugin's load
+        teamSpeaks->setObjectName(a("MainWindow"));
+        m_windows << teamSpeaks;
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        QVERIFY(!darkfirstframe::armed()); // only from the window's Show
+        TsBars t = buildBarsWindow(30, teamSpeaks, true);
+        t.window->show(); // its Show arms the guard; nothing painted yet (no event processed)
+        QVERIFY(darkfirstframe::armed());
+        QVERIFY(!darkfirstframe::cloaked()); // offscreen: no DWM
+        const quintptr hwnd  = teamSpeaks->internalWinId();
+        const QRgb     white = qRgb(255, 255, 255);
+        const QRgb     panel = darkpalette::tokens().panel.rgb();
+        QVERIFY(hwnd != 0);
+        firstframewin::Erase other = firstframewin::erase(hwnd + 7919); // another window's erase
+        QVERIFY(!other.taken);
+        QCOMPARE(other.pixel, white);
+        firstframewin::Erase e = firstframewin::erase(hwnd);
+        QVERIFY(e.taken);
+        QCOMPARE(e.result, 1L);
+        QCOMPARE(e.pixel, panel);
+        QCOMPARE(darkfirstframe::fills(), 1);
+        if (end == a("paint")) {
+            QVERIFY(!firstframewin::paint(hwnd)); // a WM_PAINT through the filters doesn't end it (TeamSpeak's never comes)
+            QVERIFY(darkfirstframe::armed());
+            QVERIFY(QTest::qWaitForWindowExposed(t.window)); // Qt's first paint of the window
+            pump(50);
+        } else if (end == a("off")) {
+            dark->setEnabled(false);
+        } else if (end == a("unload")) {
+            dark->shutdown(); // Disable or Reload: TeamSpeak's main window shown
+        } else {
+            teamSpeaks->hide(); // TeamSpeak's Quit: it hides its main window before it lets the plugins go
+            QVERIFY(dark->teamSpeakClosing());
+            dark->shutdown();
+        }
+        QVERIFY(!darkfirstframe::armed());
+        e = firstframewin::erase(hwnd);
+        QVERIFY(!e.taken); // Qt's own answer again
+        QCOMPARE(e.pixel, white);
+        if (end != a("quit")) {
+            QVERIFY(QTest::qWaitForWindowExposed(t.window));
+            pump(50); // painted later without the guard
+            QVERIFY(!darkfirstframe::armed());
+            QVERIFY(!firstframewin::erase(hwnd).taken);
+        }
+        if (end == a("paint")) {
+            dark->setEnabled(false);
+            dark->setEnabled(true); // an on while the window is shown: nothing to guard
+            pump(30);
+            QVERIFY(!darkfirstframe::armed());
+            t.window->hide();
+            t.window->show(); // its next Show neither
+            QVERIFY(!darkfirstframe::armed());
+            pump(30);
+            dark->setEnabled(false);
+        }
+        dark.reset();
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(!firstframewin::erase(hwnd).taken);
+    }
+
+    // 2.7.4 (F1): the guard cloaks TeamSpeak's main window from its first Show at a dark start and uncloaks it right after the
+    // first erase's fill, else when the show is over (WM_WINDOWPOSCHANGED with SWP_SHOWWINDOW), when it hides, minimizes or
+    // goes, at the window's first paint, an off, the unload, TeamSpeak's Quit or a pause, else after its own 300 ms timer
+    // (also a refused uncloak, again by that timer): every cloak is undone exactly once, and nothing is left armed or
+    // cloaked. A refused cloak leaves the fill alone. (DWM through a test hook: the offscreen window has no real handle.)
+    void firstFrameCloak_data()
+    {
+        QTest::addColumn<QString>("end");
+        QTest::addColumn<int>("how");
+        QTest::newRow("erase") << a("erase") << int(darkfirstframe::Uncloak::Erase);
+        QTest::newRow("shown") << a("shown") << int(darkfirstframe::Uncloak::Shown);
+        QTest::newRow("hidden") << a("hidden") << int(darkfirstframe::Uncloak::Hidden);
+        QTest::newRow("hidden by its position") << a("hidden by position") << int(darkfirstframe::Uncloak::Hidden);
+        QTest::newRow("minimized") << a("minimized") << int(darkfirstframe::Uncloak::Hidden);
+        QTest::newRow("destroyed") << a("destroyed") << int(darkfirstframe::Uncloak::Hidden);
+        QTest::newRow("first paint") << a("paint") << int(darkfirstframe::Uncloak::Disarm);
+        QTest::newRow("off") << a("off") << int(darkfirstframe::Uncloak::Disarm);
+        QTest::newRow("unload") << a("unload") << int(darkfirstframe::Uncloak::Disarm);
+        QTest::newRow("quit") << a("quit") << int(darkfirstframe::Uncloak::Disarm);
+        QTest::newRow("pause") << a("pause") << int(darkfirstframe::Uncloak::Disarm);
+        QTest::newRow("timer") << a("timer") << int(darkfirstframe::Uncloak::Timer);
+        QTest::newRow("uncloak refused once") << a("refused") << int(darkfirstframe::Uncloak::Timer);
+        QTest::newRow("cloak refused") << a("cloak refused") << int(darkfirstframe::Uncloak::None);
+    }
+
+    static int& refusedCloaks()
+    {
+        static int n = 0;
+        return n;
+    }
+
+    static int& refusedUncloaks()
+    {
+        static int n = 0;
+        return n;
+    }
+
+    static QList<QPair<quintptr, bool>>& cloakCalls()
+    {
+        static QList<QPair<quintptr, bool>> calls;
+        return calls;
+    }
+
+    // What DWM would show: the window's cloak after the calls DWM took (a refused call changes nothing).
+    static bool& hookCloaked()
+    {
+        static bool cloaked = false;
+        return cloaked;
+    }
+
+    static bool cloakHook(quintptr hwnd, bool on)
+    {
+        cloakCalls() << qMakePair(hwnd, on);
+        int& refused = on ? refusedCloaks() : refusedUncloaks();
+        if (refused > 0) {
+            --refused;
+            return false; // DWM refuses this call
+        }
+        hookCloaked() = on;
+        return true;
+    }
+
+    void firstFrameCloak()
+    {
+        QFETCH(QString, end);
+        QFETCH(int, how);
+        cloakCalls().clear();
+        refusedCloaks()   = end == a("cloak refused") ? 1 : 0;
+        refusedUncloaks() = end == a("refused") ? 1 : 0;
+        darkfirstframe::setCloakHookForTests(&cloakHook);
+        installSkin();
+        auto* teamSpeaks = new QMainWindow;
+        teamSpeaks->setObjectName(a("MainWindow"));
+        m_windows << teamSpeaks;
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        QVERIFY(cloakCalls().isEmpty());
+        TsBars     t       = buildBarsWindow(30, teamSpeaks, true);
+        const bool noPaint = end == a("timer") || end == a("refused") || end == a("pause");
+        if (noPaint)
+            t.window->setUpdatesEnabled(false); // no paint: only the timer (or the pause) ends it
+        QElapsedTimer clock;
+        clock.start();
+        t.window->show();
+        const quintptr hwnd  = teamSpeaks->internalWinId();
+        const QRgb     panel = darkpalette::tokens().panel.rgb();
+        QVERIFY(hwnd != 0);
+        QVERIFY(darkfirstframe::armed());
+        QCOMPARE(cloakCalls().size(), 1);
+        QCOMPARE(cloakCalls().first(), qMakePair(hwnd, true));
+        if (end == a("cloak refused")) {
+            QVERIFY(!darkfirstframe::cloaked()); // no cloak: the fill alone
+            const firstframewin::Erase e = firstframewin::erase(hwnd);
+            QVERIFY(e.taken);
+            QCOMPARE(e.pixel, panel);
+        } else {
+            QVERIFY(darkfirstframe::cloaked());
+            QVERIFY(!firstframewin::posChanged(hwnd, false)); // a move: still cloaked
+            QVERIFY(!firstframewin::showWindow(hwnd, true));  // being shown: still cloaked
+            QVERIFY(!firstframewin::size(hwnd, false));       // sized: still cloaked
+            QVERIFY(darkfirstframe::cloaked());
+            QCOMPARE(cloakCalls().size(), 1);
+        }
+        if (end == a("erase")) {
+            const firstframewin::Erase e = firstframewin::erase(hwnd);
+            QVERIFY(e.taken);
+            QCOMPARE(e.pixel, panel);
+            QVERIFY(!darkfirstframe::cloaked());
+            QVERIFY(darkfirstframe::armed()); // the fill goes on until the first paint
+            QVERIFY(firstframewin::erase(hwnd).taken);
+            QCOMPARE(darkfirstframe::fills(), 2);
+        } else if (end == a("shown")) {
+            QVERIFY(!firstframewin::posChanged(hwnd, true));
+            QVERIFY(!darkfirstframe::cloaked());
+            QVERIFY(firstframewin::erase(hwnd).taken); // filled, nothing more to uncloak
+        } else if (end == a("hidden")) {
+            QVERIFY(!firstframewin::showWindow(hwnd, false));
+            QVERIFY(!darkfirstframe::cloaked());
+        } else if (end == a("hidden by position")) {
+            QVERIFY(!firstframewin::posChanged(hwnd, false, true));
+            QVERIFY(!darkfirstframe::cloaked());
+        } else if (end == a("minimized")) {
+            QVERIFY(!firstframewin::size(hwnd, true));
+            QVERIFY(!darkfirstframe::cloaked());
+        } else if (end == a("destroyed")) {
+            QVERIFY(!firstframewin::destroy(hwnd));
+            QVERIFY(!darkfirstframe::cloaked());
+            QVERIFY(darkfirstframe::armed());
+            QVERIFY(!firstframewin::erase(hwnd).taken); // a handle Windows may give another window now: left alone
+        } else if (end == a("paint")) {
+            QVERIFY(QTest::qWaitForWindowExposed(t.window));
+            pump(50);
+        } else if (end == a("off")) {
+            dark->setEnabled(false);
+        } else if (end == a("unload")) {
+            dark->shutdown();
+        } else if (end == a("quit")) {
+            teamSpeaks->hide(); // TeamSpeak's Quit (offscreen: no window message)
+            QVERIFY(dark->teamSpeakClosing());
+            dark->shutdown();
+        } else if (end == a("pause")) {
+            for (int i = 0; i < 8 && !dark->paused(); ++i) { // another plugin fighting over the sheet
+                qApp->setStyleSheet(QString::fromLatin1(kOtherSheet) + QString::fromLatin1("QLabel#n%1 { color: #000000; }\n").arg(i));
+                pump(20);
+            }
+            QVERIFY(dark->paused());
+            QVERIFY(!darkfirstframe::armed());
+        } else if (end == a("refused")) {
+            QVERIFY(firstframewin::erase(hwnd).taken); // its uncloak refused: still cloaked
+            QVERIFY(darkfirstframe::cloaked());
+            QCOMPARE(cloakCalls().size(), 2);
+            QTRY_VERIFY_WITH_TIMEOUT(!darkfirstframe::cloaked(), 2000); // again by the timer
+            QVERIFY(clock.elapsed() >= 280); // its 300 ms (a Windows timer can come one 15.6 ms tick early)
+            QVERIFY(darkfirstframe::armed()); // no paint yet
+        } else if (end == a("timer")) {
+            QTRY_VERIFY_WITH_TIMEOUT(!darkfirstframe::cloaked(), 2000);
+            QVERIFY(clock.elapsed() >= 280); // its 300 ms (one tick early at most)
+            QVERIFY(darkfirstframe::armed()); // no paint yet
+        }
+        if (noPaint)
+            t.window->setUpdatesEnabled(true);
+        if (end != a("quit")) {
+            QVERIFY(QTest::qWaitForWindowExposed(t.window));
+            pump(50); // painted: the guard ends (if it hadn't)
+        }
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(!darkfirstframe::cloaked());
+        const int ended = int(darkfirstframe::lastUncloak());
+        if (end == a("pause") && ended == int(darkfirstframe::Uncloak::Timer))
+            QVERIFY(clock.elapsed() >= 280); // a slow machine: the timer came before the pause
+        else
+            QCOMPARE(ended, how);
+        if (end == a("cloak refused"))
+            QCOMPARE(darkfirstframe::lastCloakMs(), 0.0);
+        else
+            QVERIFY(darkfirstframe::lastCloakMs() > 0);
+        dark.reset();
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(!darkfirstframe::cloaked());
+        // One cloak and one uncloak (and the refused one), the last one an uncloak; a refused cloak: nothing to undo.
+        QCOMPARE(cloakCalls().size(), end == a("refused") ? 3 : end == a("cloak refused") ? 1 : 2);
+        QCOMPARE(cloakCalls().last(), qMakePair(hwnd, end == a("cloak refused")));
+    }
+
+    // 2.7.4 (F1, review): DWM refuses the uncloak at the first erase and again when the guard ends (the window's first paint,
+    // an off or a pause; never seen live): the fill ends there, but the window must not stay cloaked: the uncloak is tried
+    // again every 300 ms until DWM takes it. Only the plugin's unload gives up after one last try, since nothing of the plugin
+    // may stay after it. (DWM through the test hook.)
+    void firstFrameCloakRefusedAtEnd_data()
+    {
+        QTest::addColumn<QString>("end");
+        QTest::newRow("first paint") << a("paint");
+        QTest::newRow("off") << a("off");
+        QTest::newRow("pause") << a("pause");
+        QTest::newRow("unload") << a("unload");
+    }
+
+    void firstFrameCloakRefusedAtEnd()
+    {
+        QFETCH(QString, end);
+        cloakCalls().clear();
+        hookCloaked()     = false;
+        refusedCloaks()   = 0;
+        refusedUncloaks() = 1 << 20; // DWM refuses every uncloak until the test lets it take one
+        darkfirstframe::setCloakHookForTests(&cloakHook);
+        installSkin();
+        auto* teamSpeaks = new QMainWindow;
+        teamSpeaks->setObjectName(a("MainWindow"));
+        m_windows << teamSpeaks;
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        TsBars     t       = buildBarsWindow(30, teamSpeaks, true);
+        const bool noPaint = end == a("pause");
+        if (noPaint)
+            t.window->setUpdatesEnabled(false); // no paint: the pause ends it
+        t.window->show();
+        const quintptr hwnd = teamSpeaks->internalWinId();
+        QVERIFY(hwnd != 0);
+        QVERIFY(darkfirstframe::armed());
+        QVERIFY(hookCloaked());
+        QVERIFY(firstframewin::erase(hwnd).taken); // filled, its uncloak refused
+        QVERIFY(darkfirstframe::cloaked());
+        QVERIFY(hookCloaked());
+        if (end == a("paint")) {
+            QVERIFY(QTest::qWaitForWindowExposed(t.window));
+            pump(50);
+        } else if (end == a("off")) {
+            dark->setEnabled(false);
+        } else if (end == a("pause")) {
+            for (int i = 0; i < 8 && !dark->paused(); ++i) { // another plugin fighting over the sheet
+                qApp->setStyleSheet(QString::fromLatin1(kOtherSheet) + QString::fromLatin1("QLabel#n%1 { color: #000000; }\n").arg(i));
+                pump(20);
+            }
+            QVERIFY(dark->paused());
+        } else {
+            dark->shutdown(); // Disable or Reload
+        }
+        QVERIFY(!darkfirstframe::armed());          // the fill ended:
+        QVERIFY(!firstframewin::erase(hwnd).taken); // an erase is Qt's again
+        QVERIFY(hookCloaked());                     // the end's uncloak refused too
+        QCOMPARE(cloakCalls().last(), qMakePair(hwnd, false));
+        const int calls = cloakCalls().size();
+        QVERIFY(calls >= 3); // the cloak, the erase's uncloak and the end's (and the timer's, on a slow machine)
+        if (end == a("unload")) {
+            // The plugin goes: after its last try nothing of the guard is left to try again.
+            pump(700);
+            QCOMPARE(cloakCalls().size(), calls);
+            QVERIFY(!darkfirstframe::cloaked());
+            QCOMPARE(darkfirstframe::leftOver(), 0);
+        } else {
+            QTRY_VERIFY_WITH_TIMEOUT(cloakCalls().size() > calls, 2000); // tried again while refused
+            QCOMPARE(cloakCalls().last(), qMakePair(hwnd, false));
+            QVERIFY(hookCloaked());
+            QVERIFY(darkfirstframe::cloaked()); // still held cloaked, still trying
+            QCOMPARE(darkfirstframe::leftOver(), 1);
+            QVERIFY(!firstframewin::erase(hwnd).taken); // its erases stay Qt's
+            refusedUncloaks() = 0;                      // DWM takes the next one
+            QTRY_VERIFY_WITH_TIMEOUT(!hookCloaked(), 2000);
+            QVERIFY(!darkfirstframe::cloaked());
+            QVERIFY(!darkfirstframe::armed());
+            QCOMPARE(darkfirstframe::leftOver(), 1); // done, gone at the unload
+            QCOMPARE(int(darkfirstframe::lastUncloak()), int(darkfirstframe::Uncloak::Timer));
+            QVERIFY(darkfirstframe::lastCloakMs() >= 280);
+            const int done = cloakCalls().size();
+            pump(700);
+            QCOMPARE(cloakCalls().size(), done); // nothing more once uncloaked
+        }
+        if (noPaint)
+            t.window->setUpdatesEnabled(true);
+        dark.reset();
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(!darkfirstframe::cloaked());
+        QCOMPARE(darkfirstframe::leftOver(), 0);
+        QCOMPARE(cloakCalls().last(), qMakePair(hwnd, false));
+        refusedUncloaks() = 0;
+    }
+
+    // 2.7.4 (F1): a light start (dark mode off at the plugin's load) arms nothing: TeamSpeak's window shown, then dark mode
+    // turned on and off twice, its erases are Qt's, and no cloak is ever asked for.
+    void firstFrameGuardLightStart()
+    {
+        installSkin();
+        auto* teamSpeaks = new QMainWindow;
+        teamSpeaks->setObjectName(a("MainWindow"));
+        m_windows << teamSpeaks;
+        auto dark = makeDark();
+        dark->setEnabled(false);
+        cloakCalls().clear();
+        refusedCloaks()   = 0;
+        refusedUncloaks() = 0;
+        darkfirstframe::setCloakHookForTests(&cloakHook);
+        TsBars t = shownBarsWindow(30, teamSpeaks, true);
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(!firstframewin::erase(teamSpeaks->internalWinId()).taken);
+        for (int round = 0; round < 2; ++round) {
+            dark->setEnabled(true); // turned on later, the window shown
+            pump(30);
+            QVERIFY(!darkfirstframe::armed());
+            QVERIFY(!firstframewin::erase(teamSpeaks->internalWinId()).taken);
+            dark->setEnabled(false);
+            pump(30);
+        }
+        QVERIFY(cloakCalls().isEmpty()); // never cloaked
+        Q_UNUSED(t);
+    }
+
+    // 2.7.4 (F1): at a dark start only TeamSpeak's main window is guarded, at its first Show: a dialog or a TS Media window
+    // shown before it arms nothing; once painted, hiding and showing it again arms nothing either. Dark mode turned on while
+    // TeamSpeak's window is hidden (in the tray) guards its next Show the same way.
+    void firstFrameGuardOnlyMainWindow()
+    {
+        installSkin();
+        auto* teamSpeaks = new QMainWindow;
+        teamSpeaks->setObjectName(a("MainWindow"));
+        m_windows << teamSpeaks;
+        auto dark = makeDark();
+        dark->setEnabled(true);
+        auto* dialog = new QDialog;
+        m_windows << dialog;
+        dialog->resize(300, 200);
+        dialog->show();
+        QVERIFY(!darkfirstframe::armed());
+        auto* ours = new QMainWindow; // a TS Media window
+        ours->setObjectName(a("tsmediaViewer"));
+        m_windows << ours;
+        ours->resize(300, 200);
+        ours->show();
+        QVERIFY(!darkfirstframe::armed());
+        pump(30);
+        TsBars t = buildBarsWindow(30, teamSpeaks, true);
+        t.window->show();
+        QVERIFY(darkfirstframe::armed());
+        QVERIFY(firstframewin::erase(teamSpeaks->internalWinId()).taken);
+        QVERIFY(!firstframewin::erase(dialog->internalWinId()).taken);
+        QVERIFY(!firstframewin::erase(ours->internalWinId()).taken);
+        QVERIFY(QTest::qWaitForWindowExposed(t.window));
+        pump(50);
+        QVERIFY(!darkfirstframe::armed()); // its first paint
+        t.window->hide();
+        pump(30);
+        t.window->show();
+        QVERIFY(!darkfirstframe::armed());
+        QVERIFY(QTest::qWaitForWindowExposed(t.window));
+        pump(30);
+        // In the tray: hidden, dark mode off and on, then shown again.
+        t.window->hide();
+        pump(30);
+        dark->setEnabled(false);
+        dark->setEnabled(true);
+        QVERIFY(!darkfirstframe::armed());
+        t.window->show();
+        QVERIFY(darkfirstframe::armed());
+        QVERIFY(firstframewin::erase(teamSpeaks->internalWinId()).taken);
+        QVERIFY(QTest::qWaitForWindowExposed(t.window));
+        pump(50);
+        QVERIFY(!darkfirstframe::armed());
+        dark->setEnabled(false);
     }
 
     // Both at 150 % and 200 % (font DPI), each in a child process (the scale is per process).

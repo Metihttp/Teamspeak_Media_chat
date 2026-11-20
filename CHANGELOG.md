@@ -5,6 +5,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version 2.0.6 is the first public release. Earlier versions were internal builds without a public release; they are listed briefly at the end.
 
+## [2.7.4] - 2026-11-20
+
+2.7.4 is an important update: TS Media chat 2.4.0 and later with automatic update checks on installs it without a click ([how](docs/UPDATES.md#important-updates)), and it starts the next time you open TeamSpeak. Older versions offer it as usual; with automatic checks off, the offer comes when you check for updates.
+
+### Fixed
+- Dark mode: TeamSpeak's window no longer flashes white when TeamSpeak starts with dark mode on. Windows showed the window before TeamSpeak had drawn it, so it was white for about a tenth of a second (2.7.3 made that a little longer). Now it is dark from the first moment it appears (it then opens without Windows' fade-in animation, which showed it white).
+- Dark mode's [FAQ](docs/FAQ.md#some-names-in-the-channel-tree-keep-their-colors-in-dark-mode) and [description](docs/USAGE.md#dark-mode) say exactly which colors the news line at the bottom of TeamSpeak's window has: the ones it had when TeamSpeak showed the news. TeamSpeak draws that line once when it shows the news and keeps the drawing, and a plugin can't make it draw it again, so news shown while dark mode was on keeps dark mode's light colors after it goes off, and news shown before you turned it on keeps your style's colors in dark mode. The FAQ said only the first, and that it lasted until TeamSpeak draws the line anew.
+- Releases: `scripts\build.ps1 -Important` and `-VerifyPublished` name 2.4.0 as the first version that installs an important update by itself (they said 2.3.4, which was never released), and [updates](docs/UPDATES.md#on-disk) says that `state.ini` keeps the version of an important update installed without a click in `[install] automatic` (it said `automatic=1`).
+
 ## [2.7.3] - 2026-11-19
 
 2.7.3 is an important update: TS Media chat 2.4.0 and later with automatic update checks on installs it without a click ([how](docs/UPDATES.md#important-updates)), and it starts the next time you open TeamSpeak. Older versions offer it as usual; with automatic checks off, the offer comes when you check for updates.
@@ -443,6 +452,7 @@ Version 2.0.6 is the first public release. Earlier versions were internal builds
 - Files are uploaded to the channel's file browser (`/tsmedia`) and posted as a normal `ts3file://` link that works for everyone.
 - Inline image previews and file cards for users with the plugin.
 
+[2.7.4]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.3...v2.7.4
 [2.7.3]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/Metihttp/Teamspeak_Media_chat/compare/v2.7.0...v2.7.1
